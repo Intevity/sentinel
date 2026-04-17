@@ -53,6 +53,17 @@ There is no Claude Code plugin — everything belongs to the app.
 
    The daemon is bundled inside the app — there is nothing else to install.
 
+   > **macOS: first launch will show "unidentified developer"** — Claude Sentinel is not Apple-code-signed yet (v0.1.x ships unsigned while the project is in early access). To bypass Gatekeeper the first time:
+   >
+   > **Option A (one-click):** right-click `Claude Sentinel.app` in `/Applications` → **Open** → confirm **Open** in the dialog. macOS remembers the decision.
+   >
+   > **Option B (terminal):** clear the quarantine attribute before first launch:
+   > ```sh
+   > xattr -c "/Applications/Claude Sentinel.app"
+   > ```
+   >
+   > If macOS says the app is "damaged and can't be opened," that's also the quarantine flag — Option B fixes it. Signed + notarized builds will land in a future release.
+
 2. **Launch Claude Sentinel** from your Applications folder. The tray icon appears in the menu bar / system tray, and the daemon starts automatically.
 
 3. **Click "Activate Sentinel"** in the banner that appears on first launch. This writes `ANTHROPIC_BASE_URL=http://localhost:47284` plus OTEL env vars into `~/.claude/settings.json` — the only setup step required.

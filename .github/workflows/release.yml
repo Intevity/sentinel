@@ -73,18 +73,19 @@ jobs:
       # then runs build:sidecar to produce the platform binary. That binary is
       # placed in packages/app/src-tauri/binaries/ and bundled into the app by
       # the Tauri build step below.
+      # macOS builds ship unsigned for v0.1.x — users right-click → Open once
+      # to bypass Gatekeeper. When we're ready for signed + notarized releases,
+      # add back: APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+      # APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID (all populated with valid values —
+      # an empty APPLE_CERTIFICATE secret makes tauri-action fail at keychain import).
+      # TAURI_SIGNING_PRIVATE_KEY below is a different mechanism — it signs the
+      # auto-updater's latest.json manifest, not the .app bundle.
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: packages/app
           tagName: ${{ github.ref_name }}
