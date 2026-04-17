@@ -34,7 +34,7 @@ export default function App(): React.ReactElement {
   const { settings } = useSettings();
   const isRoundRobin = settings?.switchingMode === 'round-robin';
 
-  const { rootRef, contentRef, overlayRef } = useAutoResizeWindow();
+  const { rootRef, contentRef, overlayRef, popoverRef } = useAutoResizeWindow();
 
   // Per-tab view scope. Separate from activeAccount — lets the user inspect
   // any enrolled account's data on a given tab without changing the proxy's
@@ -118,7 +118,7 @@ export default function App(): React.ReactElement {
             <SettingsIcon size={16} strokeWidth={2.2} />
           </button>
           <div className="flex-shrink-0">
-            <HeaderMenu />
+            <HeaderMenu measureRef={popoverRef} />
           </div>
         </div>
       </header>

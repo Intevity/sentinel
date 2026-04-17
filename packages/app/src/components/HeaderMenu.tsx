@@ -27,7 +27,14 @@ function formatUptime(ms: number): string {
  * persists after closing the window) because this menu item expresses explicit
  * user intent to stop everything.
  */
-export default function HeaderMenu(): React.ReactElement {
+interface HeaderMenuProps {
+  /** Callback ref attached to the dropdown when open, so the auto-resize hook
+   *  can grow the window to fit the expanded menu (e.g. the Uninstall confirm
+   *  panel) instead of letting it get clipped by the current window height. */
+  measureRef?: (el: HTMLElement | null) => void;
+}
+
+export default function HeaderMenu({ measureRef }: HeaderMenuProps): React.ReactElement {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<DaemonProcessStatus | null>(null);
   const [quitting, setQuitting] = useState(false);
@@ -116,6 +123,7 @@ export default function HeaderMenu(): React.ReactElement {
       {open && (
         <motion.div
           {...menuPop}
+          ref={measureRef}
           style={{ transformOrigin: 'top right' }}
           className="absolute right-0 top-full mt-1 z-30 min-w-[220px] rounded-xl bg-white dark:bg-[#2A2A2C] shadow-lg ring-1 ring-black/10 dark:ring-white/10 overflow-hidden"
         >

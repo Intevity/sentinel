@@ -11,6 +11,11 @@ export interface AutoResizeRefs {
   /** Attach to a full-surface overlay (e.g. SettingsPanel) so its scroll
    *  height drives the window when it's mounted. Optional. */
   overlayRef: (el: HTMLElement | null) => void;
+  /** Attach to a floating element anchored inside the window (e.g. the
+   *  HeaderMenu dropdown). Unlike `overlayRef`, this measures the element's
+   *  bottom edge relative to the root, so the window grows to reveal a
+   *  popover that expands beyond the current viewport. */
+  popoverRef: (el: HTMLElement | null) => void;
 }
 
 /**
@@ -37,10 +42,12 @@ export function useAutoResizeWindow(): AutoResizeRefs {
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const [content, setContent] = useState<HTMLDivElement | null>(null);
   const [overlay, setOverlay] = useState<HTMLElement | null>(null);
+  const [popover, setPopover] = useState<HTMLElement | null>(null);
 
   const rootRef    = useCallback((el: HTMLDivElement | null) => { setRoot(el); }, []);
   const contentRef = useCallback((el: HTMLDivElement | null) => { setContent(el); }, []);
   const overlayRef = useCallback((el: HTMLElement | null)    => { setOverlay(el); }, []);
+  const popoverRef = useCallback((el: HTMLElement | null)    => { setPopover(el); }, []);
 
   useEffect(() => {
     if (!root || !content) return;
@@ -55,13 +62,22 @@ export function useAutoResizeWindow(): AutoResizeRefs {
     let inFlight = false;
 
     const computeInner = (): number => {
-      const chrome = main.getBoundingClientRect().top - root.getBoundingClientRect().top;
+      const rootTop = root.getBoundingClientRect().top;
+      const chrome = main.getBoundingClientRect().top - rootTop;
       // Measure the inner wrapper's natural height — `main.scrollHeight`
       // collapses to clientHeight when content fits, which would prevent the
       // window from ever shrinking back down.
       const mainPadBottom = parseFloat(getComputedStyle(main).paddingBottom) || 0;
       let needed = chrome + content.offsetHeight + mainPadBottom;
       if (overlay) needed = Math.max(needed, overlay.scrollHeight);
+      if (popover) {
+        // The popover is anchored inside the window (e.g. a header dropdown),
+        // so its scrollHeight tells us nothing about where it ends visually.
+        // Use its bottom edge relative to the root, plus a little breathing
+        // room, so the window grows just enough to reveal the whole thing.
+        const popoverBottom = popover.getBoundingClientRect().bottom;
+        needed = Math.max(needed, popoverBottom - rootTop + 8);
+      }
       return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.ceil(needed)));
     };
 
@@ -104,6 +120,7 @@ export function useAutoResizeWindow(): AutoResizeRefs {
     ro.observe(main);
     ro.observe(root);
     if (overlay) ro.observe(overlay);
+    if (popover) ro.observe(popover);
 
     schedule();
 
@@ -111,7 +128,7 @@ export function useAutoResizeWindow(): AutoResizeRefs {
       ro.disconnect();
       if (rafId !== null) cancelAnimationFrame(rafId);
     };
-  }, [root, content, overlay]);
+  }, [root, content, overlay, popover]);
 
-  return { rootRef, contentRef, overlayRef };
+  return { rootRef, contentRef, overlayRef, popoverRef };
 }

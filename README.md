@@ -80,7 +80,7 @@ Grab the latest installer from the **[Releases page](https://github.com/Intevity
 
 | Platform | Format | Download |
 |---|---|---|
-| **macOS** — Apple Silicon (M1/M2/M3/M4) | `.dmg` | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
+| **macOS** — Apple Silicon (M1/M2/M3/M4/M5) | `.dmg` | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
 | **macOS** — Intel | `.dmg` | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
 | **Windows** 10/11 | `.msi` / NSIS | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
 | **Linux** (Debian/Ubuntu) | `.deb` | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
