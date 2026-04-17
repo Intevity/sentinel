@@ -8,7 +8,7 @@ import type { ActiveToken, ActiveAccountId } from './proxy.js';
 import { RateLimitStore } from './rate-limit-store.js';
 import { TokenRotator } from './token-rotator.js';
 import { startAutoSwitch } from './auto-switch.js';
-import { startAlertEvaluator } from './alerts.js';
+import { startAlertEvaluator, primeNewAlertAgainstCurrentWindow } from './alerts.js';
 import type { Settings } from '@claude-sentinel/shared';
 import { getActiveAccount, setActiveAccount } from './claude-state.js';
 import { readActiveCredentials, captureCurrentCredentials, writeSentinelCredentials, writeClaudeCodeCredentials, deleteSentinelCredentials } from './accounts.js';
@@ -388,13 +388,20 @@ export async function startDaemon(): Promise<void> {
       }
 
       case 'get_metrics_summary': {
-        const active = getActiveAccount();
-        if (!active) {
+        // View-scope account: prefer msg.accountId (per-tab picker), otherwise
+        // derive from the currently active account. Either must resolve.
+        let key: string | null = null;
+        if (msg.accountId) {
+          key = msg.accountId;
+        } else {
+          const active = getActiveAccount();
+          if (active) key = sentinelKey(active.organizationUuid ?? '', active.accountUuid);
+        }
+        if (!key) {
           respond({ requestType: 'get_metrics_summary', success: false, error: 'No active account' });
           break;
         }
         const days = msg.days ?? 7;
-        const key = sentinelKey(active.organizationUuid ?? '', active.accountUuid);
         // Bundle every dashboard slice in one round-trip. Query helpers all
         // accept (accountId, days) and do their own windowing, so ordering
         // here is just for readability.
@@ -542,11 +549,17 @@ export async function startDaemon(): Promise<void> {
       }
 
       case 'get_rate_limits': {
-        // Return rate limit windows for the active account
-        const activeForRl = getActiveAccount();
-        const rlKey = activeForRl
-          ? sentinelKey(activeForRl.organizationUuid ?? '', activeForRl.accountUuid)
-          : 'default';
+        // View-scope account: use msg.accountId when provided (per-tab picker),
+        // otherwise fall back to the currently active account (legacy behavior).
+        let rlKey: string;
+        if (msg.accountId) {
+          rlKey = msg.accountId;
+        } else {
+          const activeForRl = getActiveAccount();
+          rlKey = activeForRl
+            ? sentinelKey(activeForRl.organizationUuid ?? '', activeForRl.accountUuid)
+            : 'default';
+        }
         const rlData = rateLimitStore.getAll(rlKey);
         console.log(`[IPC] get_rate_limits: key=${rlKey}, windows=${rlData.length}`);
         respond({ requestType: 'get_rate_limits', success: true, data: rlData });
@@ -560,7 +573,10 @@ export async function startDaemon(): Promise<void> {
       }
 
       case 'get_overage_events': {
-        const events = getOverageEvents(db, { limit: msg.limit ?? 100 });
+        const events = getOverageEvents(db, {
+          limit: msg.limit ?? 100,
+          ...(msg.accountId ? { accountId: msg.accountId } : {}),
+        });
         respond({ requestType: 'get_overage_events', success: true, data: events });
         break;
       }
@@ -644,12 +660,14 @@ export async function startDaemon(): Promise<void> {
           respond({ requestType: 'upsert_alert', success: false, error: 'thresholdPct must be between 1 and 99' });
           break;
         }
+        const isNew = msg.id === undefined;
         const saved = upsertAlert(db, {
           ...(msg.id !== undefined ? { id: msg.id } : {}),
           accountId: msg.accountId,
           thresholdPct: msg.thresholdPct,
           enabled: msg.enabled,
         });
+        if (isNew) primeNewAlertAgainstCurrentWindow(db, rateLimitStore, saved);
         respond({ requestType: 'upsert_alert', success: true, data: saved });
         break;
       }
@@ -736,6 +754,16 @@ export async function startDaemon(): Promise<void> {
               isActive:    false, // don't switch automatically — let the user choose
               createdAt:   Date.now(),
             });
+
+            // Seed a default 95% usage alert for first-time enrollments so users
+            // get notified before they cap the 5-hour window. Re-auths skip this
+            // so we don't stack duplicate alerts every time the OAuth token
+            // refreshes. Threshold picked high (95 vs 80) because the alert is
+            // meant as a surprise-minimizer, not a cost governor.
+            if (listAlerts(db, credKey).length === 0) {
+              upsertAlert(db, { accountId: credKey, thresholdPct: 95, enabled: true });
+              console.log(`[OAuth] Seeded default 95% alert for ${credKey}`);
+            }
 
             // If no active account exists yet, make this one active
             const current = getActiveAccount();

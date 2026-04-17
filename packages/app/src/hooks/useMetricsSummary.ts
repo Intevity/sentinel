@@ -13,15 +13,21 @@ interface UseMetricsSummaryResult {
 
 /**
  * Fetch the full Metrics tab rollup (cost, tokens, errors, tools, activity,
- * edit accept rate, skills, plugins) for the active account over the selected
- * window. One `get_metrics_summary` IPC per period change / account switch.
+ * edit accept rate, skills, plugins) for a given account over the selected
+ * window. One `get_metrics_summary` IPC per period or scope change.
  *
- * Replaces the older useUsage hook. A re-fetch fires on:
+ * @param viewAccountId Account key to query. Pass undefined to fall back to
+ *        the daemon's active account (legacy behavior).
+ *
+ * A re-fetch fires on:
  *   - mount
  *   - days selector change
- *   - account_switched broadcast from the daemon
+ *   - viewAccountId change (per-tab picker)
+ *   - account_switched broadcast from the daemon (only when the hook is
+ *     following the active account — when an explicit id is set we ignore
+ *     the broadcast because the user pinned a specific scope)
  */
-export function useMetricsSummary(): UseMetricsSummaryResult {
+export function useMetricsSummary(viewAccountId?: string): UseMetricsSummaryResult {
   const [days, setDays] = useState(7);
   const [summary, setSummary] = useState<MetricsSummary | null>(null);
   const [loading, setLoading] = useState(false);
@@ -31,7 +37,11 @@ export function useMetricsSummary(): UseMetricsSummaryResult {
     setLoading(true);
     setError(null);
     try {
-      const res = await sendToSentinel<MetricsSummary>({ type: 'get_metrics_summary', days });
+      const res = await sendToSentinel<MetricsSummary>(
+        viewAccountId
+          ? { type: 'get_metrics_summary', days, accountId: viewAccountId }
+          : { type: 'get_metrics_summary', days },
+      );
       if (res.success) {
         setSummary(res.data ?? null);
       } else {
@@ -42,17 +52,18 @@ export function useMetricsSummary(): UseMetricsSummaryResult {
     } finally {
       setLoading(false);
     }
-  }, [days]);
+  }, [days, viewAccountId]);
 
   useEffect(() => { void fetchSummary(); }, [fetchSummary]);
 
   useEffect(() => {
+    if (viewAccountId) return; // pinned — don't auto-follow the active account
     let unlisten: (() => void) | null = null;
     onDaemonMessage((msg) => {
       if (msg.type === 'account_switched') void fetchSummary();
     }).then((fn) => { unlisten = fn; }).catch(() => undefined);
     return () => { unlisten?.(); };
-  }, [fetchSummary]);
+  }, [fetchSummary, viewAccountId]);
 
   return { summary, loading, error, days, setDays, refetch: fetchSummary };
 }

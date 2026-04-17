@@ -1,5 +1,6 @@
 import React from 'react';
 import type { AccountInfo } from '@claude-sentinel/shared';
+import { planLabel, planColor } from '../lib/plan.js';
 
 interface AccountCardProps {
   account: AccountInfo;
@@ -12,13 +13,6 @@ interface AccountCardProps {
    *  accounts, or on a fresh install). */
   fiveHourUtil?: number;
 }
-
-const PLAN_META: Record<string, { label: string; color: string }> = {
-  pro:        { label: 'Pro',        color: 'bg-ios-blue/10 text-ios-blue' },
-  max:        { label: 'Max',        color: 'bg-ios-purple/10 text-ios-purple' },
-  team:       { label: 'Team',       color: 'bg-ios-indigo/10 text-ios-indigo' },
-  enterprise: { label: 'Enterprise', color: 'bg-ios-orange/10 text-ios-orange' },
-};
 
 const AVATAR_GRADIENTS = [
   'from-[#007AFF] to-[#5E5CE6]',
@@ -42,7 +36,7 @@ export default function AccountCard({ account, onSwitch, onRemove, switching, fi
     .join('')
     .toUpperCase();
 
-  const plan = PLAN_META[account.planType] ?? { label: account.planType, color: 'bg-[#8E8E93]/10 text-[#8E8E93]' };
+  const plan = { label: planLabel(account.planType), color: planColor(account.planType) };
   const gradient = avatarGradient(account.id);
 
   // Matches UsageView's rounding: plain round on the header value. Pin the

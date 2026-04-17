@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   lim          INTEGER,
   remaining    INTEGER,
   reset_ts     INTEGER,
+  in_use       INTEGER,
   last_updated INTEGER NOT NULL,
   PRIMARY KEY (account_id, name)
 );
@@ -193,6 +194,12 @@ export function getDb(dbPath: string = DB_PATH): Database.Database {
   _db.exec("UPDATE accounts SET account_uuid = id WHERE account_uuid IS NULL");
   if (!cols.some((c) => c.name === 'removed')) {
     _db.exec('ALTER TABLE accounts ADD COLUMN removed INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Migrate rate_limits for pre-in_use databases.
+  const rlCols = _db.pragma('table_info(rate_limits)') as Array<{ name: string }>;
+  if (!rlCols.some((c) => c.name === 'in_use')) {
+    _db.exec('ALTER TABLE rate_limits ADD COLUMN in_use INTEGER');
   }
 
   return _db;
@@ -590,14 +597,15 @@ export function listNotifications(
  */
 export function upsertRateLimit(db: Database.Database, accountId: string, window: RateLimitWindow): void {
   db.prepare(`
-    INSERT INTO rate_limits (account_id, name, status, utilization, lim, remaining, reset_ts, last_updated)
-    VALUES (@accountId, @name, @status, @utilization, @lim, @remaining, @resetTs, @lastUpdated)
+    INSERT INTO rate_limits (account_id, name, status, utilization, lim, remaining, reset_ts, in_use, last_updated)
+    VALUES (@accountId, @name, @status, @utilization, @lim, @remaining, @resetTs, @inUse, @lastUpdated)
     ON CONFLICT(account_id, name) DO UPDATE SET
       status       = excluded.status,
       utilization  = excluded.utilization,
       lim          = excluded.lim,
       remaining    = excluded.remaining,
       reset_ts     = excluded.reset_ts,
+      in_use       = excluded.in_use,
       last_updated = excluded.last_updated
   `).run({
     accountId,
@@ -607,6 +615,7 @@ export function upsertRateLimit(db: Database.Database, accountId: string, window
     lim: window.limit ?? null,
     remaining: window.remaining ?? null,
     resetTs: window.reset ?? null,
+    inUse: window.inUse == null ? null : window.inUse ? 1 : 0,
     lastUpdated: window.lastUpdated,
   });
 }
@@ -619,6 +628,7 @@ interface DbRateLimitRow {
   lim: number | null;
   remaining: number | null;
   reset_ts: number | null;
+  in_use: number | null;
   last_updated: number;
 }
 
@@ -648,6 +658,7 @@ export function loadRateLimits(db: Database.Database): Map<string, RateLimitWind
       limit: row.lim,
       remaining: row.remaining,
       reset: row.reset_ts,
+      inUse: row.in_use == null ? null : row.in_use === 1,
       lastUpdated: row.last_updated,
     });
   }

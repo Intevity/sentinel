@@ -1,12 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { Plus, Trash2, Loader2, Pencil } from 'lucide-react';
-import type { Alert, OAuthAccount } from '@claude-sentinel/shared';
+import type { AccountInfo, Alert, OAuthAccount } from '@claude-sentinel/shared';
 import { useAlerts } from '../hooks/useAlerts.js';
 import { useNotifications } from '../hooks/useNotifications.js';
 import NotificationHistory from './NotificationHistory.js';
 
 interface AlertsEditorProps {
   activeAccount: OAuthAccount | null;
+  /** Full list of enrolled accounts — used to resolve the view-scope account's
+   *  display name when `viewAccountId` is set. */
+  accounts: AccountInfo[];
+  /** View-scope override from the per-tab AccountViewPicker. When set,
+   *  alerts are loaded for that account rather than the currently active one. */
+  viewAccountId?: string | undefined;
 }
 
 /**
@@ -21,8 +27,11 @@ interface AlertsEditorProps {
  * only re-fire once the window rolls over — lowering the threshold while the
  * active alert is still within its window does not re-trigger.
  */
-export default function AlertsEditor({ activeAccount }: AlertsEditorProps): React.ReactElement {
-  const accountId = activeAccount ? sentinelKey(activeAccount) : undefined;
+export default function AlertsEditor({ activeAccount, accounts, viewAccountId }: AlertsEditorProps): React.ReactElement {
+  // View-scope (picker) wins over the proxy's active account. This lets the
+  // user configure alerts for any enrolled account without switching tokens.
+  const accountId = viewAccountId ?? (activeAccount ? sentinelKey(activeAccount) : undefined);
+  const viewedInfo = viewAccountId ? accounts.find((a) => a.id === viewAccountId) : undefined;
   const { alerts, loading: alertsLoading, error: alertsError, create, update, toggle, remove } =
     useAlerts(accountId);
   const { notifications, refetch: refetchNotifications } = useNotifications();
@@ -65,17 +74,15 @@ export default function AlertsEditor({ activeAccount }: AlertsEditorProps): Reac
     }
   };
 
-  const accountLabel = activeAccount ? describeAccount(activeAccount) : null;
+  const hasAccountContext = Boolean(viewedInfo || activeAccount);
 
   return (
     <div className="space-y-4 pt-1">
       {/* ── User alerts ─────────────────────────────────────── */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <span className="section-label">
-            {accountLabel ? `Alerts for ${accountLabel}` : 'Alerts'}
-          </span>
-          {!adding && activeAccount && (
+          <span className="section-label">Alerts</span>
+          {!adding && hasAccountContext && (
             <button
               onClick={() => setAdding(true)}
               className="flex items-center gap-1 text-[11px] font-medium text-ios-blue hover:opacity-80 transition-opacity active:scale-95"
@@ -86,7 +93,7 @@ export default function AlertsEditor({ activeAccount }: AlertsEditorProps): Reac
           )}
         </div>
 
-        {!activeAccount && (
+        {!hasAccountContext && (
           <div className="glass-card px-4 py-8 text-center">
             <p className="text-[12px] text-[#8E8E93]">
               Switch to an account to configure usage alerts.
@@ -94,18 +101,18 @@ export default function AlertsEditor({ activeAccount }: AlertsEditorProps): Reac
           </div>
         )}
 
-        {activeAccount && alertsLoading && (
+        {hasAccountContext && alertsLoading && (
           <div className="flex items-center justify-center py-6 gap-2 text-[#8E8E93]">
             <Loader2 size={12} className="animate-spin" />
             <span className="text-[11px]">Loading alerts…</span>
           </div>
         )}
 
-        {activeAccount && !alertsLoading && alertsError && (
+        {hasAccountContext && !alertsLoading && alertsError && (
           <p className="text-[12px] text-ios-red px-1">{alertsError}</p>
         )}
 
-        {activeAccount && !alertsLoading && !alertsError && (
+        {hasAccountContext && !alertsLoading && !alertsError && (
           <div className="space-y-2">
             {alerts.length === 0 && !adding && (
               <div className="glass-card px-4 py-6 text-center">
@@ -237,14 +244,4 @@ export default function AlertsEditor({ activeAccount }: AlertsEditorProps): Reac
 
 function sentinelKey(account: OAuthAccount): string {
   return account.organizationUuid || account.accountUuid;
-}
-
-/**
- * The user's Max and Team accounts share one email, so "Alerts for <email>"
- * is ambiguous. Prefer the org name; fall back to the email only when no
- * org name is present.
- */
-function describeAccount(account: OAuthAccount): string {
-  if (account.organizationName) return account.organizationName;
-  return account.emailAddress;
 }

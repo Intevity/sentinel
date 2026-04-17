@@ -132,6 +132,10 @@ export interface GetUsageSummaryMessage {
 export interface GetMetricsSummaryMessage {
   type: 'get_metrics_summary';
   days: number;
+  /** View-scope account key. When omitted the handler falls back to the
+   *  currently active account so existing callers keep working; the UI's
+   *  per-tab picker passes an explicit id to inspect non-active accounts. */
+  accountId?: string;
 }
 
 export interface AcknowledgeNotificationMessage {
@@ -175,6 +179,10 @@ export interface RemoveAccountMessage {
 
 export interface GetRateLimitsMessage {
   type: 'get_rate_limits';
+  /** View-scope account key. Omit to get the current active account's
+   *  windows (legacy behavior). The per-tab picker on Usage passes an
+   *  explicit id to view any enrolled account without switching the proxy. */
+  accountId?: string;
 }
 
 export interface GetAllRateLimitsMessage {
@@ -184,6 +192,9 @@ export interface GetAllRateLimitsMessage {
 export interface GetOverageEventsMessage {
   type: 'get_overage_events';
   limit?: number;
+  /** View-scope account. When omitted, the handler returns events across
+   *  every account so the Overage tab can default to an all-accounts view. */
+  accountId?: string;
 }
 
 export interface GetRemovedAccountsMessage {

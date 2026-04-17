@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { existsSync, unlinkSync } from 'fs';
 import { getDb, closeDb, upsertAlert, listAlerts, deleteAlert, markAlertTriggered, listNotifications } from './db.js';
 import { RateLimitStore } from './rate-limit-store.js';
-import { startAlertEvaluator } from './alerts.js';
+import { startAlertEvaluator, primeNewAlertAgainstCurrentWindow } from './alerts.js';
 
 const TEST_DB = () => join(tmpdir(), `sentinel-alerts-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 
@@ -209,5 +209,114 @@ describe('startAlertEvaluator', () => {
       'anthropic-ratelimit-unified-5h-utilization': '0.80',
     });
     expect(ipc.broadcasts).toHaveLength(1);
+  });
+});
+
+describe('primeNewAlertAgainstCurrentWindow', () => {
+  let dbPath: string;
+
+  beforeEach(() => { dbPath = TEST_DB(); });
+  afterEach(() => {
+    closeDb();
+    if (existsSync(dbPath)) unlinkSync(dbPath);
+  });
+
+  it('primes an alert whose threshold is already met, suppressing a same-window fire', () => {
+    const db = getDb(dbPath);
+    const store = new RateLimitStore();
+    // Existing 5h window at 27% — alert was added *after* this was observed.
+    updateSessionWindow(store, 'acc-a', 0.27, 555);
+
+    const alert = upsertAlert(db, { accountId: 'acc-a', thresholdPct: 25, enabled: true });
+    primeNewAlertAgainstCurrentWindow(db, store, alert);
+
+    // last_triggered_reset_ts should now equal the current window's reset.
+    const [row] = listAlerts(db, 'acc-a');
+    expect(row?.lastTriggeredResetTs).toBe(555);
+
+    // Subsequent header update in the same window must not fire the alert.
+    const ipc = ipcStub();
+    startAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+    updateSessionWindow(store, 'acc-a', 0.30, 555);
+    expect(ipc.broadcasts).toHaveLength(0);
+  });
+
+  it('does not prime when current utilization is below the threshold', () => {
+    const db = getDb(dbPath);
+    const store = new RateLimitStore();
+    updateSessionWindow(store, 'acc-a', 0.10, 777);
+
+    const alert = upsertAlert(db, { accountId: 'acc-a', thresholdPct: 50, enabled: true });
+    primeNewAlertAgainstCurrentWindow(db, store, alert);
+
+    const [row] = listAlerts(db, 'acc-a');
+    expect(row?.lastTriggeredResetTs).toBeNull();
+
+    // Later crossing in the same window still fires.
+    const ipc = ipcStub();
+    startAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+    updateSessionWindow(store, 'acc-a', 0.60, 777);
+    expect(ipc.broadcasts).toHaveLength(1);
+  });
+
+  it('is a no-op when no 5h window exists yet for the account', () => {
+    const db = getDb(dbPath);
+    const store = new RateLimitStore();
+
+    const alert = upsertAlert(db, { accountId: 'acc-a', thresholdPct: 25, enabled: true });
+    primeNewAlertAgainstCurrentWindow(db, store, alert);
+
+    const [row] = listAlerts(db, 'acc-a');
+    expect(row?.lastTriggeredResetTs).toBeNull();
+  });
+
+  it('is a no-op when the 5h window has no utilization yet', () => {
+    const db = getDb(dbPath);
+    const store = new RateLimitStore();
+    // Window arrives with only a reset value, no utilization.
+    store.update('acc-a', {
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
+      'anthropic-ratelimit-unified-5h-reset': '999',
+    });
+
+    const alert = upsertAlert(db, { accountId: 'acc-a', thresholdPct: 25, enabled: true });
+    primeNewAlertAgainstCurrentWindow(db, store, alert);
+
+    const [row] = listAlerts(db, 'acc-a');
+    expect(row?.lastTriggeredResetTs).toBeNull();
+  });
+
+  it('still lets a primed alert fire after the window resets', () => {
+    const db = getDb(dbPath);
+    const store = new RateLimitStore();
+    updateSessionWindow(store, 'acc-a', 0.27, 111);
+
+    const alert = upsertAlert(db, { accountId: 'acc-a', thresholdPct: 25, enabled: true });
+    primeNewAlertAgainstCurrentWindow(db, store, alert);
+
+    const ipc = ipcStub();
+    startAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+    // Same window: silent.
+    updateSessionWindow(store, 'acc-a', 0.30, 111);
+    expect(ipc.broadcasts).toHaveLength(0);
+    // New window (reset changed): fires.
+    updateSessionWindow(store, 'acc-a', 0.30, 222);
+    expect(ipc.broadcasts).toHaveLength(1);
+  });
+
+  it('uses reset=0 when the current window has no reset value', () => {
+    const db = getDb(dbPath);
+    const store = new RateLimitStore();
+    // Utilization without a reset header.
+    store.update('acc-a', {
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
+      'anthropic-ratelimit-unified-5h-utilization': '0.80',
+    });
+
+    const alert = upsertAlert(db, { accountId: 'acc-a', thresholdPct: 50, enabled: true });
+    primeNewAlertAgainstCurrentWindow(db, store, alert);
+
+    const [row] = listAlerts(db, 'acc-a');
+    expect(row?.lastTriggeredResetTs).toBe(0);
   });
 });

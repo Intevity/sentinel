@@ -1,23 +1,107 @@
 # Claude Sentinel
 
-Multi-account manager, real-time overage alerts, and usage dashboard for Claude Code.
+**Combine every Claude account you own into one. Rotate tokens automatically, see what Anthropic won't show you, and get notified the moment you enter overage.**
 
-```
-●  jeff@team.com   — Team   (active, $1.24 today)
-   jeff@personal.com — Max
-   jeff@alt.com    — Pro
-──────────────────────────────
-   Open Sentinel...
-   Today: $1.24 · 8.3M tokens
-──────────────────────────────
-   Quit
-```
+An open-source Claude Code companion: tray app + bundled daemon for multi-account routing, real-time overage alerts, honest usage metrics, and threshold-based notifications.
+
+[![CI](https://github.com/jeffwooden/claude-sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/jeffwooden/claude-sentinel/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/jeffwooden/claude-sentinel?include_prereleases)](https://github.com/jeffwooden/claude-sentinel/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/jeffwooden/claude-sentinel/total)](https://github.com/jeffwooden/claude-sentinel/releases)
+[![License: MIT](https://img.shields.io/github/license/jeffwooden/claude-sentinel)](./LICENSE)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#download)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](https://nodejs.org)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB)](https://tauri.app)
+[![TypeScript](https://img.shields.io/badge/typescript-strict-3178C6)](https://www.typescriptlang.org)
+
+---
+
+## 🔀 Combine every account into one
+
+Flip round-robin on and Sentinel rotates the OAuth token on every API request — your Max, Pro, and Team plans drain evenly, staying within ~1% of each other. Flip it off and you're back to one-click switching, with live 5-hour usage on every card so you always know which account has headroom.
+
+<table>
+<tr>
+<th align="center">Round-robin <b>on</b> — combined pool</th>
+<th align="center">Round-robin <b>off</b> — manual switching</th>
+</tr>
+<tr>
+<td align="center"><img src="assets/accounts1.png" alt="Accounts tab with round-robin enabled" /></td>
+<td align="center"><img src="assets/accounts2.png" alt="Accounts tab with manual switching" /></td>
+</tr>
+</table>
+
+## 📊 See what Anthropic hides
+
+Claude Code tells you nothing about your rate-limit state. Sentinel shows the full picture: 5-hour window, weekly all-models, weekly Sonnet, and overage budget — color-coded by urgency with reset countdowns. In round-robin mode the Usage tab aggregates every account into a single **pool** bar so you know at a glance how close the *whole fleet* is to the wall.
+
+<table>
+<tr>
+<th align="center">Pool view (round-robin)</th>
+<th align="center">Per-account view</th>
+</tr>
+<tr>
+<td align="center"><img src="assets/usage1.png" alt="Usage pool aggregate view" /></td>
+<td align="center"><img src="assets/usage2.png" alt="Usage per-account view" /></td>
+</tr>
+</table>
+
+## 💸 Real cost. Real tokens. Real cache hit rate.
+
+`~/.claude/stats-cache.json` reports `$0.00` for every subscription user. Sentinel captures Claude Code's OTEL telemetry directly and gives you the truth: per-model spend, input vs. cache-read token breakdown, cache hit rate, API error rates, and top-tool latency (p50/p95) — all over rolling 7/14/30-day windows.
+
+<table>
+<tr>
+<th align="center">Cost & token breakdown</th>
+<th align="center">Models, cache & errors</th>
+</tr>
+<tr>
+<td align="center"><img src="assets/metrics1.png" alt="Metrics dashboard — cost and tokens" /></td>
+<td align="center"><img src="assets/metrics2.png" alt="Metrics dashboard — models and errors" /></td>
+</tr>
+</table>
+
+## 🔔 Know before you hit the wall
+
+Set a threshold on the 5-hour window — 50%, 80%, 95%, whatever keeps you sane — and Sentinel fires a native OS notification the moment you cross it. Per-window deduped (one alert per rolling cycle, no spam), with a full history of every overage event, account switch, and threshold trigger so you can look back and actually understand your usage.
+
+<p align="center"><img src="assets/alerts1.png" alt="Alerts tab with threshold editor and history" width="720" /></p>
+
+## ⚙️ One panel. Zero surprises.
+
+Pick your switching mode (off / auto-switch at N% / round-robin), tune the auto-switch threshold, choose your notification sound, toggle launch-at-login — every behavior is in one place, and nothing ships on by default.
+
+<p align="center"><img src="assets/configuration1.png" alt="Settings panel" width="720" /></p>
+
+---
+
+## ⬇️ Download
+
+Grab the latest installer from the **[Releases page](https://github.com/jeffwooden/claude-sentinel/releases/latest)**, or pick your platform directly:
+
+| Platform | Format | Download |
+|---|---|---|
+| **macOS** — Apple Silicon (M1/M2/M3/M4) | `.dmg` | [Latest release](https://github.com/jeffwooden/claude-sentinel/releases/latest) |
+| **macOS** — Intel | `.dmg` | [Latest release](https://github.com/jeffwooden/claude-sentinel/releases/latest) |
+| **Windows** 10/11 | `.msi` / NSIS | [Latest release](https://github.com/jeffwooden/claude-sentinel/releases/latest) |
+| **Linux** (Debian/Ubuntu) | `.deb` | [Latest release](https://github.com/jeffwooden/claude-sentinel/releases/latest) |
+| **Linux** (Fedora/RHEL) | `.rpm` | [Latest release](https://github.com/jeffwooden/claude-sentinel/releases/latest) |
+| **Linux** (portable) | `.AppImage` | [Latest release](https://github.com/jeffwooden/claude-sentinel/releases/latest) |
+
+> **macOS note:** v0.1.x builds ship unsigned. See the [first-launch Gatekeeper steps](#installation) below — it's a one-time right-click.
+
+---
 
 ## What it does
 
-- **Overage detection** — Intercepts `anthropic-ratelimit-unified-overage-*` response headers from the Anthropic API and fires a native OS notification the moment your Claude Code session enters overage budget.
-- **Multi-account switching** — Enroll multiple Claude accounts (Pro, Max, Team). Switch between them with one click in the tray app — no re-login required.
-- **Usage visibility** — OTEL telemetry gives you real cost and token counts per model, per session. Unlike `~/.claude/stats-cache.json` (which is always `$0` for subscription users), these numbers are accurate.
+- **Multi-account routing** — Enroll unlimited Claude accounts (Pro, Max, Team, Enterprise) and pick how they're used:
+  - **Off** — manage accounts manually from the Accounts tab.
+  - **Auto-switch** — when the active account's 5-hour usage reaches your threshold (50–99%, default 90%), Sentinel switches to the account with the most remaining capacity.
+  - **Round-Robin** — rotate the OAuth token on every API request so usage drains across all accounts, keeping them within ~1% of each other.
+- **Overage detection** — Intercepts `anthropic-ratelimit-unified-overage-*` response headers and fires a native OS notification the moment your session enters overage budget.
+- **Usage visibility** — Every rate-limit window (5-hour, weekly all-models, weekly Sonnet, overage budget) rendered with reset countdowns and color-coded urgency. Round-robin mode aggregates every account into a pool view.
+- **Real metrics** — OTEL telemetry gives you accurate cost, tokens, cache hit rate, and per-model breakdowns over 7/14/30-day windows. Unlike `~/.claude/stats-cache.json` (which reports `$0` for subscription users), these numbers are real.
+- **User-configurable alerts** — Set a percentage threshold per 5-hour window; get a native notification when it trips. Deduped per window.
+- **Notification history** — Every overage transition, account switch, threshold trigger, and auto-switch exhaustion in one scrollable timeline.
 
 ## Architecture
 
@@ -32,9 +116,7 @@ Claude Code  ──→  localhost:47284  ──→  api.anthropic.com
 ```
 
 - **App** (`packages/app`) — Tauri v2 desktop tray application. Bundles and manages the daemon as a sidecar process and patches `~/.claude/settings.json` on activation so Claude Code routes through the proxy.
-- **Daemon** (`packages/daemon`) — Node.js HTTP reverse proxy + OTLP receiver + SQLite. Compiled into a self-contained binary and embedded inside the app bundle.
-
-There is no Claude Code plugin — everything belongs to the app.
+- **Daemon** (`packages/daemon`) — Node.js HTTP reverse proxy, OTLP telemetry receiver, MCP server, and SQLite store. Compiled into a self-contained binary and embedded inside the app bundle.
 
 ## Installation
 
@@ -44,14 +126,9 @@ There is no Claude Code plugin — everything belongs to the app.
 - [Claude Code](https://claude.ai/code) installed
 - Node.js 22+ (for Claude Code itself; the Sentinel daemon ships its own runtime)
 
-### Quick install
+### First launch
 
-1. **Download and install** the app for your platform from the [Releases page](https://github.com/jeffwooden/claude-sentinel/releases):
-   - **macOS** — `.dmg` (drag to `/Applications`)
-   - **Linux** — `.deb`, `.rpm`, or `.AppImage`
-   - **Windows** — `.msi` or NSIS installer
-
-   The daemon is bundled inside the app — there is nothing else to install.
+1. **Install** using the [Download](#download) table above. The daemon is bundled inside the app — there is nothing else to install.
 
    > **macOS: first launch will show "unidentified developer"** — Claude Sentinel is not Apple-code-signed yet (v0.1.x ships unsigned while the project is in early access). To bypass Gatekeeper the first time:
    >
@@ -217,25 +294,29 @@ In dev mode the app will log a warning if the sidecar binary hasn't been built y
 ```
 claude-sentinel/
 ├── packages/
-│   ├── daemon/src/          # Node.js daemon
-│   │   ├── proxy.ts         # HTTP reverse proxy
-│   │   ├── otel-receiver.ts # OTLP receiver
-│   │   ├── ipc.ts           # Unix socket IPC
-│   │   ├── db.ts            # SQLite schema + queries
-│   │   ├── overage.ts       # Overage state machine
-│   │   ├── accounts.ts      # OS credential store
-│   │   ├── claude-state.ts  # ~/.claude.json management
-│   │   └── oauth.ts         # PKCE login flow
-│   ├── app/                 # Tauri desktop app
-│   │   ├── src/             # React frontend
-│   │   └── src-tauri/       # Rust backend
+│   ├── daemon/src/            # Node.js daemon
+│   │   ├── proxy.ts           # HTTP reverse proxy + overage header inspection
+│   │   ├── otel-receiver.ts   # OTLP receiver
+│   │   ├── ipc.ts             # Unix socket IPC
+│   │   ├── db.ts              # SQLite schema + queries
+│   │   ├── overage.ts         # Overage state machine
+│   │   ├── accounts.ts        # OS credential store
+│   │   ├── claude-state.ts    # ~/.claude.json management
+│   │   ├── oauth.ts           # PKCE login flow
+│   │   ├── settings.ts        # ~/.claude-sentinel/settings.json
+│   │   ├── token-rotator.ts   # round-robin token selector
+│   │   ├── auto-switch.ts     # threshold-based auto-switch
+│   │   └── alerts.ts          # user-configured alert evaluator
+│   ├── app/                   # Tauri desktop app
+│   │   ├── src/               # React frontend (Accounts / Usage / Metrics / Overage / Alerts tabs)
+│   │   └── src-tauri/         # Rust backend
 │   │       └── src/
 │   │           ├── main.rs             # Tauri entry + window event handling
 │   │           ├── daemon.rs           # sidecar spawn logic
 │   │           ├── ipc.rs              # Unix socket bridge to daemon
 │   │           ├── settings_patch.rs   # activate / deactivate Sentinel
 │   │           └── tray.rs             # system tray menu
-│   └── shared/src/          # Shared TypeScript types
+│   └── shared/src/            # Shared TypeScript types
 ```
 
 ## Debugging

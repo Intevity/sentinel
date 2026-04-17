@@ -72,3 +72,30 @@ export function startAlertEvaluator(deps: AlertEvaluatorDeps): void {
 
   deps.rateLimitStore.onUpdate(handler);
 }
+
+/**
+ * Prevent a newly-created alert from firing in the window where it was born.
+ *
+ * Without this, an alert whose threshold is already met at creation time will
+ * fire on the first rate-limit header update that follows — because
+ * `last_triggered_reset_ts` starts as NULL and the evaluator's re-fire guard
+ * (`lastTriggeredResetTs === resetTs`) is bypassed by the NULL comparison.
+ *
+ * If current 5h utilization is already at or above the threshold, we mark the
+ * alert as if it had fired in this window. The evaluator then skips it until
+ * the window rolls over (new `reset` value), which is the desired
+ * edge-triggered behavior.
+ */
+export function primeNewAlertAgainstCurrentWindow(
+  db: Database,
+  rateLimitStore: RateLimitStore,
+  alert: { id: number; accountId: string; thresholdPct: number },
+): void {
+  const session = rateLimitStore
+    .getAll(alert.accountId)
+    .find((w) => w.name === SESSION_WINDOW);
+  if (!session || session.utilization == null) return;
+  const utilPct = session.utilization * 100;
+  if (utilPct < alert.thresholdPct) return;
+  markAlertTriggered(db, alert.id, session.reset ?? 0);
+}

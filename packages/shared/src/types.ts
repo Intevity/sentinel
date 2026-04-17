@@ -206,12 +206,20 @@ export interface Alert {
 }
 
 /**
- * Overage response headers from api.anthropic.com
+ * Overage response headers from api.anthropic.com.
+ *
+ * The live Anthropic API emits `overage-status: 'allowed'` whenever overage
+ * is available to tap, and sets a separate `overage-in-use` header on
+ * responses that actually drew from the overage budget. `overage-status:
+ * 'disabled'` is used when overage is turned off (weekly budget exhausted
+ * or user-disabled). `inUse` is the authoritative "currently consuming
+ * overage" signal; `status` drives the disabled transition.
  */
 export interface OverageHeaders {
-  status: string | null; // 'active' | 'disabled' | null
+  status: string | null; // 'allowed' | 'disabled' | null
   resetsAt: number | null; // Unix timestamp
   disabledReason: string | null;
+  inUse: boolean | null;
 }
 
 /**
@@ -233,6 +241,12 @@ export interface RateLimitWindow {
   remaining: number | null;
   /** Unix timestamp (seconds) when this window resets */
   reset: number | null;
+  /** True while the response headers signal this window is actively being
+   *  consumed — currently only emitted by Anthropic for `unified-overage`
+   *  (header `anthropic-ratelimit-unified-overage-in-use`). Null/undefined
+   *  if the header was never observed on this account. Optional for
+   *  back-compat with persisted rows written before the column existed. */
+  inUse?: boolean | null;
   lastUpdated: number; // Unix ms
 }
 

@@ -7,7 +7,7 @@ vi.mock('https', () => ({
   request: vi.fn(),
 }));
 
-import { createProxyServer, DAEMON_PORT, ANTHROPIC_HOST } from './proxy.js';
+import { createProxyServer, DAEMON_PORT, ANTHROPIC_HOST, summarizeOverageHeaders } from './proxy.js';
 import type { IpcServer } from './ipc.js';
 import { RateLimitStore } from './rate-limit-store.js';
 import type Database from 'better-sqlite3';
@@ -85,6 +85,36 @@ describe('proxy constants', () => {
 
   it('ANTHROPIC_HOST is api.anthropic.com', () => {
     expect(ANTHROPIC_HOST).toBe('api.anthropic.com');
+  });
+});
+
+describe('summarizeOverageHeaders', () => {
+  it('returns null when no tracked headers are present', () => {
+    expect(summarizeOverageHeaders({ 'content-type': 'application/json' })).toBeNull();
+  });
+
+  it('renders the subset of tracked headers that are present', () => {
+    const out = summarizeOverageHeaders({
+      'anthropic-ratelimit-unified-overage-status': 'allowed',
+      'anthropic-ratelimit-unified-overage-in-use': 'true',
+      'anthropic-ratelimit-unified-5h-utilization': '0.42',
+    });
+    expect(out).toContain('overage-status=allowed');
+    expect(out).toContain('overage-in-use=true');
+    expect(out).toContain('5h-util=0.42');
+  });
+
+  it('handles array header values (takes first element)', () => {
+    const out = summarizeOverageHeaders({
+      'anthropic-ratelimit-unified-overage-in-use': ['true', 'ignored'],
+    });
+    expect(out).toBe('overage-in-use=true');
+  });
+
+  it('treats empty array as missing', () => {
+    expect(
+      summarizeOverageHeaders({ 'anthropic-ratelimit-unified-overage-in-use': [] }),
+    ).toBeNull();
   });
 });
 
@@ -278,8 +308,9 @@ describe('createProxyServer', () => {
     const mockProxyRes = {
       statusCode: 200,
       headers: {
-        'anthropic-ratelimit-unified-overage-status': 'active',
+        'anthropic-ratelimit-unified-overage-status': 'allowed',
         'anthropic-ratelimit-unified-overage-reset': '1776700800',
+        'anthropic-ratelimit-unified-overage-in-use': 'true',
       },
       on: vi.fn((event: string, cb: () => void) => {
         if (event === 'end') setTimeout(cb, 10);
@@ -403,13 +434,16 @@ describe('createProxyServer', () => {
 
   it('fires overage exited transition', async () => {
     const machine = new OverageStateMachine();
-    // First set it as active
-    machine.handleHeaders('default', { 'anthropic-ratelimit-unified-overage-status': 'active' });
+    // First set it as in-use so the next call can transition to exited
+    machine.handleHeaders('default', {
+      'anthropic-ratelimit-unified-overage-status': 'allowed',
+      'anthropic-ratelimit-unified-overage-in-use': 'true',
+    });
 
     const mockProxyRes = {
       statusCode: 200,
       headers: {
-        'anthropic-ratelimit-unified-overage-status': 'inactive',
+        'anthropic-ratelimit-unified-overage-status': 'allowed',
       },
       on: vi.fn((event: string, cb: () => void) => {
         if (event === 'end') setTimeout(cb, 10);
@@ -591,7 +625,8 @@ describe('createProxyServer', () => {
     const mockProxyRes = {
       statusCode: 200,
       headers: {
-        'anthropic-ratelimit-unified-overage-status': 'active',
+        'anthropic-ratelimit-unified-overage-status': 'allowed',
+        'anthropic-ratelimit-unified-overage-in-use': 'true',
         // No reset header
       },
       on: vi.fn((event: string, cb: () => void) => {

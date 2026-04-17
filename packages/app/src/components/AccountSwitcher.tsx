@@ -1,9 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { RefreshCw, Plus, Loader2, Trash2 } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
 import AccountCard from './AccountCard.js';
 import { useAccounts } from '../hooks/useAccounts.js';
 import { useAllRateLimits, fiveHourUtilization } from '../hooks/useAllRateLimits.js';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
+import { DUR, EASE_OUT } from '../lib/motion.js';
+
+const TRANSIENT_ANIM = {
+  initial: { opacity: 0, y: -8, height: 0 },
+  animate: { opacity: 1, y: 0, height: 'auto' as const },
+  exit:    { opacity: 0, height: 0 },
+  transition: { duration: DUR.med, ease: EASE_OUT },
+};
 
 interface AccountSwitcherProps {
   /** Called after an account is removed or purged so the parent can refresh useDaemon state. */
@@ -169,6 +178,7 @@ export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherPr
       )}
 
       {/* Status message */}
+      <AnimatePresence initial={false}>
       {statusMessage && (() => {
         const styles = {
           success: { bg: 'bg-ios-green/10 dark:bg-ios-green/15', fg: 'text-ios-green' },
@@ -176,75 +186,95 @@ export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherPr
           info:    { bg: 'bg-ios-blue/10 dark:bg-ios-blue/15',   fg: 'text-ios-blue'  },
         }[statusMessage.kind];
         return (
-          <div className={`rounded-2xl px-4 py-3 flex items-start justify-between ${styles.bg}`}>
-            <p className={`text-[12px] font-medium whitespace-pre-line ${styles.fg}`}>
-              {statusMessage.text}
-            </p>
-            <button
-              onClick={() => setStatusMessage(null)}
-              className={`ml-2 shrink-0 text-[13px] leading-none opacity-50 hover:opacity-100 transition-opacity ${styles.fg}`}
-              aria-label="Dismiss"
-            >
-              ×
-            </button>
-          </div>
+          <motion.div
+            {...TRANSIENT_ANIM}
+            className={`overflow-hidden rounded-2xl ${styles.bg}`}
+          >
+            <div className="px-4 py-3 flex items-start justify-between">
+              <p className={`text-[12px] font-medium whitespace-pre-line ${styles.fg}`}>
+                {statusMessage.text}
+              </p>
+              <button
+                onClick={() => setStatusMessage(null)}
+                className={`ml-2 shrink-0 text-[13px] leading-none opacity-50 hover:opacity-100 transition-opacity ${styles.fg}`}
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+          </motion.div>
         );
       })()}
+      </AnimatePresence>
 
       {/* Login in progress hint */}
+      <AnimatePresence initial={false}>
       {loggingIn && (
-        <div className="rounded-2xl bg-ios-blue/[0.08] dark:bg-ios-blue/[0.12] ring-1 ring-ios-blue/20 px-4 py-3 flex items-center justify-between">
-          <p className="text-[12px] text-ios-blue font-medium">
-            Complete sign-in in your browser, then return here.
-          </p>
-          <button
-            onClick={() => {
-              void sendToSentinel({ type: 'cancel_login' }).catch(() => {});
-              setLoggingIn(false);
-            }}
-            className="text-[11px] text-ios-blue/60 hover:text-ios-blue ml-2 shrink-0"
-          >
-            Cancel
-          </button>
-        </div>
+        <motion.div
+          {...TRANSIENT_ANIM}
+          className="overflow-hidden rounded-2xl bg-ios-blue/[0.08] dark:bg-ios-blue/[0.12] ring-1 ring-ios-blue/20"
+        >
+          <div className="px-4 py-3 flex items-center justify-between">
+            <p className="text-[12px] text-ios-blue font-medium">
+              Complete sign-in in your browser, then return here.
+            </p>
+            <button
+              onClick={() => {
+                void sendToSentinel({ type: 'cancel_login' }).catch(() => {});
+                setLoggingIn(false);
+              }}
+              className="text-[11px] text-ios-blue/60 hover:text-ios-blue ml-2 shrink-0"
+            >
+              Cancel
+            </button>
+          </div>
+        </motion.div>
       )}
+      </AnimatePresence>
 
       {/* Remove confirmation prompt */}
+      <AnimatePresence initial={false}>
       {pendingRemoveId && (() => {
         const target = accounts.find((a) => a.id === pendingRemoveId);
         return (
-          <div className="rounded-2xl bg-ios-red/[0.08] dark:bg-ios-red/[0.12] ring-1 ring-ios-red/20 p-4">
-            <p className="text-[13px] font-semibold text-black dark:text-white mb-0.5">
-              Remove {target?.displayName || target?.email}?
-            </p>
-            <p className="text-[11px] text-[#8E8E93] mb-3">
-              Keep data to preserve usage history, or delete everything now.
-            </p>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => void handleRemoveConfirm(pendingRemoveId, false)}
-                className="flex-1 text-[12px] font-semibold text-ios-orange bg-ios-orange/10
-                           hover:bg-ios-orange/20 active:scale-95 px-3 py-1.5 rounded-full transition-all"
-              >
-                Keep Data
-              </button>
-              <button
-                onClick={() => void handleRemoveConfirm(pendingRemoveId, true)}
-                className="flex-1 text-[12px] font-semibold text-white bg-ios-red
-                           hover:opacity-90 active:scale-95 px-3 py-1.5 rounded-full transition-all"
-              >
-                Delete Data
-              </button>
-              <button
-                onClick={() => setPendingRemoveId(null)}
-                className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
-              >
-                Cancel
-              </button>
+          <motion.div
+            {...TRANSIENT_ANIM}
+            className="overflow-hidden rounded-2xl bg-ios-red/[0.08] dark:bg-ios-red/[0.12] ring-1 ring-ios-red/20"
+          >
+            <div className="p-4">
+              <p className="text-[13px] font-semibold text-black dark:text-white mb-0.5">
+                Remove {target?.displayName || target?.email}?
+              </p>
+              <p className="text-[11px] text-[#8E8E93] mb-3">
+                Keep data to preserve usage history, or delete everything now.
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => void handleRemoveConfirm(pendingRemoveId, false)}
+                  className="flex-1 text-[12px] font-semibold text-ios-orange bg-ios-orange/10
+                             hover:bg-ios-orange/20 active:scale-95 px-3 py-1.5 rounded-full transition-all"
+                >
+                  Keep Data
+                </button>
+                <button
+                  onClick={() => void handleRemoveConfirm(pendingRemoveId, true)}
+                  className="flex-1 text-[12px] font-semibold text-white bg-ios-red
+                             hover:opacity-90 active:scale-95 px-3 py-1.5 rounded-full transition-all"
+                >
+                  Delete Data
+                </button>
+                <button
+                  onClick={() => setPendingRemoveId(null)}
+                  className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
-          </div>
+          </motion.div>
         );
       })()}
+      </AnimatePresence>
 
       {/* Account list */}
       {accounts.map((account) => {

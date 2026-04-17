@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { MoreHorizontal, Power, Activity, Trash2 } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
 import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel } from '../lib/ipc.js';
 import type { DaemonProcessStatus } from '@claude-sentinel/shared';
+import { menuPop } from '../lib/motion.js';
 
 /**
  * Format a millisecond uptime as a short human-readable string.
@@ -110,8 +112,13 @@ export default function HeaderMenu(): React.ReactElement {
         <MoreHorizontal size={16} strokeWidth={2.2} />
       </button>
 
+      <AnimatePresence>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-10 min-w-[220px] rounded-xl bg-white dark:bg-[#2A2A2C] shadow-lg ring-1 ring-black/10 dark:ring-white/10 overflow-hidden">
+        <motion.div
+          {...menuPop}
+          style={{ transformOrigin: 'top right' }}
+          className="absolute right-0 top-full mt-1 z-30 min-w-[220px] rounded-xl bg-white dark:bg-[#2A2A2C] shadow-lg ring-1 ring-black/10 dark:ring-white/10 overflow-hidden"
+        >
 
           {/* Daemon status row (display-only) */}
           <div className="px-3 py-2 border-b border-black/5 dark:border-white/5">
@@ -192,8 +199,9 @@ export default function HeaderMenu(): React.ReactElement {
               </div>
             </div>
           )}
-        </div>
+        </motion.div>
       )}
+      </AnimatePresence>
     </div>
   );
 }

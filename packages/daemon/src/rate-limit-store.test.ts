@@ -123,11 +123,68 @@ describe('RateLimitStore', () => {
     store.update('acc-1', {
       'content-type': 'application/json',
       'x-request-id': 'abc-123',
-      // metadata headers (no limit/remaining/reset/utilization/status suffix)
+      // metadata headers (no limit/remaining/reset/utilization/status/in-use suffix)
       'anthropic-ratelimit-unified-representative-claim': 'five_hour',
       'anthropic-ratelimit-unified-fallback-percentage': '0.5',
     });
     expect(store.getAll('acc-1')).toHaveLength(0);
+  });
+
+  it('captures in-use boolean on the overage window', () => {
+    const store = new RateLimitStore();
+    store.update('acc-1', {
+      'anthropic-ratelimit-unified-overage-status': 'allowed',
+      'anthropic-ratelimit-unified-overage-utilization': '0',
+      'anthropic-ratelimit-unified-overage-reset': '1777593600',
+      'anthropic-ratelimit-unified-overage-in-use': 'true',
+    });
+    const win = store.getAll('acc-1').find((w) => w.name === 'unified-overage');
+    expect(win?.inUse).toBe(true);
+  });
+
+  it('accepts in-use=1 and ignores non-truthy values', () => {
+    const store = new RateLimitStore();
+    store.update('a', { 'anthropic-ratelimit-unified-overage-in-use': '1' });
+    expect(store.getAll('a')[0]?.inUse).toBe(true);
+    store.update('b', { 'anthropic-ratelimit-unified-overage-in-use': 'false' });
+    expect(store.getAll('b')[0]?.inUse).toBe(false);
+  });
+
+  it('coerces missing in-use to false when any overage header is updated', () => {
+    // Regression guard: after a response with in-use=true, a later response
+    // with overage-status but no in-use header must flip inUse back to false.
+    const store = new RateLimitStore();
+    store.update('a', {
+      'anthropic-ratelimit-unified-overage-status': 'allowed',
+      'anthropic-ratelimit-unified-overage-in-use': 'true',
+    });
+    store.update('a', {
+      'anthropic-ratelimit-unified-overage-status': 'allowed',
+      'anthropic-ratelimit-unified-overage-utilization': '0',
+    });
+    const win = store.getAll('a').find((w) => w.name === 'unified-overage');
+    expect(win?.inUse).toBe(false);
+  });
+
+  it('handles undefined in-use header value as null', () => {
+    const store = new RateLimitStore();
+    store.update('a', {
+      'anthropic-ratelimit-unified-overage-status': 'allowed',
+      // explicitly undefined (Node's header typing allows it)
+      'anthropic-ratelimit-unified-overage-in-use': undefined,
+    });
+    const win = store.getAll('a').find((w) => w.name === 'unified-overage');
+    // The header key was observed but the value was missing — we store null
+    // to distinguish from "header absent" (no overage window at all).
+    expect(win?.inUse).toBeNull();
+  });
+
+  it('accepts in-use via array header value', () => {
+    const store = new RateLimitStore();
+    store.update('a', {
+      'anthropic-ratelimit-unified-overage-in-use': ['true', 'extra'],
+    });
+    expect(store.getAll('a')[0]?.inUse).toBe(true);
   });
 
   it('merges partial updates into existing windows', () => {
@@ -187,8 +244,8 @@ describe('RateLimitStore', () => {
     store.onUpdate(callbackFired);
 
     store.loadAccount('acc-1', [
-      { name: 'unified-5h', status: 'allowed', utilization: 0.55, limit: null, remaining: null, reset: 1776362400, lastUpdated: 1 },
-      { name: 'unified-7d', status: 'allowed', utilization: 0.10, limit: null, remaining: null, reset: 1777000000, lastUpdated: 1 },
+      { name: 'unified-5h', status: 'allowed', utilization: 0.55, limit: null, remaining: null, reset: 1776362400, inUse: null, lastUpdated: 1 },
+      { name: 'unified-7d', status: 'allowed', utilization: 0.10, limit: null, remaining: null, reset: 1777000000, inUse: null, lastUpdated: 1 },
     ]);
 
     const windows = store.getAll('acc-1');

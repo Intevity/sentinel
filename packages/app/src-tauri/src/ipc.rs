@@ -12,38 +12,54 @@
 /// it delivers it to the waiting command, then also emits a Tauri event so
 /// unsolicited broadcasts (overage_entered, etc.) still reach the frontend.
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
 use tokio::sync::{oneshot, Mutex};
 
-/// Shared write-half of the daemon socket, protected by a mutex.
-static DAEMON_SOCKET: Mutex<Option<tokio::net::unix::OwnedWriteHalf>> = Mutex::const_new(None);
+#[cfg(unix)]
+use tokio::net::UnixStream;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+
+#[cfg(unix)]
+type DaemonStream = UnixStream;
+#[cfg(windows)]
+type DaemonStream = NamedPipeClient;
+
+/// Shared write-half of the daemon socket/pipe, protected by a mutex.
+static DAEMON_SOCKET: Mutex<Option<tokio::io::WriteHalf<DaemonStream>>> = Mutex::const_new(None);
 
 /// Pending request/response correlations keyed by `requestType`.
 static PENDING: LazyLock<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn daemon_sock_path() -> PathBuf {
+#[cfg(unix)]
+async fn connect_stream() -> std::io::Result<DaemonStream> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".claude-sentinel").join("daemon.sock")
+    let path = std::path::PathBuf::from(home)
+        .join(".claude-sentinel")
+        .join("daemon.sock");
+    UnixStream::connect(&path).await
+}
+
+#[cfg(windows)]
+async fn connect_stream() -> std::io::Result<DaemonStream> {
+    ClientOptions::new().open(r"\\.\pipe\claude-sentinel")
 }
 
 /// Connect to the daemon socket and forward incoming messages to the frontend.
 /// Retries with back-off if the daemon is not yet running.
 pub async fn connect_daemon(app: AppHandle) {
-    let path = daemon_sock_path();
     let mut backoff_ms = 500u64;
 
     loop {
-        match UnixStream::connect(&path).await {
+        match connect_stream().await {
             Ok(stream) => {
                 backoff_ms = 500;
-                let (reader, writer) = stream.into_split();
+                let (reader, writer) = tokio::io::split(stream);
 
                 // Store the writer for outbound messages
                 {
@@ -71,7 +87,16 @@ pub async fn connect_daemon(app: AppHandle) {
                             }
                         }
                         // Always forward to frontend for broadcasts
-                        let _ = app.emit("daemon-message", value);
+                        let _ = app.emit("daemon-message", value.clone());
+
+                        // Drive the dynamic tray icon. Spawned in a separate
+                        // task so the handler can issue its own send_internal
+                        // calls (which need this same read loop to deliver
+                        // their responses) without blocking us here.
+                        let app_for_tray = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            crate::tray::handle_daemon_message(value, app_for_tray).await;
+                        });
                     }
                 }
 
@@ -100,13 +125,15 @@ pub struct IpcResponse {
     pub request_type: String,
 }
 
-/// Tauri command: send a JSON message to the daemon and wait for the response.
+/// Send a JSON message to the daemon and wait for the typed response.
 ///
 /// Registers a oneshot channel keyed by the message's `type` field, sends the
 /// message, then awaits the channel with a 5-second timeout. The read loop in
 /// `connect_daemon` delivers the daemon's reply to the channel.
-#[tauri::command]
-pub async fn ipc_send(message: serde_json::Value) -> Result<IpcResponse, String> {
+///
+/// Callable from Rust (e.g. tray seeding); the `ipc_send` Tauri command
+/// below delegates here so frontend and Rust share one code path.
+pub async fn send_internal(message: serde_json::Value) -> Result<IpcResponse, String> {
     let request_type = message
         .get("type")
         .and_then(|t| t.as_str())
@@ -148,4 +175,15 @@ pub async fn ipc_send(message: serde_json::Value) -> Result<IpcResponse, String>
             Err(format!("Timeout waiting for daemon response to '{request_type}'"))
         }
     }
+}
+
+/// Tauri command form of `send_internal` — exposed to the React frontend.
+#[tauri::command]
+pub async fn ipc_send(message: serde_json::Value) -> Result<IpcResponse, String> {
+    send_internal(message).await
+}
+
+/// True when the daemon socket has been established.
+pub async fn is_connected() -> bool {
+    DAEMON_SOCKET.lock().await.is_some()
 }

@@ -6,6 +6,9 @@ import type { OverageEvent } from '@claude-sentinel/shared';
 interface OverageTimelineProps {
   /** Incremented by useDaemon on each overage broadcast — triggers a re-fetch. */
   overageVersion: number;
+  /** View-scope account. When undefined the daemon returns events across all
+   *  accounts (legacy behavior). The per-tab picker in App.tsx sets this. */
+  viewAccountId?: string | undefined;
 }
 
 const TRANSITION_META = {
@@ -21,21 +24,25 @@ function formatDate(ts: number): string {
   }).format(new Date(ts));
 }
 
-export default function OverageTimeline({ overageVersion }: OverageTimelineProps): React.ReactElement {
+export default function OverageTimeline({ overageVersion, viewAccountId }: OverageTimelineProps): React.ReactElement {
   const [events, setEvents] = useState<OverageEvent[]>([]);
   const [loading, setLoading] = useState(false);
 
   const fetchEvents = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await sendToSentinel<OverageEvent[]>({ type: 'get_overage_events', limit: 100 });
+      const res = await sendToSentinel<OverageEvent[]>(
+        viewAccountId
+          ? { type: 'get_overage_events', limit: 100, accountId: viewAccountId }
+          : { type: 'get_overage_events', limit: 100 },
+      );
       setEvents(res.data ?? []);
     } catch {
       // keep whatever we had
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [viewAccountId]);
 
   useEffect(() => {
     void fetchEvents();

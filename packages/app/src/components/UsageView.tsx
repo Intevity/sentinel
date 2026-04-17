@@ -1,9 +1,17 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { RefreshCw } from 'lucide-react';
+import { motion } from 'motion/react';
 import { sendToSentinel } from '../lib/ipc.js';
 import type { RateLimitWindow, OAuthAccount, AccountInfo } from '@claude-sentinel/shared';
 import { useSettings } from '../hooks/useSettings.js';
 import { useAllRateLimits, fiveHourUtilization } from '../hooks/useAllRateLimits.js';
+import { DUR, EASE_OUT } from '../lib/motion.js';
+import InfoTooltip from './InfoTooltip.js';
+
+/** Why the Usage percentages can differ from claude.ai by up to 1 point —
+ *  shown in an InfoTooltip next to the "Usage" header. */
+const USAGE_VARIANCE_NOTE =
+  "Usage values may differ from claude.ai by up to 1%. Anthropic's rate-limit headers expose utilization truncated to two decimals, while claude.ai renders the higher-precision internal value — so rounding produces a small, expected gap.";
 
 // Human-readable labels for known rate-limit window names
 const WINDOW_META: Record<string, { label: string; order: number }> = {
@@ -65,6 +73,7 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
         : null;
 
   const blocked = w.status === 'blocked';
+  const overageActive = w.inUse === true;
   const resetStr = formatReset(w.reset);
 
   const barColor =
@@ -89,6 +98,11 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
           {windowLabel(w.name)}
         </span>
         <div className="flex items-center gap-2 shrink-0">
+          {overageActive && (
+            <span className="text-[10px] font-semibold text-ios-red bg-ios-red/10 px-1.5 py-0.5 rounded-full">
+              Overage active
+            </span>
+          )}
           {blocked && (
             <span className="text-[10px] font-semibold text-ios-red bg-ios-red/10 px-1.5 py-0.5 rounded-full">
               Blocked
@@ -105,9 +119,11 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
 
       {/* Progress bar */}
       <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all duration-500 ${barColor}`}
-          style={{ width: `${blocked ? 100 : (pct ?? 0)}%` }}
+        <motion.div
+          className={`h-full rounded-full ${barColor}`}
+          initial={{ width: 0 }}
+          animate={{ width: `${blocked ? 100 : (pct ?? 0)}%` }}
+          transition={{ duration: DUR.bar, ease: EASE_OUT }}
         />
       </div>
 
@@ -125,6 +141,31 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
       ) : null}
     </div>
   );
+}
+
+/**
+ * Synthesize a minimal OAuthAccount from an AccountInfo row. Only fills the
+ * fields the Sonnet-quota synthesis below reads (`billingType`,
+ * `hasExtraUsageEnabled`). Used when the per-tab picker selects a non-active
+ * account so Usage can still decide whether to render the Sonnet row at 0%.
+ */
+function accountInfoToOAuthLike(acct: AccountInfo | undefined): OAuthAccount | null {
+  if (!acct) return null;
+  const isMax = acct.planType === 'max' || acct.planType === 'enterprise';
+  const isTeamOrEnt = acct.planType === 'team' || acct.planType === 'enterprise';
+  return {
+    accountUuid:           acct.accountUuid,
+    emailAddress:          acct.email,
+    organizationUuid:      acct.orgUuid,
+    hasExtraUsageEnabled:  isMax,
+    billingType:           acct.planType,
+    accountCreatedAt:      new Date(acct.createdAt).toISOString(),
+    subscriptionCreatedAt: new Date(acct.createdAt).toISOString(),
+    displayName:           acct.displayName,
+    organizationRole:      'user',
+    workspaceRole:         isTeamOrEnt ? 'member' : null,
+    organizationName:      acct.orgName,
+  };
 }
 
 interface UsageViewProps {
@@ -146,20 +187,34 @@ interface UsageViewProps {
    *  pool view can render a row per account without spinning up a second copy
    *  of useAccounts (which doesn't auto-fetch on mount). */
   accounts: AccountInfo[];
+  /** View-scope override from the per-tab AccountViewPicker. Behavior:
+   *   - `undefined`: default (follows the active account in single-account mode,
+   *                  renders the pool view in round-robin mode)
+   *   - `'__pool__'`: force pool view regardless of mode
+   *   - any other string: treat as a specific accountId to inspect, rendering
+   *                       the single-account view even in round-robin mode */
+  viewAccountId?: string | undefined;
 }
 
 export default function UsageView(props: UsageViewProps): React.ReactElement {
   const { settings } = useSettings();
-  // In round-robin mode, per-request token rotation means the "active account"
-  // stream of headers churns rapidly — showing one account's Usage is noisy
-  // and misleading. Render a pool view instead (aggregate + per-account rows).
-  if (settings?.switchingMode === 'round-robin') {
+  const isRoundRobin = settings?.switchingMode === 'round-robin';
+  const { viewAccountId } = props;
+
+  // Explicit pool selection always wins.
+  if (viewAccountId === '__pool__') {
+    return <RoundRobinUsageView accounts={props.accounts} />;
+  }
+  // In RR mode with no explicit pick, default to the pool. An explicit
+  // account id (non-pool) falls through to the single-account view below so
+  // the user can drill into any account even while rotation is on.
+  if (isRoundRobin && viewAccountId === undefined) {
     return <RoundRobinUsageView accounts={props.accounts} />;
   }
   return <SingleAccountUsageView {...props} />;
 }
 
-function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount }: UsageViewProps): React.ReactElement {
+function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, viewAccountId, accounts }: UsageViewProps): React.ReactElement {
   const [windows, setWindows] = useState<RateLimitWindow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -167,11 +222,23 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount }:
 
   const busy = loading || Boolean(isProbing);
 
+  // When the user picks a non-active account via the per-tab picker, we need
+  // the OAuthAccount-shaped record for that selection so the Sonnet-quota
+  // synthesis (below) can read billingType / hasExtraUsageEnabled. Fall back
+  // to the actual active account when no pick is made.
+  const viewAccount: OAuthAccount | null = viewAccountId
+    ? accountInfoToOAuthLike(accounts.find((a) => a.id === viewAccountId)) ?? activeAccount
+    : activeAccount;
+
   const fetchRateLimits = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await sendToSentinel<RateLimitWindow[]>({ type: 'get_rate_limits' });
+      const res = await sendToSentinel<RateLimitWindow[]>(
+        viewAccountId
+          ? { type: 'get_rate_limits', accountId: viewAccountId }
+          : { type: 'get_rate_limits' },
+      );
       setWindows(res.data ?? []);
       setLastUpdated(Date.now());
     } catch (err) {
@@ -179,7 +246,7 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount }:
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [viewAccountId]);
 
   // Re-fetch on mount and whenever the daemon reports new rate-limit data.
   // rateLimitsVersion is bumped by useDaemon (always-mounted) on rate_limits_updated
@@ -201,10 +268,10 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount }:
   //      `hasExtraUsageEnabled` flag, or a team/enterprise billingType).
   const synthesized: RateLimitWindow[] = [...windows];
   const weekly = synthesized.find((w) => w.name === 'unified-7d');
-  const billing = activeAccount?.billingType;
+  const billing = viewAccount?.billingType;
   const hasSonnetQuota =
     weekly != null ||
-    activeAccount?.hasExtraUsageEnabled === true ||
+    viewAccount?.hasExtraUsageEnabled === true ||
     billing === 'team' ||
     billing === 'enterprise' ||
     billing === 'max';
@@ -228,7 +295,10 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount }:
 
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
-        <span className="section-label">Usage</span>
+        <div className="flex items-center gap-1.5">
+          <span className="section-label">Usage</span>
+          <InfoTooltip text={USAGE_VARIANCE_NOTE} placement="bottom" />
+        </div>
         <div className="flex items-center gap-2">
           {isProbing && (
             <span className="text-[10px] text-ios-blue font-medium">Refreshing…</span>
@@ -331,6 +401,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
           <span className="text-[9px] font-semibold text-ios-blue bg-ios-blue/10 px-1.5 py-0.5 rounded-full uppercase tracking-wider">
             Round-robin
           </span>
+          <InfoTooltip text={USAGE_VARIANCE_NOTE} placement="bottom" />
         </div>
         <button
           onClick={() => void refetch()}
@@ -357,9 +428,11 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
           </div>
         </div>
         <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all duration-500 ${poolColor}`}
-            style={{ width: `${poolPct ?? 0}%` }}
+          <motion.div
+            className={`h-full rounded-full ${poolColor}`}
+            initial={{ width: 0 }}
+            animate={{ width: `${poolPct ?? 0}%` }}
+            transition={{ duration: DUR.bar, ease: EASE_OUT }}
           />
         </div>
         <p className="text-[10px] text-[#8E8E93] leading-snug">
@@ -409,9 +482,11 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
                   </span>
                 </div>
                 <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-500 ${barColor}`}
-                    style={{ width: `${pct ?? 0}%` }}
+                  <motion.div
+                    className={`h-full rounded-full ${barColor}`}
+                    initial={{ width: 0 }}
+                    animate={{ width: `${pct ?? 0}%` }}
+                    transition={{ duration: DUR.bar, ease: EASE_OUT }}
                   />
                 </div>
               </div>

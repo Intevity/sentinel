@@ -7,6 +7,10 @@ import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
  *  per install — never override a user who deliberately disabled it later. */
 const AUTOSTART_BOOTSTRAP_KEY = 'sentinel.autostartBootstrapped.v1';
 
+/** Poll cadence while waiting for the daemon socket to come up at startup.
+ *  Matches useDaemon's retry loop so both hooks converge in the same window. */
+const STARTUP_RETRY_MS = 500;
+
 interface UseSettingsResult {
   settings: Settings | null;
   loading: boolean;
@@ -21,39 +25,57 @@ interface UseSettingsResult {
  *
  * On first run (no bootstrap flag set) we reconcile the OS autostart state
  * to match the daemon's default of `launchAtLogin: true`.
+ *
+ * The initial load retries every 500ms until it succeeds. Without this, the
+ * App-level useSettings instance races the daemon sidecar's socket-bind at
+ * startup, fails silently, and leaves downstream state (header round-robin
+ * pill, Usage pool-view option) stuck on the null fallback.
  */
 export function useSettings(): UseSettingsResult {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const res = await sendToSentinel<Settings>({ type: 'get_settings' });
-      if (res.success && res.data) {
-        setSettings(res.data);
-        setError(null);
-        await bootstrapAutostart(res.data);
-      } else {
-        setError(res.error ?? 'Failed to load settings');
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    void load();
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const attempt = async (): Promise<void> => {
+      if (cancelled) return;
+      try {
+        const res = await sendToSentinel<Settings>({ type: 'get_settings' });
+        if (cancelled) return;
+        if (res.success && res.data) {
+          setSettings(res.data);
+          setError(null);
+          setLoading(false);
+          await bootstrapAutostart(res.data);
+          return;
+        }
+        setError(res.error ?? 'Failed to load settings');
+      } catch (e) {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+      }
+      if (cancelled) return;
+      timer = setTimeout(() => { void attempt(); }, STARTUP_RETRY_MS);
+    };
+
+    void attempt();
+
     let unlisten: (() => void) | null = null;
     onDaemonMessage((msg) => {
       if (msg.type === 'settings_changed') {
         setSettings(msg.settings);
       }
     }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
-  }, [load]);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      unlisten?.();
+    };
+  }, []);
 
   const update = useCallback(async (patch: Partial<Settings>): Promise<void> => {
     // When launchAtLogin flips, reflect it to the OS before persisting — if the

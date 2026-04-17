@@ -72,8 +72,15 @@ function StackedTooltip({ active, payload, label, valueFormatter }: ChartTooltip
   );
 }
 
-export default function MetricsDashboard(): React.ReactElement {
-  const { summary, loading, error, days, setDays } = useMetricsSummary();
+interface MetricsDashboardProps {
+  /** Account to display metrics for. When omitted, the daemon returns the
+   *  currently active account's data (legacy behavior). Set by the per-tab
+   *  AccountViewPicker in App.tsx. */
+  viewAccountId?: string | undefined;
+}
+
+export default function MetricsDashboard({ viewAccountId }: MetricsDashboardProps = {}): React.ReactElement {
+  const { summary, loading, error, days, setDays } = useMetricsSummary(viewAccountId);
 
   return (
     <div className="space-y-3 pt-1">

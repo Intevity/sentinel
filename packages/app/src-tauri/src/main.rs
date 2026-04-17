@@ -4,7 +4,9 @@
 mod daemon;
 mod ipc;
 mod settings_patch;
+mod sound;
 mod tray;
+mod tray_icon_render;
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt;
@@ -66,6 +68,17 @@ fn main() {
                 ipc::connect_daemon(handle).await;
             });
 
+            // Seed the tray state once the daemon socket is up. Runs once at
+            // startup; live updates after that arrive via daemon broadcasts
+            // dispatched from the IPC read loop.
+            let seed_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while !ipc::is_connected().await {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                tray::seed(&seed_handle).await;
+            });
+
             // Hide the main window on startup — we're a tray app
             if let Some(window) = app.get_webview_window("main") {
                 window.hide().unwrap_or_default();
@@ -81,6 +94,7 @@ fn main() {
             quit_app,
             set_autostart,
             get_autostart,
+            sound::play_system_sound,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Claude Sentinel");

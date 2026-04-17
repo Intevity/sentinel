@@ -1,16 +1,17 @@
 import React from 'react';
 import { X, Loader2, Volume2 } from 'lucide-react';
+import { motion } from 'motion/react';
 import type { SwitchingMode } from '@claude-sentinel/shared';
 import { ALERT_SOUNDS } from '@claude-sentinel/shared';
-import {
-  isPermissionGranted,
-  requestPermission,
-  sendNotification,
-} from '@tauri-apps/plugin-notification';
+import { invoke } from '@tauri-apps/api/core';
 import { useSettings } from '../hooks/useSettings.js';
+import { panelSlide } from '../lib/motion.js';
 
 interface SettingsPanelProps {
   onClose: () => void;
+  /** Callback ref attached to the scrollable content area so the
+   *  auto-resize hook can grow the window to fit the settings list. */
+  measureRef?: (el: HTMLElement | null) => void;
 }
 
 /**
@@ -18,7 +19,7 @@ interface SettingsPanelProps {
  * tray window. Reached by the cog icon in the header. Writes propagate to the
  * daemon via `update_settings` — no Save button, every change persists live.
  */
-export default function SettingsPanel({ onClose }: SettingsPanelProps): React.ReactElement {
+export default function SettingsPanel({ onClose, measureRef }: SettingsPanelProps): React.ReactElement {
   const { settings, loading, error, update } = useSettings();
 
   const setLaunch = (enabled: boolean): void => {
@@ -38,21 +39,21 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps): React.Re
   };
 
   const previewSound = async (name: string | null): Promise<void> => {
-    try {
-      const granted = (await isPermissionGranted()) || (await requestPermission()) === 'granted';
-      if (!granted) return;
-      sendNotification(
-        name
-          ? { title: 'Sentinel sound preview', body: name, sound: name }
-          : { title: 'Sentinel sound preview', body: 'Silent' },
-      );
-    } catch {
-      /* OS denied or plugin unavailable — silently ignore */
-    }
+    // macOS silences NSSound-backed notification audio for the frontmost app,
+    // so the old sendNotification({ sound }) path produced a banner but no
+    // audible preview. Shell out to `afplay` via a native Tauri command to
+    // play the sound directly, bypassing the notification system entirely.
+    // The live alert path (useNotifications.ts) still uses sendNotification
+    // because by then the user is typically elsewhere and macOS plays sound.
+    if (!name) return; // 'None' means silent alerts — nothing to preview
+    await invoke('play_system_sound', { name }).catch(() => undefined);
   };
 
   return (
-    <div className="absolute inset-0 z-20 flex flex-col bg-[#F2F2F7] dark:bg-[#111111]">
+    <motion.div
+      {...panelSlide}
+      className="absolute inset-0 z-20 flex flex-col bg-[#F2F2F7] dark:bg-[#111111]"
+    >
       <header className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-black/5 dark:border-white/5">
         <span className="text-[15px] font-semibold text-black dark:text-white tracking-tight">Settings</span>
         <button
@@ -65,7 +66,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps): React.Re
         </button>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-4 py-3">
+      <main ref={measureRef} className="flex-1 overflow-y-auto px-4 py-3">
         {loading && (
           <div className="flex items-center justify-center py-10 gap-2 text-[#8E8E93]">
             <Loader2 size={14} className="animate-spin" />
@@ -120,7 +121,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps): React.Re
               )}
               <RadioRow
                 label="Round-Robin"
-                description="Rotate the OAuth token for every API request across all accounts so usage drains evenly. Mutually exclusive with Auto-switch."
+                description="Rotate the OAuth token on every API request so usage drains across all accounts, keeping them within ~1% of each other. Mutually exclusive with Auto-switch."
                 checked={settings.switchingMode === 'round-robin'}
                 onChange={() => setMode('round-robin')}
               />
@@ -159,7 +160,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps): React.Re
           </>
         )}
       </main>
-    </div>
+    </motion.div>
   );
 }
 

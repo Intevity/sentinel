@@ -13,6 +13,10 @@ import type { RateLimitWindow } from '@claude-sentinel/shared';
  *   anthropic-ratelimit-tokens-limit:     "40000"
  *   anthropic-ratelimit-tokens-remaining: "39000"
  *   anthropic-ratelimit-tokens-reset:     "1776362400"
+ *
+ * Overage uses an extra boolean header emitted only while the response
+ * drew from the overage budget:
+ *   anthropic-ratelimit-unified-overage-in-use: "true"
  */
 export class RateLimitStore {
   private readonly data = new Map<string, Map<string, RateLimitWindow>>();
@@ -46,7 +50,7 @@ export class RateLimitStore {
     const windowUpdates = new Map<string, Partial<RateLimitWindow> & { name: string }>();
 
     for (const [key, val] of Object.entries(headers)) {
-      const m = key.match(/^anthropic-ratelimit-(.+)-(limit|remaining|reset|utilization|status)$/i);
+      const m = key.match(/^anthropic-ratelimit-(.+)-(limit|remaining|reset|utilization|status|in-use)$/i);
       if (!m) continue;
       const name = m[1]!;
       const field = m[2]!.toLowerCase();
@@ -58,6 +62,16 @@ export class RateLimitStore {
       if (field === 'reset')       w.reset       = str != null ? parseInt(str, 10) : null;
       if (field === 'utilization') w.utilization = str != null ? parseFloat(str) : null;
       if (field === 'status')      w.status      = str ?? null;
+      if (field === 'in-use')      w.inUse       = str != null ? (str.toLowerCase() === 'true' || str === '1') : null;
+    }
+
+    // Anthropic only emits `unified-overage-in-use` while the response is
+    // actively drawing from overage. When any other overage window header is
+    // present without it, that means overage is NOT in use — without this
+    // coercion the in-memory `inUse` would stay `true` across responses.
+    const overageUpdate = windowUpdates.get('unified-overage');
+    if (overageUpdate !== undefined && overageUpdate.inUse === undefined) {
+      overageUpdate.inUse = false;
     }
 
     if (windowUpdates.size === 0) return;
@@ -73,6 +87,7 @@ export class RateLimitStore {
         limit: null,
         remaining: null,
         reset: null,
+        inUse: null,
         lastUpdated: now,
       };
       accountMap.set(name, { ...existing, ...update } as RateLimitWindow);

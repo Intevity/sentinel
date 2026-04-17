@@ -3,6 +3,7 @@ import type { OverageState, OverageHeaders, OverageTransition } from '@claude-se
 export const OVERAGE_STATUS_HEADER = 'anthropic-ratelimit-unified-overage-status';
 export const OVERAGE_RESET_HEADER = 'anthropic-ratelimit-unified-overage-reset';
 export const OVERAGE_REASON_HEADER = 'anthropic-ratelimit-unified-overage-disabled-reason';
+export const OVERAGE_IN_USE_HEADER = 'anthropic-ratelimit-unified-overage-in-use';
 
 export type OverageTransitionEvent = {
   accountId: string;
@@ -31,17 +32,31 @@ export class OverageStateMachine {
     const rawStatus = headers[OVERAGE_STATUS_HEADER];
     const rawReset = headers[OVERAGE_RESET_HEADER];
     const rawReason = headers[OVERAGE_REASON_HEADER];
+    const rawInUse = headers[OVERAGE_IN_USE_HEADER];
 
     const status = Array.isArray(rawStatus) ? rawStatus[0] ?? null : rawStatus ?? null;
     const resetStr = Array.isArray(rawReset) ? rawReset[0] ?? null : rawReset ?? null;
     const disabledReason = Array.isArray(rawReason) ? rawReason[0] ?? null : rawReason ?? null;
+    const inUseStr = Array.isArray(rawInUse) ? rawInUse[0] ?? null : rawInUse ?? null;
 
     const resetsAt = resetStr !== null ? parseInt(resetStr, 10) : null;
+    // `inUse` is null when the overage window is absent entirely (e.g. API-key
+    // plans, or a response with no overage headers at all). When the overage
+    // window IS present, a missing `in-use` header is normalized to false so
+    // state transitions correctly detect exit.
+    const overageWindowPresent = status !== null || resetsAt !== null || disabledReason !== null;
+    const inUse =
+      inUseStr !== null
+        ? inUseStr.toLowerCase() === 'true' || inUseStr === '1'
+        : overageWindowPresent
+          ? false
+          : null;
 
     return {
       status,
       resetsAt: resetsAt !== null && !isNaN(resetsAt) ? resetsAt : null,
       disabledReason,
+      inUse,
     };
   }
 
@@ -62,11 +77,11 @@ export class OverageStateMachine {
 
     const now = Date.now();
     const prev = this.states.get(accountId);
-    const isActive = parsed.status === 'active';
+    const isUsingOverage = parsed.inUse === true;
     const isDisabled = parsed.status === 'disabled';
 
     const newState: OverageState = {
-      isUsingOverage: isActive,
+      isUsingOverage,
       status: parsed.status,
       resetsAt: parsed.resetsAt,
       disabledReason: parsed.disabledReason,
@@ -78,11 +93,11 @@ export class OverageStateMachine {
     // Determine transition
     let transition: OverageTransition | null = null;
 
-    if (isActive && (prev === undefined || !prev.isUsingOverage)) {
+    if (isUsingOverage && (prev === undefined || !prev.isUsingOverage)) {
       transition = 'entered';
     } else if (isDisabled && (prev === undefined || prev.status !== 'disabled')) {
       transition = 'disabled';
-    } else if (!isActive && !isDisabled && prev !== undefined && prev.isUsingOverage) {
+    } else if (!isUsingOverage && !isDisabled && prev !== undefined && prev.isUsingOverage) {
       transition = 'exited';
     }
 

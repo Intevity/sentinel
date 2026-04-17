@@ -53,6 +53,30 @@ interface ProxyOptions {
 // to avoid flooding the UI on rapid successive requests.
 const RL_BROADCAST_DEBOUNCE_MS = 2_000;
 
+/** Compact one-line summary of the overage/5h headers worth logging per
+ *  response. Returns null when there are no rate-limit headers to summarize.
+ *  Intentionally selective — full header dumps flood the log.
+ *  Exported for tests. */
+export function summarizeOverageHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): string | null {
+  const pick = (k: string): string | null => {
+    const v = headers[k];
+    if (v === undefined) return null;
+    const str = Array.isArray(v) ? v[0] : v;
+    return str ?? null;
+  };
+  const fields: Array<[string, string | null]> = [
+    ['overage-status', pick('anthropic-ratelimit-unified-overage-status')],
+    ['overage-in-use', pick('anthropic-ratelimit-unified-overage-in-use')],
+    ['5h-status',      pick('anthropic-ratelimit-unified-5h-status')],
+    ['5h-util',        pick('anthropic-ratelimit-unified-5h-utilization')],
+  ];
+  const nonNull = fields.filter(([, v]) => v !== null);
+  if (nonNull.length === 0) return null;
+  return nonNull.map(([k, v]) => `${k}=${v}`).join(' ');
+}
+
 /**
  * Creates and returns the main HTTP server for the sentinel daemon.
  * Routes:
@@ -243,8 +267,10 @@ async function proxyToAnthropic(
         // Store rate limits under the active account's sentinel key so
         // get_rate_limits can find them by the same key.
         if (rateLimitStore) {
-          const rlHeaderKeys = Object.keys(headers).filter((k) => k.toLowerCase().startsWith('anthropic-ratelimit-'));
-          console.log(`[Proxy] RL headers for ${rlKey}: ${rlHeaderKeys.length > 0 ? rlHeaderKeys.join(', ') : 'none'}`);
+          const summary = summarizeOverageHeaders(headers);
+          if (summary !== null) {
+            console.log(`[Proxy] RL for ${rlKey}: ${summary}`);
+          }
           rateLimitStore.update(rlKey, headers);
           const stored = rateLimitStore.getAll(rlKey);
           console.log(`[Proxy] RL store now has ${stored.length} window(s) for ${rlKey}`);

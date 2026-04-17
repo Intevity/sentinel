@@ -144,4 +144,68 @@ describe('TokenRotator', () => {
     expect(rotator.size()).toBe(1);
     expect(rotator.pick()?.accountId).toBe('a');
   });
+
+  it('prefers the lower-utilization account until the gap closes', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    store.update('a', { 'anthropic-ratelimit-unified-5h-utilization': '0.9' });
+    store.update('b', { 'anthropic-ratelimit-unified-5h-utilization': '0.26' });
+    const rotator = new TokenRotator(db, store, { value: 'a' });
+    // The gap (64 points) is well outside the 1% tie band, so every pick
+    // should route to `b` until utilizations converge.
+    expect(rotator.pick()?.accountId).toBe('b');
+    expect(rotator.pick()?.accountId).toBe('b');
+    expect(rotator.pick()?.accountId).toBe('b');
+  });
+
+  it('round-robins within the 1% tie band when accounts are converged', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    // 0.5 points apart — both inside the 1% band.
+    store.update('a', { 'anthropic-ratelimit-unified-5h-utilization': '0.500' });
+    store.update('b', { 'anthropic-ratelimit-unified-5h-utilization': '0.505' });
+    const rotator = new TokenRotator(db, store, { value: 'a' });
+    const ids = [
+      rotator.pick()?.accountId,
+      rotator.pick()?.accountId,
+      rotator.pick()?.accountId,
+      rotator.pick()?.accountId,
+    ];
+    // Both accounts must appear in any 4-pick window, and the cycle repeats.
+    expect(new Set(ids)).toEqual(new Set(['a', 'b']));
+    expect(ids[0]).toBe(ids[2]);
+    expect(ids[1]).toBe(ids[3]);
+  });
+
+  it('treats missing utilization as 0 so fresh accounts are preferred', () => {
+    const db = getDb(dbPath);
+    seed(db, 'fresh', 'fresh@x');
+    seed(db, 'hot', 'hot@x');
+    const store = new RateLimitStore();
+    store.update('hot', { 'anthropic-ratelimit-unified-5h-utilization': '0.5' });
+    const rotator = new TokenRotator(db, store, { value: 'fresh' });
+    // `fresh` has no rate-limit data → scored as 0 and picked every time.
+    expect(rotator.pick()?.accountId).toBe('fresh');
+    expect(rotator.pick()?.accountId).toBe('fresh');
+  });
+
+  it('skips blocked accounts even when they would be the minimum', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    // `a` is 0% utilization (would be the min) but blocked — must be skipped.
+    store.update('a', {
+      'anthropic-ratelimit-unified-5h-status': 'blocked',
+      'anthropic-ratelimit-unified-5h-utilization': '0.0',
+    });
+    store.update('b', { 'anthropic-ratelimit-unified-5h-utilization': '0.5' });
+    const rotator = new TokenRotator(db, store, { value: 'a' });
+    expect(rotator.pick()?.accountId).toBe('b');
+    expect(rotator.pick()?.accountId).toBe('b');
+  });
 });
