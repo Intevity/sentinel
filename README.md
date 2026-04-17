@@ -4,10 +4,10 @@
 
 An open-source Claude Code companion: tray app + bundled daemon for multi-account routing, real-time overage alerts, honest usage metrics, and threshold-based notifications.
 
-[![CI](https://github.com/jeffwooden/claude-sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/jeffwooden/claude-sentinel/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/jeffwooden/claude-sentinel?include_prereleases)](https://github.com/jeffwooden/claude-sentinel/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/jeffwooden/claude-sentinel/total)](https://github.com/jeffwooden/claude-sentinel/releases)
-[![License: MIT](https://img.shields.io/github/license/jeffwooden/claude-sentinel)](./LICENSE)
+[![CI](https://github.com/Intevity/claude-sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/Intevity/claude-sentinel/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Intevity/claude-sentinel?include_prereleases)](https://github.com/Intevity/claude-sentinel/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Intevity/claude-sentinel/total)](https://github.com/Intevity/claude-sentinel/releases)
+[![License: MIT](https://img.shields.io/github/license/Intevity/claude-sentinel)](./LICENSE)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#download)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](https://nodejs.org)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB)](https://tauri.app)
@@ -76,16 +76,16 @@ Pick your switching mode (off / auto-switch at N% / round-robin), tune the auto-
 
 ## ⬇️ Download
 
-Grab the latest installer from the **[Releases page](https://github.com/jeffwooden/claude-sentinel/releases/latest)**, or pick your platform directly:
+Grab the latest installer from the **[Releases page](https://github.com/Intevity/claude-sentinel/releases/latest)**, or pick your platform directly:
 
 | Platform | Format | Download |
 |---|---|---|
-| **macOS** — Apple Silicon (M1/M2/M3/M4) | `.dmg` | [Latest release](https://github.com/jeffwooden/claude-sentinel/releases/latest) |
-| **macOS** — Intel | `.dmg` | [Latest release](https://github.com/jeffwooden/claude-sentinel/releases/latest) |
-| **Windows** 10/11 | `.msi` / NSIS | [Latest release](https://github.com/jeffwooden/claude-sentinel/releases/latest) |
-| **Linux** (Debian/Ubuntu) | `.deb` | [Latest release](https://github.com/jeffwooden/claude-sentinel/releases/latest) |
-| **Linux** (Fedora/RHEL) | `.rpm` | [Latest release](https://github.com/jeffwooden/claude-sentinel/releases/latest) |
-| **Linux** (portable) | `.AppImage` | [Latest release](https://github.com/jeffwooden/claude-sentinel/releases/latest) |
+| **macOS** — Apple Silicon (M1/M2/M3/M4) | `.dmg` | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
+| **macOS** — Intel | `.dmg` | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
+| **Windows** 10/11 | `.msi` / NSIS | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
+| **Linux** (Debian/Ubuntu) | `.deb` | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
+| **Linux** (Fedora/RHEL) | `.rpm` | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
+| **Linux** (portable) | `.AppImage` | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
 
 > **macOS note:** v0.1.x builds ship unsigned. See the [first-launch Gatekeeper steps](#installation) below — it's a one-time right-click.
 
@@ -185,7 +185,7 @@ Sentinel is a tray-only app (no Dock icon). Closing the window with the red ⨉ 
 ### Setup
 
 ```sh
-git clone https://github.com/jeffwooden/claude-sentinel
+git clone https://github.com/Intevity/claude-sentinel
 cd claude-sentinel
 pnpm install
 
