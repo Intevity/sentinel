@@ -12,15 +12,19 @@ concurrency:
 
 jobs:
   lint-test:
-    name: Lint, typecheck, test
+    name: Quality Checks
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
+      # Must match the local pnpm version that produced pnpm-lock.yaml —
+      # pnpm 10 writes `pnpmfileChecksum` into the lockfile, and pnpm 9
+      # rejects it with ERR_PNPM_LOCKFILE_CONFIG_MISMATCH. Keep this in
+      # sync with release.yml if you bump either.
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
 
       - uses: actions/setup-node@v4
         with:
