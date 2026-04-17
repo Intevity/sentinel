@@ -9,5 +9,8 @@ coverage/
 *.db-journal
 target/
 src-tauri/target/
+packages/app/src-tauri/binaries/*-apple-darwin
+packages/app/src-tauri/binaries/*-pc-windows-msvc.exe
+packages/app/src-tauri/binaries/*-unknown-linux-gnu
 .DS_Store
 *.tmp
