@@ -40,10 +40,16 @@ jobs:
           npm run build-release
         shell: bash
 
-      - name: Typecheck (daemon + shared)
-        run: |
-          pnpm --filter @claude-sentinel/shared exec tsc --noEmit
-          pnpm --filter @claude-sentinel/daemon exec tsc --noEmit
+      # Build shared first so its dist/ (types + JS) exists on disk — daemon
+       # imports @claude-sentinel/shared via package.json's `types` / `main`
+       # which point at ./dist. Using tsc --noEmit on shared would typecheck
+       # it but produce no dist, so the daemon typecheck then fails with
+       # TS2307 "Cannot find module '@claude-sentinel/shared'".
+      - name: Build shared (emits dist/ for daemon typecheck)
+        run: pnpm --filter @claude-sentinel/shared run build
+
+      - name: Typecheck daemon
+        run: pnpm --filter @claude-sentinel/daemon exec tsc --noEmit
 
       - name: Lint
         run: pnpm exec eslint packages/daemon/src packages/shared/src
