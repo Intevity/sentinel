@@ -1,0 +1,61 @@
+import { useCallback, useEffect, useState } from 'react';
+import type { RateLimitWindow } from '@claude-sentinel/shared';
+import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
+
+type AllRateLimits = Record<string, RateLimitWindow[]>;
+
+/**
+ * Snapshot every account's rate-limit windows, keyed by Sentinel accountId.
+ * Used by the Accounts tab to render a discrete 5h utilization indicator on
+ * each account pill without having to switch accounts first.
+ *
+ * Stays in sync via `rate_limits_updated` / `account_switched` broadcasts.
+ * No polling — the daemon only has fresh data after an API call, so the
+ * indicator is intentionally best-effort.
+ */
+export function useAllRateLimits(): {
+  byAccount: AllRateLimits;
+  refetch: () => Promise<void>;
+} {
+  const [byAccount, setByAccount] = useState<AllRateLimits>({});
+
+  const refetch = useCallback(async () => {
+    try {
+      const res = await sendToSentinel<AllRateLimits>({ type: 'get_all_rate_limits' });
+      if (res.success) setByAccount(res.data ?? {});
+    } catch {
+      // Non-fatal — indicator just won't show. The Usage tab surfaces real errors.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refetch();
+    let unlisten: (() => void) | null = null;
+    onDaemonMessage((msg) => {
+      if (
+        msg.type === 'rate_limits_updated' ||
+        msg.type === 'account_switched' ||
+        msg.type === 'login_complete'
+      ) {
+        void refetch();
+      }
+    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
+    return () => { unlisten?.(); };
+  }, [refetch]);
+
+  return { byAccount, refetch };
+}
+
+/**
+ * Extract the 5-hour utilization (0..1) from a list of windows, or null when
+ * the daemon has no 5h window for this account yet.
+ */
+export function fiveHourUtilization(windows: RateLimitWindow[] | undefined): number | null {
+  const w = windows?.find((x) => x.name === 'unified-5h');
+  if (!w) return null;
+  if (w.utilization != null) return w.utilization;
+  if (w.limit != null && w.remaining != null && w.limit > 0) {
+    return (w.limit - w.remaining) / w.limit;
+  }
+  return null;
+}

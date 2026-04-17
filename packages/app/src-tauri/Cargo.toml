@@ -1,0 +1,28 @@
+[package]
+name = "claude-sentinel"
+version = "0.1.0"
+description = "Claude Sentinel — multi-account manager and overage alerts for Claude Code"
+authors = ["Jeff Wooden"]
+license = "MIT"
+repository = "https://github.com/jeffwooden/claude-sentinel"
+edition = "2021"
+rust-version = "1.77"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+tauri-plugin-store = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+
+[features]
+# this feature is used for production builds or when `devPath` points to the filesystem
+# DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.js.map
+*.d.ts
+*.d.ts.map
+.pnpm-store/
+coverage/
+*.db
+*.db-journal
+target/
+src-tauri/target/
+.DS_Store
+*.tmp

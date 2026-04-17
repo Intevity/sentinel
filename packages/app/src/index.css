@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    color-scheme: light dark;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: #F2F2F7;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    body { background: #111111; }
+  }
+
+  #root {
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Thin, elegant scrollbar */
+  ::-webkit-scrollbar       { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0,0,0,0.12);
+    border-radius: 99px;
+  }
+  @media (prefers-color-scheme: dark) {
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); }
+  }
+}
+
+@layer components {
+  /* Glass card — light: white shadow card, dark: elevated dark surface */
+  .glass-card {
+    @apply bg-white dark:bg-[#1E1E1E] rounded-2xl shadow-card;
+  }
+
+  /* Section label — Apple "GROUPED SECTION HEADER" style */
+  .section-label {
+    @apply text-[11px] font-semibold uppercase tracking-widest text-ios-gray;
+  }
+
+  /* Primary button — iOS blue pill */
+  .btn-primary {
+    @apply rounded-full bg-ios-blue text-white text-[12px] font-semibold
+           px-3.5 py-1.5 transition-all active:scale-95
+           hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  /* Ghost button */
+  .btn-ghost {
+    @apply rounded-full text-ios-blue text-[12px] font-semibold px-3 py-1.5
+           transition-all hover:bg-ios-blue/10 active:scale-95
+           disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+}

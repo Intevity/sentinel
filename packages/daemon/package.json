@@ -1,0 +1,32 @@
+{
+  "name": "@claude-sentinel/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "claude-sentinel": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:sidecar": "node scripts/build-sidecar.mjs",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@claude-sentinel/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0",
+    "@yao-pkg/pkg": "^5.12.0",
+    "esbuild": "^0.21.0",
+    "typescript": "*",
+    "vitest": "*"
+  }
+}
