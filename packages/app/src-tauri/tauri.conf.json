@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "pnpm --filter @claude-sentinel/daemon build && pnpm --filter @claude-sentinel/daemon build:sidecar && pnpm build",
+    "beforeBuildCommand": "pnpm --filter @claude-sentinel/shared run build && pnpm --filter @claude-sentinel/daemon build && pnpm --filter @claude-sentinel/daemon build:sidecar && pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
