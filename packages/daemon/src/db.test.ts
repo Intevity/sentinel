@@ -464,3 +464,235 @@ describe('Database', () => {
     });
   });
 });
+
+// ─── Metrics tab helpers ────────────────────────────────────────────────────
+
+describe('Metrics tab DB helpers', () => {
+  let db: Database.Database;
+  const acct = 'acc-m';
+
+  beforeEach(() => {
+    db = makeTestDb();
+  });
+  afterEach(() => {
+    closeDb();
+    if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
+  });
+
+  it('getTokensByDayModel groups by day + model with full token breakdown', async () => {
+    const { getTokensByDayModel, insertUsageEvent } = await import('./db.js');
+    insertUsageEvent(db, {
+      ts: Date.now(),
+      accountId: acct,
+      sessionId: 's1',
+      model: 'claude-opus-4',
+      costUsd: 0.1,
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheRead: 20,
+      cacheCreate: 5,
+      durationMs: 1000,
+    });
+    insertUsageEvent(db, {
+      ts: Date.now(),
+      accountId: acct,
+      sessionId: 's2',
+      model: 'claude-opus-4',
+      costUsd: 0.2,
+      inputTokens: 200,
+      outputTokens: 80,
+      cacheRead: 40,
+      cacheCreate: 10,
+      durationMs: 2000,
+    });
+    const out = getTokensByDayModel(db, acct, 7);
+    const days = Object.keys(out);
+    expect(days).toHaveLength(1);
+    const day = days[0]!;
+    expect(out[day]!['claude-opus-4']).toEqual({
+      costUsd: 0.30000000000000004,
+      inputTokens: 300,
+      outputTokens: 130,
+      cacheReadTokens: 60,
+      cacheCreationTokens: 15,
+    });
+  });
+
+  it('getCacheHitRate computes per-model rate as cacheRead / (input + cacheRead)', async () => {
+    const { getCacheHitRate, insertUsageEvent } = await import('./db.js');
+    insertUsageEvent(db, {
+      ts: Date.now(), accountId: acct, sessionId: 's1', model: 'm1',
+      costUsd: 0, inputTokens: 800, outputTokens: 0, cacheRead: 200, cacheCreate: 0, durationMs: 0,
+    });
+    const rates = getCacheHitRate(db, acct, 7);
+    expect(rates['m1']?.rate).toBeCloseTo(0.2); // 200 / (800+200)
+  });
+
+  it('getCacheHitRate returns rate=0 when no tokens recorded', async () => {
+    const { getCacheHitRate, insertUsageEvent } = await import('./db.js');
+    insertUsageEvent(db, {
+      ts: Date.now(), accountId: acct, sessionId: 's', model: 'm0',
+      costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, durationMs: 0,
+    });
+    expect(getCacheHitRate(db, acct, 7)['m0']?.rate).toBe(0);
+  });
+
+  it('getApiErrorsByDay + retry-exhausted counter (attempt > 10)', async () => {
+    const { getApiErrorsByDay, insertApiError } = await import('./db.js');
+    const now = Date.now();
+    insertApiError(db, { ts: now, accountId: acct, sessionId: 's', model: 'm', statusCode: '429', error: 'rl', durationMs: 1, attempt: 3, requestId: 'r1', speed: 'normal' });
+    insertApiError(db, { ts: now, accountId: acct, sessionId: 's', model: 'm', statusCode: '500', error: '5xx', durationMs: 1, attempt: 11, requestId: 'r2', speed: 'normal' });
+    insertApiError(db, { ts: now, accountId: acct, sessionId: 's', model: 'm', statusCode: null,  error: '??',  durationMs: 1, attempt: 1, requestId: null, speed: null });
+    const out = getApiErrorsByDay(db, acct, 7);
+    const day = Object.keys(out.byDay)[0]!;
+    expect(out.byDay[day]).toEqual({ '429': 1, '500': 1, unknown: 1 });
+    expect(out.retryExhaustedCount).toBe(1);
+  });
+
+  it('getToolStats returns calls, p50/p95, successRate, topError', async () => {
+    const { getToolStats, insertToolEvent } = await import('./db.js');
+    const now = Date.now();
+    // 5 Bash calls: 4 success, 1 failure with an error
+    for (const ms of [100, 200, 300, 400, 500]) {
+      insertToolEvent(db, {
+        ts: now, accountId: acct, sessionId: 's', toolName: 'Bash',
+        success: ms !== 500, durationMs: ms,
+        error: ms === 500 ? 'boom' : null,
+        decisionSource: null, mcpServerScope: null, toolResultSizeBytes: null,
+      });
+    }
+    const stats = getToolStats(db, acct, 7);
+    const bash = stats.find((s) => s.toolName === 'Bash')!;
+    expect(bash.calls).toBe(5);
+    expect(bash.successRate).toBeCloseTo(0.8);
+    expect(bash.p50Ms).toBe(300);
+    expect(bash.p95Ms).toBe(500);
+    expect(bash.topError).toBe('boom');
+  });
+
+  it('getToolStats handles a tool with no failures (topError=null)', async () => {
+    const { getToolStats, insertToolEvent } = await import('./db.js');
+    insertToolEvent(db, {
+      ts: Date.now(), accountId: acct, sessionId: 's', toolName: 'Read',
+      success: true, durationMs: 10, error: null, decisionSource: null,
+      mcpServerScope: null, toolResultSizeBytes: null,
+    });
+    const stats = getToolStats(db, acct, 7);
+    expect(stats[0]?.topError).toBeNull();
+    expect(stats[0]?.successRate).toBe(1);
+  });
+
+  it('getToolStats with no data returns empty list', async () => {
+    const { getToolStats } = await import('./db.js');
+    expect(getToolStats(db, acct, 7)).toEqual([]);
+  });
+
+  it('getActivityCounters sums value per (day, kind)', async () => {
+    const { getActivityCounters, insertActivityEvent } = await import('./db.js');
+    const now = Date.now();
+    insertActivityEvent(db, { ts: now, accountId: acct, sessionId: 's', kind: 'commit', value: 1 });
+    insertActivityEvent(db, { ts: now, accountId: acct, sessionId: 's', kind: 'commit', value: 1 });
+    insertActivityEvent(db, { ts: now, accountId: acct, sessionId: 's', kind: 'lines_added', value: 100 });
+    const out = getActivityCounters(db, acct, 7, ['commit', 'lines_added']);
+    const day = Object.keys(out)[0]!;
+    expect(out[day]!['commit']).toBe(2);
+    expect(out[day]!['lines_added']).toBe(100);
+  });
+
+  it('getActivityCounters with empty kinds returns {}', async () => {
+    const { getActivityCounters } = await import('./db.js');
+    expect(getActivityCounters(db, acct, 7, [])).toEqual({});
+  });
+
+  it('getEditAcceptRate tallies per language and overall', async () => {
+    const { getEditAcceptRate, insertActivityEvent } = await import('./db.js');
+    const now = Date.now();
+    const base = { ts: now, accountId: acct, sessionId: 's', kind: 'edit_decision' as const, value: 1 };
+    insertActivityEvent(db, { ...base, language: 'TypeScript', decision: 'accept' });
+    insertActivityEvent(db, { ...base, language: 'TypeScript', decision: 'accept' });
+    insertActivityEvent(db, { ...base, language: 'TypeScript', decision: 'reject' });
+    insertActivityEvent(db, { ...base, language: 'Python',     decision: 'accept' });
+    const out = getEditAcceptRate(db, acct, 7);
+    expect(out.overall.accepts).toBe(3);
+    expect(out.overall.rejects).toBe(1);
+    expect(out.overall.rate).toBeCloseTo(0.75);
+    expect(out.byLanguage['TypeScript']?.rate).toBeCloseTo(2 / 3);
+    expect(out.byLanguage['Python']?.rate).toBe(1);
+  });
+
+  it('getEditAcceptRate with no decisions has rate=0', async () => {
+    const { getEditAcceptRate } = await import('./db.js');
+    const out = getEditAcceptRate(db, acct, 7);
+    expect(out.overall.rate).toBe(0);
+    expect(Object.keys(out.byLanguage)).toHaveLength(0);
+  });
+
+  it('getTopSkills returns name + count ordered desc, capped by limit', async () => {
+    const { getTopSkills, insertActivityEvent } = await import('./db.js');
+    const now = Date.now();
+    const row = (name: string) => ({ ts: now, accountId: acct, sessionId: 's', kind: 'skill_activated' as const, value: 1, name, source: 'plugin' });
+    insertActivityEvent(db, row('init'));
+    insertActivityEvent(db, row('init'));
+    insertActivityEvent(db, row('init'));
+    insertActivityEvent(db, row('review'));
+    insertActivityEvent(db, row('review'));
+    const skills = getTopSkills(db, acct, 7, 10);
+    expect(skills[0]).toMatchObject({ name: 'init', count: 3 });
+    expect(skills[1]).toMatchObject({ name: 'review', count: 2 });
+  });
+
+  it('getRecentPlugins returns installs ordered newest first', async () => {
+    const { getRecentPlugins, insertActivityEvent } = await import('./db.js');
+    insertActivityEvent(db, { ts: 1000, accountId: acct, sessionId: 's', kind: 'plugin_installed', value: 1, name: 'older', version: '1.0', marketplace: 'm' });
+    insertActivityEvent(db, { ts: 2000, accountId: acct, sessionId: 's', kind: 'plugin_installed', value: 1, name: 'newer', version: '2.0', marketplace: 'm' });
+    const plugins = getRecentPlugins(db, acct, 10);
+    expect(plugins.map((p) => p.name)).toEqual(['newer', 'older']);
+    expect(plugins[0]?.version).toBe('2.0');
+  });
+
+  it('legacy getUsageByDayModel aggregates cost + tokens', async () => {
+    const { getUsageByDayModel, insertUsageEvent } = await import('./db.js');
+    insertUsageEvent(db, {
+      ts: Date.now(), accountId: acct, sessionId: 's', model: 'm',
+      costUsd: 0.5, inputTokens: 100, outputTokens: 50, cacheRead: 10, cacheCreate: 5, durationMs: 100,
+    });
+    const out = getUsageByDayModel(db, acct, 7);
+    const day = Object.keys(out)[0]!;
+    expect(out[day]!['m']).toEqual({ costUsd: 0.5, tokens: 150 });
+  });
+
+  it('acknowledgeAllNotifications with accountId ack\'s scoped + null-scoped rows', async () => {
+    const { acknowledgeAllNotifications, insertNotification, listNotifications } = await import('./db.js');
+    insertNotification(db, { ts: 1, accountId: 'a', type: 'usage_alert', title: 'x', body: 'x' });
+    insertNotification(db, { ts: 2, accountId: null, type: 'account_switched', title: 'x', body: 'x' });
+    insertNotification(db, { ts: 3, accountId: 'other', type: 'usage_alert', title: 'x', body: 'x' });
+    const n = acknowledgeAllNotifications(db, 'a');
+    expect(n).toBe(2); // the 'a' one and the null-scoped one
+    const unacked = listNotifications(db, { unacknowledgedOnly: true });
+    expect(unacked).toHaveLength(1);
+    expect(unacked[0]?.accountId).toBe('other');
+  });
+
+  it('acknowledgeAllNotifications without accountId ack\'s every unread', async () => {
+    const { acknowledgeAllNotifications, insertNotification, listNotifications } = await import('./db.js');
+    insertNotification(db, { ts: 1, accountId: 'a', type: 'usage_alert', title: 'x', body: 'x' });
+    insertNotification(db, { ts: 2, accountId: 'b', type: 'usage_alert', title: 'x', body: 'x' });
+    const n = acknowledgeAllNotifications(db);
+    expect(n).toBe(2);
+    expect(listNotifications(db, { unacknowledgedOnly: true })).toHaveLength(0);
+  });
+
+  it('listRemovedAccounts + reactivateAccount roundtrip', async () => {
+    const { listRemovedAccounts, reactivateAccount } = await import('./db.js');
+    const acc: AccountInfo = {
+      id: 'rem', accountUuid: 'rem', email: 'r@x', displayName: '', orgUuid: '', orgName: '',
+      planType: 'pro', isActive: false, createdAt: Date.now(),
+    };
+    upsertAccount(db, acc);
+    markAccountRemoved(db, 'rem');
+    expect(listRemovedAccounts(db)).toHaveLength(1);
+    reactivateAccount(db, 'rem');
+    expect(listRemovedAccounts(db)).toHaveLength(0);
+    expect(listAccounts(db).some((a) => a.id === 'rem')).toBe(true);
+  });
+});

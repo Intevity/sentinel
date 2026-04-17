@@ -1,18 +1,32 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
-import { useUsage } from '../hooks/useUsage.js';
+import type { MetricsSummary, MetricsByDayModel } from '@claude-sentinel/shared';
+import { useMetricsSummary } from '../hooks/useMetricsSummary.js';
+import InfoTooltip from './InfoTooltip.js';
 
 const MODEL_COLORS: Record<string, string> = {
-  'claude-opus-4':    '#BF5AF2',
+  'claude-opus-4':     '#BF5AF2',
   'claude-sonnet-4-6': '#007AFF',
   'claude-haiku-4-5':  '#30D158',
 };
 
 function modelColor(model: string): string {
+  // Handle model variants like "claude-opus-4-7[1m]" → opus
+  const base = model.match(/claude-(opus|sonnet|haiku)/)?.[0];
+  if (base === 'claude-opus')   return '#BF5AF2';
+  if (base === 'claude-sonnet') return '#007AFF';
+  if (base === 'claude-haiku')  return '#30D158';
   return MODEL_COLORS[model] ?? '#8E8E93';
 }
+
+const TOKEN_TYPE_COLORS: Record<string, string> = {
+  input:       '#007AFF',
+  output:      '#5E5CE6',
+  cacheRead:   '#30D158',
+  cacheCreate: '#FF9F0A',
+};
 
 const PERIODS = [
   { days: 7,  label: '7d' },
@@ -20,64 +34,55 @@ const PERIODS = [
   { days: 30, label: '30d' },
 ];
 
-interface TooltipProps {
+const OTEL_PROVENANCE = [
+  'Metrics are emitted by Claude Code via OpenTelemetry and sent to',
+  "Sentinel's local receiver. Sentinel enables this automatically by",
+  "setting CLAUDE_CODE_ENABLE_TELEMETRY=1, OTEL_METRICS_EXPORTER=otlp,",
+  'and OTEL_LOGS_EXPORTER=otlp in ~/.claude/settings.json.',
+].join(' ');
+
+interface ChartTooltipProps {
   active?: boolean;
-  payload?: Array<{ name: string; value: number; fill: string }>;
+  payload?: Array<{ name: string; value: number; fill: string; dataKey: string }>;
   label?: string;
+  valueFormatter?: (v: number) => string;
 }
 
-function CustomTooltip({ active, payload, label }: TooltipProps): React.ReactElement | null {
+function StackedTooltip({ active, payload, label, valueFormatter }: ChartTooltipProps): React.ReactElement | null {
   if (!active || !payload?.length) return null;
+  const fmt = valueFormatter ?? ((v: number): string => v.toLocaleString());
+  const total = payload.reduce((s, p) => s + p.value, 0);
   return (
-    <div className="bg-white dark:bg-[#2C2C2E] rounded-xl shadow-card-md px-3 py-2 text-[11px]">
+    <div className="bg-white dark:bg-[#2C2C2E] rounded-xl shadow-card-md px-3 py-2 text-[11px] min-w-[140px]">
       <p className="font-semibold text-black dark:text-white mb-1">{label}</p>
       {payload.map((p) => (
-        <div key={p.name} className="flex items-center gap-2">
+        <div key={p.dataKey} className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full" style={{ background: p.fill }} />
           <span className="text-[#8E8E93]">{p.name}</span>
-          <span className="font-medium text-black dark:text-white ml-auto pl-4">
-            ${p.value.toFixed(4)}
-          </span>
+          <span className="font-medium text-black dark:text-white ml-auto pl-4">{fmt(p.value)}</span>
         </div>
       ))}
+      {payload.length > 1 && (
+        <div className="border-t border-black/5 dark:border-white/10 mt-1 pt-1 flex justify-between">
+          <span className="text-[#8E8E93]">Total</span>
+          <span className="font-semibold text-black dark:text-white">{fmt(total)}</span>
+        </div>
+      )}
     </div>
   );
 }
 
 export default function MetricsDashboard(): React.ReactElement {
-  const [days, setDays] = useState(7);
-  const { usage, loading, error } = useUsage();
-
-  const chartData = usage
-    ? Object.entries(usage.byDayModel).map(([date, models]) => {
-        const entry: Record<string, string | number> = { date: date.slice(5) };
-        for (const [model, stats] of Object.entries(models)) {
-          entry[model] = Math.round(stats.costUsd * 100000) / 100000;
-        }
-        return entry;
-      })
-    : [];
-
-  const allModels = usage
-    ? [...new Set(Object.values(usage.byDayModel).flatMap((m) => Object.keys(m)))]
-    : [];
-
-  const totalCost = usage
-    ? Object.values(usage.byDayModel).reduce(
-        (sum, models) => sum + Object.values(models).reduce((s, m) => s + m.costUsd, 0), 0)
-    : 0;
-
-  const totalTokens = usage
-    ? Object.values(usage.byDayModel).reduce(
-        (sum, models) => sum + Object.values(models).reduce((s, m) => s + m.tokens, 0), 0)
-    : 0;
+  const { summary, loading, error, days, setDays } = useMetricsSummary();
 
   return (
     <div className="space-y-3 pt-1">
-
-      {/* Section header + period selector */}
+      {/* ── Header + period selector ─────────────────────────────────── */}
       <div className="flex items-center justify-between mb-3">
-        <span className="section-label">Metrics</span>
+        <div className="flex items-center gap-1.5">
+          <span className="section-label">Metrics</span>
+          <InfoTooltip text={OTEL_PROVENANCE} />
+        </div>
         <div className="flex bg-black/[0.06] dark:bg-white/[0.08] rounded-lg p-[2px] gap-[2px]">
           {PERIODS.map(({ days: d, label }) => (
             <button
@@ -95,82 +100,487 @@ export default function MetricsDashboard(): React.ReactElement {
         </div>
       </div>
 
-      {/* Metric tiles */}
-      <div className="grid grid-cols-2 gap-2">
-        <div className="glass-card px-4 py-3">
-          <p className="text-[11px] text-[#8E8E93] font-medium">Total Cost</p>
-          <p className="text-[22px] font-bold tracking-tight text-black dark:text-white mt-0.5">
-            ${totalCost < 0.01 && totalCost > 0 ? totalCost.toFixed(4) : totalCost.toFixed(2)}
-          </p>
-          <p className="text-[10px] text-[#8E8E93]">last {days} days</p>
-        </div>
-        <div className="glass-card px-4 py-3">
-          <p className="text-[11px] text-[#8E8E93] font-medium">Tokens</p>
-          <p className="text-[22px] font-bold tracking-tight text-black dark:text-white mt-0.5">
-            {totalTokens >= 1_000_000
-              ? `${(totalTokens / 1_000_000).toFixed(1)}M`
-              : `${(totalTokens / 1_000).toFixed(1)}K`}
-          </p>
-          <p className="text-[10px] text-[#8E8E93]">last {days} days</p>
-        </div>
-      </div>
-
       {error && (
         <div className="rounded-2xl bg-ios-red/10 px-4 py-3">
           <p className="text-[12px] text-ios-red">{error}</p>
         </div>
       )}
 
-      {loading && (
+      {loading && !summary && (
         <div className="glass-card px-4 py-8 text-center">
           <p className="text-[12px] text-[#8E8E93]">Loading…</p>
         </div>
       )}
 
-      {!loading && chartData.length === 0 && !error && (
-        <div className="glass-card px-4 py-10 text-center">
-          <p className="text-[13px] font-medium text-black dark:text-white">No data yet</p>
-          <p className="text-[11px] text-[#8E8E93] mt-1">
-            Usage appears after your first proxied API call.
-          </p>
+      {summary && <MetricsContent summary={summary} days={days} />}
+    </div>
+  );
+}
+
+function MetricsContent({ summary, days }: { summary: MetricsSummary; days: number }): React.ReactElement {
+  // Aggregate totals across the period for the summary tiles.
+  let totalCost = 0;
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalCacheRead = 0;
+  let totalCacheCreate = 0;
+  for (const models of Object.values(summary.byDayModel)) {
+    for (const m of Object.values(models)) {
+      totalCost       += m.costUsd;
+      totalInput      += m.inputTokens;
+      totalOutput     += m.outputTokens;
+      totalCacheRead  += m.cacheReadTokens;
+      totalCacheCreate += m.cacheCreationTokens;
+    }
+  }
+  const totalTokens = totalInput + totalOutput + totalCacheRead + totalCacheCreate;
+  const cacheDenom = totalInput + totalCacheRead;
+  const overallCacheRate = cacheDenom > 0 ? totalCacheRead / cacheDenom : 0;
+  const errorCount = Object.values(summary.errors.byDay).reduce(
+    (sum, byStatus) => sum + Object.values(byStatus).reduce((a, b) => a + b, 0),
+    0,
+  );
+
+  // Days the period touches, used as the x-axis backbone for each chart so
+  // empty days render as a gap instead of compressing the layout.
+  const allDays = Object.keys(summary.byDayModel).sort();
+  const allModels = [...new Set(Object.values(summary.byDayModel).flatMap((m) => Object.keys(m)))];
+
+  return (
+    <>
+      {/* ── Summary tiles ─────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 gap-2">
+        <Tile label="Total Cost" sub={`last ${days} days`}>
+          <span className="text-[22px] font-bold tracking-tight text-black dark:text-white">
+            ${formatCost(totalCost)}
+          </span>
+        </Tile>
+        <Tile
+          label="Tokens"
+          sub={`cache-read ${compact(totalCacheRead)} · cache-create ${compact(totalCacheCreate)}`}
+        >
+          <span className="text-[22px] font-bold tracking-tight text-black dark:text-white">
+            {compact(totalTokens)}
+          </span>
+        </Tile>
+        <Tile label="Cache Hit Rate" sub="cache-read / (input + cache-read)">
+          <span className="text-[22px] font-bold tracking-tight text-black dark:text-white">
+            {(overallCacheRate * 100).toFixed(1)}%
+          </span>
+        </Tile>
+        <Tile
+          label="Errors"
+          sub={
+            summary.errors.retryExhaustedCount > 0
+              ? `${summary.errors.retryExhaustedCount} retry-exhausted`
+              : `last ${days} days`
+          }
+        >
+          <span className={`text-[22px] font-bold tracking-tight ${errorCount > 0 ? 'text-ios-orange' : 'text-black dark:text-white'}`}>
+            {errorCount}
+          </span>
+        </Tile>
+      </div>
+
+      {/* ── Tokens chart ──────────────────────────────────────────────── */}
+      {totalTokens > 0 ? (
+        <TokensChart byDayModel={summary.byDayModel} allDays={allDays} />
+      ) : (
+        <EmptyCard title="Tokens" hint="Token breakdown appears once Claude Code emits api_request log events." />
+      )}
+
+      {/* ── Cost chart ────────────────────────────────────────────────── */}
+      {totalCost > 0 && (
+        <CostChart byDayModel={summary.byDayModel} allDays={allDays} allModels={allModels} />
+      )}
+
+      {/* ── Cache-hit rate per model ──────────────────────────────────── */}
+      {Object.keys(summary.cacheHitRate).length > 0 && (
+        <div className="glass-card px-4 py-3">
+          <p className="text-[11px] font-semibold text-[#8E8E93] mb-2">Cache hit rate by model</p>
+          <div className="space-y-2">
+            {Object.entries(summary.cacheHitRate).map(([model, r]) => (
+              <div key={model} className="flex items-center gap-2">
+                <span className="text-[11px] font-medium text-black dark:text-white flex-1 truncate">{model}</span>
+                <div className="h-[4px] w-24 rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-ios-green"
+                    style={{ width: `${Math.min(100, r.rate * 100)}%` }}
+                  />
+                </div>
+                <span className="text-[11px] font-bold tabular-nums text-black dark:text-white w-12 text-right">
+                  {(r.rate * 100).toFixed(1)}%
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
-      {/* Bar chart */}
-      {chartData.length > 0 && (
-        <div className="glass-card px-4 pt-4 pb-2">
-          <p className="text-[11px] font-semibold text-[#8E8E93] mb-3">Cost by Day (USD)</p>
-          <ResponsiveContainer width="100%" height={160}>
-            <BarChart data={chartData} barSize={20} margin={{ top: 0, right: 0, bottom: 0, left: -20 }}>
-              <XAxis
-                dataKey="date"
-                tick={{ fontSize: 10, fill: '#8E8E93' }}
-                axisLine={false}
-                tickLine={false}
-              />
-              <YAxis
-                tick={{ fontSize: 10, fill: '#8E8E93' }}
-                axisLine={false}
-                tickLine={false}
-                tickFormatter={(v: number) => `$${v.toFixed(2)}`}
-              />
-              <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
-              {allModels.map((model) => (
-                <Bar key={model} dataKey={model} stackId="a" radius={model === allModels[allModels.length - 1] ? [4, 4, 0, 0] : [0, 0, 0, 0]}>
-                  {chartData.map((_, i) => (
-                    <Cell key={i} fill={modelColor(model)} />
-                  ))}
-                </Bar>
-              ))}
-            </BarChart>
-          </ResponsiveContainer>
+      {/* ── Errors timeline ──────────────────────────────────────────── */}
+      {errorCount > 0 && <ErrorsTimeline errors={summary.errors} allDays={Object.keys(summary.errors.byDay).sort()} />}
 
-          {/* Legend */}
-          <div className="flex flex-wrap gap-3 mt-2">
-            {allModels.map((model) => (
-              <div key={model} className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full" style={{ background: modelColor(model) }} />
-                <span className="text-[10px] text-[#8E8E93]">{model.split('-').slice(0, 3).join('-')}</span>
+      {/* ── Top tools ────────────────────────────────────────────────── */}
+      {summary.tools.length > 0 && <TopTools tools={summary.tools} />}
+
+      {/* ── Productivity sparklines ──────────────────────────────────── */}
+      {hasProductivityData(summary) && <ProductivityRow activity={summary.activity} />}
+
+      {/* ── Active time ──────────────────────────────────────────────── */}
+      {Object.keys(summary.activity.activeTimePerDay).length > 0 && (
+        <ActiveTimeChart perDay={summary.activity.activeTimePerDay} />
+      )}
+
+      {/* ── Edit accept rate ─────────────────────────────────────────── */}
+      {summary.editAcceptRate.overall.accepts + summary.editAcceptRate.overall.rejects > 0 && (
+        <EditAcceptRateCard rate={summary.editAcceptRate} />
+      )}
+
+      {/* ── Skills & Plugins ─────────────────────────────────────────── */}
+      {(summary.skills.length > 0 || summary.plugins.length > 0) && (
+        <SkillsAndPlugins skills={summary.skills} plugins={summary.plugins} />
+      )}
+
+      {/* Friendly nudge when the whole dashboard is empty */}
+      {totalTokens === 0 && totalCost === 0 && errorCount === 0 && summary.tools.length === 0 && (
+        <div className="glass-card px-4 py-10 text-center">
+          <p className="text-[13px] font-medium text-black dark:text-white">Awaiting telemetry</p>
+          <p className="text-[11px] text-[#8E8E93] mt-1 leading-relaxed">
+            Run a Claude Code session — metrics appear here once OTEL events flush.
+          </p>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function Tile({
+  label,
+  sub,
+  children,
+}: {
+  label: string;
+  sub?: string;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <div className="glass-card px-4 py-3">
+      <p className="text-[11px] text-[#8E8E93] font-medium">{label}</p>
+      <p className="mt-0.5">{children}</p>
+      {sub && <p className="text-[10px] text-[#8E8E93] mt-0.5 truncate">{sub}</p>}
+    </div>
+  );
+}
+
+function EmptyCard({ title, hint }: { title: string; hint: string }): React.ReactElement {
+  return (
+    <div className="glass-card px-4 py-5">
+      <p className="text-[11px] font-semibold text-[#8E8E93] mb-1">{title}</p>
+      <p className="text-[11px] text-[#8E8E93]">{hint}</p>
+    </div>
+  );
+}
+
+/** Stacked bar: input / output / cacheRead / cacheCreation per day. */
+function TokensChart({
+  byDayModel,
+  allDays,
+}: {
+  byDayModel: Record<string, Record<string, MetricsByDayModel>>;
+  allDays: string[];
+}): React.ReactElement {
+  const data = allDays.map((date) => {
+    const entry: Record<string, string | number> = { date: date.slice(5) };
+    let input = 0, output = 0, cacheRead = 0, cacheCreate = 0;
+    for (const m of Object.values(byDayModel[date] ?? {})) {
+      input += m.inputTokens;
+      output += m.outputTokens;
+      cacheRead += m.cacheReadTokens;
+      cacheCreate += m.cacheCreationTokens;
+    }
+    entry['input'] = input;
+    entry['output'] = output;
+    entry['cacheRead'] = cacheRead;
+    entry['cacheCreate'] = cacheCreate;
+    return entry;
+  });
+
+  const keys = ['input', 'output', 'cacheRead', 'cacheCreate'] as const;
+
+  return (
+    <div className="glass-card px-4 pt-4 pb-2">
+      <p className="text-[11px] font-semibold text-[#8E8E93] mb-3">Tokens by day</p>
+      <ResponsiveContainer width="100%" height={160}>
+        <BarChart data={data} barSize={18} margin={{ top: 0, right: 0, bottom: 0, left: -12 }}>
+          <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
+          <YAxis tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} tickFormatter={(v: number) => compact(v)} />
+          <Tooltip content={<StackedTooltip />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
+          {keys.map((k, idx) => (
+            <Bar key={k} dataKey={k} name={tokenLabel(k)} stackId="tokens" fill={TOKEN_TYPE_COLORS[k]} radius={idx === keys.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]} />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+      <div className="flex flex-wrap gap-3 mt-2">
+        {keys.map((k) => (
+          <div key={k} className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full" style={{ background: TOKEN_TYPE_COLORS[k] }} />
+            <span className="text-[10px] text-[#8E8E93]">{tokenLabel(k)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Stacked bar: cost per day colored by model. */
+function CostChart({
+  byDayModel,
+  allDays,
+  allModels,
+}: {
+  byDayModel: Record<string, Record<string, MetricsByDayModel>>;
+  allDays: string[];
+  allModels: string[];
+}): React.ReactElement {
+  const data = allDays.map((date) => {
+    const entry: Record<string, string | number> = { date: date.slice(5) };
+    for (const model of allModels) {
+      entry[model] = Math.round((byDayModel[date]?.[model]?.costUsd ?? 0) * 100000) / 100000;
+    }
+    return entry;
+  });
+
+  return (
+    <div className="glass-card px-4 pt-4 pb-2">
+      <p className="text-[11px] font-semibold text-[#8E8E93] mb-3">Cost by day (USD)</p>
+      <ResponsiveContainer width="100%" height={160}>
+        <BarChart data={data} barSize={18} margin={{ top: 0, right: 0, bottom: 0, left: -12 }}>
+          <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
+          <YAxis tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} tickFormatter={(v: number) => `$${v.toFixed(2)}`} />
+          <Tooltip content={<StackedTooltip valueFormatter={(v) => `$${v.toFixed(4)}`} />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
+          {allModels.map((model, idx) => (
+            <Bar key={model} dataKey={model} stackId="cost" radius={idx === allModels.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]}>
+              {data.map((_, i) => <Cell key={i} fill={modelColor(model)} />)}
+            </Bar>
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+      <div className="flex flex-wrap gap-3 mt-2">
+        {allModels.map((model) => (
+          <div key={model} className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full" style={{ background: modelColor(model) }} />
+            <span className="text-[10px] text-[#8E8E93] truncate max-w-[140px]">{model}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ErrorsTimeline({
+  errors,
+  allDays,
+}: {
+  errors: MetricsSummary['errors'];
+  allDays: string[];
+}): React.ReactElement {
+  // Bucket by status-code family so we don't explode into dozens of bars.
+  const data = allDays.map((date) => {
+    const byStatus = errors.byDay[date] ?? {};
+    let c4xx = 0, c5xx = 0, other = 0;
+    for (const [code, n] of Object.entries(byStatus)) {
+      const cc = Number(code);
+      if (cc >= 400 && cc < 500) c4xx += n;
+      else if (cc >= 500 && cc < 600) c5xx += n;
+      else other += n;
+    }
+    return { date: date.slice(5), '4xx': c4xx, '5xx': c5xx, other };
+  });
+  return (
+    <div className="glass-card px-4 pt-4 pb-2">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-[11px] font-semibold text-[#8E8E93]">API errors</p>
+        {errors.retryExhaustedCount > 0 && (
+          <span className="text-[10px] font-semibold text-ios-red bg-ios-red/10 px-2 py-0.5 rounded-full">
+            {errors.retryExhaustedCount} retry-exhausted
+          </span>
+        )}
+      </div>
+      <ResponsiveContainer width="100%" height={120}>
+        <BarChart data={data} barSize={14} margin={{ top: 0, right: 0, bottom: 0, left: -16 }}>
+          <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
+          <YAxis tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} allowDecimals={false} />
+          <Tooltip content={<StackedTooltip />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
+          <Bar dataKey="4xx"   stackId="e" fill="#FF9F0A" />
+          <Bar dataKey="5xx"   stackId="e" fill="#FF453A" radius={[4, 4, 0, 0]} />
+          <Bar dataKey="other" stackId="e" fill="#8E8E93" />
+        </BarChart>
+      </ResponsiveContainer>
+      <div className="flex gap-3 mt-2">
+        <LegendDot color="#FF9F0A" label="4xx" />
+        <LegendDot color="#FF453A" label="5xx" />
+        <LegendDot color="#8E8E93" label="other" />
+      </div>
+    </div>
+  );
+}
+
+function TopTools({ tools }: { tools: MetricsSummary['tools'] }): React.ReactElement {
+  return (
+    <div className="glass-card px-4 py-3">
+      <p className="text-[11px] font-semibold text-[#8E8E93] mb-2">Top tools</p>
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-[1fr_auto_auto_auto] gap-3 text-[10px] text-[#8E8E93] uppercase tracking-wider pb-1 border-b border-black/5 dark:border-white/5">
+          <span>Tool</span><span className="text-right">Calls</span><span className="text-right">p50 / p95</span><span className="text-right">OK</span>
+        </div>
+        {tools.map((t) => (
+          <div key={t.toolName} className="grid grid-cols-[1fr_auto_auto_auto] gap-3 text-[11px] items-center">
+            <span className="font-medium text-black dark:text-white truncate" title={t.topError ?? undefined}>
+              {t.toolName}
+            </span>
+            <span className="text-right tabular-nums text-black dark:text-white">{t.calls}</span>
+            <span className="text-right tabular-nums text-[#8E8E93]">
+              {Math.round(t.p50Ms)}/{Math.round(t.p95Ms)}ms
+            </span>
+            <span className={`text-right tabular-nums font-semibold ${t.successRate >= 0.95 ? 'text-ios-green' : t.successRate >= 0.8 ? 'text-ios-orange' : 'text-ios-red'}`}>
+              {(t.successRate * 100).toFixed(0)}%
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function hasProductivityData(summary: MetricsSummary): boolean {
+  const a = summary.activity;
+  return (
+    Object.keys(a.linesPerDay).length > 0 ||
+    Object.keys(a.commitsPerDay).length > 0 ||
+    Object.keys(a.prsPerDay).length > 0
+  );
+}
+
+function ProductivityRow({ activity }: { activity: MetricsSummary['activity'] }): React.ReactElement {
+  const linesAdded  = sumRecord(activity.linesPerDay, (v) => v.added);
+  const linesRemoved = sumRecord(activity.linesPerDay, (v) => v.removed);
+  const commits = sumRecord(activity.commitsPerDay, (v) => v);
+  const prs = sumRecord(activity.prsPerDay, (v) => v);
+
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      <Tile label="Lines" sub={`+${compact(linesAdded)} / −${compact(linesRemoved)}`}>
+        <span className="text-[18px] font-bold text-black dark:text-white">
+          {compact(linesAdded + linesRemoved)}
+        </span>
+      </Tile>
+      <Tile label="Commits" sub={`last ${Object.keys(activity.commitsPerDay).length}d`}>
+        <span className="text-[18px] font-bold text-black dark:text-white">{commits}</span>
+      </Tile>
+      <Tile label="PRs" sub={`last ${Object.keys(activity.prsPerDay).length}d`}>
+        <span className="text-[18px] font-bold text-black dark:text-white">{prs}</span>
+      </Tile>
+    </div>
+  );
+}
+
+function ActiveTimeChart({
+  perDay,
+}: {
+  perDay: Record<string, { user: number; cli: number }>;
+}): React.ReactElement {
+  const days = Object.keys(perDay).sort();
+  const data = days.map((d) => ({
+    date: d.slice(5),
+    user: Math.round(perDay[d]!.user / 60),  // seconds → minutes
+    cli: Math.round(perDay[d]!.cli / 60),
+  }));
+  return (
+    <div className="glass-card px-4 pt-4 pb-2">
+      <p className="text-[11px] font-semibold text-[#8E8E93] mb-3">Active time (minutes / day)</p>
+      <ResponsiveContainer width="100%" height={120}>
+        <BarChart data={data} barSize={16} margin={{ top: 0, right: 0, bottom: 0, left: -16 }}>
+          <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
+          <YAxis tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
+          <Tooltip content={<StackedTooltip valueFormatter={(v) => `${v}m`} />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
+          <Bar dataKey="user" stackId="t" fill="#007AFF" name="user" />
+          <Bar dataKey="cli"  stackId="t" fill="#5E5CE6" radius={[4, 4, 0, 0]} name="cli" />
+        </BarChart>
+      </ResponsiveContainer>
+      <div className="flex gap-3 mt-2">
+        <LegendDot color="#007AFF" label="user" />
+        <LegendDot color="#5E5CE6" label="cli" />
+      </div>
+    </div>
+  );
+}
+
+function EditAcceptRateCard({ rate }: { rate: MetricsSummary['editAcceptRate'] }): React.ReactElement {
+  const { overall, byLanguage } = rate;
+  const overallPct = (overall.rate * 100).toFixed(1);
+  const overallColor =
+    overall.rate >= 0.8 ? 'text-ios-green' :
+    overall.rate >= 0.5 ? 'text-ios-orange' :
+                          'text-ios-red';
+  return (
+    <div className="glass-card px-4 py-3">
+      <div className="flex items-baseline justify-between mb-2">
+        <p className="text-[11px] font-semibold text-[#8E8E93]">Edit accept rate</p>
+        <p className={`text-[18px] font-bold tabular-nums ${overallColor}`}>{overallPct}%</p>
+      </div>
+      <p className="text-[10px] text-[#8E8E93] mb-2">
+        {overall.accepts} accepted · {overall.rejects} rejected
+      </p>
+      {Object.keys(byLanguage).length > 0 && (
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+          {Object.entries(byLanguage).map(([lang, r]) => (
+            <div key={lang} className="flex items-center justify-between text-[11px]">
+              <span className="text-black dark:text-white truncate">{lang}</span>
+              <span className="text-[#8E8E93] tabular-nums">{(r.rate * 100).toFixed(0)}%</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SkillsAndPlugins({
+  skills,
+  plugins,
+}: {
+  skills: MetricsSummary['skills'];
+  plugins: MetricsSummary['plugins'];
+}): React.ReactElement {
+  return (
+    <div className="glass-card px-4 py-3">
+      <p className="text-[11px] font-semibold text-[#8E8E93] mb-2">Skills &amp; plugins</p>
+      {skills.length > 0 && (
+        <div className="mb-2">
+          <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-1">Top skills</p>
+          <div className="flex flex-wrap gap-1.5">
+            {skills.slice(0, 8).map((s) => (
+              <span key={s.name} className="inline-flex items-center gap-1 text-[10px] font-medium bg-black/[0.04] dark:bg-white/[0.06] px-2 py-0.5 rounded-full">
+                <span className="text-black dark:text-white">{s.name}</span>
+                <span className="text-[#8E8E93] tabular-nums">{s.count}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {plugins.length > 0 && (
+        <div>
+          <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-1">Recent plugins</p>
+          <div className="space-y-0.5">
+            {plugins.map((p) => (
+              <div key={`${p.name}-${p.installedAt}`} className="flex items-center justify-between text-[11px]">
+                <span className="text-black dark:text-white truncate">
+                  {p.name}
+                  {p.version && <span className="text-[#8E8E93] ml-1">v{p.version}</span>}
+                </span>
+                <span className="text-[10px] text-[#8E8E93] tabular-nums">{formatRelative(p.installedAt)}</span>
               </div>
             ))}
           </div>
@@ -178,4 +588,49 @@ export default function MetricsDashboard(): React.ReactElement {
       )}
     </div>
   );
+}
+
+function LegendDot({ color, label }: { color: string; label: string }): React.ReactElement {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="w-2 h-2 rounded-full" style={{ background: color }} />
+      <span className="text-[10px] text-[#8E8E93]">{label}</span>
+    </div>
+  );
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+function tokenLabel(k: string): string {
+  if (k === 'cacheRead')   return 'cache read';
+  if (k === 'cacheCreate') return 'cache create';
+  return k;
+}
+
+function compact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+function formatCost(n: number): string {
+  if (n === 0) return '0.00';
+  if (n < 0.01) return n.toFixed(4);
+  return n.toFixed(2);
+}
+
+function sumRecord<T>(rec: Record<string, T>, extract: (v: T) => number): number {
+  let total = 0;
+  for (const v of Object.values(rec)) total += extract(v);
+  return total;
+}
+
+function formatRelative(ts: number): string {
+  const diffMs = Date.now() - ts;
+  const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (days <= 0) return 'today';
+  if (days === 1) return 'yesterday';
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  return `${months}mo ago`;
 }

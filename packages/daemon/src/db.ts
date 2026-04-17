@@ -12,6 +12,12 @@ import type {
   PlanType,
   RateLimitWindow,
   Alert,
+  MetricsByDayModel,
+  CacheHitRate,
+  ToolStat,
+  EditAcceptRate,
+  SkillUsage,
+  PluginInstall,
 } from '@claude-sentinel/shared';
 
 export const SENTINEL_DIR = join(homedir(), '.claude-sentinel');
@@ -85,11 +91,78 @@ CREATE TABLE IF NOT EXISTS alerts (
   created_at                 INTEGER NOT NULL
 );
 
+-- Per-tool-invocation facts from claude_code.tool_result log events.
+-- Powers the Top tools view on the Metrics tab (p50/p95 latency,
+-- success rate, top error).
+CREATE TABLE IF NOT EXISTS tool_events (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts                       INTEGER NOT NULL,
+  account_id               TEXT NOT NULL,
+  session_id               TEXT,
+  tool_name                TEXT NOT NULL,
+  success                  INTEGER NOT NULL,
+  duration_ms              INTEGER,
+  error                    TEXT,
+  decision_source          TEXT,
+  mcp_server_scope         TEXT,
+  tool_result_size_bytes   INTEGER
+);
+
+-- Terminal API failures from claude_code.api_error log events.
+-- Claude Code emits one event *after* retries are exhausted; the attempt
+-- attribute tells us whether retries played out before giving up.
+CREATE TABLE IF NOT EXISTS api_errors (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts            INTEGER NOT NULL,
+  account_id    TEXT NOT NULL,
+  session_id    TEXT,
+  model         TEXT,
+  status_code   TEXT,
+  error         TEXT,
+  duration_ms   INTEGER,
+  attempt       INTEGER,
+  request_id    TEXT,
+  speed         TEXT
+);
+
+-- Generic counter-style signal bucket. One row per observation for:
+--   session, commit, pull_request, lines_added, lines_removed,
+--   active_user_seconds, active_cli_seconds, edit_decision,
+--   skill_activated, plugin_installed.
+-- Optional dimension columns (model, tool_name, language, decision,
+-- source, name, version, marketplace) stay NULL when not applicable to
+-- the kind. extra_json reserves room for future dimensions without
+-- another migration.
+CREATE TABLE IF NOT EXISTS activity_events (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts               INTEGER NOT NULL,
+  account_id       TEXT NOT NULL,
+  session_id       TEXT,
+  kind             TEXT NOT NULL,
+  value            REAL,
+  model            TEXT,
+  tool_name        TEXT,
+  language         TEXT,
+  decision         TEXT,
+  source           TEXT,
+  name             TEXT,
+  version          TEXT,
+  marketplace      TEXT,
+  extra_json       TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_usage_ts      ON usage_events(ts);
 CREATE INDEX IF NOT EXISTS idx_usage_account ON usage_events(account_id);
 CREATE INDEX IF NOT EXISTS idx_overage_account ON overage_events(account_id);
 CREATE INDEX IF NOT EXISTS idx_notif_ts      ON notifications(ts);
 CREATE INDEX IF NOT EXISTS idx_alerts_account ON alerts(account_id);
+CREATE INDEX IF NOT EXISTS idx_tool_events_ts        ON tool_events(ts);
+CREATE INDEX IF NOT EXISTS idx_tool_events_account   ON tool_events(account_id);
+CREATE INDEX IF NOT EXISTS idx_tool_events_tool      ON tool_events(tool_name);
+CREATE INDEX IF NOT EXISTS idx_api_errors_ts         ON api_errors(ts);
+CREATE INDEX IF NOT EXISTS idx_api_errors_account    ON api_errors(account_id);
+CREATE INDEX IF NOT EXISTS idx_activity_ts           ON activity_events(ts);
+CREATE INDEX IF NOT EXISTS idx_activity_account_kind ON activity_events(account_id, kind);
 `;
 
 let _db: Database.Database | null = null;
@@ -751,4 +824,409 @@ function rowToNotification(row: DbNotificationRow): NotificationRecord {
     body: row.body,
     acknowledged: row.acknowledged === 1,
   };
+}
+
+// ─── Tool / API error / activity event inserts ────────────────────────────────
+
+export interface InsertToolEvent {
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  toolName: string;
+  success: boolean;
+  durationMs: number | null;
+  error: string | null;
+  decisionSource: string | null;
+  mcpServerScope: string | null;
+  toolResultSizeBytes: number | null;
+}
+
+export function insertToolEvent(db: Database.Database, e: InsertToolEvent): number {
+  const result = db.prepare(`
+    INSERT INTO tool_events (ts, account_id, session_id, tool_name, success, duration_ms, error, decision_source, mcp_server_scope, tool_result_size_bytes)
+    VALUES (@ts, @accountId, @sessionId, @toolName, @success, @durationMs, @error, @decisionSource, @mcpServerScope, @toolResultSizeBytes)
+  `).run({
+    ts: e.ts,
+    accountId: e.accountId,
+    sessionId: e.sessionId,
+    toolName: e.toolName,
+    success: e.success ? 1 : 0,
+    durationMs: e.durationMs,
+    error: e.error,
+    decisionSource: e.decisionSource,
+    mcpServerScope: e.mcpServerScope,
+    toolResultSizeBytes: e.toolResultSizeBytes,
+  });
+  return Number(result.lastInsertRowid);
+}
+
+export interface InsertApiError {
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  model: string | null;
+  statusCode: string | null;
+  error: string | null;
+  durationMs: number | null;
+  attempt: number | null;
+  requestId: string | null;
+  speed: string | null;
+}
+
+export function insertApiError(db: Database.Database, e: InsertApiError): number {
+  const result = db.prepare(`
+    INSERT INTO api_errors (ts, account_id, session_id, model, status_code, error, duration_ms, attempt, request_id, speed)
+    VALUES (@ts, @accountId, @sessionId, @model, @statusCode, @error, @durationMs, @attempt, @requestId, @speed)
+  `).run(e as unknown as Record<string, unknown>);
+  return Number(result.lastInsertRowid);
+}
+
+/** Kind values the receiver emits into activity_events. */
+export type ActivityKind =
+  | 'session'
+  | 'commit'
+  | 'pull_request'
+  | 'lines_added'
+  | 'lines_removed'
+  | 'active_user_seconds'
+  | 'active_cli_seconds'
+  | 'edit_decision'
+  | 'skill_activated'
+  | 'plugin_installed';
+
+export interface InsertActivityEvent {
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  kind: ActivityKind;
+  value: number | null;
+  model?: string | null;
+  toolName?: string | null;
+  language?: string | null;
+  decision?: string | null;
+  source?: string | null;
+  name?: string | null;
+  version?: string | null;
+  marketplace?: string | null;
+  extraJson?: string | null;
+}
+
+export function insertActivityEvent(db: Database.Database, e: InsertActivityEvent): number {
+  const result = db.prepare(`
+    INSERT INTO activity_events (ts, account_id, session_id, kind, value, model, tool_name, language, decision, source, name, version, marketplace, extra_json)
+    VALUES (@ts, @accountId, @sessionId, @kind, @value, @model, @toolName, @language, @decision, @source, @name, @version, @marketplace, @extraJson)
+  `).run({
+    ts: e.ts,
+    accountId: e.accountId,
+    sessionId: e.sessionId,
+    kind: e.kind,
+    value: e.value,
+    model: e.model ?? null,
+    toolName: e.toolName ?? null,
+    language: e.language ?? null,
+    decision: e.decision ?? null,
+    source: e.source ?? null,
+    name: e.name ?? null,
+    version: e.version ?? null,
+    marketplace: e.marketplace ?? null,
+    extraJson: e.extraJson ?? null,
+  });
+  return Number(result.lastInsertRowid);
+}
+
+// ─── Metrics tab query helpers ────────────────────────────────────────────────
+
+/**
+ * Per-day, per-model rollup with the full token breakdown (input / output /
+ * cacheRead / cacheCreation) plus cost. Drives the Tokens and Cost charts on
+ * the Metrics tab.
+ */
+export function getTokensByDayModel(
+  db: Database.Database,
+  accountId: string,
+  days: number,
+): Record<string, Record<string, MetricsByDayModel>> {
+  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db.prepare(
+    `SELECT
+       date(ts / 1000, 'unixepoch')          AS day,
+       model,
+       COALESCE(SUM(cost_usd), 0)            AS cost_usd,
+       COALESCE(SUM(input_tokens), 0)        AS input_tokens,
+       COALESCE(SUM(output_tokens), 0)       AS output_tokens,
+       COALESCE(SUM(cache_read), 0)          AS cache_read,
+       COALESCE(SUM(cache_create), 0)        AS cache_create
+     FROM usage_events
+     WHERE account_id = ? AND ts >= ?
+     GROUP BY day, model
+     ORDER BY day ASC`,
+  ).all(accountId, sinceTs) as Array<{
+    day: string;
+    model: string;
+    cost_usd: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read: number;
+    cache_create: number;
+  }>;
+
+  const result: Record<string, Record<string, MetricsByDayModel>> = {};
+  for (const r of rows) {
+    (result[r.day] ??= {})[r.model] = {
+      costUsd: r.cost_usd,
+      inputTokens: r.input_tokens,
+      outputTokens: r.output_tokens,
+      cacheReadTokens: r.cache_read,
+      cacheCreationTokens: r.cache_create,
+    };
+  }
+  return result;
+}
+
+/**
+ * Cache-hit rate per model over the period. Rate = cacheRead / (input + cacheRead);
+ * cache creation tokens are excluded from the denominator since they represent
+ * the "first write" of cacheable content rather than a read.
+ */
+export function getCacheHitRate(
+  db: Database.Database,
+  accountId: string,
+  days: number,
+): Record<string, CacheHitRate> {
+  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db.prepare(
+    `SELECT
+       model,
+       COALESCE(SUM(input_tokens), 0) AS input_tokens,
+       COALESCE(SUM(cache_read), 0)   AS cache_read
+     FROM usage_events
+     WHERE account_id = ? AND ts >= ?
+     GROUP BY model`,
+  ).all(accountId, sinceTs) as Array<{ model: string; input_tokens: number; cache_read: number }>;
+
+  const result: Record<string, CacheHitRate> = {};
+  for (const r of rows) {
+    const denom = r.input_tokens + r.cache_read;
+    result[r.model] = {
+      input: r.input_tokens,
+      cacheRead: r.cache_read,
+      rate: denom > 0 ? r.cache_read / denom : 0,
+    };
+  }
+  return result;
+}
+
+/** Per-day counts of api_errors grouped by status code + retry-exhausted tally. */
+export function getApiErrorsByDay(
+  db: Database.Database,
+  accountId: string,
+  days: number,
+): { byDay: Record<string, Record<string, number>>; retryExhaustedCount: number } {
+  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db.prepare(
+    `SELECT
+       date(ts / 1000, 'unixepoch') AS day,
+       COALESCE(status_code, 'unknown') AS status_code,
+       COUNT(*)                    AS n
+     FROM api_errors
+     WHERE account_id = ? AND ts >= ?
+     GROUP BY day, status_code
+     ORDER BY day ASC`,
+  ).all(accountId, sinceTs) as Array<{ day: string; status_code: string; n: number }>;
+
+  const byDay: Record<string, Record<string, number>> = {};
+  for (const r of rows) {
+    (byDay[r.day] ??= {})[r.status_code] = r.n;
+  }
+
+  // Claude Code's CLAUDE_CODE_MAX_RETRIES default is 10; attempt > 10 means
+  // retries were exhausted. Uses > so we match what the docs describe.
+  const exhaustedRow = db.prepare(
+    `SELECT COUNT(*) AS n FROM api_errors WHERE account_id = ? AND ts >= ? AND attempt > 10`,
+  ).get(accountId, sinceTs) as { n: number };
+
+  return { byDay, retryExhaustedCount: exhaustedRow.n };
+}
+
+/**
+ * Per-tool rollup: calls, p50/p95 duration, success rate, most common error.
+ * Returns tools ordered by call count (highest first). `limit` caps results.
+ */
+export function getToolStats(
+  db: Database.Database,
+  accountId: string,
+  days: number,
+  limit = 20,
+): ToolStat[] {
+  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+
+  // First pass: per-tool totals + success counts
+  const totals = db.prepare(
+    `SELECT
+       tool_name,
+       COUNT(*) AS calls,
+       SUM(success) AS successes
+     FROM tool_events
+     WHERE account_id = ? AND ts >= ?
+     GROUP BY tool_name
+     ORDER BY calls DESC
+     LIMIT ?`,
+  ).all(accountId, sinceTs, limit) as Array<{ tool_name: string; calls: number; successes: number }>;
+
+  const result: ToolStat[] = [];
+  for (const t of totals) {
+    // Second pass: percentiles from the sorted duration list. SQLite lacks
+    // a built-in percentile function, so we compute it in JS.
+    const durations = db.prepare(
+      `SELECT duration_ms FROM tool_events
+       WHERE account_id = ? AND ts >= ? AND tool_name = ? AND duration_ms IS NOT NULL
+       ORDER BY duration_ms ASC`,
+    ).all(accountId, sinceTs, t.tool_name) as Array<{ duration_ms: number }>;
+
+    const p50 = percentile(durations.map((r) => r.duration_ms), 0.5);
+    const p95 = percentile(durations.map((r) => r.duration_ms), 0.95);
+
+    // Top error — most common non-null error message for failures
+    const topErrorRow = db.prepare(
+      `SELECT error, COUNT(*) AS n FROM tool_events
+       WHERE account_id = ? AND ts >= ? AND tool_name = ? AND success = 0 AND error IS NOT NULL
+       GROUP BY error ORDER BY n DESC LIMIT 1`,
+    ).get(accountId, sinceTs, t.tool_name) as { error: string; n: number } | undefined;
+
+    result.push({
+      toolName: t.tool_name,
+      calls: t.calls,
+      successRate: t.calls > 0 ? t.successes / t.calls : 0,
+      p50Ms: p50,
+      p95Ms: p95,
+      topError: topErrorRow?.error ?? null,
+    });
+  }
+  return result;
+}
+
+function percentile(sortedValues: number[], q: number): number {
+  if (sortedValues.length === 0) return 0;
+  if (sortedValues.length === 1) return sortedValues[0]!;
+  const idx = Math.min(sortedValues.length - 1, Math.floor(q * sortedValues.length));
+  return sortedValues[idx]!;
+}
+
+/** Per-day totals for a set of activity kinds. */
+export function getActivityCounters(
+  db: Database.Database,
+  accountId: string,
+  days: number,
+  kinds: ActivityKind[],
+): Record<string, Record<ActivityKind, number>> {
+  if (kinds.length === 0) return {};
+  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const placeholders = kinds.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT
+       date(ts / 1000, 'unixepoch') AS day,
+       kind,
+       COALESCE(SUM(value), COUNT(*)) AS total
+     FROM activity_events
+     WHERE account_id = ? AND ts >= ? AND kind IN (${placeholders})
+     GROUP BY day, kind
+     ORDER BY day ASC`,
+  ).all(accountId, sinceTs, ...kinds) as Array<{ day: string; kind: ActivityKind; total: number }>;
+
+  const result: Record<string, Record<ActivityKind, number>> = {};
+  for (const r of rows) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (result[r.day] ??= {} as any)[r.kind] = r.total;
+  }
+  return result;
+}
+
+/**
+ * Edit-decision accept rate overall and broken down by programming language.
+ * Only counts `kind = 'edit_decision'` rows (from code_edit_tool.decision metric).
+ */
+export function getEditAcceptRate(
+  db: Database.Database,
+  accountId: string,
+  days: number,
+): { overall: EditAcceptRate; byLanguage: Record<string, EditAcceptRate> } {
+  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db.prepare(
+    `SELECT
+       COALESCE(language, 'unknown') AS language,
+       decision,
+       COUNT(*)                       AS n
+     FROM activity_events
+     WHERE account_id = ? AND ts >= ? AND kind = 'edit_decision'
+     GROUP BY language, decision`,
+  ).all(accountId, sinceTs) as Array<{ language: string; decision: string | null; n: number }>;
+
+  let overallAccepts = 0;
+  let overallRejects = 0;
+  const byLangAccum: Record<string, { accepts: number; rejects: number }> = {};
+  for (const r of rows) {
+    const bucket = (byLangAccum[r.language] ??= { accepts: 0, rejects: 0 });
+    if (r.decision === 'accept') {
+      bucket.accepts += r.n;
+      overallAccepts += r.n;
+    } else if (r.decision === 'reject') {
+      bucket.rejects += r.n;
+      overallRejects += r.n;
+    }
+  }
+  const byLanguage: Record<string, EditAcceptRate> = {};
+  for (const [lang, b] of Object.entries(byLangAccum)) {
+    const total = b.accepts + b.rejects;
+    byLanguage[lang] = { accepts: b.accepts, rejects: b.rejects, rate: total > 0 ? b.accepts / total : 0 };
+  }
+  const overallTotal = overallAccepts + overallRejects;
+  return {
+    overall: {
+      accepts: overallAccepts,
+      rejects: overallRejects,
+      rate: overallTotal > 0 ? overallAccepts / overallTotal : 0,
+    },
+    byLanguage,
+  };
+}
+
+/** Top skills invoked over the period, ordered by invocation count. */
+export function getTopSkills(
+  db: Database.Database,
+  accountId: string,
+  days: number,
+  limit = 10,
+): SkillUsage[] {
+  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db.prepare(
+    `SELECT
+       name,
+       COUNT(*)                 AS n,
+       MAX(source)              AS plugin
+     FROM activity_events
+     WHERE account_id = ? AND ts >= ? AND kind = 'skill_activated' AND name IS NOT NULL
+     GROUP BY name
+     ORDER BY n DESC
+     LIMIT ?`,
+  ).all(accountId, sinceTs, limit) as Array<{ name: string; n: number; plugin: string | null }>;
+  return rows.map((r) => ({ name: r.name, count: r.n, plugin: r.plugin }));
+}
+
+/**
+ * Recent plugin installs for this account. Order is install time descending.
+ * Not windowed by `days` — plugin history is valuable even if old.
+ */
+export function getRecentPlugins(
+  db: Database.Database,
+  accountId: string,
+  limit = 10,
+): PluginInstall[] {
+  const rows = db.prepare(
+    `SELECT ts, name, version, marketplace
+     FROM activity_events
+     WHERE account_id = ? AND kind = 'plugin_installed' AND name IS NOT NULL
+     ORDER BY ts DESC
+     LIMIT ?`,
+  ).all(accountId, limit) as Array<{ ts: number; name: string; version: string | null; marketplace: string | null }>;
+  return rows.map((r) => ({ name: r.name, version: r.version, marketplace: r.marketplace, installedAt: r.ts }));
 }

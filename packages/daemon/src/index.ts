@@ -1,4 +1,4 @@
-import { getDb, closeDb, listAccounts, listRemovedAccounts, upsertAccount, deleteAccount, deleteStaleAccountRows, markAccountRemoved, purgeAccount, reactivateAccount, hasNonPurgedAccount, getUsageByDayModel, acknowledgeNotification, acknowledgeAllNotifications, upsertRateLimit, loadRateLimits, getOverageEvents, listNotifications, listAlerts, upsertAlert, deleteAlert, deleteRateLimitsForAccount } from './db.js';
+import { getDb, closeDb, listAccounts, listRemovedAccounts, upsertAccount, deleteAccount, deleteStaleAccountRows, markAccountRemoved, purgeAccount, reactivateAccount, hasNonPurgedAccount, getUsageByDayModel, acknowledgeNotification, acknowledgeAllNotifications, upsertRateLimit, loadRateLimits, getOverageEvents, listNotifications, listAlerts, upsertAlert, deleteAlert, deleteRateLimitsForAccount, getTokensByDayModel, getCacheHitRate, getApiErrorsByDay, getToolStats, getActivityCounters, getEditAcceptRate, getTopSkills, getRecentPlugins } from './db.js';
 import { loadSettings, updateSettings as writeSettings } from './settings.js';
 import { IpcServer } from './ipc.js';
 import { OtelReceiver } from './otel-receiver.js';
@@ -383,6 +383,67 @@ export async function startDaemon(): Promise<void> {
           requestType: 'get_usage_summary',
           success: true,
           data: { days: msg.days ?? 7, accountId: usageSentinelKey, byDayModel },
+        });
+        break;
+      }
+
+      case 'get_metrics_summary': {
+        const active = getActiveAccount();
+        if (!active) {
+          respond({ requestType: 'get_metrics_summary', success: false, error: 'No active account' });
+          break;
+        }
+        const days = msg.days ?? 7;
+        const key = sentinelKey(active.organizationUuid ?? '', active.accountUuid);
+        // Bundle every dashboard slice in one round-trip. Query helpers all
+        // accept (accountId, days) and do their own windowing, so ordering
+        // here is just for readability.
+        const byDayModel = getTokensByDayModel(db, key, days);
+        const cacheHitRate = getCacheHitRate(db, key, days);
+        const errors = getApiErrorsByDay(db, key, days);
+        const tools = getToolStats(db, key, days);
+        const perDayCounters = getActivityCounters(db, key, days, [
+          'session', 'commit', 'pull_request',
+          'lines_added', 'lines_removed',
+          'active_user_seconds', 'active_cli_seconds',
+        ]);
+        const editAcceptRate = getEditAcceptRate(db, key, days);
+        const skills = getTopSkills(db, key, days, 10);
+        const plugins = getRecentPlugins(db, key, 10);
+
+        // Reshape per-day counters into the flat per-kind records the UI wants.
+        const sessionsPerDay: Record<string, number> = {};
+        const commitsPerDay: Record<string, number> = {};
+        const prsPerDay: Record<string, number> = {};
+        const linesPerDay: Record<string, { added: number; removed: number }> = {};
+        const activeTimePerDay: Record<string, { user: number; cli: number }> = {};
+        for (const [day, row] of Object.entries(perDayCounters)) {
+          if (row.session != null) sessionsPerDay[day] = row.session;
+          if (row.commit != null) commitsPerDay[day] = row.commit;
+          if (row.pull_request != null) prsPerDay[day] = row.pull_request;
+          if (row.lines_added != null || row.lines_removed != null) {
+            linesPerDay[day] = { added: row.lines_added ?? 0, removed: row.lines_removed ?? 0 };
+          }
+          if (row.active_user_seconds != null || row.active_cli_seconds != null) {
+            activeTimePerDay[day] = { user: row.active_user_seconds ?? 0, cli: row.active_cli_seconds ?? 0 };
+          }
+        }
+
+        respond({
+          requestType: 'get_metrics_summary',
+          success: true,
+          data: {
+            days,
+            accountId: key,
+            byDayModel,
+            cacheHitRate,
+            errors,
+            tools,
+            activity: { sessionsPerDay, commitsPerDay, prsPerDay, linesPerDay, activeTimePerDay },
+            editAcceptRate,
+            skills,
+            plugins,
+          },
         });
         break;
       }

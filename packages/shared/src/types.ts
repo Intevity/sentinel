@@ -235,3 +235,86 @@ export interface RateLimitWindow {
   reset: number | null;
   lastUpdated: number; // Unix ms
 }
+
+// ─── Metrics dashboard ────────────────────────────────────────────────────────
+
+/** Per-day per-model tokens + cost breakdown. Powers the Tokens and Cost charts. */
+export interface MetricsByDayModel {
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+export interface CacheHitRate {
+  cacheRead: number;
+  input: number;
+  /** cacheRead / (input + cacheRead), 0..1. 0 when both are 0. */
+  rate: number;
+}
+
+export interface ToolStat {
+  toolName: string;
+  calls: number;
+  successRate: number; // 0..1
+  p50Ms: number;
+  p95Ms: number;
+  /** Most common error message for failed invocations, or null when no failures. */
+  topError: string | null;
+}
+
+export interface EditAcceptRate {
+  accepts: number;
+  rejects: number;
+  /** accepts / (accepts + rejects), 0..1. 0 when no decisions recorded. */
+  rate: number;
+}
+
+export interface SkillUsage {
+  name: string;
+  count: number;
+  plugin: string | null;
+}
+
+export interface PluginInstall {
+  name: string;
+  version: string | null;
+  marketplace: string | null;
+  installedAt: number; // Unix ms
+}
+
+/**
+ * Rollup of every OTEL-sourced signal surfaced by the Metrics tab for the
+ * active account over the requested period. Fetched via the
+ * `get_metrics_summary` IPC so the UI makes one round trip per period change.
+ */
+export interface MetricsSummary {
+  days: number;
+  accountId: string;
+  /** { "YYYY-MM-DD": { "claude-sonnet-4-6": { costUsd, inputTokens, ... } } } */
+  byDayModel: Record<string, Record<string, MetricsByDayModel>>;
+  /** Keyed by model name. */
+  cacheHitRate: Record<string, CacheHitRate>;
+  errors: {
+    /** { "YYYY-MM-DD": { "429": 3, "500": 1 } } */
+    byDay: Record<string, Record<string, number>>;
+    /** Count of errors where `attempt > CLAUDE_CODE_MAX_RETRIES` (default 10). */
+    retryExhaustedCount: number;
+  };
+  tools: ToolStat[];
+  activity: {
+    sessionsPerDay: Record<string, number>;
+    commitsPerDay: Record<string, number>;
+    prsPerDay: Record<string, number>;
+    linesPerDay: Record<string, { added: number; removed: number }>;
+    /** Seconds of active time per day, split by source. */
+    activeTimePerDay: Record<string, { user: number; cli: number }>;
+  };
+  editAcceptRate: {
+    overall: EditAcceptRate;
+    byLanguage: Record<string, EditAcceptRate>;
+  };
+  skills: SkillUsage[];
+  plugins: PluginInstall[];
+}

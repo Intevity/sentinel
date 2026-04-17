@@ -1,4 +1,4 @@
-import type { OAuthAccount, Settings, Alert, NotificationRecord } from './types.js';
+import type { OAuthAccount, Settings, Alert, NotificationRecord, MetricsSummary } from './types.js';
 
 // ─── Daemon → App messages ────────────────────────────────────────────────────
 
@@ -121,6 +121,16 @@ export interface StoreCredentialsMessage {
 
 export interface GetUsageSummaryMessage {
   type: 'get_usage_summary';
+  days: number;
+}
+
+/**
+ * Fetch the full Metrics tab rollup for the active account across the
+ * requested window. Returns a MetricsSummary (see types.ts) containing every
+ * OTEL-sourced signal the dashboard renders, in one round trip.
+ */
+export interface GetMetricsSummaryMessage {
+  type: 'get_metrics_summary';
   days: number;
 }
 
@@ -252,6 +262,7 @@ export type AppToDaemonMessage =
   | GetCredentialsMessage
   | StoreCredentialsMessage
   | GetUsageSummaryMessage
+  | GetMetricsSummaryMessage
   | AcknowledgeNotificationMessage
   | AcknowledgeAllNotificationsMessage
   | SwitchAccountMessage
@@ -275,7 +286,7 @@ export type AppToDaemonMessage =
   | GetNotificationsMessage;
 
 /** Response payload alias re-exports for convenience in consumers. */
-export type { Settings, Alert, NotificationRecord };
+export type { Settings, Alert, NotificationRecord, MetricsSummary };
 
 // ─── All IPC messages ─────────────────────────────────────────────────────────
 

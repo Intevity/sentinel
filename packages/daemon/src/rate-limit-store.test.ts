@@ -244,4 +244,19 @@ describe('RateLimitStore', () => {
 
     expect(callbackFired).not.toHaveBeenCalled();
   });
+
+  it('getAllByAccount returns a snapshot keyed by accountId', () => {
+    const store = new RateLimitStore();
+    store.update('acc-a', { 'anthropic-ratelimit-unified-5h-utilization': '0.25' });
+    store.update('acc-b', { 'anthropic-ratelimit-unified-5h-utilization': '0.9' });
+    const all = store.getAllByAccount();
+    expect(Object.keys(all).sort()).toEqual(['acc-a', 'acc-b']);
+    expect(all['acc-a']?.[0]?.utilization).toBeCloseTo(0.25);
+    expect(all['acc-b']?.[0]?.utilization).toBeCloseTo(0.9);
+  });
+
+  it('getAllByAccount is empty when no accounts have data', () => {
+    const store = new RateLimitStore();
+    expect(store.getAllByAccount()).toEqual({});
+  });
 });
