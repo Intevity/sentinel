@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import type { Settings, SwitchingMode } from '@claude-sentinel/shared';
@@ -65,7 +65,6 @@ export function saveSettings(settings: Settings, path: string = SETTINGS_PATH): 
   writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
   // Atomic rename on POSIX; fall back to a direct write on Windows if rename fails.
   try {
-    const { renameSync } = require('fs') as typeof import('fs');
     renameSync(tmp, path);
   } catch {
     /* v8 ignore next 1 */
