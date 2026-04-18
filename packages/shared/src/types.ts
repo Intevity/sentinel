@@ -168,6 +168,16 @@ export interface Settings {
    *  `null` means silent. On macOS the name must match a file in
    *  /System/Library/Sounds (e.g. 'Glass', 'Ping'). See ALERT_SOUNDS. */
   alertSoundName: string | null;
+  /** When true, check for a new release on app startup and install it
+   *  silently, restarting on success. Defaults to `false` until macOS
+   *  signing + notarization lands (Gatekeeper rejects unsigned .app
+   *  replacements). Users can still opt in on Windows/Linux immediately. */
+  autoUpdate: boolean;
+  /** Sentinel account IDs excluded from round-robin rotation. Empty means
+   *  every enrolled account rotates (opt-out model) — preserves the
+   *  original "RR just works" behavior and auto-enrolls newly added
+   *  accounts. Ignored unless `switchingMode === 'round-robin'`. */
+  poolExcludedIds: string[];
 }
 
 /** Sound choices exposed in Settings. Values map to macOS system sounds;

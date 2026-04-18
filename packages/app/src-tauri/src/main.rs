@@ -7,6 +7,7 @@ mod settings_patch;
 mod sound;
 mod tray;
 mod tray_icon_render;
+mod updater;
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt;
@@ -45,6 +46,8 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
         // Intercept red-X / Cmd+W: hide the window instead of closing it.
         // Sentinel is an LSUIElement tray app — the daemon keeps running in the
         // background so Claude Code continues routing through it. The user
@@ -84,6 +87,11 @@ fn main() {
                 window.hide().unwrap_or_default();
             }
 
+            // Fire-and-forget update check. No-op unless the user has toggled
+            // "Automatically install updates" in Settings. Silent success
+            // (triggers a restart when an update lands) and silent failure.
+            updater::maybe_check_on_startup(app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -95,6 +103,7 @@ fn main() {
             set_autostart,
             get_autostart,
             sound::play_system_sound,
+            updater::check_for_updates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Claude Sentinel");

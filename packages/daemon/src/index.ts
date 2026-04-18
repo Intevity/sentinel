@@ -13,6 +13,7 @@ import type { Settings } from '@claude-sentinel/shared';
 import { getActiveAccount, setActiveAccount } from './claude-state.js';
 import { readActiveCredentials, captureCurrentCredentials, writeSentinelCredentials, writeClaudeCodeCredentials, deleteSentinelCredentials } from './accounts.js';
 import { startOAuthLogin, OAUTH_ABORTED } from './oauth.js';
+import { startTokenRefresher, refreshIfNeeded, markAccountReauthenticated } from './token-refresher.js';
 import type { OAuthAccount, PlanType, ClaudeCodeCredentials } from '@claude-sentinel/shared';
 import type { Server } from 'http';
 import { request as httpRequest } from 'http';
@@ -196,7 +197,7 @@ export async function startDaemon(): Promise<void> {
       displayName: activeAccount.displayName ?? '',
       orgUuid: activeAccount.organizationUuid ?? '',
       orgName: activeAccount.organizationName ?? '',
-      planType: existingStartupAcct?.planType ?? inferPlanType(activeAccount, null),
+      planType: existingStartupAcct?.planType ?? inferPlanType(activeAccount, startupCreds),
       isActive: true,
       createdAt: Date.now(),
     });
@@ -229,7 +230,15 @@ export async function startDaemon(): Promise<void> {
   let currentSettings: Settings = loadSettings();
 
   // Round-robin token pool. Only consulted when switchingMode === 'round-robin'.
-  const tokenRotator = new TokenRotator(db, rateLimitStore, activeAccountId);
+  // The excluded-ids getter reads the live in-memory settings so pool-membership
+  // toggles take effect on the next `tokenRotator.refresh()` (called from the
+  // update_settings handler).
+  const tokenRotator = new TokenRotator(
+    db,
+    rateLimitStore,
+    activeAccountId,
+    () => new Set(currentSettings.poolExcludedIds),
+  );
 
   /**
    * Change the active account: update ~/.claude.json, swap the Claude Code
@@ -678,6 +687,35 @@ export async function startDaemon(): Promise<void> {
         break;
       }
 
+      case 'refresh_token': {
+        const acct = listAccounts(db).find((a) => a.id === msg.accountId);
+        if (!acct) {
+          respond({ requestType: 'refresh_token', success: false, error: 'Unknown account' });
+          break;
+        }
+        refreshIfNeeded(
+          { db, activeToken, activeAccountId, ipcServer },
+          msg.accountId,
+          acct.email,
+          true,
+        )
+          .then((result) => {
+            if (result.success) {
+              respond({ requestType: 'refresh_token', success: true, data: { expiresAt: result.expiresAt ?? 0 } });
+            } else {
+              respond({ requestType: 'refresh_token', success: false, error: result.error ?? 'Refresh failed' });
+            }
+          })
+          .catch((err: unknown) => {
+            respond({
+              requestType: 'refresh_token',
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        break;
+      }
+
       case 'cancel_login': {
         if (loginAbortController) {
           loginAbortController.abort();
@@ -739,6 +777,10 @@ export async function startDaemon(): Promise<void> {
             // If this account was previously soft-deleted, clear the flag so it
             // shows in the active list again. An explicit re-login is user intent.
             reactivateAccount(db, credKey);
+
+            // Clear any prior "refresh token expired" mark so the background
+            // refresher resumes keeping this account warm.
+            markAccountReauthenticated(credKey);
 
             // Upsert into DB using sentinelKey as id so same-UUID accounts in
             // different orgs get separate rows.
@@ -859,9 +901,14 @@ export async function startDaemon(): Promise<void> {
     }
   });
 
+  // Keep OAuth tokens fresh in the background. Runs once immediately (catching
+  // any account whose token expired overnight) then every 15 minutes.
+  const stopTokenRefresher = startTokenRefresher({ db, activeToken, activeAccountId, ipcServer });
+
   // Graceful shutdown
   const shutdown = (server: Server) => {
     console.log('[Sentinel] Shutting down...');
+    stopTokenRefresher();
     ipcServer.close();
     server.close();
     closeDb();

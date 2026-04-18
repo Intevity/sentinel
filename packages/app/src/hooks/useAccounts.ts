@@ -11,6 +11,7 @@ interface UseAccountsResult {
   removeAccount: (id: string, deleteData: boolean) => Promise<{ success: boolean; message: string }>;
   purgeAccount: (id: string) => Promise<{ success: boolean; message: string }>;
   refreshAccounts: () => Promise<void>;
+  refreshToken: (accountId: string) => Promise<{ success: boolean; message: string; needsReauth?: boolean }>;
 }
 
 export function useAccounts(): UseAccountsResult {
@@ -107,5 +108,25 @@ export function useAccounts(): UseAccountsResult {
     }
   }, []);
 
-  return { accounts, removedAccounts, loading, error, switchAccount, removeAccount, purgeAccount, refreshAccounts };
+  const refreshToken = useCallback(async (
+    accountId: string,
+  ): Promise<{ success: boolean; message: string; needsReauth?: boolean }> => {
+    setError(null);
+    try {
+      const res = await sendToSentinel<{ expiresAt: number }>({ type: 'refresh_token', accountId });
+      if (res.success) {
+        return { success: true, message: 'Token refreshed.' };
+      }
+      // Daemon returns needsReauth via error text convention; surface the hint.
+      const err = res.error ?? 'Refresh failed';
+      const needsReauth = /expired|re-authenticate|sign in/i.test(err);
+      return { success: false, message: err, needsReauth };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Refresh failed';
+      setError(msg);
+      return { success: false, message: msg };
+    }
+  }, []);
+
+  return { accounts, removedAccounts, loading, error, switchAccount, removeAccount, purgeAccount, refreshAccounts, refreshToken };
 }

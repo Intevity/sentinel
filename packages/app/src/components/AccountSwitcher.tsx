@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import AccountCard from './AccountCard.js';
 import { useAccounts } from '../hooks/useAccounts.js';
 import { useAllRateLimits, fiveHourUtilization } from '../hooks/useAllRateLimits.js';
+import { useSettings } from '../hooks/useSettings.js';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import { DUR, EASE_OUT } from '../lib/motion.js';
 
@@ -20,8 +21,31 @@ interface AccountSwitcherProps {
 }
 
 export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherProps): React.ReactElement {
-  const { accounts, removedAccounts, loading, error, switchAccount, removeAccount, purgeAccount, refreshAccounts } = useAccounts();
+  const { accounts, removedAccounts, loading, error, switchAccount, removeAccount, purgeAccount, refreshAccounts, refreshToken } = useAccounts();
   const { byAccount: rateLimitsByAccount } = useAllRateLimits();
+  const { settings } = useSettings();
+  const isRoundRobin = settings?.switchingMode === 'round-robin';
+  // Pool-exclusion set (RR only). `poolExcludedIds` may contain stale IDs
+  // of removed accounts — harmless because the rotator filters against the
+  // live account list; we do the same here when counting members.
+  const excludedIds = React.useMemo(
+    () => new Set(settings?.poolExcludedIds ?? []),
+    [settings?.poolExcludedIds],
+  );
+  const poolMemberCount = accounts.reduce(
+    (n, a) => (excludedIds.has(a.id) ? n : n + 1),
+    0,
+  );
+
+  const togglePoolMembership = (accountId: string, nextInPool: boolean): void => {
+    const current = settings?.poolExcludedIds ?? [];
+    const next = nextInPool
+      ? current.filter((id) => id !== accountId)
+      : current.includes(accountId)
+        ? current
+        : [...current, accountId];
+    void sendToSentinel({ type: 'update_settings', settings: { poolExcludedIds: next } });
+  };
   const [switchingEmail, setSwitchingEmail] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<{
     text: string;
@@ -30,6 +54,10 @@ export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherPr
   const [loggingIn, setLoggingIn] = useState(false);
   const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null);
   const [purgingId, setPurgingId] = useState<string | null>(null);
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  // Accounts flagged by the daemon as having an expired/revoked refresh token.
+  // Cleared when token_refreshed or login_complete fires for the same account.
+  const [expiredAccountIds, setExpiredAccountIds] = useState<Set<string>>(new Set());
 
   // Snapshot of account IDs when login started — used by the polling fallback
   const initialAccountIdsRef = useRef<Set<string>>(new Set());
@@ -76,11 +104,33 @@ export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherPr
           setStatusMessage({ text: `${msg.email}${orgLabel} added to Sentinel.`, kind: 'success' });
           setTimeout(() => setStatusMessage(null), 10000);
         }
+        // A fresh OAuth credential clears any expired-mark for this email,
+        // regardless of which specific account row the daemon rebound.
+        setExpiredAccountIds((prev) => {
+          const next = new Set(prev);
+          for (const a of accounts) if (a.email === msg.email) next.delete(a.id);
+          return next;
+        });
         void refreshAccounts();
+      } else if (msg.type === 'token_refresh_failed') {
+        if (msg.reason === 'expired') {
+          setExpiredAccountIds((prev) => new Set(prev).add(msg.accountId));
+          setStatusMessage({
+            text: `Sign-in expired for ${msg.email}. Click "Re-authenticate" on that account to restore access.`,
+            kind: 'error',
+          });
+        }
+      } else if (msg.type === 'token_refreshed') {
+        setExpiredAccountIds((prev) => {
+          if (!prev.has(msg.accountId)) return prev;
+          const next = new Set(prev);
+          next.delete(msg.accountId);
+          return next;
+        });
       }
     }).then((fn) => { unlisten = fn; }).catch(() => {});
     return () => { unlisten?.(); };
-  }, [refreshAccounts]);
+  }, [refreshAccounts, accounts]);
 
   // Polling fallback while login is in progress
   useEffect(() => {
@@ -136,6 +186,28 @@ export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherPr
     } catch {
       setLoggingIn(false);
       setStatusMessage({ text: 'Failed to start login.', kind: 'error' });
+    }
+  };
+
+  const handleRefreshToken = async (id: string): Promise<void> => {
+    setRefreshingId(id);
+    setStatusMessage(null);
+    const result = await refreshToken(id);
+    setRefreshingId(null);
+    if (result.success) {
+      setExpiredAccountIds((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setStatusMessage({ text: 'Token refreshed.', kind: 'success' });
+      setTimeout(() => setStatusMessage(null), 4000);
+    } else {
+      if (result.needsReauth) {
+        setExpiredAccountIds((prev) => new Set(prev).add(id));
+      }
+      setStatusMessage({ text: result.message, kind: 'error' });
     }
   };
 
@@ -279,6 +351,8 @@ export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherPr
       {/* Account list */}
       {accounts.map((account) => {
         const util = fiveHourUtilization(rateLimitsByAccount[account.id]);
+        const expired = expiredAccountIds.has(account.id);
+        const inPool = !excludedIds.has(account.id);
         return (
           <AccountCard
             key={account.id}
@@ -286,6 +360,14 @@ export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherPr
             onSwitch={(id, email) => void handleSwitch(id, email)}
             onRemove={(id) => { setStatusMessage(null); setPendingRemoveId(id); }}
             switching={switchingEmail === account.email}
+            onRefreshToken={(id) => void handleRefreshToken(id)}
+            refreshing={refreshingId === account.id}
+            needsReauth={expired}
+            onReauth={() => void handleAddAccount()}
+            isRoundRobin={isRoundRobin}
+            inPool={inPool}
+            canExclude={poolMemberCount > 1}
+            onTogglePool={togglePoolMembership}
             {...(util != null ? { fiveHourUtil: util } : {})}
           />
         );

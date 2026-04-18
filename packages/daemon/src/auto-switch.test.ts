@@ -55,7 +55,7 @@ describe('startAutoSwitch', () => {
   });
 
   function settings(partial: Partial<Settings> = {}): Settings {
-    return { launchAtLogin: true, switchingMode: 'auto-switch', autoSwitchThresholdPct: 80, alertSoundName: 'Glass', ...partial };
+    return { launchAtLogin: true, switchingMode: 'auto-switch', autoSwitchThresholdPct: 80, alertSoundName: 'Glass', autoUpdate: false, poolExcludedIds: [], ...partial };
   }
 
   it('switches to the lowest-utilization candidate when threshold is crossed', () => {

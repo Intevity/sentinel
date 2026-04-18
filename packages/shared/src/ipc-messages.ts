@@ -88,6 +88,25 @@ export interface AllAccountsExhaustedMessage {
   thresholdPct: number;
 }
 
+/** Broadcast when an automatic or manual token refresh fails because the
+ *  stored refresh_token has been revoked or expired. The UI shows a re-auth
+ *  banner on the affected account that triggers start_login. */
+export interface TokenRefreshFailedMessage {
+  type: 'token_refresh_failed';
+  accountId: string;
+  email: string;
+  reason: 'expired' | 'network' | 'unknown';
+}
+
+/** Broadcast after a successful token refresh so the UI can update any
+ *  "expired" state it was showing and clear the re-auth banner. */
+export interface TokenRefreshedMessage {
+  type: 'token_refreshed';
+  accountId: string;
+  /** Unix ms timestamp of the new expiration. */
+  expiresAt: number;
+}
+
 export type DaemonToAppMessage =
   | OverageEnteredMessage
   | OverageExitedMessage
@@ -100,7 +119,9 @@ export type DaemonToAppMessage =
   | RateLimitsProbeEndedMessage
   | SettingsChangedMessage
   | AlertTriggeredMessage
-  | AllAccountsExhaustedMessage;
+  | AllAccountsExhaustedMessage
+  | TokenRefreshFailedMessage
+  | TokenRefreshedMessage;
 
 // ─── App → Daemon messages ────────────────────────────────────────────────────
 
@@ -268,6 +289,15 @@ export interface GetNotificationsMessage {
   limit?: number;
 }
 
+/** Request a manual OAuth token refresh for a specific account. The daemon
+ *  uses the stored refresh_token to obtain a fresh access token and writes
+ *  the updated credential back to the keychain. Returns the new expiration
+ *  time on success or an error message if the refresh fails. */
+export interface RefreshTokenMessage {
+  type: 'refresh_token';
+  accountId: string;
+}
+
 export type AppToDaemonMessage =
   | GetAccountsMessage
   | GetCredentialsMessage
@@ -294,7 +324,8 @@ export type AppToDaemonMessage =
   | ListAlertsMessage
   | UpsertAlertMessage
   | DeleteAlertMessage
-  | GetNotificationsMessage;
+  | GetNotificationsMessage
+  | RefreshTokenMessage;
 
 /** Response payload alias re-exports for convenience in consumers. */
 export type { Settings, Alert, NotificationRecord, MetricsSummary };

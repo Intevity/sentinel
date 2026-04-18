@@ -15,11 +15,11 @@
       {
         "title": "Claude Sentinel",
         "width": 480,
-        "height": 600,
+        "height": 628,
         "minWidth": 480,
         "maxWidth": 480,
-        "minHeight": 260,
-        "maxHeight": 600,
+        "minHeight": 288,
+        "maxHeight": 628,
         "resizable": false,
         "decorations": true,
         "visible": false
@@ -46,6 +46,13 @@
   },
   "plugins": {
     "notification": null,
-    "store": null
+    "store": null,
+    "updater": {
+      "active": true,
+      "pubkey": "REPLACE_WITH_TAURI_UPDATER_PUBLIC_KEY",
+      "endpoints": [
+        "https://github.com/jeffwooden/claude-sentinel/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

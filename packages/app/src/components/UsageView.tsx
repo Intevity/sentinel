@@ -370,13 +370,21 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
  */
 function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.ReactElement {
   const { byAccount, refetch } = useAllRateLimits();
+  const { settings } = useSettings();
+  // Excluded accounts are sitting out of rotation, so they shouldn't
+  // contribute to the pool average — the meter should reflect what's
+  // actually rotating. Per-account rows still render them (dimmed) so
+  // the user can still see their usage.
+  const excludedIds = new Set(settings?.poolExcludedIds ?? []);
 
   const rows = accounts.map((acct) => ({
     account: acct,
     util: fiveHourUtilization(byAccount[acct.id]),
+    inPool: !excludedIds.has(acct.id),
   }));
 
-  const knownUtils = rows.map((r) => r.util).filter((u): u is number => u != null);
+  const poolRows = rows.filter((r) => r.inPool);
+  const knownUtils = poolRows.map((r) => r.util).filter((u): u is number => u != null);
   const poolPct = knownUtils.length === 0
     ? null
     : Math.min(100, Math.round((knownUtils.reduce((a, b) => a + b, 0) / knownUtils.length) * 100));
@@ -423,7 +431,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
               <span className={`text-[11px] font-bold tabular-nums ${poolPctColor}`}>{poolPct}% avg</span>
             )}
             <span className="text-[10px] text-[#8E8E93]">
-              {knownUtils.length} of {accounts.length}
+              {knownUtils.length} of {poolRows.length}
             </span>
           </div>
         </div>
@@ -448,7 +456,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
         </div>
       ) : (
         <div className="glass-card px-4 py-4 space-y-4">
-          {rows.map(({ account, util }) => {
+          {rows.map(({ account, util, inPool }) => {
             const pct = util == null
               ? null
               : util <= 0 ? 0
@@ -467,12 +475,19 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
             const label = account.displayName || account.email;
             const sub = account.orgName || (account.displayName ? account.email : null);
             return (
-              <div key={account.id} className="space-y-1.5">
+              <div key={account.id} className={`space-y-1.5 ${inPool ? '' : 'opacity-50'}`}>
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex-1 min-w-0">
-                    <p className="text-[12px] font-semibold text-black dark:text-white truncate leading-snug">
-                      {label}
-                    </p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-[12px] font-semibold text-black dark:text-white truncate leading-snug">
+                        {label}
+                      </p>
+                      {!inPool && (
+                        <span className="text-[9px] font-semibold text-[#8E8E93] bg-[#8E8E93]/15 px-1.5 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0">
+                          Excluded
+                        </span>
+                      )}
+                    </div>
                     {sub && (
                       <p className="text-[10px] text-[#8E8E93] truncate leading-snug">{sub}</p>
                     )}

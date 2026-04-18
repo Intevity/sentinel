@@ -46,6 +46,10 @@ export class TokenRotator {
     /** The account that is "primary" in ~/.claude.json; its creds come from
      *  Claude Code's keychain slot when Sentinel doesn't have its own copy. */
     private readonly activeAccountIdRef: { value: string },
+    /** Live accessor for the user's pool-exclusion list. Read on every
+     *  `refresh()` so mode/settings changes take effect immediately.
+     *  Defaults to an empty set — every enrolled account rotates. */
+    private readonly getExcludedIds: () => ReadonlySet<string> = () => new Set(),
   ) {
     this.refresh();
   }
@@ -58,7 +62,11 @@ export class TokenRotator {
   refresh(): void {
     const next: RotatedCredential[] = [];
     const accounts = listAccounts(this.db);
+    const excluded = this.getExcludedIds();
     for (const account of accounts) {
+      // User opted this account out of round-robin — don't fetch credentials
+      // or include it in the rotation pool.
+      if (excluded.has(account.id)) continue;
       // Prefer Sentinel's own per-account store; fall back to Claude Code's
       // single slot only for the currently active account (handled by
       // readActiveCredentials' activeId guard).

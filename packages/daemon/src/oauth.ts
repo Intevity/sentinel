@@ -18,6 +18,10 @@ import type { ClaudeCodeCredentials } from '@claude-sentinel/shared';
 /** Sentinel error thrown when a login is intentionally aborted (cancel or restart). */
 export const OAUTH_ABORTED = 'LOGIN_ABORTED';
 
+/** Sentinel error thrown when the refresh_token itself is rejected by the
+ *  token endpoint (400/401). Callers catch this to drive re-login UX. */
+export const REFRESH_TOKEN_EXPIRED = 'REFRESH_TOKEN_EXPIRED';
+
 /**
  * Resolves when the current callback server has fully closed.
  * Used to prevent EADDRINUSE when a new login starts immediately after a cancel.
@@ -192,6 +196,40 @@ async function exchangeCode(
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`Token exchange failed (${res.status}): ${text}`);
+  }
+
+  return res.json() as Promise<TokenResponse>;
+}
+
+/**
+ * Exchange a refresh token for a fresh access/refresh token pair.
+ * Used by the background refresher and by the manual "Refresh token" IPC.
+ *
+ * Throws a plain Error whose message is REFRESH_TOKEN_EXPIRED when the token
+ * endpoint returns 400/401 (refresh token revoked or expired). All other
+ * failures throw with the response body for diagnostics.
+ */
+export async function refreshAccessToken(refreshToken: string): Promise<TokenResponse> {
+  const body = {
+    grant_type:    'refresh_token',
+    refresh_token: refreshToken,
+    client_id:     CLIENT_ID,
+  };
+
+  console.log(`[OAuth] Token refresh → POST ${TOKEN_URL}`);
+  const res = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    if (res.status === 400 || res.status === 401) {
+      console.warn(`[OAuth] Refresh token rejected (${res.status}): ${text}`);
+      throw new Error(REFRESH_TOKEN_EXPIRED);
+    }
+    throw new Error(`Token refresh failed (${res.status}): ${text}`);
   }
 
   return res.json() as Promise<TokenResponse>;

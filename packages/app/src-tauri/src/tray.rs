@@ -61,10 +61,20 @@ impl SwitchingMode {
 pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Quit Claude Sentinel", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Sentinel...", true, None::<&str>)?;
+    let check_updates = MenuItem::with_id(
+        app,
+        "check_updates",
+        "Check for updates…",
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let status = MenuItem::with_id(app, "status", "Claude Sentinel", false, None::<&str>)?;
 
-    let menu = Menu::with_items(app, &[&status, &separator, &open, &separator, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&status, &separator, &open, &check_updates, &separator, &quit],
+    )?;
 
     // Start with the gray-tinted variant so we never show the monochrome
     // template until real data arrives — a template icon would visually lie
@@ -88,6 +98,12 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
+            }
+            "check_updates" => {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = crate::updater::check_for_updates(handle).await;
+                });
             }
             _ => {}
         })

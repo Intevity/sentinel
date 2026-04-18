@@ -38,6 +38,14 @@ export default function SettingsPanel({ onClose, measureRef }: SettingsPanelProp
     void update({ alertSoundName: value }).catch(() => undefined);
   };
 
+  const setAutoUpdate = (enabled: boolean): void => {
+    void update({ autoUpdate: enabled }).catch(() => undefined);
+  };
+
+  const checkForUpdatesNow = async (): Promise<void> => {
+    await invoke('check_for_updates').catch(() => undefined);
+  };
+
   const previewSound = async (name: string | null): Promise<void> => {
     // macOS silences NSSound-backed notification audio for the frontmost app,
     // so the old sendNotification({ sound }) path produced a banner but no
@@ -87,6 +95,21 @@ export default function SettingsPanel({ onClose, measureRef }: SettingsPanelProp
                 checked={settings.launchAtLogin}
                 onChange={setLaunch}
               />
+            </Section>
+
+            <Section title="Updates">
+              <ToggleRow
+                label="Automatically install updates"
+                description="Check GitHub for a new release on launch and install it silently. Sentinel will restart when the update is ready."
+                checked={settings.autoUpdate}
+                onChange={setAutoUpdate}
+              />
+              <button
+                onClick={() => void checkForUpdatesNow()}
+                className="w-full text-left px-3 py-2.5 text-[13px] font-medium text-ios-blue hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors"
+              >
+                Check for updates now…
+              </button>
             </Section>
 
             <Section title="Account switching">

@@ -64,11 +64,29 @@ describe('settings', () => {
       writeFileSync(path, JSON.stringify({ autoSwitchThresholdPct: 75.7 }), 'utf-8');
       expect(loadSettings(path).autoSwitchThresholdPct).toBe(75);
     });
+
+    it('accepts a boolean autoUpdate and ignores non-boolean values', () => {
+      writeFileSync(path, JSON.stringify({ autoUpdate: true }), 'utf-8');
+      expect(loadSettings(path).autoUpdate).toBe(true);
+      writeFileSync(path, JSON.stringify({ autoUpdate: 'yes' }), 'utf-8');
+      expect(loadSettings(path).autoUpdate).toBe(DEFAULT_SETTINGS.autoUpdate);
+    });
+
+    it('defaults autoUpdate to false when the file is missing', () => {
+      expect(loadSettings(path).autoUpdate).toBe(false);
+    });
   });
 
   describe('saveSettings', () => {
     it('writes valid JSON that loadSettings can read back', () => {
-      const wanted = { launchAtLogin: false, switchingMode: 'auto-switch' as const, autoSwitchThresholdPct: 75, alertSoundName: 'Glass' };
+      const wanted = {
+        launchAtLogin: false,
+        switchingMode: 'auto-switch' as const,
+        autoSwitchThresholdPct: 75,
+        alertSoundName: 'Glass',
+        autoUpdate: true,
+        poolExcludedIds: [],
+      };
       saveSettings(wanted, path);
       expect(existsSync(path)).toBe(true);
       expect(loadSettings(path)).toEqual(wanted);
@@ -118,6 +136,14 @@ describe('settings', () => {
       const got = loadSettings(path);
       expect(got.launchAtLogin).toBe(false);
       expect(got.autoSwitchThresholdPct).toBe(70);
+    });
+
+    it('round-trips the autoUpdate toggle', () => {
+      const on = updateSettings({ autoUpdate: true }, path);
+      expect(on.autoUpdate).toBe(true);
+      expect(loadSettings(path).autoUpdate).toBe(true);
+      const off = updateSettings({ autoUpdate: false }, path);
+      expect(off.autoUpdate).toBe(false);
     });
   });
 });

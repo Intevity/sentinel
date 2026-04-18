@@ -193,6 +193,49 @@ describe('TokenRotator', () => {
     expect(rotator.pick()?.accountId).toBe('fresh');
   });
 
+  it('omits accounts listed in getExcludedIds from the pool', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    seed(db, 'c', 'c@x');
+    const store = new RateLimitStore();
+    const excluded = new Set<string>(['b']);
+    const rotator = new TokenRotator(db, store, { value: 'a' }, () => excluded);
+    expect(rotator.size()).toBe(2);
+    const ids = [rotator.pick()?.accountId, rotator.pick()?.accountId];
+    expect(new Set(ids)).toEqual(new Set(['a', 'c']));
+  });
+
+  it('returns null when every account is excluded', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    const excluded = new Set<string>(['a', 'b']);
+    const rotator = new TokenRotator(db, store, { value: 'a' }, () => excluded);
+    expect(rotator.size()).toBe(0);
+    expect(rotator.pick()).toBeNull();
+  });
+
+  it('re-reads the excluded set on each refresh() so toggles take effect', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    const excluded = new Set<string>();
+    const rotator = new TokenRotator(db, store, { value: 'a' }, () => excluded);
+    expect(rotator.size()).toBe(2);
+
+    excluded.add('a');
+    rotator.refresh();
+    expect(rotator.size()).toBe(1);
+    expect(rotator.pick()?.accountId).toBe('b');
+
+    excluded.delete('a');
+    rotator.refresh();
+    expect(rotator.size()).toBe(2);
+  });
+
   it('skips blocked accounts even when they would be the minimum', () => {
     const db = getDb(dbPath);
     seed(db, 'a', 'a@x');

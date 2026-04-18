@@ -10,6 +10,8 @@ export const DEFAULT_SETTINGS: Settings = {
   switchingMode: 'off',
   autoSwitchThresholdPct: 90,
   alertSoundName: 'Glass',
+  autoUpdate: false,
+  poolExcludedIds: [],
 };
 
 const VALID_MODES: readonly SwitchingMode[] = ['off', 'auto-switch', 'round-robin'];
@@ -36,6 +38,14 @@ function coerce(raw: unknown): Settings {
   }
   if (obj['alertSoundName'] === null || typeof obj['alertSoundName'] === 'string') {
     next.alertSoundName = obj['alertSoundName'] as string | null;
+  }
+  if (typeof obj['autoUpdate'] === 'boolean') {
+    next.autoUpdate = obj['autoUpdate'];
+  }
+  if (Array.isArray(obj['poolExcludedIds'])) {
+    next.poolExcludedIds = obj['poolExcludedIds'].filter(
+      (v): v is string => typeof v === 'string',
+    );
   }
   return next;
 }

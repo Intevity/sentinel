@@ -11,10 +11,11 @@ import ActivationBanner from './components/ActivationBanner.js';
 import HeaderMenu from './components/HeaderMenu.js';
 import PersistenceBanner from './components/PersistenceBanner.js';
 import SettingsPanel from './components/SettingsPanel.js';
+import Footer from './components/Footer.js';
 import { useAutoResizeWindow } from './hooks/useAutoResizeWindow.js';
 import { useDaemon } from './hooks/useDaemon.js';
 import { useSettings } from './hooks/useSettings.js';
-import { planLabel } from './lib/plan.js';
+import { planLabel, planColor } from './lib/plan.js';
 import { DUR, EASE_STD } from './lib/motion.js';
 
 type Tab = 'accounts' | 'usage' | 'metrics' | 'overage' | 'notifications';
@@ -86,14 +87,26 @@ export default function App(): React.ReactElement {
         {/* Flex-1 + min-w-0 lets this cluster take the remaining width and
             pass the squeeze onto the email element below (which has truncate). */}
         <div className="flex items-center gap-2 flex-1 min-w-0 justify-end">
-          {activeAccount && (
-            <span
-              className="text-[11px] text-[#8E8E93] truncate min-w-0"
-              title={activeAccount.emailAddress + (planBadge ? ` (${planBadge})` : '')}
-            >
-              {activeAccount.emailAddress}
-              {planBadge && <span className="ml-1">({planBadge})</span>}
-            </span>
+          {/* In round-robin mode, showing a single email is misleading
+              (requests rotate) so we hide it — the RR pill below carries
+              the signal. Otherwise show email + plan as pill, matching
+              the account-card chip style. */}
+          {activeAccount && !isRoundRobin && (
+            <>
+              <span
+                className="text-[11px] text-[#8E8E93] truncate min-w-0"
+                title={activeAccount.emailAddress + (planBadge ? ` (${planBadge})` : '')}
+              >
+                {activeAccount.emailAddress}
+              </span>
+              {planBadge && (
+                <span
+                  className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${planColor(activeAccount.billingType)}`}
+                >
+                  {planBadge}
+                </span>
+              )}
+            </>
           )}
           {/* Round-robin pill — surfaced in the header so users always know
               their requests are rotating, even though the email above is
@@ -255,6 +268,8 @@ export default function App(): React.ReactElement {
           </main>
         </>
       )}
+
+      <Footer />
 
     </div>
     </MotionConfig>

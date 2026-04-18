@@ -16,6 +16,7 @@
     "@claude-sentinel/shared": "workspace:*",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-notification": "^2.0.0",
+    "@tauri-apps/plugin-opener": "^2.0.0",
     "@tauri-apps/plugin-store": "^2.0.0",
     "lucide-react": "^1.8.0",
     "motion": "^12.38.0",

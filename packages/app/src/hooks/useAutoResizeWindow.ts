@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { LogicalSize, getCurrentWindow } from '@tauri-apps/api/window';
 
 const WIDTH = 480;
-const MIN_HEIGHT = 260;
-const MAX_HEIGHT = 600;
+// Footer (~28px) is a sibling of <main>, so the window gets that much taller
+// without stealing from page content.
+const MIN_HEIGHT = 288;
+const MAX_HEIGHT = 628;
 
 export interface AutoResizeRefs {
   rootRef: (el: HTMLDivElement | null) => void;
@@ -63,12 +65,17 @@ export function useAutoResizeWindow(): AutoResizeRefs {
 
     const computeInner = (): number => {
       const rootTop = root.getBoundingClientRect().top;
-      const chrome = main.getBoundingClientRect().top - rootTop;
+      // Everything inside root but outside main — header, banners, tab
+      // control, AND the footer below main. Stable across window resizes
+      // because main absorbs all flex-1 space while the siblings have
+      // content-based heights. Using the arithmetic diff avoids needing
+      // an explicit ref per sibling.
+      const chromeAndFooter = root.offsetHeight - main.offsetHeight;
       // Measure the inner wrapper's natural height — `main.scrollHeight`
       // collapses to clientHeight when content fits, which would prevent the
       // window from ever shrinking back down.
       const mainPadBottom = parseFloat(getComputedStyle(main).paddingBottom) || 0;
-      let needed = chrome + content.offsetHeight + mainPadBottom;
+      let needed = chromeAndFooter + content.offsetHeight + mainPadBottom;
       if (overlay) needed = Math.max(needed, overlay.scrollHeight);
       if (popover) {
         // The popover is anchored inside the window (e.g. a header dropdown),

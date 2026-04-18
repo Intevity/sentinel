@@ -50,7 +50,16 @@ function getRustTriple() {
   }
 }
 
-const triple = process.env.CARGO_BUILD_TARGET ?? getRustTriple();
+// Precedence:
+//   1. CARGO_BUILD_TARGET    — explicit override (local cross-compile)
+//   2. TAURI_ENV_TARGET_TRIPLE — set by `tauri build --target <triple>` for
+//      beforeBuildCommand; required in CI where the host arch (arm64 runner)
+//      differs from the target arch (e.g. x86_64-apple-darwin release).
+//   3. rustc host triple     — default for local same-arch builds.
+const triple =
+  process.env.CARGO_BUILD_TARGET ??
+  process.env.TAURI_ENV_TARGET_TRIPLE ??
+  getRustTriple();
 if (!triple) {
   console.error('[build-sidecar] Could not determine Rust target triple.');
   process.exit(1);

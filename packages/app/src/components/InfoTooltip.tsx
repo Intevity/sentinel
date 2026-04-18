@@ -29,8 +29,8 @@ export default function InfoTooltip({
 }: InfoTooltipProps): React.ReactElement {
   const bubblePos =
     placement === 'bottom'
-      ? 'top-full right-0 mt-1.5'
-      : 'bottom-full right-0 mb-1.5';
+      ? 'top-full left-0 mt-1.5'
+      : 'bottom-full left-0 mb-1.5';
 
   return (
     <div className={`relative group inline-flex items-center ${className ?? ''}`}>
@@ -42,7 +42,7 @@ export default function InfoTooltip({
       <div
         className={`pointer-events-none absolute ${bubblePos} opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-20`}
       >
-        <div className="bg-black/90 dark:bg-white/95 text-white dark:text-black text-[10px] font-medium px-2.5 py-1.5 rounded-md shadow-lg leading-snug max-w-[280px]">
+        <div className="bg-black/90 dark:bg-white/95 text-white dark:text-black text-[10px] font-medium px-2.5 py-1.5 rounded-md shadow-lg leading-snug w-[400px] max-w-[calc(100vw-32px)]">
           {text}
         </div>
       </div>
@@ -68,8 +68,8 @@ export function InfoTooltipRich({
 }: InfoTooltipRichProps): React.ReactElement {
   const bubblePos =
     placement === 'bottom'
-      ? 'top-full right-0 mt-1.5'
-      : 'bottom-full right-0 mb-1.5';
+      ? 'top-full left-0 mt-1.5'
+      : 'bottom-full left-0 mb-1.5';
 
   return (
     <div className={`relative group inline-flex items-center ${className ?? ''}`}>
@@ -81,7 +81,7 @@ export function InfoTooltipRich({
       <div
         className={`pointer-events-none absolute ${bubblePos} opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-20`}
       >
-        <div className="bg-black/90 dark:bg-white/95 text-white dark:text-black text-[10px] font-medium px-2.5 py-1.5 rounded-md shadow-lg leading-snug max-w-[320px] space-y-1">
+        <div className="bg-black/90 dark:bg-white/95 text-white dark:text-black text-[10px] font-medium px-2.5 py-1.5 rounded-md shadow-lg leading-snug w-[400px] max-w-[calc(100vw-32px)] space-y-1">
           {children}
         </div>
       </div>
