@@ -149,11 +149,11 @@ export default function HeaderMenu({ measureRef }: HeaderMenuProps): React.React
           <button
             onClick={() => void handleQuit()}
             disabled={quitting || uninstallStep !== 'idle'}
-            className="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-black dark:text-white hover:bg-black/[0.05] dark:hover:bg-white/[0.06] disabled:opacity-50 transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-black dark:text-white whitespace-nowrap hover:bg-black/[0.05] dark:hover:bg-white/[0.06] disabled:opacity-50 transition-colors"
           >
             <Power size={12} strokeWidth={2.5} />
-            {quitting ? 'Quitting…' : 'Quit Sentinel'}
-            <span className="ml-auto text-[10px] text-[#8E8E93]">Stops the background service</span>
+            <span>{quitting ? 'Quitting…' : 'Quit Sentinel'}</span>
+            <span className="ml-auto pl-3 text-[10px] text-[#8E8E93]">Stops the background service</span>
           </button>
 
           {/* Uninstall */}

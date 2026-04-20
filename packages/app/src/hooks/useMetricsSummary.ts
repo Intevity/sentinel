@@ -26,6 +26,8 @@ interface UseMetricsSummaryResult {
  *   - account_switched broadcast from the daemon (only when the hook is
  *     following the active account — when an explicit id is set we ignore
  *     the broadcast because the user pinned a specific scope)
+ *   - metrics_updated broadcast from the daemon (fires once per OTEL batch
+ *     that wrote telemetry rows) so dashboards update live
  */
 export function useMetricsSummary(viewAccountId?: string): UseMetricsSummaryResult {
   const [days, setDays] = useState(7);
@@ -57,10 +59,15 @@ export function useMetricsSummary(viewAccountId?: string): UseMetricsSummaryResu
   useEffect(() => { void fetchSummary(); }, [fetchSummary]);
 
   useEffect(() => {
-    if (viewAccountId) return; // pinned — don't auto-follow the active account
     let unlisten: (() => void) | null = null;
     onDaemonMessage((msg) => {
-      if (msg.type === 'account_switched') void fetchSummary();
+      // `account_switched` only matters when this hook is following the
+      // active account — a pinned view shouldn't move underneath the user.
+      if (msg.type === 'account_switched' && !viewAccountId) void fetchSummary();
+      // `metrics_updated` fires once per OTEL batch that wrote rows. Refetch
+      // regardless of pin state — even a pinned view wants fresh data when
+      // the currently active account's telemetry just landed.
+      if (msg.type === 'metrics_updated') void fetchSummary();
     }).then((fn) => { unlisten = fn; }).catch(() => undefined);
     return () => { unlisten?.(); };
   }, [fetchSummary, viewAccountId]);

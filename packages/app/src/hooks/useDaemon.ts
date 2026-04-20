@@ -113,6 +113,10 @@ export function useDaemon(): DaemonState & { refetch: () => void } {
         setState((prev) => ({ ...prev, overageActive: false, overageVersion: prev.overageVersion + 1 }));
       } else if (msg.type === 'login_complete' && msg.email) {
         void refetch();
+      } else if (msg.type === 'account_updated') {
+        // Per-account metadata (currently just color) changed — pull fresh
+        // accounts so every surface that renders an avatar/dot stays in sync.
+        void refetch();
       } else if (msg.type === 'account_switched') {
         // Bump rateLimitsVersion immediately so UsageView re-fetches for the
         // new account without waiting for the async probe to broadcast rate_limits_updated.

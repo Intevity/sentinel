@@ -14,10 +14,10 @@
     "windows": [
       {
         "title": "Claude Sentinel",
-        "width": 480,
+        "width": 540,
         "height": 628,
-        "minWidth": 480,
-        "maxWidth": 480,
+        "minWidth": 540,
+        "maxWidth": 540,
         "minHeight": 288,
         "maxHeight": 628,
         "resizable": false,

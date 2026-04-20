@@ -1,12 +1,16 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
+import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel } from '../lib/ipc.js';
-import type { RateLimitWindow, OAuthAccount, AccountInfo } from '@claude-sentinel/shared';
+import type { RateLimitWindow, OAuthAccount, AccountInfo, ClaudeAiUsageSnapshot } from '@claude-sentinel/shared';
 import { useSettings } from '../hooks/useSettings.js';
 import { useAllRateLimits, fiveHourUtilization } from '../hooks/useAllRateLimits.js';
+import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
+import { usePausedAccounts, type PausedState } from '../hooks/usePausedAccounts.js';
 import { DUR, EASE_OUT } from '../lib/motion.js';
 import InfoTooltip from './InfoTooltip.js';
+import ResetCountdown from './ResetCountdown.js';
 
 /** Why the Usage percentages can differ from claude.ai by up to 1 point —
  *  shown in an InfoTooltip next to the "Usage" header. */
@@ -31,19 +35,6 @@ function windowLabel(name: string): string {
 
 function windowOrder(name: string): number {
   return WINDOW_META[name]?.order ?? 99;
-}
-
-/** Unix seconds → "resets in Xh Ym" or "resets in Xd Yh" */
-function formatReset(reset: number | null): string {
-  if (reset == null) return '';
-  const diff = reset * 1000 - Date.now();
-  if (diff <= 0) return 'resets soon';
-  const totalMins = Math.floor(diff / 60_000);
-  const h = Math.floor(totalMins / 60);
-  const m = totalMins % 60;
-  if (h >= 24) return `resets in ${Math.floor(h / 24)}d ${h % 24}h`;
-  if (h > 0) return `resets in ${h}h ${m}m`;
-  return `resets in ${m}m`;
 }
 
 interface ProgressRowProps {
@@ -74,7 +65,6 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
 
   const blocked = w.status === 'blocked';
   const overageActive = w.inUse === true;
-  const resetStr = formatReset(w.reset);
 
   const barColor =
     blocked         ? 'bg-ios-red'    :
@@ -111,21 +101,26 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
           {pct != null && (
             <span className={`text-[11px] font-bold tabular-nums ${pctColor}`}>{pct}%</span>
           )}
-          {resetStr && (
-            <span className="text-[10px] text-[#8E8E93]">{resetStr}</span>
+          {w.reset != null && w.reset > 0 && (
+            <ResetCountdown epochSec={w.reset} variant="inline" />
           )}
         </div>
       </div>
 
-      {/* Progress bar */}
-      <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
-        <motion.div
-          className={`h-full rounded-full ${barColor}`}
-          initial={{ width: 0 }}
-          animate={{ width: `${blocked ? 100 : (pct ?? 0)}%` }}
-          transition={{ duration: DUR.bar, ease: EASE_OUT }}
-        />
-      </div>
+      {/* Progress bar — suppressed at 0% to avoid rendering an empty track
+          that reads as an orphan pill (most noticeable on the synthesized
+          Sonnet row at the bottom of the card). Blocked rows still render
+          the full-width red bar since that's intentional visual feedback. */}
+      {(blocked || (pct != null && pct > 0)) && (
+        <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
+          <motion.div
+            className={`h-full rounded-full ${barColor}`}
+            initial={{ width: 0 }}
+            animate={{ width: `${blocked ? 100 : (pct ?? 0)}%` }}
+            transition={{ duration: DUR.bar, ease: EASE_OUT }}
+          />
+        </div>
+      )}
 
       {/* Detail line: API-key plans show counts; subscription plans show utilization fraction */}
       {w.limit != null && w.remaining != null ? (
@@ -139,6 +134,269 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
           {(w.utilization * 100).toFixed(1)}% of quota consumed
         </p>
       ) : null}
+    </div>
+  );
+}
+
+/** Format a dollar amount as "$X.YZ". Negative / NaN falls back to "$0.00". */
+function fmtUsd(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '$0.00';
+  return `$${n.toFixed(2)}`;
+}
+
+interface OverageMeterRowProps {
+  /** The unified-overage RateLimitWindow. We reuse its reset timestamp and
+   *  `inUse` flag; the numeric dollar values themselves come from the
+   *  claude.ai usage endpoint (ClaudeAiUsageSnapshot.extraUsage). */
+  window: RateLimitWindow;
+  /** Anthropic's usage snapshot for the viewed account. `null` when no
+   *  sessionKey is configured yet or the first fetch hasn't landed. */
+  usage: ClaudeAiUsageSnapshot | null;
+  /** Error discriminator from the latest fetch, or null on success. Drives
+   *  the "Connect claude.ai" CTA vs "Reconnect" vs "Retry" copy. */
+  usageError: 'missing_key' | 'auth_expired' | 'network' | 'parse' | null;
+  /** User-configured Sentinel cap for the viewed account, or null if none
+   *  is set. When null, the Sentinel sub-bar is suppressed. */
+  sentinelCapUsd: number | null;
+  /** Sentinel account id — passed to `start_claude_ai_login` when the CTA
+   *  is clicked. */
+  accountId: string | null;
+  /** Paused-state metadata for the viewed account (null when not paused). */
+  pauseState: PausedState | null;
+  /** Account plan type (as stored in the Sentinel account registry).
+   *  Gates team-only rendering paths: for team plans the org-wide
+   *  `extraUsage.usedUsd` number is NOT a personal spend figure, so
+   *  we only ever render `perUserBudget` and prompt the user to ask
+   *  their admin if per-user budget is unconfigured. All non-team
+   *  values use the individual-plan render path. */
+  planType: string;
+}
+
+/**
+ * Overage meter composite. Renders up to two stacked bars:
+ *   - "Anthropic budget": dollar spend vs. the Anthropic-configured monthly
+ *     limit. Sourced from claude.ai's /api/organizations/{org}/usage
+ *     endpoint (the ONLY source of these numbers — no OAuth equivalent).
+ *   - "Sentinel cap": the user-set lower ceiling, if configured. Progress
+ *     is the same spend number compared against the local cap.
+ *
+ * When neither is available (no sessionKey / no local cap), falls back to
+ * the plain ProgressRow so accounts without overage data still render
+ * something meaningful from rate-limit headers alone.
+ */
+function OverageMeterRow({
+  window: w,
+  usage,
+  usageError,
+  sentinelCapUsd,
+  accountId,
+  pauseState,
+  planType,
+}: OverageMeterRowProps): React.ReactElement {
+  const extra = usage?.extraUsage ?? null;
+  const perUser = usage?.perUserBudget ?? null;
+
+  // Distinct render modes:
+  //
+  //   'team-per-user'   — team account WITH an admin-configured
+  //                       per-user budget. Show member's personal
+  //                       cap + spend.
+  //   'team-needs-admin'— team account WITHOUT a per-user budget.
+  //                       extra_usage.used_credits here is a credit
+  //                       counter, not an actual spend number (and
+  //                       extra_usage.utilization is null for teams),
+  //                       so we intentionally show NOTHING numeric
+  //                       and nudge the user to ask their admin to
+  //                       enable the feature.
+  //   'individual'      — Max/Pro. extra_usage.used_credits does
+  //                       equal dollar spend here because a monthly_
+  //                       limit is set; standard bar render.
+  //   'disabled'        — no overage configured at all; degrade to
+  //                       rate-limit-only ProgressRow.
+  const isTeam = planType === 'team';
+  const teamPerUserValid = isTeam
+    && perUser != null
+    && perUser.limitUsd != null
+    && perUser.limitUsd > 0
+    && perUser.usedUsd != null;
+  const individualAnthropicValid = !isTeam
+    && !!extra && extra.isEnabled && extra.limitUsd > 0;
+  const teamNeedsAdmin = isTeam && !teamPerUserValid && !!extra && extra.isEnabled;
+
+  const anthUsedPrimary = teamPerUserValid
+    ? (perUser!.usedUsd ?? 0)
+    : (extra?.usedUsd ?? 0);
+  const anthTotalPrimary = teamPerUserValid
+    ? (perUser!.limitUsd ?? 0)
+    : (extra?.limitUsd ?? 0);
+
+  const showAnthropic = teamPerUserValid || individualAnthropicValid;
+  const showSentinel =
+    sentinelCapUsd != null && sentinelCapUsd > 0 && !!extra && !isTeam;
+
+  // No sessionKey and no cap → two render paths:
+  //
+  // (a) Genuinely no sessionKey yet (`missing_key`): the per-window util%
+  //     we'd otherwise render here is a rate-limit number that reads as
+  //     "0 / 100% usage" to a user who hasn't told Sentinel about their
+  //     claude.ai cookie. That framing is misleading — the overage
+  //     section is about dollar spend, not rate-limit buckets, and we
+  //     have no dollar data until the user connects. Swap the meter for
+  //     a prominent CTA that makes the action obvious.
+  //
+  // (b) Any other state (network error, snapshot still loading, or
+  //     connected but without overage enabled): fall back to the plain
+  //     ProgressRow so at least the rate-limit util% the proxy sees
+  //     still shows something. The dollar overlay is skipped.
+  if (!showAnthropic && !showSentinel) {
+    if (usageError === 'missing_key' && accountId) {
+      return (
+        <div className="rounded-xl bg-ios-blue/[0.08] dark:bg-ios-blue/[0.12] border border-ios-blue/20 p-3 flex items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-[12px] font-semibold text-black dark:text-white leading-tight">
+              Connect claude.ai to track overage spend
+            </p>
+            <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+              Dollar-denominated usage + weekly caps unlock once your session cookie is captured.
+            </p>
+          </div>
+          <button
+            onClick={() => void invoke('start_claude_ai_login', { accountId }).catch(() => undefined)}
+            className="shrink-0 text-[11px] font-semibold text-white bg-ios-blue hover:brightness-110 px-3 py-1.5 rounded-full transition"
+          >
+            Connect
+          </button>
+        </div>
+      );
+    }
+    if (teamNeedsAdmin) {
+      return (
+        <div className="space-y-2">
+          <ProgressRow window={w} />
+          <div className="rounded-xl bg-ios-orange/[0.08] dark:bg-ios-orange/[0.12] border border-ios-orange/20 p-3">
+            <p className="text-[12px] font-semibold text-black dark:text-white leading-tight">
+              Team spend tracking unavailable
+            </p>
+            <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+              claude.ai reports only a team-wide credit counter for this
+              account and doesn't expose personal spend to non-admins.
+              Ask your org admin to enable per-user budgets in claude.ai
+              → Settings → Usage to unlock dollar tracking and Sentinel
+              caps for your seat.
+            </p>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-2">
+        <ProgressRow window={w} />
+      </div>
+    );
+  }
+
+  const anthUsed = anthUsedPrimary;
+  const anthTotal = anthTotalPrimary;
+  const anthPct = anthTotal > 0 ? Math.min(100, Math.round((anthUsed / anthTotal) * 100)) : 0;
+  const anthBarColor =
+    anthPct >= 90 ? 'bg-ios-red' :
+    anthPct >= 70 ? 'bg-ios-orange' :
+    'bg-ios-blue';
+
+  const sentPct =
+    showSentinel && sentinelCapUsd! > 0
+      ? Math.min(100, Math.round((anthUsed / sentinelCapUsd!) * 100))
+      : 0;
+  const sentBarColor =
+    sentPct >= 100 ? 'bg-ios-red' :
+    sentPct >= 90  ? 'bg-ios-red' :
+    sentPct >= 70  ? 'bg-ios-orange' :
+    'bg-ios-blue';
+
+  const overageActive = w.inUse === true;
+
+  return (
+    <div className="space-y-2">
+      {/* Header row */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[12px] font-semibold text-black dark:text-white">
+          Overage Budget
+        </span>
+        <div className="flex items-center gap-2 shrink-0">
+          {overageActive && (
+            <span className="text-[10px] font-semibold text-ios-red bg-ios-red/10 px-1.5 py-0.5 rounded-full">
+              Overage active
+            </span>
+          )}
+          {pauseState && (
+            <span className="text-[10px] font-semibold text-ios-red bg-ios-red/10 px-1.5 py-0.5 rounded-full">
+              Paused
+            </span>
+          )}
+          {w.reset != null && w.reset > 0 && !pauseState && (
+            <ResetCountdown epochSec={w.reset} variant="inline" />
+          )}
+          {pauseState && pauseState.resetsAt != null && (
+            <ResetCountdown epochSec={pauseState.resetsAt} variant="inline" label="resumes in" />
+          )}
+        </div>
+      </div>
+
+      {usageError === 'auth_expired' && accountId && (
+        <button
+          onClick={() => void invoke('start_claude_ai_login', { accountId }).catch(() => undefined)}
+          className="w-full text-left text-[11px] text-ios-orange hover:underline"
+        >
+          Your claude.ai session expired. Reconnect to refresh numbers →
+        </button>
+      )}
+
+      {/* Anthropic sub-bar — labeled based on which scope the numbers
+          came from. Per-user budget (admin-configured via claude.ai's
+          settings/usage page) is prioritized when present; otherwise
+          we fall back to the team-wide extra_usage.used_credits, made
+          explicit in the label so the member doesn't misread it as
+          personal spend. */}
+      {showAnthropic && (
+        <div className="space-y-1">
+          <div className="flex items-baseline justify-between text-[11px]">
+            <span className="text-[#8E8E93]">
+              {teamPerUserValid ? 'Your personal budget' : 'Anthropic grant'}
+            </span>
+            <span className="tabular-nums text-black dark:text-white font-medium">
+              {fmtUsd(anthUsed)} <span className="text-[#8E8E93] font-normal">/ {fmtUsd(anthTotal)}</span>
+            </span>
+          </div>
+          <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
+            <motion.div
+              className={`h-full rounded-full ${anthBarColor}`}
+              initial={{ width: 0 }}
+              animate={{ width: `${anthPct}%` }}
+              transition={{ duration: DUR.bar, ease: EASE_OUT }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Sentinel sub-bar */}
+      {showSentinel && (
+        <div className="space-y-1">
+          <div className="flex items-baseline justify-between text-[11px]">
+            <span className="text-[#8E8E93]">Sentinel cap</span>
+            <span className="tabular-nums text-black dark:text-white font-medium">
+              {fmtUsd(anthUsed)} <span className="text-[#8E8E93] font-normal">/ {fmtUsd(sentinelCapUsd!)}</span>
+            </span>
+          </div>
+          <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
+            <motion.div
+              className={`h-full rounded-full ${sentBarColor}`}
+              initial={{ width: 0 }}
+              animate={{ width: `${sentPct}%` }}
+              transition={{ duration: DUR.bar, ease: EASE_OUT }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -219,6 +477,8 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const { settings } = useSettings();
+  const paused = usePausedAccounts();
 
   const busy = loading || Boolean(isProbing);
 
@@ -229,6 +489,20 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
   const viewAccount: OAuthAccount | null = viewAccountId
     ? accountInfoToOAuthLike(accounts.find((a) => a.id === viewAccountId)) ?? activeAccount
     : activeAccount;
+
+  // Resolve Sentinel id for the viewed account so we can scope settings
+  // lookups + pause-state + live usage subscription.
+  const viewAccountKey = viewAccountId
+    ?? (activeAccount
+        ? accounts.find((a) => a.accountUuid === activeAccount.accountUuid)?.id
+        : undefined);
+  const { snapshot: claudeAiUsage, error: claudeAiUsageError } = useClaudeAiUsage(viewAccountKey);
+  const sentinelCap: number | null = viewAccountKey
+    ? (settings?.budgetWeeklyUsdByAccount[viewAccountKey]
+       ?? settings?.budgetWeeklyUsdGlobal
+       ?? null)
+    : null;
+  const viewPauseState = viewAccountKey ? paused[viewAccountKey] ?? null : null;
 
   const fetchRateLimits = useCallback(async () => {
     setLoading(true);
@@ -339,7 +613,20 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
       {displayWindows.length > 0 && (
         <div className="glass-card px-4 py-4 space-y-5">
           {displayWindows.map((w) => (
-            <ProgressRow key={w.name} window={w} />
+            w.name === 'unified-overage' ? (
+              <OverageMeterRow
+                key={w.name}
+                window={w}
+                usage={claudeAiUsage}
+                usageError={claudeAiUsageError}
+                sentinelCapUsd={sentinelCap}
+                accountId={viewAccountKey ?? null}
+                pauseState={viewPauseState}
+                planType={accounts.find((a) => a.id === viewAccountKey)?.planType ?? 'unknown'}
+              />
+            ) : (
+              <ProgressRow key={w.name} window={w} />
+            )
           ))}
         </div>
       )}
@@ -435,14 +722,16 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
             </span>
           </div>
         </div>
-        <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
-          <motion.div
-            className={`h-full rounded-full ${poolColor}`}
-            initial={{ width: 0 }}
-            animate={{ width: `${poolPct ?? 0}%` }}
-            transition={{ duration: DUR.bar, ease: EASE_OUT }}
-          />
-        </div>
+        {poolPct != null && poolPct > 0 && (
+          <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
+            <motion.div
+              className={`h-full rounded-full ${poolColor}`}
+              initial={{ width: 0 }}
+              animate={{ width: `${poolPct}%` }}
+              transition={{ duration: DUR.bar, ease: EASE_OUT }}
+            />
+          </div>
+        )}
         <p className="text-[10px] text-[#8E8E93] leading-snug">
           Average 5-hour utilization across every account in the round-robin pool.
           Accounts with no data yet are excluded from the average.
@@ -496,14 +785,16 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
                     {pct == null ? '—' : `${pct}%`}
                   </span>
                 </div>
-                <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
-                  <motion.div
-                    className={`h-full rounded-full ${barColor}`}
-                    initial={{ width: 0 }}
-                    animate={{ width: `${pct ?? 0}%` }}
-                    transition={{ duration: DUR.bar, ease: EASE_OUT }}
-                  />
-                </div>
+                {pct != null && pct > 0 && (
+                  <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
+                    <motion.div
+                      className={`h-full rounded-full ${barColor}`}
+                      initial={{ width: 0 }}
+                      animate={{ width: `${pct}%` }}
+                      transition={{ duration: DUR.bar, ease: EASE_OUT }}
+                    />
+                  </div>
+                )}
               </div>
             );
           })}

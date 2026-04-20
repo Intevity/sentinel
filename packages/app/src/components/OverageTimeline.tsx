@@ -1,7 +1,18 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
-import { sendToSentinel } from '../lib/ipc.js';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { AlertTriangle, CheckCircle, XCircle, PauseCircle, PlayCircle } from 'lucide-react';
+import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import type { OverageEvent } from '@claude-sentinel/shared';
+
+/** In-memory pause event tracked from `account_paused`/`account_unpaused`
+ *  broadcasts. Not persisted — the timeline only reflects pauses that have
+ *  happened while this UI instance has been mounted. */
+interface PauseEvent {
+  id: string;
+  ts: number;
+  accountId: string;
+  kind: 'paused' | 'unpaused';
+  reason?: 'sentinel_budget' | 'anthropic_overage_disabled';
+}
 
 interface OverageTimelineProps {
   /** Incremented by useDaemon on each overage broadcast — triggers a re-fetch. */
@@ -26,7 +37,39 @@ function formatDate(ts: number): string {
 
 export default function OverageTimeline({ overageVersion, viewAccountId }: OverageTimelineProps): React.ReactElement {
   const [events, setEvents] = useState<OverageEvent[]>([]);
+  const [pauseEvents, setPauseEvents] = useState<PauseEvent[]>([]);
   const [loading, setLoading] = useState(false);
+  const [confirmingClear, setConfirmingClear] = useState(false);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Subscribe to live pause/unpause broadcasts. The daemon does NOT persist
+  // these (pause state lives in-memory on the tracker) so our visibility is
+  // bounded to the current session. Good enough for "what just happened?"
+  // debugging; a persistent audit log would need a new DB table.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    onDaemonMessage((msg) => {
+      if (msg.type === 'account_paused' && (!viewAccountId || msg.accountId === viewAccountId)) {
+        const pe: PauseEvent = {
+          id: `pause-${msg.accountId}-${Date.now()}`,
+          ts: Date.now(),
+          accountId: msg.accountId,
+          kind: 'paused',
+          reason: msg.reason,
+        };
+        setPauseEvents((prev) => [pe, ...prev].slice(0, 50));
+      } else if (msg.type === 'account_unpaused' && (!viewAccountId || msg.accountId === viewAccountId)) {
+        const pe: PauseEvent = {
+          id: `unpause-${msg.accountId}-${Date.now()}`,
+          ts: Date.now(),
+          accountId: msg.accountId,
+          kind: 'unpaused',
+        };
+        setPauseEvents((prev) => [pe, ...prev].slice(0, 50));
+      }
+    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
+    return () => { unlisten?.(); };
+  }, [viewAccountId]);
 
   const fetchEvents = useCallback(async () => {
     setLoading(true);
@@ -48,13 +91,49 @@ export default function OverageTimeline({ overageVersion, viewAccountId }: Overa
     void fetchEvents();
   }, [fetchEvents, overageVersion]);
 
+  useEffect(() => () => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+  }, []);
+
+  const handleClearClick = useCallback(async () => {
+    if (!confirmingClear) {
+      setConfirmingClear(true);
+      confirmTimerRef.current = setTimeout(() => setConfirmingClear(false), 4000);
+      return;
+    }
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmingClear(false);
+    try {
+      await sendToSentinel(
+        viewAccountId
+          ? { type: 'clear_overage_events', accountId: viewAccountId }
+          : { type: 'clear_overage_events' },
+      );
+    } catch {
+      // swallow — the refetch below will resurface the current truth
+    }
+    await fetchEvents();
+  }, [confirmingClear, viewAccountId, fetchEvents]);
+
   return (
     <div className="space-y-2 pt-1">
-      <div className="mb-3">
+      <div className="mb-3 flex items-center justify-between">
         <span className="section-label">Overage Events</span>
+        {events.length > 0 && (
+          <button
+            onClick={() => void handleClearClick()}
+            className={`text-[11px] font-medium transition-colors ${
+              confirmingClear
+                ? 'text-ios-red'
+                : 'text-[#8E8E93] hover:text-ios-red'
+            }`}
+          >
+            {confirmingClear ? 'Click again to clear' : 'Clear events…'}
+          </button>
+        )}
       </div>
 
-      {!loading && events.length === 0 ? (
+      {!loading && events.length === 0 && pauseEvents.length === 0 ? (
         <div className="glass-card px-4 py-10 text-center">
           <p className="text-[13px] font-medium text-black dark:text-white">No overage events</p>
           <p className="text-[11px] text-[#8E8E93] mt-1">
@@ -63,6 +142,30 @@ export default function OverageTimeline({ overageVersion, viewAccountId }: Overa
         </div>
       ) : (
         <div className="space-y-2">
+          {pauseEvents.map((pe) => {
+            const Icon = pe.kind === 'paused' ? PauseCircle : PlayCircle;
+            const color = pe.kind === 'paused' ? 'text-ios-red' : 'text-ios-green';
+            const bg = pe.kind === 'paused' ? 'bg-ios-red/10' : 'bg-ios-green/10';
+            const label = pe.kind === 'paused'
+              ? (pe.reason === 'sentinel_budget' ? 'Paused by Sentinel budget' : 'Paused — overage disabled')
+              : 'Resumed';
+            return (
+              <div key={pe.id} className="glass-card p-3">
+                <div className="flex items-start gap-3">
+                  <div className={`flex-shrink-0 w-8 h-8 rounded-full ${bg} flex items-center justify-center`}>
+                    <Icon size={15} className={color} strokeWidth={2} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-[13px] font-semibold ${color}`}>{label}</p>
+                    <p className="text-[11px] text-[#8E8E93] mt-0.5 truncate">{pe.accountId}</p>
+                  </div>
+                  <span className="flex-shrink-0 text-[10px] text-[#8E8E93] mt-0.5">
+                    {formatDate(pe.ts)}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
           {events.map((event) => {
             const meta = TRANSITION_META[event.transition] ?? TRANSITION_META.entered;
             const { Icon, color, bg, label } = meta;

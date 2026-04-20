@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Check } from 'lucide-react';
-import type { AccountInfo, OAuthAccount } from '@claude-sentinel/shared';
+import type { AccountInfo, OAuthAccount, SwitchingMode } from '@claude-sentinel/shared';
 import { planLabel } from '../lib/plan.js';
+import { getAccountStatus, type AccountStatus } from '../lib/account-status.js';
+import { accountColor } from '../lib/accountColor.js';
+import AccountColorDot from './AccountColorDot.js';
 
 /** Sentinel value used in place of an accountId when the user picks the
  *  cross-account pool view (Usage tab in round-robin mode). */
@@ -19,6 +22,13 @@ interface AccountViewPickerProps {
    *  POOL_VIEW when showPoolOption is true and no explicit value is given. */
   value?: PickerValue;
   onChange: (value: PickerValue) => void;
+  /** Current switching mode. Drives how status is rendered per row:
+   *  in round-robin, every pool member shows "Active" and excluded accounts
+   *  show "Excluded" — matching the Accounts tab. In 'off' mode, only the
+   *  currently-bound account shows "Active". */
+  switchingMode: SwitchingMode;
+  /** Pool-exclusion set (RR only). Ignored in non-RR mode. */
+  poolExcludedIds: readonly string[];
 }
 
 /**
@@ -27,9 +37,10 @@ interface AccountViewPickerProps {
  * lets the user rebind the view scope to any enrolled account without
  * changing which account Claude Code's proxy uses.
  *
- * The active proxy account is flagged with a green dot + "Active" label
- * so the user always sees which account is handling their live traffic,
- * regardless of what data the tab is currently showing.
+ * Per-row status rendering delegates to `getAccountStatus` so this
+ * dropdown stays in sync with AccountCard on the Accounts tab. In
+ * round-robin mode that means every pool member reads "Active" (green)
+ * and excluded accounts read "Excluded" (gray).
  */
 export default function AccountViewPicker({
   accounts,
@@ -37,6 +48,8 @@ export default function AccountViewPicker({
   showPoolOption = false,
   value,
   onChange,
+  switchingMode,
+  poolExcludedIds,
 }: AccountViewPickerProps): React.ReactElement | null {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -65,7 +78,7 @@ export default function AccountViewPicker({
   if (accounts.length === 0 || !resolved) return null;
 
   const currentLabel = formatValue(resolved, accounts);
-  const activeId = findActiveId(accounts, activeAccount);
+  const excludedSet = new Set(poolExcludedIds);
 
   return (
     <div ref={rootRef} className="relative pt-1 pb-2">
@@ -107,7 +120,12 @@ export default function AccountViewPicker({
               selected={resolved === acct.id}
               primary={acct.displayName || acct.email}
               secondary={secondaryLine(acct)}
-              isActive={acct.id === activeId}
+              color={accountColor(acct)}
+              status={getAccountStatus({
+                isActive: acct.isActive,
+                switchingMode,
+                inPool: !excludedSet.has(acct.id),
+              })}
               onClick={() => { onChange(acct.id); setOpen(false); }}
             />
           ))}
@@ -121,11 +139,16 @@ interface PickerRowProps {
   selected: boolean;
   primary: string;
   secondary?: string | undefined;
-  isActive?: boolean;
+  /** Resolved account color. Rendered as a small dot at the start of the
+   *  row so the user can scan by color alone. Omitted for the pool row. */
+  color?: string;
+  /** Status pill shown on the right side of the row. `inactive` renders
+   *  nothing so non-RR non-active rows stay visually quiet. */
+  status?: AccountStatus;
   onClick: () => void;
 }
 
-function PickerRow({ selected, primary, secondary, isActive, onClick }: PickerRowProps): React.ReactElement {
+function PickerRow({ selected, primary, secondary, color, status, onClick }: PickerRowProps): React.ReactElement {
   return (
     <button
       role="option"
@@ -135,14 +158,21 @@ function PickerRow({ selected, primary, secondary, isActive, onClick }: PickerRo
         selected ? 'bg-black/[0.02] dark:bg-white/[0.04]' : ''
       }`}
     >
+      {color && <AccountColorDot color={color} size="sm" />}
       <div className="flex-1 min-w-0">
         <p className="text-[12px] font-semibold text-black dark:text-white truncate">{primary}</p>
         {secondary && <p className="text-[10px] text-[#8E8E93] truncate">{secondary}</p>}
       </div>
-      {isActive && (
+      {status === 'active' && (
         <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-ios-green shrink-0">
           <span className="w-1.5 h-1.5 rounded-full bg-ios-green" />
           Active
+        </span>
+      )}
+      {status === 'excluded' && (
+        <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-[#8E8E93] shrink-0">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#8E8E93]/60" />
+          Excluded
         </span>
       )}
       {selected && <Check size={12} strokeWidth={2.5} className="text-ios-blue shrink-0" />}
@@ -150,10 +180,15 @@ function PickerRow({ selected, primary, secondary, isActive, onClick }: PickerRo
   );
 }
 
+/**
+ * Resolve the default visible selection to the currently-bound active account
+ * when the caller hasn't pinned an explicit `value`. Matches the sentinel-key
+ * derivation used elsewhere: prefer org match, fall back to accountUuid.
+ * Used only for default selection — per-row status rendering is driven by
+ * `getAccountStatus`, not this lookup.
+ */
 function findActiveId(accounts: AccountInfo[], active: OAuthAccount | null): string | null {
   if (!active) return null;
-  // Prefer the sentinel-key match (AccountInfo.id uses orgUuid||accountUuid,
-  // which is how OAuthAccount.organizationUuid/accountUuid also resolves).
   const byOrg = accounts.find((a) => active.organizationUuid && a.orgUuid === active.organizationUuid);
   if (byOrg) return byOrg.id;
   const byUuid = accounts.find((a) => a.accountUuid === active.accountUuid);

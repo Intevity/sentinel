@@ -13,6 +13,12 @@
     "autostart:allow-is-enabled",
     "notification:default",
     "updater:default",
-    "opener:default"
+    "opener:default",
+    "dialog:allow-save",
+    "fs:allow-write-text-file",
+    "fs:scope-download-recursive",
+    "fs:scope-desktop-recursive",
+    "fs:scope-document-recursive",
+    "fs:scope-home-recursive"
   ]
 }

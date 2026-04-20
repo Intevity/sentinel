@@ -38,31 +38,68 @@ describe('settings', () => {
       writeFileSync(path, JSON.stringify({
         launchAtLogin: false,
         switchingMode: 'bogus-mode',
-        autoSwitchThresholdPct: 200,
       }), 'utf-8');
       const got = loadSettings(path);
       expect(got.launchAtLogin).toBe(false);
       expect(got.switchingMode).toBe(DEFAULT_SETTINGS.switchingMode);
-      expect(got.autoSwitchThresholdPct).toBe(DEFAULT_SETTINGS.autoSwitchThresholdPct);
     });
 
-    it('accepts all three valid switchingMode values', () => {
-      for (const mode of ['off', 'auto-switch', 'round-robin'] as const) {
+    it('accepts both valid switchingMode values', () => {
+      for (const mode of ['off', 'round-robin'] as const) {
         writeFileSync(path, JSON.stringify({ ...DEFAULT_SETTINGS, switchingMode: mode }), 'utf-8');
         expect(loadSettings(path).switchingMode).toBe(mode);
       }
     });
 
-    it('clamps autoSwitchThresholdPct outside [1,99] back to default', () => {
-      writeFileSync(path, JSON.stringify({ autoSwitchThresholdPct: 0 }), 'utf-8');
-      expect(loadSettings(path).autoSwitchThresholdPct).toBe(DEFAULT_SETTINGS.autoSwitchThresholdPct);
-      writeFileSync(path, JSON.stringify({ autoSwitchThresholdPct: 100 }), 'utf-8');
-      expect(loadSettings(path).autoSwitchThresholdPct).toBe(DEFAULT_SETTINGS.autoSwitchThresholdPct);
+    it('rejects the retired "auto-switch" mode, falling back to default', () => {
+      writeFileSync(path, JSON.stringify({ switchingMode: 'auto-switch' }), 'utf-8');
+      expect(loadSettings(path).switchingMode).toBe(DEFAULT_SETTINGS.switchingMode);
     });
 
-    it('floors fractional thresholds', () => {
-      writeFileSync(path, JSON.stringify({ autoSwitchThresholdPct: 75.7 }), 'utf-8');
-      expect(loadSettings(path).autoSwitchThresholdPct).toBe(75);
+    it('defaults roundRobinStrategy to "balance"', () => {
+      expect(loadSettings(path).roundRobinStrategy).toBe('balance');
+    });
+
+    it('accepts both valid roundRobinStrategy values', () => {
+      for (const strategy of ['balance', 'earliest-reset'] as const) {
+        writeFileSync(path, JSON.stringify({ ...DEFAULT_SETTINGS, roundRobinStrategy: strategy }), 'utf-8');
+        expect(loadSettings(path).roundRobinStrategy).toBe(strategy);
+      }
+    });
+
+    it('falls back to default roundRobinStrategy when the value is garbage', () => {
+      writeFileSync(path, JSON.stringify({ roundRobinStrategy: 'other' }), 'utf-8');
+      expect(loadSettings(path).roundRobinStrategy).toBe(DEFAULT_SETTINGS.roundRobinStrategy);
+      writeFileSync(path, JSON.stringify({ roundRobinStrategy: 42 }), 'utf-8');
+      expect(loadSettings(path).roundRobinStrategy).toBe(DEFAULT_SETTINGS.roundRobinStrategy);
+    });
+
+    it('accepts all valid logLevel values', () => {
+      for (const level of ['debug', 'info', 'warn', 'error'] as const) {
+        writeFileSync(path, JSON.stringify({ ...DEFAULT_SETTINGS, logLevel: level }), 'utf-8');
+        expect(loadSettings(path).logLevel).toBe(level);
+      }
+    });
+
+    it('falls back to default logLevel when the value is garbage', () => {
+      writeFileSync(path, JSON.stringify({ logLevel: 'verbose' }), 'utf-8');
+      expect(loadSettings(path).logLevel).toBe(DEFAULT_SETTINGS.logLevel);
+    });
+
+    it('falls back to default logLevel when the value is not a string', () => {
+      writeFileSync(path, JSON.stringify({ logLevel: 42 }), 'utf-8');
+      expect(loadSettings(path).logLevel).toBe(DEFAULT_SETTINGS.logLevel);
+    });
+
+    it('defaults overageOsNotify to true when the file is missing', () => {
+      expect(loadSettings(path).overageOsNotify).toBe(true);
+    });
+
+    it('round-trips overageOsNotify=false and rejects non-boolean input', () => {
+      writeFileSync(path, JSON.stringify({ overageOsNotify: false }), 'utf-8');
+      expect(loadSettings(path).overageOsNotify).toBe(false);
+      writeFileSync(path, JSON.stringify({ overageOsNotify: 'nope' }), 'utf-8');
+      expect(loadSettings(path).overageOsNotify).toBe(DEFAULT_SETTINGS.overageOsNotify);
     });
 
     it('accepts a boolean autoUpdate and ignores non-boolean values', () => {
@@ -75,14 +112,107 @@ describe('settings', () => {
     it('defaults autoUpdate to false when the file is missing', () => {
       expect(loadSettings(path).autoUpdate).toBe(false);
     });
+
+    it('defaults overageEnabledIds to an empty array', () => {
+      expect(loadSettings(path).overageEnabledIds).toEqual([]);
+    });
+
+    it('filters non-string entries out of overageEnabledIds', () => {
+      writeFileSync(path, JSON.stringify({ overageEnabledIds: ['acc-1', 5, null, 'acc-2', {}] }), 'utf-8');
+      expect(loadSettings(path).overageEnabledIds).toEqual(['acc-1', 'acc-2']);
+    });
+
+    it('ignores a non-array overageEnabledIds value', () => {
+      writeFileSync(path, JSON.stringify({ overageEnabledIds: 'acc-1' }), 'utf-8');
+      expect(loadSettings(path).overageEnabledIds).toEqual(DEFAULT_SETTINGS.overageEnabledIds);
+    });
+
+    it('defaults budgetWeeklyUsdByAccount to an empty map', () => {
+      expect(loadSettings(path).budgetWeeklyUsdByAccount).toEqual({});
+    });
+
+    it('accepts a valid budgetWeeklyUsdByAccount and drops invalid entries', () => {
+      writeFileSync(path, JSON.stringify({
+        budgetWeeklyUsdByAccount: {
+          'acc-a': 10,
+          'acc-b': -3,             // negative — dropped
+          'acc-c': 'not-a-number', // non-number — dropped
+          'acc-d': Number.POSITIVE_INFINITY, // non-finite — dropped
+          '':      7,               // empty key — dropped
+          'acc-e': 250_000,         // clamped to 100_000
+        },
+      }), 'utf-8');
+      expect(loadSettings(path).budgetWeeklyUsdByAccount).toEqual({
+        'acc-a': 10,
+        'acc-e': 100_000,
+      });
+    });
+
+    it('ignores a non-object budgetWeeklyUsdByAccount value', () => {
+      writeFileSync(path, JSON.stringify({ budgetWeeklyUsdByAccount: [1, 2] }), 'utf-8');
+      expect(loadSettings(path).budgetWeeklyUsdByAccount).toEqual({});
+    });
+
+    it('defaults budgetWeeklyUsdGlobal to null', () => {
+      expect(loadSettings(path).budgetWeeklyUsdGlobal).toBe(null);
+    });
+
+    it('accepts a valid budgetWeeklyUsdGlobal and clamps above 100000', () => {
+      writeFileSync(path, JSON.stringify({ budgetWeeklyUsdGlobal: 42 }), 'utf-8');
+      expect(loadSettings(path).budgetWeeklyUsdGlobal).toBe(42);
+      writeFileSync(path, JSON.stringify({ budgetWeeklyUsdGlobal: 250_000 }), 'utf-8');
+      expect(loadSettings(path).budgetWeeklyUsdGlobal).toBe(100_000);
+      writeFileSync(path, JSON.stringify({ budgetWeeklyUsdGlobal: null }), 'utf-8');
+      expect(loadSettings(path).budgetWeeklyUsdGlobal).toBe(null);
+    });
+
+    it('rejects an invalid budgetWeeklyUsdGlobal (negative, NaN, string)', () => {
+      writeFileSync(path, JSON.stringify({ budgetWeeklyUsdGlobal: -1 }), 'utf-8');
+      expect(loadSettings(path).budgetWeeklyUsdGlobal).toBe(DEFAULT_SETTINGS.budgetWeeklyUsdGlobal);
+      writeFileSync(path, JSON.stringify({ budgetWeeklyUsdGlobal: 'fifty' }), 'utf-8');
+      expect(loadSettings(path).budgetWeeklyUsdGlobal).toBe(DEFAULT_SETTINGS.budgetWeeklyUsdGlobal);
+    });
+
+    it('defaults overageBufferPct to 5', () => {
+      expect(loadSettings(path).overageBufferPct).toBe(5);
+    });
+
+    it('accepts overageBufferPct in [0, 50] and floors fractionals', () => {
+      writeFileSync(path, JSON.stringify({ overageBufferPct: 0 }), 'utf-8');
+      expect(loadSettings(path).overageBufferPct).toBe(0);
+      writeFileSync(path, JSON.stringify({ overageBufferPct: 25 }), 'utf-8');
+      expect(loadSettings(path).overageBufferPct).toBe(25);
+      writeFileSync(path, JSON.stringify({ overageBufferPct: 50 }), 'utf-8');
+      expect(loadSettings(path).overageBufferPct).toBe(50);
+      writeFileSync(path, JSON.stringify({ overageBufferPct: 12.7 }), 'utf-8');
+      expect(loadSettings(path).overageBufferPct).toBe(12);
+    });
+
+    it('rejects overageBufferPct outside [0, 50] or non-numeric', () => {
+      for (const bad of [-1, 51, 100, NaN, 'twenty', null, {}]) {
+        writeFileSync(path, JSON.stringify({ overageBufferPct: bad }), 'utf-8');
+        expect(loadSettings(path).overageBufferPct).toBe(DEFAULT_SETTINGS.overageBufferPct);
+      }
+    });
+
+    it('accepts telemetryRetentionDays in [1, 365] and clamps the rest to default', () => {
+      writeFileSync(path, JSON.stringify({ telemetryRetentionDays: 60 }), 'utf-8');
+      expect(loadSettings(path).telemetryRetentionDays).toBe(60);
+      writeFileSync(path, JSON.stringify({ telemetryRetentionDays: 0 }), 'utf-8');
+      expect(loadSettings(path).telemetryRetentionDays).toBe(DEFAULT_SETTINGS.telemetryRetentionDays);
+      writeFileSync(path, JSON.stringify({ telemetryRetentionDays: 500 }), 'utf-8');
+      expect(loadSettings(path).telemetryRetentionDays).toBe(DEFAULT_SETTINGS.telemetryRetentionDays);
+      writeFileSync(path, JSON.stringify({ telemetryRetentionDays: 'month' }), 'utf-8');
+      expect(loadSettings(path).telemetryRetentionDays).toBe(DEFAULT_SETTINGS.telemetryRetentionDays);
+    });
   });
 
   describe('saveSettings', () => {
     it('writes valid JSON that loadSettings can read back', () => {
       const wanted = {
+        ...DEFAULT_SETTINGS,
         launchAtLogin: false,
-        switchingMode: 'auto-switch' as const,
-        autoSwitchThresholdPct: 75,
+        switchingMode: 'round-robin' as const,
         alertSoundName: 'Glass',
         autoUpdate: true,
         poolExcludedIds: [],
@@ -132,10 +262,10 @@ describe('settings', () => {
 
     it('persists across calls', () => {
       updateSettings({ launchAtLogin: false }, path);
-      updateSettings({ autoSwitchThresholdPct: 70 }, path);
+      updateSettings({ switchingMode: 'round-robin' }, path);
       const got = loadSettings(path);
       expect(got.launchAtLogin).toBe(false);
-      expect(got.autoSwitchThresholdPct).toBe(70);
+      expect(got.switchingMode).toBe('round-robin');
     });
 
     it('round-trips the autoUpdate toggle', () => {

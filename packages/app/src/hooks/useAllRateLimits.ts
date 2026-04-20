@@ -59,3 +59,14 @@ export function fiveHourUtilization(windows: RateLimitWindow[] | undefined): num
   }
   return null;
 }
+
+/**
+ * Extract the Unix-seconds reset timestamp for the 5-hour window, or null
+ * when we haven't observed a reset header for this account yet. Drives the
+ * live countdown pill on AccountCard and the reset-in-X label beside each
+ * meter on UsageView.
+ */
+export function fiveHourResetAt(windows: RateLimitWindow[] | undefined): number | null {
+  const w = windows?.find((x) => x.name === 'unified-5h');
+  return w?.reset ?? null;
+}

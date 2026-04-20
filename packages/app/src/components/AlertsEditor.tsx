@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { Plus, Trash2, Loader2, Pencil } from 'lucide-react';
 import type { AccountInfo, Alert, OAuthAccount } from '@claude-sentinel/shared';
-import { useAlerts } from '../hooks/useAlerts.js';
+import { useAlerts, type UseAlertsTarget } from '../hooks/useAlerts.js';
 import { useNotifications } from '../hooks/useNotifications.js';
+import { useSettings } from '../hooks/useSettings.js';
 import NotificationHistory from './NotificationHistory.js';
+import AccountColorDot from './AccountColorDot.js';
+import { accountColor } from '../lib/accountColor.js';
 
 interface AlertsEditorProps {
   activeAccount: OAuthAccount | null;
@@ -16,37 +19,127 @@ interface AlertsEditorProps {
 }
 
 /**
- * Renders two sections inside the Alerts tab:
- *   1. "Alerts" — CRUD for user-configured usage alerts tied to the currently
+ * Renders three sections inside the Alerts tab:
+ *   1. "Pooled alerts" — round-robin only. CRUD for alerts that fire on the
+ *      pool-wide MEAN unified-5h utilization across every pool member.
+ *   2. "Alerts" — CRUD for user-configured usage alerts tied to the currently
  *      active account's Sentinel key.
- *   2. "History" — every notification the daemon has persisted, including
- *      overage transitions, account switches, triggered user alerts, and
- *      auto-switch exhaustion events.
+ *   3. "History" — every notification the daemon has persisted, including
+ *      overage transitions, account switches, and triggered user alerts.
  *
- * Alerts fire at `thresholdPct` of the unified-5h window's utilization. They
- * only re-fire once the window rolls over — lowering the threshold while the
- * active alert is still within its window does not re-trigger.
+ * Per-account alerts fire at `thresholdPct` of the unified-5h window's
+ * utilization for the bound account. Pool alerts fire when the pool's mean
+ * utilization crosses the threshold. Both re-fire only once their governing
+ * window (per-account or earliest-in-pool) rolls over.
  */
 export default function AlertsEditor({ activeAccount, accounts, viewAccountId }: AlertsEditorProps): React.ReactElement {
+  const { settings } = useSettings();
+  const isRoundRobin = settings?.switchingMode === 'round-robin';
+
   // View-scope (picker) wins over the proxy's active account. This lets the
   // user configure alerts for any enrolled account without switching tokens.
   const accountId = viewAccountId ?? (activeAccount ? sentinelKey(activeAccount) : undefined);
   const viewedInfo = viewAccountId ? accounts.find((a) => a.id === viewAccountId) : undefined;
-  const { alerts, loading: alertsLoading, error: alertsError, create, update, toggle, remove } =
-    useAlerts(accountId);
+  // Resolve the matching AccountInfo for dot coloring. Prefer viewed-scope,
+  // fall back to the enrolled account whose id matches the active OAuth context.
+  const rowInfo = viewedInfo
+    ?? (activeAccount ? accounts.find((a) => a.id === sentinelKey(activeAccount)) : undefined);
+  const hasAccountContext = Boolean(viewedInfo || activeAccount);
+
+  const accountTarget: UseAlertsTarget = { scope: 'account', accountId };
+  const poolTarget: UseAlertsTarget = { scope: 'pool' };
+  const perAccount = useAlerts(accountTarget);
+  const pool = useAlerts(poolTarget);
   const { notifications, refetch: refetchNotifications } = useNotifications();
+
+  return (
+    <div className="space-y-4 pt-1">
+      {/* ── Pooled alerts (round-robin only) ───────────────────── */}
+      {isRoundRobin && (
+        <AlertList
+          title="Pooled alerts"
+          emptyCopy="No pool alerts yet. Add one to get notified when pool-wide 5-hour usage (averaged across every account in the pool) crosses a threshold."
+          rowSuffix="of pool average"
+          alerts={pool.alerts}
+          loading={pool.loading}
+          error={pool.error}
+          available={true}
+          rowColor={null}
+          create={pool.create}
+          update={pool.update}
+          toggle={pool.toggle}
+          remove={pool.remove}
+        />
+      )}
+
+      {/* ── Per-account alerts ─────────────────────────────────── */}
+      <AlertList
+        title="Alerts"
+        emptyCopy="No alerts yet. Add one to get a native notification when usage crosses a threshold."
+        rowSuffix="of 5-hour usage"
+        unavailableCopy="Switch to an account to configure usage alerts."
+        alerts={perAccount.alerts}
+        loading={perAccount.loading}
+        error={perAccount.error}
+        available={hasAccountContext}
+        rowColor={rowInfo ? accountColor(rowInfo) : null}
+        create={perAccount.create}
+        update={perAccount.update}
+        toggle={perAccount.toggle}
+        remove={perAccount.remove}
+      />
+
+      {/* ── History ─────────────────────────────────────────── */}
+      <div className="pt-2 border-t border-black/5 dark:border-white/5">
+        <NotificationHistory
+          notifications={notifications}
+          accounts={accounts}
+          {...(accountId !== undefined ? { accountId } : {})}
+          onRefresh={() => { void refetchNotifications(); }}
+        />
+      </div>
+    </div>
+  );
+}
+
+interface AlertListProps {
+  title: string;
+  emptyCopy: string;
+  /** Copy rendered next to the threshold pct in each row. Differs between
+   *  per-account ("of 5-hour usage") and pool ("of pool average"). */
+  rowSuffix: string;
+  /** When false, show `unavailableCopy` instead of the list + Add button. */
+  available: boolean;
+  unavailableCopy?: string;
+  /** Color for the per-row dot. Null renders a muted gray dot (pool scope)
+   *  so row alignment stays consistent across both lists. */
+  rowColor: string | null;
+  alerts: Alert[];
+  loading: boolean;
+  error: string | null;
+  create: (thresholdPct: number) => Promise<void>;
+  update: (alert: Alert, thresholdPct: number) => Promise<void>;
+  toggle: (alert: Alert) => Promise<void>;
+  remove: (id: number) => Promise<void>;
+}
+
+function AlertList({
+  title, emptyCopy, rowSuffix, available, unavailableCopy, rowColor,
+  alerts, loading, error, create, update, toggle, remove,
+}: AlertListProps): React.ReactElement {
   const [adding, setAdding] = useState(false);
   const [draftThreshold, setDraftThreshold] = useState(90);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editThreshold, setEditThreshold] = useState(90);
 
-  // Cancel any in-flight edit / add when the user switches accounts so we never
-  // save to the wrong account.
+  // Cancel any in-flight edit / add when availability toggles (account
+  // switch, round-robin mode flipped off) so we never save to the wrong
+  // scope.
   useEffect(() => {
     setAdding(false);
     setEditingId(null);
-  }, [accountId]);
+  }, [available]);
 
   const handleSave = async (): Promise<void> => {
     setSaving(true);
@@ -74,150 +167,72 @@ export default function AlertsEditor({ activeAccount, accounts, viewAccountId }:
     }
   };
 
-  const hasAccountContext = Boolean(viewedInfo || activeAccount);
-
   return (
-    <div className="space-y-4 pt-1">
-      {/* ── User alerts ─────────────────────────────────────── */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <span className="section-label">Alerts</span>
-          {!adding && hasAccountContext && (
-            <button
-              onClick={() => setAdding(true)}
-              className="flex items-center gap-1 text-[11px] font-medium text-ios-blue hover:opacity-80 transition-opacity active:scale-95"
-            >
-              <Plus size={12} strokeWidth={2.5} />
-              Add alert
-            </button>
-          )}
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <span className="section-label">{title}</span>
+        {!adding && available && (
+          <button
+            onClick={() => setAdding(true)}
+            className="flex items-center gap-1 text-[11px] font-medium text-ios-blue hover:opacity-80 transition-opacity active:scale-95"
+          >
+            <Plus size={12} strokeWidth={2.5} />
+            Add alert
+          </button>
+        )}
+      </div>
+
+      {!available && (
+        <div className="glass-card px-4 py-8 text-center">
+          <p className="text-[12px] text-[#8E8E93]">{unavailableCopy ?? 'Not available.'}</p>
         </div>
+      )}
 
-        {!hasAccountContext && (
-          <div className="glass-card px-4 py-8 text-center">
-            <p className="text-[12px] text-[#8E8E93]">
-              Switch to an account to configure usage alerts.
-            </p>
-          </div>
-        )}
+      {available && loading && (
+        <div className="flex items-center justify-center py-6 gap-2 text-[#8E8E93]">
+          <Loader2 size={12} className="animate-spin" />
+          <span className="text-[11px]">Loading alerts…</span>
+        </div>
+      )}
 
-        {hasAccountContext && alertsLoading && (
-          <div className="flex items-center justify-center py-6 gap-2 text-[#8E8E93]">
-            <Loader2 size={12} className="animate-spin" />
-            <span className="text-[11px]">Loading alerts…</span>
-          </div>
-        )}
+      {available && !loading && error && (
+        <p className="text-[12px] text-ios-red px-1">{error}</p>
+      )}
 
-        {hasAccountContext && !alertsLoading && alertsError && (
-          <p className="text-[12px] text-ios-red px-1">{alertsError}</p>
-        )}
+      {available && !loading && !error && (
+        <div className="space-y-2">
+          {alerts.length === 0 && !adding && (
+            <div className="glass-card px-4 py-6 text-center">
+              <p className="text-[12px] text-[#8E8E93]">{emptyCopy}</p>
+            </div>
+          )}
 
-        {hasAccountContext && !alertsLoading && !alertsError && (
-          <div className="space-y-2">
-            {alerts.length === 0 && !adding && (
-              <div className="glass-card px-4 py-6 text-center">
-                <p className="text-[12px] text-[#8E8E93]">No alerts yet. Add one to get a native notification when usage crosses a threshold.</p>
-              </div>
-            )}
-
-            {alerts.map((alert) => (
-              editingId === alert.id ? (
-                <div key={alert.id} className="glass-card px-3 py-3">
-                  <div className="flex items-center justify-between text-[11px] text-[#8E8E93] mb-1.5">
-                    <span>Edit threshold</span>
-                    <span className="font-semibold text-black dark:text-white tabular-nums">{editThreshold}%</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={1}
-                    max={99}
-                    step={1}
-                    value={editThreshold}
-                    onChange={(e) => setEditThreshold(Number(e.target.value))}
-                    className="w-full accent-ios-blue mb-3"
-                  />
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => void handleEditSave(alert)}
-                      disabled={saving}
-                      className="flex-1 text-[12px] font-semibold text-white bg-ios-blue hover:opacity-90 active:scale-95 px-3 py-1.5 rounded-full transition-all disabled:opacity-50"
-                    >
-                      {saving ? 'Saving…' : 'Save'}
-                    </button>
-                    <button
-                      onClick={() => setEditingId(null)}
-                      disabled={saving}
-                      className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div key={alert.id} className="glass-card px-3 py-2.5 flex items-center gap-3">
-                  <span className="text-[13px] font-semibold text-black dark:text-white tabular-nums w-12">
-                    {alert.thresholdPct}%
-                  </span>
-                  <span className="text-[11px] text-[#8E8E93] flex-1">
-                    of 5-hour usage
-                    {alert.lastTriggeredResetTs && (
-                      <span className="ml-1 text-ios-blue">· triggered this window</span>
-                    )}
-                  </span>
-                  <label className="flex items-center gap-1.5 text-[11px] text-[#8E8E93] cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={alert.enabled}
-                      onChange={() => void toggle(alert)}
-                      className="accent-ios-blue w-3.5 h-3.5"
-                    />
-                    Enabled
-                  </label>
-                  <button
-                    onClick={() => startEdit(alert)}
-                    className="text-[#8E8E93] hover:text-ios-blue transition-colors active:scale-90"
-                    title="Edit threshold"
-                    aria-label="Edit alert"
-                  >
-                    <Pencil size={12} strokeWidth={2.2} />
-                  </button>
-                  <button
-                    onClick={() => void remove(alert.id)}
-                    className="text-[#8E8E93] hover:text-ios-red transition-colors active:scale-90"
-                    title="Delete alert"
-                    aria-label="Delete alert"
-                  >
-                    <Trash2 size={12} strokeWidth={2.2} />
-                  </button>
-                </div>
-              )
-            ))}
-
-            {adding && (
-              <div className="glass-card px-3 py-3">
+          {alerts.map((alert) => (
+            editingId === alert.id ? (
+              <div key={alert.id} className="glass-card px-3 py-3">
                 <div className="flex items-center justify-between text-[11px] text-[#8E8E93] mb-1.5">
-                  <span>New alert threshold</span>
-                  <span className="font-semibold text-black dark:text-white tabular-nums">{draftThreshold}%</span>
+                  <span>Edit threshold</span>
+                  <span className="font-semibold text-black dark:text-white tabular-nums">{editThreshold}%</span>
                 </div>
                 <input
                   type="range"
                   min={1}
                   max={99}
                   step={1}
-                  value={draftThreshold}
-                  onChange={(e) => setDraftThreshold(Number(e.target.value))}
+                  value={editThreshold}
+                  onChange={(e) => setEditThreshold(Number(e.target.value))}
                   className="w-full accent-ios-blue mb-3"
                 />
                 <div className="flex gap-2">
                   <button
-                    onClick={() => void handleSave()}
+                    onClick={() => void handleEditSave(alert)}
                     disabled={saving}
                     className="flex-1 text-[12px] font-semibold text-white bg-ios-blue hover:opacity-90 active:scale-95 px-3 py-1.5 rounded-full transition-all disabled:opacity-50"
                   >
                     {saving ? 'Saving…' : 'Save'}
                   </button>
                   <button
-                    onClick={() => { setAdding(false); setDraftThreshold(90); }}
+                    onClick={() => setEditingId(null)}
                     disabled={saving}
                     className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
                   >
@@ -225,19 +240,82 @@ export default function AlertsEditor({ activeAccount, accounts, viewAccountId }:
                   </button>
                 </div>
               </div>
-            )}
-          </div>
-        )}
-      </div>
+            ) : (
+              <div key={alert.id} className="glass-card px-3 py-2.5 flex items-center gap-3">
+                <AccountColorDot color={rowColor} size="sm" />
+                <span className="text-[13px] font-semibold text-black dark:text-white tabular-nums w-12">
+                  {alert.thresholdPct}%
+                </span>
+                <span className="text-[11px] text-[#8E8E93] flex-1">
+                  {rowSuffix}
+                  {alert.lastTriggeredResetTs && (
+                    <span className="ml-1 text-ios-blue">· triggered this window</span>
+                  )}
+                </span>
+                <label className="flex items-center gap-1.5 text-[11px] text-[#8E8E93] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={alert.enabled}
+                    onChange={() => void toggle(alert)}
+                    className="accent-ios-blue w-3.5 h-3.5"
+                  />
+                  Enabled
+                </label>
+                <button
+                  onClick={() => startEdit(alert)}
+                  className="text-[#8E8E93] hover:text-ios-blue transition-colors active:scale-90"
+                  title="Edit threshold"
+                  aria-label="Edit alert"
+                >
+                  <Pencil size={12} strokeWidth={2.2} />
+                </button>
+                <button
+                  onClick={() => void remove(alert.id)}
+                  className="text-[#8E8E93] hover:text-ios-red transition-colors active:scale-90"
+                  title="Delete alert"
+                  aria-label="Delete alert"
+                >
+                  <Trash2 size={12} strokeWidth={2.2} />
+                </button>
+              </div>
+            )
+          ))}
 
-      {/* ── History ─────────────────────────────────────────── */}
-      <div className="pt-2 border-t border-black/5 dark:border-white/5">
-        <NotificationHistory
-          notifications={notifications}
-          {...(accountId !== undefined ? { accountId } : {})}
-          onRefresh={() => { void refetchNotifications(); }}
-        />
-      </div>
+          {adding && (
+            <div className="glass-card px-3 py-3">
+              <div className="flex items-center justify-between text-[11px] text-[#8E8E93] mb-1.5">
+                <span>New alert threshold</span>
+                <span className="font-semibold text-black dark:text-white tabular-nums">{draftThreshold}%</span>
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={99}
+                step={1}
+                value={draftThreshold}
+                onChange={(e) => setDraftThreshold(Number(e.target.value))}
+                className="w-full accent-ios-blue mb-3"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => void handleSave()}
+                  disabled={saving}
+                  className="flex-1 text-[12px] font-semibold text-white bg-ios-blue hover:opacity-90 active:scale-95 px-3 py-1.5 rounded-full transition-all disabled:opacity-50"
+                >
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                  onClick={() => { setAdding(false); setDraftThreshold(90); }}
+                  disabled={saving}
+                  className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { LogicalSize, getCurrentWindow } from '@tauri-apps/api/window';
+import { listen } from '@tauri-apps/api/event';
 
-const WIDTH = 480;
+const WIDTH = 500;
 // Footer (~28px) is a sibling of <main>, so the window gets that much taller
 // without stealing from page content.
 const MIN_HEIGHT = 288;
@@ -51,6 +52,30 @@ export function useAutoResizeWindow(): AutoResizeRefs {
   const overlayRef = useCallback((el: HTMLElement | null)    => { setOverlay(el); }, []);
   const popoverRef = useCallback((el: HTMLElement | null)    => { setPopover(el); }, []);
 
+  // DevTools open/close state — stored in a ref (not the main effect's
+  // closure) so it survives effect re-runs triggered by `popover` /
+  // `overlay` changes. Previously this lived as a plain `let` inside the
+  // resize effect, which meant opening the HeaderMenu popover while
+  // DevTools was open re-ran the effect with `devtoolsOpen = false`, and
+  // the next apply() shrank the window back down mid-debug.
+  const devtoolsOpenRef = useRef(false);
+
+  // Subscribe to `devtools_state_changed` once per component lifetime.
+  // On close, flip the ref AND flag the "please recalibrate" state via
+  // a version bump so the main effect re-measures against the restored
+  // tray size instead of using the cached 1280×900 chromeOverhead.
+  const [recalibVersion, setRecalibVersion] = useState(0);
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void listen<{ open: boolean }>('devtools_state_changed', (event) => {
+      devtoolsOpenRef.current = event.payload.open;
+      if (!event.payload.open) {
+        setRecalibVersion((v) => v + 1);
+      }
+    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
+    return () => { unlisten?.(); };
+  }, []);
+
   useEffect(() => {
     if (!root || !content) return;
     const main = content.parentElement;
@@ -91,8 +116,28 @@ export function useAutoResizeWindow(): AutoResizeRefs {
     const apply = async (): Promise<void> => {
       rafId = null;
       if (inFlight) return; // don't stack setSize calls
+      // Rust owns the window size while the inspector is docked. Read
+      // from the ref (not a closure-local) so popover / overlay-driven
+      // effect re-runs don't reset this to false mid-debug.
+      if (devtoolsOpenRef.current) return;
       const targetInner = computeInner();
       const target = targetInner + chromeOverhead;
+
+      // Recalibration trigger: if the window isn't rendering at the size we
+      // last asked for, the baseline assumption behind `chromeOverhead` is
+      // stale. This happens any time something OUTSIDE our control resizes
+      // the window — most commonly DevTools docking in or out, but also a
+      // user-initiated drag on the window edge. Without this, closing
+      // DevTools leaves the hook thinking it's already at the right size
+      // (`target === lastTarget`) and the window stays whatever size the
+      // teardown left it at.
+      const actualInner = window.innerHeight;
+      const baselineDrift = lastTarget > 0 && Math.abs((lastTarget - chromeOverhead) - actualInner) > 4;
+      if (baselineDrift) {
+        calibrated = false;
+        lastTarget = 0;
+      }
+
       if (target === lastTarget) return;
       lastTarget = target;
       inFlight = true;
@@ -103,11 +148,20 @@ export function useAutoResizeWindow(): AutoResizeRefs {
           // viewport height, or did it include the title bar in the total?
           // window.innerHeight is the layout viewport — what CSS sees as
           // 100vh — which is what we actually care about for our content.
-          const actualInner = window.innerHeight;
-          const deficit = targetInner - actualInner;
+          const measured = window.innerHeight;
+          const deficit = targetInner - measured;
           if (deficit > 1) {
             chromeOverhead = deficit;
             lastTarget = targetInner + chromeOverhead;
+            await appWindow.setSize(new LogicalSize(WIDTH, lastTarget));
+          } else if (deficit < -1) {
+            // Overshoot (webview ended up LARGER than target). Happens when
+            // a prior calibration was polluted by DevTools docking — the
+            // cached `chromeOverhead` overstated the chrome. Clamp back to
+            // zero so subsequent setSize calls don't keep growing the
+            // window past its intended size.
+            chromeOverhead = 0;
+            lastTarget = targetInner;
             await appWindow.setSize(new LogicalSize(WIDTH, lastTarget));
           }
           calibrated = true;
@@ -129,13 +183,22 @@ export function useAutoResizeWindow(): AutoResizeRefs {
     if (overlay) ro.observe(overlay);
     if (popover) ro.observe(popover);
 
+    // When DevTools closes (recalibVersion bumps), force a fresh
+    // measurement so the tray window snaps back to its content size
+    // — otherwise a stale chromeOverhead from the expanded state would
+    // make the window an inspector-sized 1280×900 ghost.
+    if (recalibVersion > 0) {
+      calibrated = false;
+      lastTarget = 0;
+    }
+
     schedule();
 
     return () => {
       ro.disconnect();
       if (rafId !== null) cancelAnimationFrame(rafId);
     };
-  }, [root, content, overlay, popover]);
+  }, [root, content, overlay, popover, recalibVersion]);
 
   return { rootRef, contentRef, overlayRef, popoverRef };
 }

@@ -62,13 +62,13 @@ Claude Code tells you nothing about your rate-limit state. Sentinel shows the fu
 
 ## 🔔 Know before you hit the wall
 
-Set a threshold on the 5-hour window — 50%, 80%, 95%, whatever keeps you sane — and Sentinel fires a native OS notification the moment you cross it. Per-window deduped (one alert per rolling cycle, no spam), with a full history of every overage event, account switch, and threshold trigger so you can look back and actually understand your usage.
+Set a threshold on the 5-hour window — 50%, 80%, 95%, whatever keeps you sane — and Sentinel fires a native OS notification the moment you cross it. In round-robin mode you can alert on pool-wide mean usage too. Per-window deduped (one alert per rolling cycle, no spam), with a full history of every overage event, account switch, and threshold trigger so you can look back and actually understand your usage.
 
 <p align="center"><img src="assets/alerts1.png" alt="Alerts tab with threshold editor and history" width="720" /></p>
 
 ## ⚙️ One panel. Zero surprises.
 
-Pick your switching mode (off / auto-switch at N% / round-robin), tune the auto-switch threshold, choose your notification sound, toggle launch-at-login — every behavior is in one place, and nothing ships on by default.
+Pick your switching mode (off / round-robin), tune the rotation strategy (balance evenly or exhaust the soonest-resetting account first), choose your notification sound, toggle launch-at-login — every behavior is in one place, and nothing ships on by default.
 
 <p align="center"><img src="assets/configuration1.png" alt="Settings panel" width="720" /></p>
 
@@ -95,13 +95,14 @@ Grab the latest installer from the **[Releases page](https://github.com/Intevity
 
 - **Multi-account routing** — Enroll unlimited Claude accounts (Pro, Max, Team, Enterprise) and pick how they're used:
   - **Off** — manage accounts manually from the Accounts tab.
-  - **Auto-switch** — when the active account's 5-hour usage reaches your threshold (50–99%, default 90%), Sentinel switches to the account with the most remaining capacity.
-  - **Round-Robin** — rotate the OAuth token on every API request so usage drains across all accounts, keeping them within ~1% of each other.
+  - **Round-Robin** — rotate the OAuth token on every API request, with two sub-strategies:
+    - **Balance** (default) — prefer the lowest-utilization account so the pool drains evenly, staying within ~1%.
+    - **Earliest reset** — pin traffic to the account whose 5-hour window rolls over soonest, reclaiming headroom you'd lose anyway; rotation resumes when it blocks or resets.
 - **Overage detection** — Intercepts `anthropic-ratelimit-unified-overage-*` response headers and fires a native OS notification the moment your session enters overage budget.
 - **Usage visibility** — Every rate-limit window (5-hour, weekly all-models, weekly Sonnet, overage budget) rendered with reset countdowns and color-coded urgency. Round-robin mode aggregates every account into a pool view.
 - **Real metrics** — OTEL telemetry gives you accurate cost, tokens, cache hit rate, and per-model breakdowns over 7/14/30-day windows. Unlike `~/.claude/stats-cache.json` (which reports `$0` for subscription users), these numbers are real.
-- **User-configurable alerts** — Set a percentage threshold per 5-hour window; get a native notification when it trips. Deduped per window.
-- **Notification history** — Every overage transition, account switch, threshold trigger, and auto-switch exhaustion in one scrollable timeline.
+- **User-configurable alerts** — Set a percentage threshold on the 5-hour window (per-account or pool-wide in round-robin mode); get a native notification when it trips. Deduped per window.
+- **Notification history** — Every overage transition, account switch, and threshold trigger in one scrollable timeline.
 
 ## Architecture
 
@@ -289,6 +290,76 @@ pnpm --filter @claude-sentinel/app run tauri:dev
 
 In dev mode the app will log a warning if the sidecar binary hasn't been built yet and skip spawning it — that's expected. The IPC module retries the socket connection automatically once the daemon is running.
 
+### Testing the security feature
+
+The security scanner has three layers that each need exercising:
+
+1. **Outbound detectors** — secrets, injection heuristics — run on the
+   JSON body of every `POST /v1/messages` before the proxy forwards it
+   upstream.
+2. **Tool-use detectors** — risky bash, write, webfetch — run on streamed
+   model responses.
+3. **Block-hold flow** — the Approve / Deny banner that holds a blocked
+   request open while the user decides.
+
+`pnpm security:test <scenario>` fires synthetic events that exercise
+these layers end-to-end without any real malicious content. See the
+scenario list:
+
+```sh
+pnpm security:test --list
+```
+
+Outbound scenarios (`secret-observe`, `secret-block`, `secret-pending`,
+`injection`, `injection-unicode-tag`, `secret-ghp`) send a crafted
+payload to `localhost:47284/v1/messages` with a fake bearer token. The
+scanner runs on the body *before* any upstream call, so:
+
+- block-mode scenarios 403 immediately without touching Anthropic,
+- observe-mode scenarios may 401 upstream (expected: fake token) but
+  still fire the full persist + broadcast + UI-notification pipeline.
+
+Tool-use and pending-block scenarios (`risky-bash`, `risky-write`,
+`risky-webfetch`, `tool-use-low-severity`, `pending-block`) go through
+the daemon's `dev_trigger_security_event` IPC, which dispatches through
+the same `persistAndBroadcast` / `createPending` paths the real scanner
+uses. No real model response is needed.
+
+Examples:
+
+```sh
+# Populate the Security tab with a medium-severity tool-use finding.
+pnpm security:test risky-webfetch
+
+# Smoke-test the pending-block banner (approve/deny + countdown).
+# Works regardless of your live enforcement mode.
+pnpm security:test pending-block
+
+# Verify block-mode actually 403s. Set enforcement to "Block on HIGH"
+# and disable "Hold blocked requests for approval" in Settings first.
+pnpm security:test secret-block
+
+# Verify the pending-block flow against a real request path. Enforcement
+# in block_high, hold ON. A banner should appear; approve it and the
+# match gets added to the allowlist.
+pnpm security:test secret-pending
+```
+
+After each scenario, check:
+
+- the **Security tab** for the new event,
+- the **Alerts tab** for the mirrored notification (severity-tinted
+  shield icon),
+- the OS **Notification Center** when severity clears the configured
+  threshold (Settings → Security → Notify me about).
+
+The synthetic tokens used by the script are valid-shape garbage — they
+match the detector prefixes but are not real credentials. The literals
+are built by string concatenation inside the script (not stored as one
+contiguous string) so your own security scanner doesn't flag them when
+an agent reads the script as context. Each test run uses a unique
+`match_hash` so the dedup logic doesn't suppress repeated runs.
+
 ### Project structure
 
 ```
@@ -368,12 +439,24 @@ If the socket file is missing after the app is running, the daemon failed to sta
 
 ### App-side logs (DevTools)
 
-When running the app in dev mode (`pnpm --filter @claude-sentinel/app run tauri:dev`), open DevTools from the system tray menu and look at the Console tab. The app logs every incoming daemon message:
+**Click the `dev` version badge in the footer.** The `dev` badge is a toggle — click to open DevTools, click again to close. What you get per-platform:
 
-```
-[Sentinel] daemon-message: { type: 'account_switched', ... }
-[Sentinel] daemon-message: { type: 'login_complete', ... }
-```
+- **macOS**: Safari Web Inspector (WKWebView's native inspector) docks inside the Sentinel window.
+- **Windows**: Edge DevTools (WebView2 = Chromium, so this is the same Chrome DevTools UI you know) docks inside the Sentinel window.
+- **Linux**: WebKitGTK Inspector docks inside the Sentinel window.
+
+**How the window behaves when DevTools is open**: the tray window is normally pinned to 540×628 non-resizable (tray-menu ergonomics). When you click `dev` to open DevTools, Tauri's `toggle_devtools` command lifts those constraints and grows the window to 1280×900 with resizing enabled, so the docked inspector has room to work. The frontend's auto-resize hook pauses via a `devtools_state_changed` Tauri event so it doesn't fight the expanded size. Clicking `dev` again closes DevTools, restores the tray size, re-locks resizable, and resumes auto-resizing.
+
+**Why docked in Sentinel rather than a separate Safari window?** Earlier revisions tried driving Safari's Develop menu via AppleScript to get a separate inspector window. It required two one-time macOS permissions (Safari Develop menu + Accessibility grant) and the automation was fragile across macOS locales / Safari versions. The expand-while-open approach uses Tauri's standard [`open_devtools`/`close_devtools`](https://v2.tauri.app/develop/debug/) APIs directly — no extra permissions, cross-platform, zero platform-specific code.
+
+**Feature equivalence**: Safari Web Inspector, Edge DevTools, and WebKitGTK Inspector all provide the same tools — Console, Network, Elements, Sources with breakpoints, Timelines/Performance, Memory, Storage/Application. Safari's layout differs from Chrome's (left sidebar vs. top tabs) but the tools are functionally the same.
+
+**claude.ai login webview** (opened by **Connect claude.ai** in Settings → Overage spend tracking) — right-click anywhere → Inspect. Use this whenever login fails:
+
+- **Network tab** captures every request the auth flow makes. If login errors out, the failing request + response body is visible here.
+- **Console tab** surfaces the Sentinel-injected cookie-poll script's logs (`[Sentinel login] init script loaded. UA: …`, `[Sentinel login] sessionKey captured, handing off to Rust`) plus any claude.ai JS errors.
+
+> **Note:** "Continue with Google" doesn't work in embedded webviews — Google actively blocks them. Use email / magic-link / Apple login inside the Connect window instead.
 
 ### Common issues
 

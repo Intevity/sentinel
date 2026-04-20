@@ -209,12 +209,14 @@ function MetricsContent({ summary, days }: { summary: MetricsSummary; days: numb
             {Object.entries(summary.cacheHitRate).map(([model, r]) => (
               <div key={model} className="flex items-center gap-2">
                 <span className="text-[11px] font-medium text-black dark:text-white flex-1 truncate">{model}</span>
-                <div className="h-[4px] w-24 rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-ios-green"
-                    style={{ width: `${Math.min(100, r.rate * 100)}%` }}
-                  />
-                </div>
+                {r.rate > 0 && (
+                  <div className="h-[4px] w-24 rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-ios-green"
+                      style={{ width: `${Math.min(100, r.rate * 100)}%` }}
+                    />
+                  </div>
+                )}
                 <span className="text-[11px] font-bold tabular-nums text-black dark:text-white w-12 text-right">
                   {(r.rate * 100).toFixed(1)}%
                 </span>
@@ -242,6 +244,14 @@ function MetricsContent({ summary, days }: { summary: MetricsSummary; days: numb
       {summary.editAcceptRate.overall.accepts + summary.editAcceptRate.overall.rejects > 0 && (
         <EditAcceptRateCard rate={summary.editAcceptRate} />
       )}
+
+      {/* ── Tool-permission decisions (all tools) ────────────────────── */}
+      {summary.toolDecisions.overall.accepts + summary.toolDecisions.overall.rejects > 0 && (
+        <ToolDecisionsCard decisions={summary.toolDecisions} />
+      )}
+
+      {/* ── Prompts submitted ────────────────────────────────────────── */}
+      {summary.prompts.total > 0 && <PromptsCard prompts={summary.prompts} />}
 
       {/* ── Skills & Plugins ─────────────────────────────────────────── */}
       {(summary.skills.length > 0 || summary.plugins.length > 0) && (
@@ -552,6 +562,120 @@ function EditAcceptRateCard({ rate }: { rate: MetricsSummary['editAcceptRate'] }
       )}
     </div>
   );
+}
+
+function ToolDecisionsCard({ decisions }: { decisions: MetricsSummary['toolDecisions'] }): React.ReactElement {
+  const { overall, byTool, bySource } = decisions;
+  const overallPct = (overall.rate * 100).toFixed(1);
+  const overallColor =
+    overall.rate >= 0.8 ? 'text-ios-green' :
+    overall.rate >= 0.5 ? 'text-ios-orange' :
+                          'text-ios-red';
+
+  // Rank tools by total decisions, highest first. Limit to 6 to keep the
+  // card compact — the rest are already summarized in "overall".
+  const topTools = Object.entries(byTool)
+    .map(([tool, r]) => ({ tool, ...r, total: r.accepts + r.rejects }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 6);
+
+  // Sources are bounded (config/hook/user_permanent/user_temporary/
+  // user_abort/user_reject) so just show them all.
+  const sourceEntries = Object.entries(bySource)
+    .map(([source, r]) => ({ source, ...r, total: r.accepts + r.rejects }))
+    .sort((a, b) => b.total - a.total);
+
+  return (
+    <div className="glass-card px-4 py-3">
+      <div className="flex items-baseline justify-between mb-2">
+        <p className="text-[11px] font-semibold text-[#8E8E93]">Tool permission decisions</p>
+        <p className={`text-[18px] font-bold tabular-nums ${overallColor}`}>{overallPct}%</p>
+      </div>
+      <p className="text-[10px] text-[#8E8E93] mb-2">
+        {overall.accepts} accepted · {overall.rejects} rejected · all tools (Bash, Read, Write, MCP, …)
+      </p>
+      {topTools.length > 0 && (
+        <div className="mb-2">
+          <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-1">By tool</p>
+          <div className="space-y-1">
+            {topTools.map((t) => (
+              <div key={t.tool} className="grid grid-cols-[1fr_auto_auto] gap-3 text-[11px] items-center">
+                <span className="font-medium text-black dark:text-white truncate">{t.tool}</span>
+                <span className="text-[10px] text-[#8E8E93] tabular-nums">
+                  {t.accepts}✓ / {t.rejects}✗
+                </span>
+                <span className="text-[11px] font-semibold tabular-nums text-black dark:text-white w-10 text-right">
+                  {(t.rate * 100).toFixed(0)}%
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {sourceEntries.length > 0 && (
+        <div>
+          <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-1">By source</p>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+            {sourceEntries.map((s) => (
+              <div key={s.source} className="flex items-center justify-between text-[11px]">
+                <span className="text-black dark:text-white truncate" title={sourceDescription(s.source)}>
+                  {s.source}
+                </span>
+                <span className="text-[#8E8E93] tabular-nums">
+                  {s.total} · {(s.rate * 100).toFixed(0)}%
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PromptsCard({ prompts }: { prompts: MetricsSummary['prompts'] }): React.ReactElement {
+  const days = Object.keys(prompts.perDay).sort();
+  const data = days.map((d) => ({
+    date: d.slice(5),
+    prompts: prompts.perDay[d]!.count,
+  }));
+  const avgLen = prompts.avgLength > 0 ? Math.round(prompts.avgLength) : 0;
+
+  return (
+    <div className="glass-card px-4 pt-4 pb-2">
+      <div className="flex items-baseline justify-between mb-2">
+        <p className="text-[11px] font-semibold text-[#8E8E93]">Prompts per day</p>
+        <p className="text-[18px] font-bold tabular-nums text-black dark:text-white">
+          {prompts.total.toLocaleString()}
+        </p>
+      </div>
+      <p className="text-[10px] text-[#8E8E93] mb-2">
+        avg {avgLen.toLocaleString()} chars · {prompts.total} total
+      </p>
+      {data.length > 0 && (
+        <ResponsiveContainer width="100%" height={100}>
+          <BarChart data={data} barSize={14} margin={{ top: 0, right: 0, bottom: 0, left: -20 }}>
+            <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
+            <Tooltip content={<StackedTooltip />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
+            <Bar dataKey="prompts" fill="#5E5CE6" radius={[4, 4, 0, 0]} name="prompts" />
+          </BarChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
+}
+
+function sourceDescription(source: string): string {
+  switch (source) {
+    case 'config': return 'Pre-approved by settings';
+    case 'hook': return 'Allowed by a hook';
+    case 'user_permanent': return '"Always allow" — you approved permanently';
+    case 'user_temporary': return 'You approved for this session';
+    case 'user_abort': return 'You cancelled (abort)';
+    case 'user_reject': return 'You explicitly rejected';
+    default: return source;
+  }
 }
 
 function SkillsAndPlugins({

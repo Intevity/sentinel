@@ -13,11 +13,15 @@ import {
   markAccountRemoved,
   purgeAccount,
   hasNonPurgedAccount,
+  hasActiveAccount,
+  setAccountColor,
   insertUsageEvent,
   getUsageEvents,
   getTodayUsageSummary,
   insertOverageEvent,
   getOverageEvents,
+  clearOverageEvents,
+  getLastOverageEventPerAccount,
   insertNotification,
   acknowledgeNotification,
   listNotifications,
@@ -86,6 +90,7 @@ describe('Database', () => {
       planType: 'pro',
       isActive: false,
       createdAt: 1700000000000,
+      color: null,
     };
 
     it('inserts and retrieves an account', () => {
@@ -193,6 +198,63 @@ describe('Database', () => {
         expect(hasNonPurgedAccount(db, 'uuid-1')).toBe(false);
       });
     });
+
+    describe('hasActiveAccount', () => {
+      it('returns false for a row that does not exist', () => {
+        expect(hasActiveAccount(db, 'no-such-id')).toBe(false);
+      });
+
+      it('returns true for an active account (removed=0)', () => {
+        upsertAccount(db, account);
+        expect(hasActiveAccount(db, 'uuid-1')).toBe(true);
+      });
+
+      it('returns false for a soft-removed account (removed=1)', () => {
+        upsertAccount(db, account);
+        markAccountRemoved(db, 'uuid-1');
+        expect(hasActiveAccount(db, 'uuid-1')).toBe(false);
+      });
+
+      it('returns false for a hard-purged tombstone (removed=2)', () => {
+        upsertAccount(db, account);
+        purgeAccount(db, 'uuid-1');
+        expect(hasActiveAccount(db, 'uuid-1')).toBe(false);
+      });
+    });
+
+    describe('avatar color', () => {
+      it('defaults to null on a freshly-upserted account', () => {
+        upsertAccount(db, account);
+        expect(getAccount(db, 'uuid-1')?.color).toBeNull();
+      });
+
+      it('persists and round-trips a hex color via setAccountColor', () => {
+        upsertAccount(db, account);
+        expect(setAccountColor(db, 'uuid-1', '#FF9F0A')).toBe(true);
+        expect(getAccount(db, 'uuid-1')?.color).toBe('#FF9F0A');
+      });
+
+      it('returns false when setAccountColor targets an unknown id', () => {
+        expect(setAccountColor(db, 'no-such-id', '#FF9F0A')).toBe(false);
+      });
+
+      it('clears the stored color when set to null', () => {
+        upsertAccount(db, account);
+        setAccountColor(db, 'uuid-1', '#FF9F0A');
+        expect(setAccountColor(db, 'uuid-1', null)).toBe(true);
+        expect(getAccount(db, 'uuid-1')?.color).toBeNull();
+      });
+
+      it('preserves the stored color across subsequent upserts', () => {
+        // upsertAccount's ON CONFLICT DO UPDATE intentionally omits the color
+        // column so metadata refreshes (e.g. refresh_accounts, login flow)
+        // can't clobber the user's pick.
+        upsertAccount(db, account);
+        setAccountColor(db, 'uuid-1', '#30D158');
+        upsertAccount(db, { ...account, displayName: 'Renamed', color: null });
+        expect(getAccount(db, 'uuid-1')?.color).toBe('#30D158');
+      });
+    });
   });
 
   describe('usage events', () => {
@@ -297,6 +359,7 @@ describe('Database', () => {
         resetsAt: 1776700800,
         disabledReason: null,
       });
+      expect(id).not.toBeNull();
       expect(id).toBeGreaterThan(0);
 
       const events = getOverageEvents(db, { accountId: 'acc-1' });
@@ -314,11 +377,73 @@ describe('Database', () => {
     });
 
     it('respects limit', () => {
+      // Distinct (accountId, resetsAt, transition) tuples so the unique
+      // index doesn't collapse them — rolling resetsAt per row.
       for (let i = 0; i < 5; i++) {
-        insertOverageEvent(db, { ts: Date.now(), accountId: 'acc-1', transition: 'entered', status: 'active', resetsAt: null, disabledReason: null });
+        insertOverageEvent(db, {
+          ts: Date.now(),
+          accountId: 'acc-1',
+          transition: 'entered',
+          status: 'active',
+          resetsAt: 1_700_000_000 + i,
+          disabledReason: null,
+        });
       }
       const events = getOverageEvents(db, { limit: 2 });
       expect(events).toHaveLength(2);
+    });
+
+    it('clearOverageEvents wipes every row when no account scope is given', () => {
+      insertOverageEvent(db, { ts: 1, accountId: 'acc-1', transition: 'entered', status: 'a', resetsAt: 1, disabledReason: null });
+      insertOverageEvent(db, { ts: 2, accountId: 'acc-2', transition: 'entered', status: 'a', resetsAt: 2, disabledReason: null });
+      const count = clearOverageEvents(db);
+      expect(count).toBe(2);
+      expect(getOverageEvents(db, {})).toEqual([]);
+    });
+
+    it('clearOverageEvents scopes delete to a single account when provided', () => {
+      insertOverageEvent(db, { ts: 1, accountId: 'acc-1', transition: 'entered', status: 'a', resetsAt: 1, disabledReason: null });
+      insertOverageEvent(db, { ts: 2, accountId: 'acc-2', transition: 'entered', status: 'a', resetsAt: 2, disabledReason: null });
+      const count = clearOverageEvents(db, 'acc-1');
+      expect(count).toBe(1);
+      const remaining = getOverageEvents(db, {});
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]?.accountId).toBe('acc-2');
+    });
+
+    it('getLastOverageEventPerAccount returns one newest row per account', () => {
+      insertOverageEvent(db, { ts: 100, accountId: 'acc-1', transition: 'entered', status: 'a', resetsAt: 1, disabledReason: null });
+      insertOverageEvent(db, { ts: 200, accountId: 'acc-1', transition: 'exited',  status: 'a', resetsAt: 1, disabledReason: null });
+      insertOverageEvent(db, { ts: 150, accountId: 'acc-2', transition: 'entered', status: 'a', resetsAt: 2, disabledReason: null });
+
+      const rows = getLastOverageEventPerAccount(db);
+      const byAccount = Object.fromEntries(rows.map((r) => [r.accountId, r]));
+      expect(byAccount['acc-1']?.ts).toBe(200);
+      expect(byAccount['acc-1']?.transition).toBe('exited');
+      expect(byAccount['acc-2']?.ts).toBe(150);
+    });
+
+    it('returns null on duplicate insert within the same window', () => {
+      const first = insertOverageEvent(db, {
+        ts: Date.now(),
+        accountId: 'acc-1',
+        transition: 'entered',
+        status: 'active',
+        resetsAt: 1776700800,
+        disabledReason: null,
+      });
+      const second = insertOverageEvent(db, {
+        ts: Date.now() + 1000,
+        accountId: 'acc-1',
+        transition: 'entered',
+        status: 'active',
+        resetsAt: 1776700800,
+        disabledReason: null,
+      });
+      expect(first).not.toBeNull();
+      expect(second).toBeNull();
+      const events = getOverageEvents(db, { accountId: 'acc-1' });
+      expect(events).toHaveLength(1);
     });
   });
 
@@ -465,6 +590,163 @@ describe('Database', () => {
   });
 });
 
+// ─── Tool decisions + prompt stats ──────────────────────────────────────────
+
+describe('getToolDecisionBreakdown', () => {
+  let db: Database.Database;
+
+  beforeEach(() => { db = makeTestDb(); });
+  afterEach(() => {
+    closeDb();
+    if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
+  });
+
+  it('aggregates tool_decision activity rows by overall, tool, and source', async () => {
+    const { insertActivityEvent, getToolDecisionBreakdown } = await import('./db.js');
+    const now = Date.now();
+    const seed = (toolName: string, decision: string, source: string): void => {
+      insertActivityEvent(db, { ts: now, accountId: 'a', sessionId: null, kind: 'tool_decision', value: 1, toolName, decision, source });
+    };
+    // Bash: 3 accept, 1 reject, all user_temporary
+    seed('Bash', 'accept', 'user_temporary');
+    seed('Bash', 'accept', 'user_temporary');
+    seed('Bash', 'accept', 'user_temporary');
+    seed('Bash', 'reject', 'user_reject');
+    // WebFetch: 1 accept from hook
+    seed('WebFetch', 'accept', 'hook');
+
+    const out = getToolDecisionBreakdown(db, 'a', 7);
+    expect(out.overall.accepts).toBe(4);
+    expect(out.overall.rejects).toBe(1);
+    expect(out.overall.rate).toBeCloseTo(0.8);
+
+    expect(out.byTool['Bash']).toEqual({ accepts: 3, rejects: 1, rate: 0.75 });
+    expect(out.byTool['WebFetch']).toEqual({ accepts: 1, rejects: 0, rate: 1 });
+
+    expect(out.bySource['user_temporary']?.accepts).toBe(3);
+    expect(out.bySource['user_reject']?.rejects).toBe(1);
+    expect(out.bySource['hook']?.accepts).toBe(1);
+  });
+
+  it('ignores rows from other accounts and other kinds', async () => {
+    const { insertActivityEvent, getToolDecisionBreakdown } = await import('./db.js');
+    const now = Date.now();
+    // Wrong account
+    insertActivityEvent(db, { ts: now, accountId: 'b', sessionId: null, kind: 'tool_decision', value: 1, toolName: 'Bash', decision: 'accept', source: 'hook' });
+    // Right account, wrong kind
+    insertActivityEvent(db, { ts: now, accountId: 'a', sessionId: null, kind: 'edit_decision', value: 1, toolName: 'Edit', decision: 'accept' });
+    const out = getToolDecisionBreakdown(db, 'a', 7);
+    expect(out.overall.accepts).toBe(0);
+    expect(out.overall.rejects).toBe(0);
+    expect(out.overall.rate).toBe(0);
+  });
+
+  it('empty window yields zeroed overall and empty byTool/bySource', async () => {
+    const { getToolDecisionBreakdown } = await import('./db.js');
+    const out = getToolDecisionBreakdown(db, 'a', 7);
+    expect(out).toEqual({
+      overall: { accepts: 0, rejects: 0, rate: 0 },
+      byTool: {},
+      bySource: {},
+    });
+  });
+});
+
+describe('getUserPromptStats', () => {
+  let db: Database.Database;
+
+  beforeEach(() => { db = makeTestDb(); });
+  afterEach(() => {
+    closeDb();
+    if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
+  });
+
+  it('returns per-day counts and a prompt-weighted average length', async () => {
+    const { insertActivityEvent, getUserPromptStats } = await import('./db.js');
+    const now = Date.now();
+    // Same day, avg = (100+200)/2 = 150; two prompts.
+    insertActivityEvent(db, { ts: now, accountId: 'a', sessionId: null, kind: 'user_prompt', value: 100 });
+    insertActivityEvent(db, { ts: now, accountId: 'a', sessionId: null, kind: 'user_prompt', value: 200 });
+
+    const out = getUserPromptStats(db, 'a', 7);
+    expect(out.total).toBe(2);
+    expect(out.avgLength).toBe(150);
+    // Single day key present with the right count.
+    const days = Object.keys(out.perDay);
+    expect(days).toHaveLength(1);
+    expect(out.perDay[days[0]!]).toEqual({ count: 2, avgLength: 150 });
+  });
+
+  it('handles prompts with null length (no prompt_length attribute)', async () => {
+    const { insertActivityEvent, getUserPromptStats } = await import('./db.js');
+    insertActivityEvent(db, { ts: Date.now(), accountId: 'a', sessionId: null, kind: 'user_prompt', value: null });
+    const out = getUserPromptStats(db, 'a', 7);
+    // Total still increments, but avgLength stays 0 because no row carried a
+    // length.
+    expect(out.total).toBe(1);
+    expect(out.avgLength).toBe(0);
+  });
+
+  it('returns empty stats when no user_prompt rows exist', async () => {
+    const { getUserPromptStats } = await import('./db.js');
+    expect(getUserPromptStats(db, 'a', 7)).toEqual({ total: 0, avgLength: 0, perDay: {} });
+  });
+});
+
+// ─── Retention purge ────────────────────────────────────────────────────────
+
+describe('purgeTelemetryOlderThan', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = makeTestDb();
+  });
+  afterEach(() => {
+    closeDb();
+    if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
+  });
+
+  it('deletes rows older than cutoff across all four telemetry tables; keeps newer rows', async () => {
+    const { insertUsageEvent, insertToolEvent, insertApiError, insertActivityEvent, purgeTelemetryOlderThan } =
+      await import('./db.js');
+
+    const old = Date.now() - 60 * 24 * 60 * 60 * 1000; // 60d ago
+    const fresh = Date.now() - 1 * 24 * 60 * 60 * 1000; // 1d ago
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000; // 30d
+
+    const makeUsage = (ts: number): void => {
+      insertUsageEvent(db, { ts, accountId: 'a', sessionId: null, model: 'm', costUsd: null, inputTokens: null, outputTokens: null, cacheRead: null, cacheCreate: null, durationMs: null });
+    };
+    const makeTool = (ts: number): void => {
+      insertToolEvent(db, { ts, accountId: 'a', sessionId: null, toolName: 'Bash', success: true, durationMs: null, error: null, decisionSource: null, decisionType: null, mcpServerScope: null, toolResultSizeBytes: null });
+    };
+    const makeErr = (ts: number): void => {
+      insertApiError(db, { ts, accountId: 'a', sessionId: null, model: null, statusCode: '500', error: 'x', durationMs: null, attempt: 1, requestId: null, speed: null });
+    };
+    const makeActivity = (ts: number): void => {
+      insertActivityEvent(db, { ts, accountId: 'a', sessionId: null, kind: 'session', value: 1 });
+    };
+
+    // Two rows per table: one old, one fresh.
+    [makeUsage, makeTool, makeErr, makeActivity].forEach((fn) => { fn(old); fn(fresh); });
+
+    const purged = purgeTelemetryOlderThan(db, cutoff);
+    expect(purged).toBe(4); // one per table
+
+    for (const table of ['usage_events', 'tool_events', 'api_errors', 'activity_events']) {
+      const rows = db.prepare(`SELECT ts FROM ${table}`).all() as Array<{ ts: number }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.ts).toBe(fresh);
+    }
+  });
+
+  it('returns 0 when nothing is past the cutoff', async () => {
+    const { insertUsageEvent, purgeTelemetryOlderThan } = await import('./db.js');
+    insertUsageEvent(db, { ts: Date.now(), accountId: 'a', sessionId: null, model: 'm', costUsd: null, inputTokens: null, outputTokens: null, cacheRead: null, cacheCreate: null, durationMs: null });
+    expect(purgeTelemetryOlderThan(db, Date.now() - 24 * 60 * 60 * 1000)).toBe(0);
+  });
+});
+
 // ─── Metrics tab helpers ────────────────────────────────────────────────────
 
 describe('Metrics tab DB helpers', () => {
@@ -558,7 +840,7 @@ describe('Metrics tab DB helpers', () => {
         ts: now, accountId: acct, sessionId: 's', toolName: 'Bash',
         success: ms !== 500, durationMs: ms,
         error: ms === 500 ? 'boom' : null,
-        decisionSource: null, mcpServerScope: null, toolResultSizeBytes: null,
+        decisionSource: null, decisionType: null, mcpServerScope: null, toolResultSizeBytes: null,
       });
     }
     const stats = getToolStats(db, acct, 7);
@@ -575,7 +857,7 @@ describe('Metrics tab DB helpers', () => {
     insertToolEvent(db, {
       ts: Date.now(), accountId: acct, sessionId: 's', toolName: 'Read',
       success: true, durationMs: 10, error: null, decisionSource: null,
-      mcpServerScope: null, toolResultSizeBytes: null,
+      decisionType: null, mcpServerScope: null, toolResultSizeBytes: null,
     });
     const stats = getToolStats(db, acct, 7);
     expect(stats[0]?.topError).toBeNull();
@@ -686,7 +968,7 @@ describe('Metrics tab DB helpers', () => {
     const { listRemovedAccounts, reactivateAccount } = await import('./db.js');
     const acc: AccountInfo = {
       id: 'rem', accountUuid: 'rem', email: 'r@x', displayName: '', orgUuid: '', orgName: '',
-      planType: 'pro', isActive: false, createdAt: Date.now(),
+      planType: 'pro', isActive: false, createdAt: Date.now(), color: null,
     };
     upsertAccount(db, acc);
     markAccountRemoved(db, 'rem');
@@ -694,5 +976,157 @@ describe('Metrics tab DB helpers', () => {
     reactivateAccount(db, 'rem');
     expect(listRemovedAccounts(db)).toHaveLength(0);
     expect(listAccounts(db).some((a) => a.id === 'rem')).toBe(true);
+  });
+});
+
+describe('alerts schema migration', () => {
+  const LEGACY_DB = join(tmpdir(), `sentinel-alerts-legacy-${Date.now()}.db`);
+
+  afterEach(() => {
+    closeDb();
+    if (existsSync(LEGACY_DB)) unlinkSync(LEGACY_DB);
+  });
+
+  it('adds the scope column to a pre-existing alerts table and back-fills "account"', async () => {
+    // Build a DB that predates the `scope` column by hand.
+    const raw = new Database(LEGACY_DB);
+    raw.exec(`
+      CREATE TABLE alerts (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id              TEXT NOT NULL,
+        threshold_pct           INTEGER NOT NULL,
+        enabled                 INTEGER NOT NULL DEFAULT 1,
+        last_triggered_reset_ts INTEGER,
+        created_at              INTEGER NOT NULL
+      );
+    `);
+    raw.prepare(
+      'INSERT INTO alerts (account_id, threshold_pct, enabled, created_at) VALUES (?, ?, ?, ?)',
+    ).run('acc-legacy', 75, 1, Date.now());
+    raw.close();
+
+    // Reopen through getDb so the migration runs.
+    const db = getDb(LEGACY_DB);
+    const cols = db.pragma('table_info(alerts)') as Array<{ name: string }>;
+    expect(cols.some((c) => c.name === 'scope')).toBe(true);
+
+    // Legacy rows should read as scope='account' via the row mapper.
+    const { listAlerts } = await import('./db.js');
+    const rows = listAlerts(db);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.scope).toBe('account');
+    expect(rows[0]?.accountId).toBe('acc-legacy');
+  });
+
+  it('adds the budget_scope column to a pre-scope-migration alerts table', async () => {
+    // DB that predates both the scope and budget_scope columns.
+    const raw = new Database(LEGACY_DB);
+    raw.exec(`
+      CREATE TABLE alerts (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id              TEXT NOT NULL,
+        threshold_pct           INTEGER NOT NULL,
+        enabled                 INTEGER NOT NULL DEFAULT 1,
+        last_triggered_reset_ts INTEGER,
+        created_at              INTEGER NOT NULL
+      );
+    `);
+    raw.close();
+
+    const db = getDb(LEGACY_DB);
+    const cols = db.pragma('table_info(alerts)') as Array<{ name: string }>;
+    expect(cols.some((c) => c.name === 'scope')).toBe(true);
+    expect(cols.some((c) => c.name === 'budget_scope')).toBe(true);
+  });
+});
+
+describe('budget-scope alerts', () => {
+  const BUDGET_DB = join(tmpdir(), `sentinel-alerts-budget-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+
+  afterEach(() => {
+    closeDb();
+    if (existsSync(BUDGET_DB)) unlinkSync(BUDGET_DB);
+  });
+
+  it('round-trips a budget:account alert', async () => {
+    const db = getDb(BUDGET_DB);
+    const { upsertAlert, listAlerts } = await import('./db.js');
+    const saved = upsertAlert(db, {
+      scope: 'budget',
+      budgetScope: 'account',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    expect(saved.scope).toBe('budget');
+    expect(saved.budgetScope).toBe('account');
+    expect(saved.accountId).toBe('acc-a');
+    expect(saved.thresholdPct).toBe(80);
+
+    const rows = listAlerts(db, { scope: 'budget' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.scope).toBe('budget');
+    expect(rows[0]?.accountId).toBe('acc-a');
+  });
+
+  it('round-trips a budget:global alert with null accountId', async () => {
+    const db = getDb(BUDGET_DB);
+    const { upsertAlert, listAlerts } = await import('./db.js');
+    const saved = upsertAlert(db, {
+      scope: 'budget',
+      budgetScope: 'global',
+      accountId: null,
+      thresholdPct: 90,
+      enabled: true,
+    });
+    expect(saved.scope).toBe('budget');
+    expect(saved.budgetScope).toBe('global');
+    expect(saved.accountId).toBe(null);
+
+    const rows = listAlerts(db, { scope: 'budget' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.accountId).toBe(null);
+    expect(rows[0]?.budgetScope).toBe('global');
+  });
+
+  it('rejects a budget:global alert with a non-null accountId', async () => {
+    const db = getDb(BUDGET_DB);
+    const { upsertAlert } = await import('./db.js');
+    expect(() =>
+      upsertAlert(db, { scope: 'budget', budgetScope: 'global', accountId: 'acc-a', thresholdPct: 80, enabled: true }),
+    ).toThrow();
+  });
+
+  it('rejects a budget:account alert with a null accountId', async () => {
+    const db = getDb(BUDGET_DB);
+    const { upsertAlert } = await import('./db.js');
+    expect(() =>
+      upsertAlert(db, { scope: 'budget', budgetScope: 'account', accountId: null, thresholdPct: 80, enabled: true }),
+    ).toThrow();
+  });
+
+  it('listAlerts by scope:budget + accountId returns only that account', async () => {
+    const db = getDb(BUDGET_DB);
+    const { upsertAlert, listAlerts } = await import('./db.js');
+    upsertAlert(db, { scope: 'budget', budgetScope: 'account', accountId: 'acc-a', thresholdPct: 80, enabled: true });
+    upsertAlert(db, { scope: 'budget', budgetScope: 'account', accountId: 'acc-b', thresholdPct: 80, enabled: true });
+    upsertAlert(db, { scope: 'budget', budgetScope: 'global',  accountId: null,     thresholdPct: 90, enabled: true });
+
+    const aRows = listAlerts(db, { scope: 'budget', accountId: 'acc-a' });
+    expect(aRows).toHaveLength(1);
+    expect(aRows[0]?.accountId).toBe('acc-a');
+
+    const all = listAlerts(db, { scope: 'budget' });
+    expect(all).toHaveLength(3);
+  });
+
+  it('updates an existing budget alert in place', async () => {
+    const db = getDb(BUDGET_DB);
+    const { upsertAlert } = await import('./db.js');
+    const saved = upsertAlert(db, { scope: 'budget', budgetScope: 'account', accountId: 'acc-a', thresholdPct: 80, enabled: true });
+    const updated = upsertAlert(db, { id: saved.id, scope: 'budget', budgetScope: 'account', accountId: 'acc-a', thresholdPct: 95, enabled: false });
+    expect(updated.id).toBe(saved.id);
+    expect(updated.thresholdPct).toBe(95);
+    expect(updated.enabled).toBe(false);
   });
 });

@@ -14,11 +14,22 @@ export type OverageTransitionEvent = {
 export type TransitionHandler = (event: OverageTransitionEvent) => void;
 
 /**
+ * Per-window fired-transitions cache. A single overage window is keyed by
+ * `resetsAt`; within a window, each transition type fires at most once.
+ * A new `resetsAt` implicitly opens a new window and resets the set.
+ */
+type FiredWindow = { resetsAt: number | null; transitions: Set<OverageTransition> };
+
+/**
  * In-memory overage state machine.
  * Tracks per-account overage status and fires callbacks on transitions.
+ * Deduplicates transitions within a single overage window so that an
+ * oscillating `in-use` header does not produce a chain of identical
+ * entered/exited events.
  */
 export class OverageStateMachine {
   private readonly states = new Map<string, OverageState>();
+  private readonly fired = new Map<string, FiredWindow>();
   private readonly handlers: TransitionHandler[] = [];
 
   onTransition(handler: TransitionHandler): void {
@@ -90,10 +101,18 @@ export class OverageStateMachine {
 
     this.states.set(accountId, newState);
 
-    // Determine transition
+    // Determine transition. A change in `resetsAt` while still in overage
+    // means a new overage window has opened — treat that as a fresh
+    // `entered` even though `isUsingOverage` was already true, so the new
+    // window gets its own timeline entry.
     let transition: OverageTransition | null = null;
+    const windowRolledOver =
+      isUsingOverage &&
+      prev !== undefined &&
+      prev.isUsingOverage &&
+      prev.resetsAt !== parsed.resetsAt;
 
-    if (isUsingOverage && (prev === undefined || !prev.isUsingOverage)) {
+    if (isUsingOverage && (prev === undefined || !prev.isUsingOverage || windowRolledOver)) {
       transition = 'entered';
     } else if (isDisabled && (prev === undefined || prev.status !== 'disabled')) {
       transition = 'disabled';
@@ -105,9 +124,39 @@ export class OverageStateMachine {
       return null;
     }
 
+    // Window-level dedup: same resetsAt + same transition already fired →
+    // swallow it. A new resetsAt opens a fresh window.
+    let window = this.fired.get(accountId);
+    if (window === undefined || window.resetsAt !== parsed.resetsAt) {
+      window = { resetsAt: parsed.resetsAt, transitions: new Set() };
+      this.fired.set(accountId, window);
+    }
+    if (window.transitions.has(transition)) {
+      return null;
+    }
+    window.transitions.add(transition);
+
     const event: OverageTransitionEvent = { accountId, transition, state: newState };
     this.handlers.forEach((h) => h(event));
     return event;
+  }
+
+  /**
+   * Seed the state machine with an account's last known overage snapshot.
+   * Used at daemon startup (after crash/restart) to suppress re-emitting a
+   * transition that was already persisted for the active overage window.
+   * `transitions` are the transition types already recorded for this window.
+   */
+  rehydrate(
+    accountId: string,
+    state: OverageState,
+    transitions: OverageTransition[],
+  ): void {
+    this.states.set(accountId, state);
+    this.fired.set(accountId, {
+      resetsAt: state.resetsAt,
+      transitions: new Set(transitions),
+    });
   }
 
   /**
@@ -122,6 +171,7 @@ export class OverageStateMachine {
    */
   resetState(accountId: string): void {
     this.states.delete(accountId);
+    this.fired.delete(accountId);
   }
 
   /**

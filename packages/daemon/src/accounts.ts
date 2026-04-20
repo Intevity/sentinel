@@ -12,6 +12,19 @@ const CC_SERVICE = 'Claude Code-credentials';
  */
 const SENTINEL_SERVICE = 'Claude Sentinel-credentials';
 
+/**
+ * Per-account claude.ai session cookie store. Used by the usage fetcher to
+ * hit `/api/organizations/{org}/usage` — the web-session-only endpoint that
+ * returns real overage spend + limit numbers (no OAuth equivalent exists).
+ *
+ * SECURITY: the value is a live web session credential. Anyone holding it
+ * can act as the user on claude.ai. Keep it in the OS keychain, never in
+ * settings.json or any readable file. The daemon also never echoes the
+ * value back to the UI — the frontend can only set, clear, or check
+ * presence.
+ */
+const CLAUDE_AI_SESSION_SERVICE = 'Claude Sentinel-claude-ai-session';
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -112,6 +125,52 @@ export function writeSentinelCredentials(key: string, creds: ClaudeCodeCredentia
  */
 export function deleteSentinelCredentials(key: string): void {
   deleteCredentialBlob(SENTINEL_SERVICE, key);
+}
+
+/**
+ * Read the stored claude.ai sessionKey cookie for an account, or null when
+ * none is set. This value is sensitive — callers must never pass it back to
+ * the UI or log it.
+ * @param key - Sentinel account id (AccountInfo.id)
+ */
+export function readClaudeAiSessionKey(key: string): string | null {
+  try {
+    const blob = readCredentialBlob(CLAUDE_AI_SESSION_SERVICE, key);
+    if (!blob) return null;
+    // Stored as the raw sessionKey string (no JSON envelope — saves one
+    // parse and matches what the user pasted from DevTools).
+    return blob || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Store a claude.ai sessionKey cookie for an account. Trims whitespace and
+ * refuses empty strings so a blank paste doesn't overwrite a valid entry.
+ */
+export function writeClaudeAiSessionKey(key: string, sessionKey: string): void {
+  const trimmed = sessionKey.trim();
+  if (!trimmed) throw new Error('sessionKey must not be empty');
+  writeCredentialBlob(CLAUDE_AI_SESSION_SERVICE, key, trimmed);
+}
+
+export function deleteClaudeAiSessionKey(key: string): void {
+  deleteCredentialBlob(CLAUDE_AI_SESSION_SERVICE, key);
+}
+
+/**
+ * Presence check without exposing the value. Returns true when the keychain
+ * entry exists AND has a non-empty value. Used by the UI to render "set" vs
+ * "not set" status without the daemon ever sending the secret back.
+ */
+export function hasClaudeAiSessionKey(key: string): boolean {
+  try {
+    const blob = readCredentialBlob(CLAUDE_AI_SESSION_SERVICE, key);
+    return !!blob && blob.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**

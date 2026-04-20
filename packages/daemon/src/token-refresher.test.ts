@@ -42,14 +42,17 @@ function makeCreds(overrides: Partial<ClaudeCodeCredentials> = {}): ClaudeCodeCr
 
 function makeDeps() {
   const broadcast = vi.fn();
+  const rotatorRefresh = vi.fn();
   return {
     deps: {
       db: {} as never,
       activeToken: { value: null as string | null },
       activeAccountId: { value: 'acct-1' },
       ipcServer: { broadcast } as never,
+      tokenRotator: { refresh: rotatorRefresh },
     },
     broadcast,
+    rotatorRefresh,
   };
 }
 
@@ -120,6 +123,31 @@ describe('token-refresher', () => {
 
       expect(writeClaudeCodeCredentialsMock).not.toHaveBeenCalled();
       expect(deps.activeToken.value).toBeNull();
+    });
+
+    it('invalidates the rotator pool after a successful refresh of an inactive account', async () => {
+      // Regression: round-robin pool kept serving the pre-refresh token on the
+      // non-active account until the daemon was restarted, causing 401s.
+      readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 5 * 60 * 1000 }));
+      refreshAccessTokenMock.mockResolvedValue({
+        access_token: 'at-new', refresh_token: 'rt-new', expires_in: 3600, token_type: 'Bearer',
+      });
+      const { deps, rotatorRefresh } = makeDeps();
+      deps.activeAccountId.value = 'different-account'; // refreshed account is NOT active
+
+      await refreshIfNeeded(deps, 'acct-1', 'a@b.com');
+
+      expect(rotatorRefresh).toHaveBeenCalledOnce();
+    });
+
+    it('does not invalidate the rotator pool when the refresh is skipped', async () => {
+      readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 45 * 60 * 1000 }));
+      const { deps, rotatorRefresh } = makeDeps();
+
+      await refreshIfNeeded(deps, 'acct-1', 'a@b.com');
+
+      expect(refreshAccessTokenMock).not.toHaveBeenCalled();
+      expect(rotatorRefresh).not.toHaveBeenCalled();
     });
 
     it('force=true refreshes even when token is fresh', async () => {

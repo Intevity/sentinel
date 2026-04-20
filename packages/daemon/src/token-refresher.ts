@@ -21,6 +21,11 @@ export interface TokenRefresherDeps {
   activeToken: ActiveToken;
   activeAccountId: ActiveAccountId;
   ipcServer: IpcServer;
+  /** Round-robin pool cache. Structural type so this module doesn't import
+   *  TokenRotator (avoids a circular dep with index.ts). `refresh()` must be
+   *  called after every successful token rotation or the pool will keep
+   *  handing out the pre-refresh token and requests will 401. */
+  tokenRotator: { refresh(): void };
 }
 
 export interface RefreshResult {
@@ -71,6 +76,12 @@ export async function refreshIfNeeded(
       scopes:       tokens.scope ? tokens.scope.split(' ').filter(Boolean) : creds.scopes,
     };
     writeSentinelCredentials(accountId, updated);
+
+    // Invariant: Sentinel's keychain now has the new token; the rotator pool
+    // must reflect it before the next pick() or round-robin will keep
+    // serving the pre-refresh token and 401. Invalidate unconditionally —
+    // the pool covers every non-excluded account, not just the active one.
+    deps.tokenRotator.refresh();
 
     // If this account is currently active, keep Claude Code's keychain slot and
     // the proxy's in-memory token reference in sync so the next request uses

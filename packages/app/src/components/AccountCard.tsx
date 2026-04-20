@@ -1,6 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { AccountInfo } from '@claude-sentinel/shared';
 import { planLabel, planColor } from '../lib/plan.js';
+import { getAccountStatus } from '../lib/account-status.js';
+import { avatarStyle } from '../lib/accountColor.js';
+import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
+import AccountColorPicker from './AccountColorPicker.js';
+import ResetCountdown from './ResetCountdown.js';
 
 interface AccountCardProps {
   account: AccountInfo;
@@ -12,6 +17,17 @@ interface AccountCardProps {
    *  no cached headers for this account yet (typical for never-switched-to
    *  accounts, or on a fresh install). */
   fiveHourUtil?: number;
+  /** Unix-seconds timestamp when the 5h window rolls over. Displayed as a
+   *  live countdown pill ("resets in 1h 24m") next to the util chip. Null
+   *  / undefined suppresses the pill so cards without observed reset data
+   *  don't show a bare "resets in …". */
+  fiveHourResetAt?: number | null;
+  /** Effective Sentinel cap for this account in USD (per-account override
+   *  falling back to global). 0 or undefined suppresses the Sentinel chip. */
+  weeklyCapUsd?: number | null;
+  /** True when Sentinel has paused this account (weekly cap reached). Shown
+   *  as a red "Paused" pill replacing the normal spend chip. */
+  paused?: boolean;
   /** Click handler for the "Refresh token" action. When set, the card
    *  renders a small tertiary button that triggers a manual token refresh. */
   onRefreshToken?: (id: string) => void;
@@ -36,19 +52,6 @@ interface AccountCardProps {
   onTogglePool?: (id: string, nextInPool: boolean) => void;
 }
 
-const AVATAR_GRADIENTS = [
-  'from-[#007AFF] to-[#5E5CE6]',
-  'from-[#30D158] to-[#007AFF]',
-  'from-[#BF5AF2] to-[#5E5CE6]',
-  'from-[#FF9F0A] to-[#FF453A]',
-];
-
-function avatarGradient(id: string): string {
-  const idx = id.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) % AVATAR_GRADIENTS.length;
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  return AVATAR_GRADIENTS[idx]!;
-}
-
 export default function AccountCard({
   account,
   onSwitch,
@@ -63,11 +66,26 @@ export default function AccountCard({
   inPool,
   canExclude,
   onTogglePool,
+  weeklyCapUsd,
+  paused,
+  fiveHourResetAt,
 }: AccountCardProps): React.ReactElement {
-  // In round-robin, only pool members rotate — they read as "active." Excluded
-  // cards fall back to standard styling so they're clearly sitting out.
-  const rotating = isRoundRobin && inPool;
-  const highlight = account.isActive || rotating;
+  // Live Anthropic usage snapshot for this account. The spend chip is only
+  // rendered when `extraUsage` is real — a connected account with overage
+  // enabled. If the user hasn't completed claude.ai login we have no
+  // honest numbers to show, so no chip appears (the 5h util chip and plan
+  // label still render).
+  const { snapshot } = useClaudeAiUsage(account.id);
+  const extraUsage = snapshot?.extraUsage ?? null;
+  const hasRealUsage = !!extraUsage && extraUsage.isEnabled;
+  // Shared status derivation with the AccountViewPicker dropdown so the two
+  // stay in lock-step (round-robin pool members → "Active", excluded → muted).
+  const status = getAccountStatus({
+    isActive: account.isActive,
+    switchingMode: isRoundRobin ? 'round-robin' : 'off',
+    inPool: inPool ?? false,
+  });
+  const highlight = status === 'active';
 
   const initials = (account.displayName || account.email)
     .split(/[\s@]/)
@@ -78,7 +96,8 @@ export default function AccountCard({
     .toUpperCase();
 
   const plan = { label: planLabel(account.planType), color: planColor(account.planType) };
-  const gradient = avatarGradient(account.id);
+  const avatar = avatarStyle(account);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   // Matches UsageView's rounding: plain round on the header value. Pin the
   // 0 / 100 boundaries so a fresh account isn't mislabeled.
@@ -94,15 +113,12 @@ export default function AccountCard({
     : 'bg-[#8E8E93]/10 text-[#8E8E93]';
 
   // ── Status dot/label for the bottom-left of the action row ──
-  // Four states: RR-included, RR-excluded, active (non-RR), idle (non-RR).
-  // Idle renders an empty placeholder so the action row keeps its alignment.
-  const statusNode: React.ReactNode = isRoundRobin
-    ? inPool
-      ? <StatusDot label="Active" tone="green" />
-      : <StatusDot label="Excluded" tone="gray" />
-    : account.isActive
-      ? <StatusDot label="Active" tone="green" />
-      : <span />;
+  // Three states driven by `getAccountStatus`: active (green), excluded
+  // (gray, RR-only), inactive (empty placeholder to keep row alignment).
+  const statusNode: React.ReactNode =
+    status === 'active'   ? <StatusDot label="Active"   tone="green" />
+  : status === 'excluded' ? <StatusDot label="Excluded" tone="gray"  />
+  :                         <span />;
 
   // ── Primary action for the bottom-right of the action row ──
   // Non-RR non-active → Switch pill (blue). RR excluded → Include pill (blue,
@@ -180,12 +196,18 @@ export default function AccountCard({
     >
       {/* ── Info row ─────────────────────────────────────────── */}
       <div className="flex items-center gap-3">
-        <div
-          className={`flex-shrink-0 w-10 h-10 rounded-full bg-gradient-to-br ${gradient}
-                      flex items-center justify-center text-white text-[13px] font-semibold shadow-sm`}
+        <button
+          type="button"
+          onClick={() => setPickerOpen(true)}
+          title="Customize avatar color"
+          aria-label="Customize avatar color"
+          className={`flex-shrink-0 w-10 h-10 p-0 rounded-full border-0 appearance-none cursor-pointer ${avatar.className}
+                      flex items-center justify-center text-white text-[13px] font-semibold shadow-sm
+                      hover:brightness-110`}
+          style={avatar.style}
         >
           {initials || '?'}
-        </div>
+        </button>
 
         <div className="flex-1 min-w-0">
           <p className="text-[13px] font-semibold text-black dark:text-white truncate leading-snug">
@@ -201,17 +223,31 @@ export default function AccountCard({
 
         <div className="flex-shrink-0 flex flex-col items-end gap-1">
           {fiveHourPct != null && (
-            <div className="relative group">
-              <span className={`text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-full ${utilChipStyle}`}>
-                5h · {fiveHourPct}%
-              </span>
-              <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
-                <div className="bg-black/85 dark:bg-white/90 text-white dark:text-black text-[10px] font-medium px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
-                  5-hour usage window
+            <div className="flex items-center gap-1.5">
+              <div className="relative group">
+                <span className={`text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-full ${utilChipStyle}`}>
+                  5h · {fiveHourPct}%
+                </span>
+                <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
+                  <div className="bg-black/85 dark:bg-white/90 text-white dark:text-black text-[10px] font-medium px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
+                    5-hour usage window
+                  </div>
                 </div>
               </div>
+              {fiveHourResetAt != null && fiveHourResetAt > 0 && (
+                <ResetCountdown epochSec={fiveHourResetAt} variant="pill" />
+              )}
             </div>
           )}
+          {paused ? (
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-ios-red/15 text-ios-red" title="Sentinel paused this account — weekly budget reached">
+              Paused
+            </span>
+          ) : hasRealUsage && weeklyCapUsd != null && weeklyCapUsd > 0 ? (
+            <SpendChip spend={extraUsage!.usedUsd} cap={weeklyCapUsd} label="Sentinel" />
+          ) : hasRealUsage && extraUsage!.limitUsd > 0 ? (
+            <SpendChip spend={extraUsage!.usedUsd} cap={extraUsage!.limitUsd} label="Overage" />
+          ) : null}
           <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${plan.color}`}>
             {plan.label}
           </span>
@@ -229,6 +265,8 @@ export default function AccountCard({
           {removeAction}
         </div>
       </div>
+
+      {pickerOpen && <AccountColorPicker account={account} onClose={() => setPickerOpen(false)} />}
 
       {/* ── Sign-in expired banner (unchanged) ───────────────── */}
       {needsReauth && (
@@ -251,6 +289,24 @@ export default function AccountCard({
 
 /** Small left-aligned status with a colored dot. Keeps the action row
  *  visually anchored regardless of whether the card is active/excluded. */
+/** Small $spend / $cap chip shown next to the 5h chip on AccountCard. The
+ *  color tiers mirror the 5h chip so "nearly capped" reads the same on both. */
+function SpendChip({ spend, cap, label }: { spend: number; cap: number; label: string }): React.ReactElement {
+  const pct = cap > 0 ? Math.min(100, (spend / cap) * 100) : 0;
+  const tone =
+    pct >= 90 ? 'bg-ios-red/10 text-ios-red' :
+    pct >= 70 ? 'bg-ios-orange/10 text-ios-orange' :
+    'bg-[#8E8E93]/10 text-[#8E8E93]';
+  return (
+    <span
+      className={`text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-full ${tone}`}
+      title={`Rolling 7-day spend vs ${label} cap`}
+    >
+      ${spend.toFixed(2)} / ${cap.toFixed(2)}
+    </span>
+  );
+}
+
 function StatusDot({ label, tone }: { label: string; tone: 'green' | 'gray' }): React.ReactElement {
   const dot = tone === 'green' ? 'bg-ios-green' : 'bg-[#8E8E93]/60';
   const text = tone === 'green' ? 'text-ios-green' : 'text-[#8E8E93]';

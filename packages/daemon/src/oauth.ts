@@ -120,7 +120,7 @@ async function startCallbackServer(
         <body style="font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f5f5f7">
           <div style="text-align:center">
             <p style="font-size:24px;font-weight:600;color:#1d1d1f">Signed in!</p>
-            <p style="color:#6e6e73">You can close this window and return to Sentinel.</p>
+            <p style="color:#6e6e73">This window will close automatically.</p>
           </div>
         </body>
         </html>
@@ -351,13 +351,42 @@ export interface OAuthResult {
  * Pass an AbortSignal to cancel the pending login without broadcasting a
  * failure — used when the user starts a new login while one is in progress.
  */
-export async function startOAuthLogin(signal?: AbortSignal): Promise<OAuthResult> {
+export interface OAuthLoginOptions {
+  signal?: AbortSignal;
+  /** How to surface the authorize URL to the user. Default opens the
+   *  system browser via exec('open URL'), which leaves Sentinel out of
+   *  the loop for any cookies claude.ai sets during the login + consent
+   *  pages. Callers that want mid-flow cookie capture (e.g. to pick up
+   *  the sessionKey for the freshly-added account) can pass an override
+   *  that opens the URL inside a Tauri WebviewWindow — the webview's
+   *  WKHTTPCookieStore is shared with the rest of the app, so anything
+   *  claude.ai sets there is visible to the Connect claude.ai flow
+   *  afterwards. */
+  openAuthUrl?: (url: string) => void;
+  /** Hint the authorize endpoint which org should mint the token.
+   *  Attached as `organization_uuid=<uuid>` query param. When the user
+   *  is already signed in to claude.ai (sessionKey present), claude.ai
+   *  should honor the hint and skip the org chooser. When it isn't
+   *  honored, the user sees the chooser as usual — no regression. */
+  orgUuidHint?: string;
+}
+
+export async function startOAuthLogin(
+  signalOrOpts?: AbortSignal | OAuthLoginOptions,
+): Promise<OAuthResult> {
+  // Backward-compatible overload: older callers pass the AbortSignal
+  // directly. The modern callsite passes an options object with both
+  // signal and the authorize-URL handler.
+  const opts: OAuthLoginOptions = signalOrOpts instanceof AbortSignal
+    ? { signal: signalOrOpts }
+    : (signalOrOpts ?? {});
+
   const verifier  = generateVerifier();
   const challenge = deriveChallenge(verifier);
   const state     = generateState();
 
   const redirectUri = `http://localhost:${CALLBACK_PORT}/callback`;
-  const codePromise = startCallbackServer(state, signal);
+  const codePromise = startCallbackServer(state, opts.signal);
 
   // Build the authorization URL
   const params = new URLSearchParams({
@@ -371,9 +400,19 @@ export async function startOAuthLogin(signal?: AbortSignal): Promise<OAuthResult
     state,
   });
   const authUrl = `${AUTH_URL}?${params.toString()}`;
+  // Note: we intentionally don't pass `organization_uuid` on the
+  // authorize URL. claude.ai's server keys off the `lastActiveOrg`
+  // cookie rather than a URL param, so the correct way to preselect
+  // is to fetch `/api/organizations/{uuid}/sync/settings` first (the
+  // server answers with a `Set-Cookie: lastActiveOrg=<uuid>`) and
+  // then navigate to this URL. That happens on the webview side via
+  // open_oauth_webview's preselect path — this function just hands
+  // the URL up, along with the hint so the caller can wire it into
+  // the webview.
 
-  openBrowser(authUrl);
-  console.log('[OAuth] Opened browser for login:', authUrl);
+  const openAuthUrl = opts.openAuthUrl ?? openBrowser;
+  openAuthUrl(authUrl);
+  console.log('[OAuth] Surfaced auth URL:', authUrl);
 
   // Wait for the auth code
   const code = await codePromise;

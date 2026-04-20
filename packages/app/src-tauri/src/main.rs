@@ -1,15 +1,17 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod claude_ai_login;
 mod daemon;
 mod ipc;
+mod notify;
 mod settings_patch;
 mod sound;
 mod tray;
 mod tray_icon_render;
 mod updater;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager};
 use tauri_plugin_autostart::ManagerExt;
 
 /// Tauri command exposed to the frontend so the "Quit Sentinel" menu item can
@@ -38,6 +40,116 @@ fn get_autostart(app: AppHandle) -> Result<bool, String> {
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
 }
 
+/// Default tray-window dimensions. Mirror tauri.conf.json — the pinned
+/// size is what keeps the app feeling like a compact tray menu. When
+/// DevTools opens we temporarily blow these constraints out so the
+/// inspector has room to dock; we restore on close.
+const TRAY_WIDTH: f64 = 540.0;
+const TRAY_HEIGHT: f64 = 628.0;
+
+/// Size the window expands to when DevTools opens. Chosen to leave ~540×628
+/// of the viewport for the app content and the rest for a docked
+/// inspector — matches Chrome's typical "bottom-docked" footprint on a
+/// laptop-sized display.
+const DEVTOOLS_OPEN_WIDTH: f64 = 1280.0;
+const DEVTOOLS_OPEN_HEIGHT: f64 = 900.0;
+
+/// Toggle DevTools on the main tray window. Uses Tauri's standard
+/// `open_devtools` / `close_devtools` / `is_devtools_open` APIs.
+///
+/// Tricky part: our tray window is locked to 540×628 non-resizable, so
+/// a docked inspector has no room. The toggle lifts those constraints
+/// while DevTools is open and puts them back when closed:
+///
+///   - **Opening**: clear max-size, enable resizable, grow to 1280×900,
+///     `open_devtools()`, emit `devtools_state_changed {open: true}`,
+///     spawn a watchdog task that polls `is_devtools_open()` and runs
+///     the close/restore path when the user closes DevTools via a
+///     non-Sentinel path (inspector X button, ⌘-Option-I, etc.).
+///   - **Closing**: see `restore_tray_window_size` — called both by
+///     this command and by the watchdog.
+///
+/// The watchdog is what fixes the "closed DevTools and my window stayed
+/// huge" case. Without it, closing the inspector from its own UI left
+/// the window at 1280×900 forever (until Sentinel restarted).
+#[tauri::command]
+fn toggle_devtools(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not available".to_string())?;
+
+    if window.is_devtools_open() {
+        window.close_devtools();
+        restore_tray_window_size(&window, &app)?;
+    } else {
+        // Clearing the cap BEFORE enabling resize + grow. set_max_size(None)
+        // is what allows the window to exceed its pinned tray size — without
+        // it, set_size would be clamped back to 540×628 and DevTools would
+        // still have no room.
+        window
+            .set_max_size(None::<LogicalSize<f64>>)
+            .map_err(|e| format!("set_max_size: {e}"))?;
+        window
+            .set_resizable(true)
+            .map_err(|e| format!("set_resizable: {e}"))?;
+        window
+            .set_size(LogicalSize::new(DEVTOOLS_OPEN_WIDTH, DEVTOOLS_OPEN_HEIGHT))
+            .map_err(|e| format!("set_size: {e}"))?;
+        window.open_devtools();
+        let _ = app.emit("devtools_state_changed", serde_json::json!({ "open": true }));
+
+        // Watchdog: poll every 500ms for DevTools closing. Self-
+        // terminating — the task ends as soon as the user closes the
+        // inspector (by any path), after firing the restore sequence.
+        // Single-shot, so duplicate `toggle_devtools` "open" presses
+        // while the inspector is already open are effectively no-ops
+        // (the first branch's `is_devtools_open()` would be true and
+        // we'd take the close path instead).
+        let watch_window = window.clone();
+        let watch_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            use tokio::time::{sleep, Duration};
+            loop {
+                sleep(Duration::from_millis(500)).await;
+                if !watch_window.is_devtools_open() {
+                    let _ = restore_tray_window_size(&watch_window, &watch_app);
+                    return;
+                }
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Shrink the main window back to its pinned tray dimensions and
+/// re-engage the max-size + non-resizable constraints. Also fires
+/// `devtools_state_changed {open: false}` so the frontend's auto-resize
+/// hook unpauses and recalibrates against the restored viewport.
+///
+/// Called from two paths: the "close" branch of `toggle_devtools`, and
+/// the watchdog task for external DevTools closes (keyboard shortcut,
+/// inspector X button). Idempotent — repeating the sequence on an
+/// already-restored window is harmless.
+fn restore_tray_window_size(
+    window: &tauri::WebviewWindow,
+    app: &AppHandle,
+) -> Result<(), String> {
+    // Order matters: set size first (while still resizable), then pin
+    // max + disable resize. If we disabled resize first, set_size might
+    // silently refuse to change.
+    window
+        .set_size(LogicalSize::new(TRAY_WIDTH, TRAY_HEIGHT))
+        .map_err(|e| format!("set_size: {e}"))?;
+    window
+        .set_max_size(Some(LogicalSize::new(TRAY_WIDTH, TRAY_HEIGHT)))
+        .map_err(|e| format!("set_max_size: {e}"))?;
+    window
+        .set_resizable(false)
+        .map_err(|e| format!("set_resizable: {e}"))?;
+    let _ = app.emit("devtools_state_changed", serde_json::json!({ "open": false }));
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -48,11 +160,23 @@ fn main() {
         ))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
-        // Intercept red-X / Cmd+W: hide the window instead of closing it.
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        // Intercept red-X / Cmd+W on the tray window: hide instead of close.
         // Sentinel is an LSUIElement tray app — the daemon keeps running in the
         // background so Claude Code continues routing through it. The user
         // explicitly quits via the tray menu or the in-app ⋯ → Quit Sentinel.
+        //
+        // Scoped to the "main" window label only. Other windows (the claude.ai
+        // login webview) must honor their normal close behavior so closing
+        // actually destroys the webview — otherwise a closed-but-hidden login
+        // window would block the next `WebviewWindowBuilder::new(..., "claude-ai-login", ...)`
+        // and the user's second Connect click would silently focus the stale
+        // hidden window instead of opening a fresh one.
         .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
                 api.prevent_close();
@@ -102,8 +226,13 @@ fn main() {
             quit_app,
             set_autostart,
             get_autostart,
+            toggle_devtools,
             sound::play_system_sound,
+            notify::display_os_notification,
             updater::check_for_updates,
+            claude_ai_login::start_claude_ai_login,
+            claude_ai_login::clear_claude_ai_cookies,
+            claude_ai_login::open_oauth_webview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Claude Sentinel");

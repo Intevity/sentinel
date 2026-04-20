@@ -1,6 +1,6 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import type { AccountInfo } from '@claude-sentinel/shared';
-import { sendToSentinel } from '../lib/ipc.js';
+import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 interface UseAccountsResult {
   accounts: AccountInfo[];
@@ -107,6 +107,18 @@ export function useAccounts(): UseAccountsResult {
       return { success: false, message: msg };
     }
   }, []);
+
+  // Refetch when the daemon broadcasts `account_updated` (e.g. the avatar
+  // color changed via the picker). Without this the local `accounts` state
+  // stays stale — the DB has the new color but every AccountCard still
+  // renders the previous avatar until the user triggers another refresh.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    onDaemonMessage((msg) => {
+      if (msg.type === 'account_updated') void refreshAccounts();
+    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
+    return () => { unlisten?.(); };
+  }, [refreshAccounts]);
 
   const refreshToken = useCallback(async (
     accountId: string,

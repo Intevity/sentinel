@@ -1,4 +1,4 @@
-import { getDb, closeDb, listAccounts, listRemovedAccounts, upsertAccount, deleteAccount, deleteStaleAccountRows, markAccountRemoved, purgeAccount, reactivateAccount, hasNonPurgedAccount, getUsageByDayModel, acknowledgeNotification, acknowledgeAllNotifications, upsertRateLimit, loadRateLimits, getOverageEvents, listNotifications, listAlerts, upsertAlert, deleteAlert, deleteRateLimitsForAccount, getTokensByDayModel, getCacheHitRate, getApiErrorsByDay, getToolStats, getActivityCounters, getEditAcceptRate, getTopSkills, getRecentPlugins } from './db.js';
+import { getDb, closeDb, listAccounts, listRemovedAccounts, upsertAccount, deleteAccount, deleteStaleAccountRows, markAccountRemoved, purgeAccount, reactivateAccount, hasActiveAccount, getAccount, setAccountColor, getUsageByDayModel, acknowledgeNotification, acknowledgeAllNotifications, upsertRateLimit, loadRateLimits, getOverageEvents, clearOverageEvents, getLastOverageEventPerAccount, listNotifications, listAlerts, upsertAlert, deleteAlert, deleteRateLimitsForAccount, getTokensByDayModel, getCacheHitRate, getApiErrorsByDay, getToolStats, getActivityCounters, getEditAcceptRate, getToolDecisionBreakdown, getUserPromptStats, getTopSkills, getRecentPlugins,listSecurityEvents, acknowledgeSecurityEvent, acknowledgeAllSecurityEvents, clearSecurityEvents, purgeSecurityEventsOlderThan, purgeTelemetryOlderThan, addSecurityAllowlist, removeSecurityAllowlist, listSecurityAllowlist } from './db.js';
 import { loadSettings, updateSettings as writeSettings } from './settings.js';
 import { IpcServer } from './ipc.js';
 import { OtelReceiver } from './otel-receiver.js';
@@ -7,39 +7,38 @@ import { createProxyServer, DAEMON_PORT } from './proxy.js';
 import type { ActiveToken, ActiveAccountId } from './proxy.js';
 import { RateLimitStore } from './rate-limit-store.js';
 import { TokenRotator } from './token-rotator.js';
-import { startAutoSwitch } from './auto-switch.js';
-import { startAlertEvaluator, primeNewAlertAgainstCurrentWindow } from './alerts.js';
+import { OverageGrantStore } from './overage-grant-store.js';
+import { SpendTracker } from './spend-tracker.js';
+import { ClaudeAiUsageStore } from './claude-ai-usage.js';
+import {
+  writeClaudeAiSessionKey,
+  deleteClaudeAiSessionKey,
+  hasClaudeAiSessionKey,
+  readClaudeAiSessionKey,
+} from './accounts.js';
+import { fetchBootstrap } from './claude-ai-bootstrap.js';
+import { startAlertEvaluator, startPoolAlertEvaluator, evaluatePoolOnce, primeNewAlertAgainstCurrentWindow } from './alerts.js';
+import { createSecurityScanner } from './security/scanner.js';
 import type { Settings } from '@claude-sentinel/shared';
 import { getActiveAccount, setActiveAccount } from './claude-state.js';
-import { readActiveCredentials, captureCurrentCredentials, writeSentinelCredentials, writeClaudeCodeCredentials, deleteSentinelCredentials } from './accounts.js';
+import { readActiveCredentials, captureCurrentCredentials, writeSentinelCredentials, writeClaudeCodeCredentials, deleteSentinelCredentials, readSentinelCredentials } from './accounts.js';
 import { startOAuthLogin, OAUTH_ABORTED } from './oauth.js';
+import type { OAuthResult } from './oauth.js';
+import { switchActiveOrg } from './claude-ai-bootstrap.js';
 import { startTokenRefresher, refreshIfNeeded, markAccountReauthenticated } from './token-refresher.js';
+import { probeRateLimits } from './rate-limit-probe.js';
+import { startUsageProber, type UsageProberHandle } from './usage-probe.js';
 import type { OAuthAccount, PlanType, ClaudeCodeCredentials } from '@claude-sentinel/shared';
 import type { Server } from 'http';
-import { request as httpRequest } from 'http';
-import { createWriteStream, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
+import { log } from './logger.js';
 
 // ─── File logger ─────────────────────────────────────────────────────────────
-// All console output is tee'd to ~/.claude-sentinel/daemon.log so logs are
-// visible when running as a native app sidecar (no terminal attached).
-(function setupFileLogger() {
-  const logDir = join(homedir(), '.claude-sentinel');
-  mkdirSync(logDir, { recursive: true });
-  const logPath = join(logDir, 'daemon.log');
-  const stream = createWriteStream(logPath, { flags: 'a' });
-
-  const write = (level: string, args: unknown[]) => {
-    const line = `[${new Date().toISOString()}] ${level} ${args.map(String).join(' ')}\n`;
-    stream.write(line);
-  };
-
-  const orig = { log: console.log, warn: console.warn, error: console.error };
-  console.log   = (...a) => { orig.log(...a);   write('LOG  ', a); };
-  console.warn  = (...a) => { orig.warn(...a);  write('WARN ', a); };
-  console.error = (...a) => { orig.error(...a); write('ERROR', a); };
-})();
+// The logger singleton owns: level filtering, ring buffer, file rotation
+// (10MB × 3), and broadcast batching to the UI. Apply the persisted level
+// BEFORE installing the console monkey-patch so the very first console.log
+// call (`[Sentinel] Starting daemon…` below) is already subject to filtering.
+log.setLevel(loadSettings().logLevel);
+log.installConsolePatch();
 
 /**
  * Returns the Sentinel-internal key for an account: orgUuid when present,
@@ -57,19 +56,21 @@ function inferPlanType(account: OAuthAccount, creds?: ClaudeCodeCredentials | nu
   const sub = creds?.subscriptionType?.toLowerCase() ?? '';
   if (sub === 'enterprise') return 'enterprise';
   if (sub === 'max')        return 'max';
-  // A Team org where this user has a Max seat: the org type is 'team' but the user's
-  // effective access level is Max (hasExtraUsageEnabled comes from account.has_claude_max
-  // in the OAuth profile — it is TRUE only for Max seat holders, not the whole team).
-  if (sub === 'team' && account.hasExtraUsageEnabled) return 'max';
-  if (sub === 'team')  return 'team';
-  if (sub === 'pro')   return 'pro';
+  if (sub === 'team')       return 'team';
+  if (sub === 'pro')        return 'pro';
+  //
+  // Prior versions upgraded `team` → `max` when `account.hasExtraUsageEnabled`
+  // (aka `account.has_claude_max` from the OAuth profile) was true. That was
+  // wrong: `has_claude_max` is a USER-level flag that stays true across every
+  // OAuth round for the same user, so anyone with a personal Max subscription
+  // ALSO ends up flagged as Max within every Team org they're a member of.
+  // Symptom: a Team account (Intevity) showed "Max" in Sentinel's UI because
+  // the user happened to hold a personal Max elsewhere. Fix: trust the
+  // organization_type the token was minted for.
 
-  // No credential-based type available.
-  // NOTE: hasExtraUsageEnabled in ~/.claude.json is only reliable when it comes fresh
-  // from the OAuth profile. When read from ~/.claude.json it may reflect a PREVIOUS
-  // account's state (written by Sentinel itself), so this fallback must only be used
-  // for seeding brand-new accounts that have no existing DB entry.
-  if (account.hasExtraUsageEnabled) return 'max';
+  // No credential-based type available — fall back to account-level hints.
+  // These only fire for freshly-enrolled accounts that never saw the OAuth
+  // profile (unlikely path, kept for safety).
   if (account.workspaceRole !== null) return 'team';
   return 'pro';
 }
@@ -81,79 +82,8 @@ const credentialStore = new Map<string, string>();
 // Replaced each time start_login is received; used by cancel_login.
 let loginAbortController: AbortController | null = null;
 
-/**
- * Probe POST /v1/messages/count_tokens through the local proxy to obtain
- * fresh rate-limit headers for the currently active account.
- *
- * Routing through the proxy (rather than calling api.anthropic.com directly)
- * lets the proxy inject the OAuth Bearer token and handle auth — direct calls
- * with OAuth tokens are rejected by Anthropic with "OAuth authentication is
- * currently not supported". The proxy also writes the parsed headers into the
- * RateLimitStore and broadcasts rate_limits_updated to connected clients.
- *
- * Must be called AFTER the proxy server is listening.
- */
-function probeRateLimits(accountId: string, ipcServer?: IpcServer): void {
-  // Send a minimal inference request (max_tokens: 1) to obtain rate-limit headers.
-  // count_tokens rejects OAuth tokens; /v1/messages accepts them as long as the
-  // request includes the oauth-2025-04-20 beta flag and matches the shape
-  // Claude Code itself sends. Without the beta header the endpoint 401s an
-  // OAuth (claudeAiOauth) token even when it's valid. Cost: ~1 output token.
-  const body = JSON.stringify({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 1,
-    messages: [{ role: 'user', content: 'hi' }],
-  });
-
-  // Tell the UI a probe is in flight for this account so it can show a
-  // loading indicator. Successful completion triggers rate_limits_updated
-  // from the proxy; failures fall through to rate_limits_probe_ended below.
-  ipcServer?.broadcast({ type: 'rate_limits_probing', accountId });
-
-  const req = httpRequest(
-    {
-      hostname: '127.0.0.1',
-      port: DAEMON_PORT,
-      // `?beta=true` mirrors Claude Code's production request. The path-prefix
-      // match in the proxy (ANTHROPIC_PATHS.some(p => url.startsWith(p)))
-      // tolerates it.
-      path: '/v1/messages?beta=true',
-      method: 'POST',
-      headers: {
-        'anthropic-version': '2023-06-01',
-        'anthropic-beta':    'oauth-2025-04-20',
-        'user-agent':        'claude-cli/sentinel-probe',
-        'accept':            'application/json',
-        // Deliberately no accept-encoding — keeps failure bodies readable
-        // in daemon.log instead of printing gzip binary.
-        'content-type':      'application/json',
-        'content-length':    Buffer.byteLength(body),
-      },
-    },
-    (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (c: Buffer) => chunks.push(c));
-      res.on('end', () => {
-        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-          console.log(`[RateLimit] Probe succeeded (HTTP ${res.statusCode}) for ${accountId}`);
-          // Non-2xx responses don't emit rate_limits_updated from the proxy,
-          // so we signal probe-end here for the UI. Successful probes are
-          // already covered by the proxy's rate_limits_updated broadcast.
-        } else {
-          const bodyStr = Buffer.concat(chunks).toString('utf-8').slice(0, 300);
-          console.warn(`[RateLimit] Probe HTTP ${res.statusCode} for ${accountId}: ${bodyStr}`);
-          ipcServer?.broadcast({ type: 'rate_limits_probe_ended', accountId });
-        }
-      });
-    },
-  );
-  req.on('error', (err: Error) => {
-    console.warn('[RateLimit] Probe error:', err.message);
-    ipcServer?.broadcast({ type: 'rate_limits_probe_ended', accountId });
-  });
-  req.write(body);
-  req.end();
-}
+// probeRateLimits now lives in ./rate-limit-probe.ts to avoid a circular
+// dependency with ./usage-probe.ts, which imports it.
 
 /**
  * Start the sentinel daemon:
@@ -200,6 +130,7 @@ export async function startDaemon(): Promise<void> {
       planType: existingStartupAcct?.planType ?? inferPlanType(activeAccount, startupCreds),
       isActive: true,
       createdAt: Date.now(),
+      color: existingStartupAcct?.color ?? null,
     });
 
     // Remove the old-style row (id = accountUuid) that may have been created
@@ -208,6 +139,57 @@ export async function startDaemon(): Promise<void> {
     // accountUuid) to avoid deleting the only row for accounts without an org.
     if (startupKey !== activeAccount.accountUuid) {
       deleteAccount(db, activeAccount.accountUuid);
+    }
+  }
+
+  // Self-heal planType on every startup. A bug in a prior version classified
+  // some Team accounts as 'max' because `account.has_claude_max` in the
+  // OAuth profile is a user-level flag (true when the user holds a personal
+  // Max anywhere) rather than a per-org flag. Existing rows stay wrong until
+  // the user re-authorizes, so we re-derive planType from the stored
+  // credentials.subscriptionType on every boot and write the corrected
+  // value back. No-op for rows that were already right.
+  {
+    const rehealAccounts = listAccounts(db);
+    let healed = 0;
+    for (const acct of rehealAccounts) {
+      const credsForHeal = readSentinelCredentials(acct.id);
+      if (!credsForHeal?.subscriptionType) continue;
+      const oauthShape: OAuthAccount = {
+        accountUuid: acct.accountUuid,
+        emailAddress: acct.email,
+        organizationUuid: acct.orgUuid,
+        hasExtraUsageEnabled: false,
+        billingType: credsForHeal.subscriptionType,
+        accountCreatedAt: new Date().toISOString(),
+        subscriptionCreatedAt: new Date().toISOString(),
+        displayName: acct.displayName,
+        organizationRole: 'user',
+        workspaceRole: null,
+        organizationName: acct.orgName,
+      };
+      const correct = inferPlanType(oauthShape, credsForHeal);
+      if (correct !== acct.planType) {
+        console.log(
+          `[PlanType] Re-deriving for ${acct.email} (${acct.orgName || acct.id}): ${acct.planType} → ${correct} (subscriptionType=${credsForHeal.subscriptionType})`,
+        );
+        upsertAccount(db, {
+          id: acct.id,
+          accountUuid: acct.accountUuid,
+          email: acct.email,
+          displayName: acct.displayName,
+          orgUuid: acct.orgUuid,
+          orgName: acct.orgName,
+          planType: correct,
+          isActive: acct.isActive,
+          createdAt: acct.createdAt,
+          color: acct.color,
+        });
+        healed++;
+      }
+    }
+    if (healed > 0) {
+      console.log(`[PlanType] Healed ${healed} account(s) with stale planType`);
     }
   }
 
@@ -220,33 +202,137 @@ export async function startDaemon(): Promise<void> {
   if (startupCreds) activeToken.value = startupCreds.accessToken;
 
   const ipcServer = new IpcServer();
+
+  // Push daemon log entries to every connected UI client. Batched by the
+  // logger itself (100ms / 50 entries). Registered before the server starts
+  // so entries logged during startup flow through the broadcast pipeline.
+  log.onBroadcast((entries) => {
+    ipcServer.broadcast({ type: 'daemon_log', entries });
+  });
+
   const overageMachine = new OverageStateMachine();
-  const otelReceiver = new OtelReceiver(db, activeAccountId);
+
+  // Rehydrate the state machine from the DB so a daemon restart mid-overage-
+  // window does not re-fire an `entered` transition on the very next request.
+  // We seed from the newest event per account; if the window's resetsAt is
+  // still in the future we also mark the transitions already recorded for
+  // that window so dedup keeps them suppressed.
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const latestByAccount = getLastOverageEventPerAccount(db);
+    for (const ev of latestByAccount) {
+      if (ev.resetsAt !== null && ev.resetsAt <= nowSec) continue;
+      const windowEvents = getOverageEvents(db, { accountId: ev.accountId }).filter(
+        (e) => e.resetsAt === ev.resetsAt,
+      );
+      const transitions = Array.from(new Set(windowEvents.map((e) => e.transition)));
+      const isUsingOverage = transitions.includes('entered') && !transitions.includes('exited');
+      const isDisabled = transitions.includes('disabled');
+      overageMachine.rehydrate(
+        ev.accountId,
+        {
+          isUsingOverage,
+          status: isDisabled ? 'disabled' : ev.status,
+          resetsAt: ev.resetsAt,
+          disabledReason: ev.disabledReason,
+          lastUpdated: ev.ts,
+        },
+        transitions,
+      );
+    }
+  } catch (err) {
+    console.error('[Sentinel] Overage state rehydration failed:', err);
+  }
+
+  const otelReceiver = new OtelReceiver(db, activeAccountId, ipcServer);
   const rateLimitStore = new RateLimitStore();
 
   // In-memory mirror of settings — read at startup, updated on every
-  // update_settings call so proxy/auto-switch paths can consult it without
+  // update_settings call so proxy/rotator paths can consult it without
   // re-reading the JSON file per request.
   let currentSettings: Settings = loadSettings();
+
+  // Assigned after the proxy is listening — update_settings references it
+  // via optional-chain so handler registration order doesn't matter.
+  let usageProber: UsageProberHandle | null = null;
+
+  // Shared settings getter so the rotator, alert evaluators, and other
+  // subsystems read the same live in-memory snapshot that `update_settings`
+  // mutates. Declared up-front so it can be referenced in constructors below.
+  const getSettings = (): Settings => currentSettings;
 
   // Round-robin token pool. Only consulted when switchingMode === 'round-robin'.
   // The excluded-ids getter reads the live in-memory settings so pool-membership
   // toggles take effect on the next `tokenRotator.refresh()` (called from the
-  // update_settings handler).
+  // update_settings handler). The strategy getter is read on every `pick()` so
+  // toggling the sub-strategy in Settings takes effect for the next request
+  // without a restart or refresh.
+  // Sentinel-side paused set — populated by SpendTracker once it's wired in
+  // (stage 4). For now it's an empty reference so existing pick() callsites
+  // keep working. Replacing the reference in-place keeps the rotator's live
+  // getter pointed at the real set once the tracker exists.
+  let getPausedAccountIds: () => ReadonlySet<string> = () => new Set();
+
   const tokenRotator = new TokenRotator(
     db,
     rateLimitStore,
     activeAccountId,
     () => new Set(currentSettings.poolExcludedIds),
+    () => currentSettings.roundRobinStrategy,
+    () => new Set(currentSettings.overageEnabledIds),
+    () => getPausedAccountIds(),
+    () => currentSettings.overageBufferPct,
   );
+
+  // Mirror of `~/.claude.json:overageCreditGrantCache`. Reloaded on startup,
+  // after switches, and on demand via the refresh_overage_grants IPC.
+  // Broadcasts fire automatically via subscriber callback on any change.
+  const overageGrantStore = new OverageGrantStore();
+  overageGrantStore.load();
+  overageGrantStore.onUpdate((grants) => {
+    ipcServer.broadcast({ type: 'overage_grants_updated', grants });
+  });
+
+  // Real-usage fetcher: polls claude.ai's /api/organizations/{org}/usage
+  // endpoint (the only source of truth for dollar-denominated overage spend
+  // + limit) using the per-account sessionKey cookie stored in the keychain.
+  // Broadcasts claude_ai_usage_updated on every fetch outcome.
+  const claudeAiUsageStore = new ClaudeAiUsageStore({
+    ipcServer,
+    getOrgUuid: (accountId) => {
+      const acc = listAccounts(db).find((a) => a.id === accountId);
+      return acc?.orgUuid || null;
+    },
+    getAccountIds: () => listAccounts(db).map((a) => a.id),
+  });
+  claudeAiUsageStore.start();
+
+  // Sentinel-side spend tracker: enforces the user's weekly cap by pausing
+  // accounts whose Anthropic-reported spend has reached the configured
+  // limit, and fires budget-scope alerts. Hooks back into the rotator via
+  // the live paused-id getter declared above.
+  const spendTracker = new SpendTracker({
+    db,
+    rateLimitStore,
+    ipcServer,
+    getSettings,
+    getAnthropicSpend: (accountId) => {
+      const snap = claudeAiUsageStore.getSnapshot(accountId);
+      return snap?.extraUsage?.usedUsd ?? null;
+    },
+  });
+  getPausedAccountIds = () => spendTracker.getPausedIds();
+  // Initial pass — paused state is empty at startup, but a spend summary
+  // broadcast lets the UI seed its dashboard without waiting for the first
+  // OTEL batch.
+  spendTracker.recompute();
 
   /**
    * Change the active account: update ~/.claude.json, swap the Claude Code
    * keychain slot, inject the new token into the proxy, probe fresh rate
    * limits, upsert the DB row, refresh the rotator pool, and broadcast.
    *
-   * Used by the `switch_account` IPC handler AND by the auto-switch module
-   * when a utilization threshold is crossed. Returns a serializable result
+   * Used by the `switch_account` IPC handler. Returns a serializable result
    * so callers can decide whether to retry or surface the failure.
    */
   function performSwitch(accountId: string, email: string): { success: true; data: OAuthAccount } | { success: false; error: string } {
@@ -320,9 +406,16 @@ export async function startDaemon(): Promise<void> {
       planType: switchPlanType,
       isActive: true,
       createdAt: Date.now(),
+      // ON CONFLICT DO UPDATE SET omits the color column, so an existing
+      // user-picked color is preserved across this upsert.
+      color: null,
     });
 
     tokenRotator.refresh();
+    // Claude Code rewrote ~/.claude.json as part of the switch, so the grant
+    // cache may have been updated too — re-read so subscribers and the next
+    // get_overage_grants caller see fresh numbers.
+    overageGrantStore.load();
     ipcServer.broadcast({ type: 'account_switched', to: oauthAccount });
     return { success: true, data: oauthAccount };
   }
@@ -340,6 +433,103 @@ export async function startDaemon(): Promise<void> {
       upsertRateLimit(db, accountId, w);
     }
   });
+
+  // Piggyback on rate-limit updates to re-read the Anthropic overage grant
+  // cache — it's rewritten by Claude Code whenever it interacts with the API,
+  // and those interactions are exactly the moments that also produce fresh
+  // rate-limit headers. Cheap (one file read + JSON diff), silent when
+  // nothing changed, and broadcasts overage_grants_updated to the UI when
+  // the numbers do move.
+  rateLimitStore.onUpdate(() => {
+    overageGrantStore.load();
+  });
+
+  // Spend tracker also watches rate-limit updates for 5h-window rollover so
+  // it can auto-unpause + re-evaluate accounts that Sentinel paused earlier.
+  rateLimitStore.onUpdate((accountId) => {
+    spendTracker.handleRateLimitUpdate(accountId);
+  });
+
+  // Spend source of truth is now Anthropic's usage endpoint via
+  // ClaudeAiUsageStore. Every successful or failed fetch triggers a
+  // tracker recompute so the paused set reflects the freshest numbers.
+  claudeAiUsageStore.onUpdate(() => {
+    spendTracker.recompute();
+  });
+
+  /**
+   * Persist an OAuthResult into Sentinel's keychain + DB and broadcast
+   * login_complete. Shared between the browser-driven `start_login`
+   * path and the server-to-server `silent_sibling_login` path — both
+   * end with the same state transition (new credentials, new DB row,
+   * default alert seeded, login_complete broadcast), so centralizing
+   * the logic means they can't drift.
+   */
+  const persistOAuthResult = (result: OAuthResult): void => {
+    const {
+      credentials,
+      email,
+      displayName,
+      accountUuid,
+      orgUuid,
+      orgName,
+      subscriptionType,
+      organizationRole,
+      workspaceRole,
+      hasExtraUsageEnabled,
+    } = result;
+    const credKey = sentinelKey(orgUuid, accountUuid) || email;
+    const wasReauth = hasActiveAccount(db, credKey);
+
+    writeSentinelCredentials(credKey, credentials);
+
+    const newAccount: OAuthAccount = {
+      accountUuid:          accountUuid || email,
+      emailAddress:         email,
+      organizationUuid:     orgUuid,
+      hasExtraUsageEnabled,
+      billingType:          subscriptionType ?? 'unknown',
+      accountCreatedAt:     new Date().toISOString(),
+      subscriptionCreatedAt: new Date().toISOString(),
+      displayName,
+      organizationRole:     (organizationRole as OAuthAccount['organizationRole']) || 'user',
+      workspaceRole,
+      organizationName:     orgName,
+    };
+
+    reactivateAccount(db, credKey);
+    markAccountReauthenticated(credKey);
+
+    const planType = inferPlanType(newAccount, credentials);
+    upsertAccount(db, {
+      id:          credKey,
+      accountUuid: newAccount.accountUuid,
+      email:       newAccount.emailAddress,
+      displayName: newAccount.displayName,
+      orgUuid:     newAccount.organizationUuid,
+      orgName:     newAccount.organizationName,
+      planType,
+      isActive:    false,
+      createdAt:   Date.now(),
+      color:       null,
+    });
+
+    if (listAlerts(db, { scope: 'account', accountId: credKey }).length === 0) {
+      upsertAlert(db, { scope: 'account', accountId: credKey, thresholdPct: 95, enabled: true });
+      console.log(`[OAuth] Seeded default 95% alert for ${credKey}`);
+    }
+
+    const current = getActiveAccount();
+    if (!current) {
+      setActiveAccount(newAccount);
+      activeToken.value = credentials.accessToken;
+    }
+
+    tokenRotator.refresh();
+
+    console.log(`[OAuth] Login complete for ${email} (org: ${orgName || '?'}, reauth: ${wasReauth}), broadcasting to ${ipcServer.connectedClients} client(s)`);
+    ipcServer.broadcast({ type: 'login_complete', email, orgName, reauth: wasReauth });
+  };
 
   // Register IPC message handlers
   ipcServer.onMessage((msg, respond) => {
@@ -424,6 +614,8 @@ export async function startDaemon(): Promise<void> {
           'active_user_seconds', 'active_cli_seconds',
         ]);
         const editAcceptRate = getEditAcceptRate(db, key, days);
+        const toolDecisions = getToolDecisionBreakdown(db, key, days);
+        const prompts = getUserPromptStats(db, key, days);
         const skills = getTopSkills(db, key, days, 10);
         const plugins = getRecentPlugins(db, key, 10);
 
@@ -457,6 +649,8 @@ export async function startDaemon(): Promise<void> {
             tools,
             activity: { sessionsPerDay, commitsPerDay, prsPerDay, linesPerDay, activeTimePerDay },
             editAcceptRate,
+            toolDecisions,
+            prompts,
             skills,
             plugins,
           },
@@ -498,6 +692,7 @@ export async function startDaemon(): Promise<void> {
             planType: existingForRefresh?.planType ?? inferPlanType(current, creds),
             isActive: true,
             createdAt: Date.now(),
+            color: existingForRefresh?.color ?? null,
           });
           if (creds) activeToken.value = creds.accessToken;
           // Keep proxy rate-limit key in sync with active account
@@ -590,6 +785,12 @@ export async function startDaemon(): Promise<void> {
         break;
       }
 
+      case 'clear_overage_events': {
+        const count = clearOverageEvents(db, msg.accountId);
+        respond({ requestType: 'clear_overage_events', success: true, data: { count } });
+        break;
+      }
+
       case 'get_daemon_status': {
         respond({
           requestType: 'get_daemon_status',
@@ -641,14 +842,294 @@ export async function startDaemon(): Promise<void> {
         break;
       }
 
+      case 'get_overage_grants': {
+        respond({ requestType: 'get_overage_grants', success: true, data: overageGrantStore.getAll() });
+        break;
+      }
+
+      case 'refresh_overage_grants': {
+        overageGrantStore.load();
+        respond({ requestType: 'refresh_overage_grants', success: true, data: overageGrantStore.getAll() });
+        break;
+      }
+
+      case 'get_spend_summary': {
+        respond({ requestType: 'get_spend_summary', success: true, data: spendTracker.getSpendSummary() });
+        break;
+      }
+
+      case 'set_claude_ai_session_key': {
+        try {
+          console.log(`[SessionMirror] set_claude_ai_session_key received for ${msg.accountId} (key len=${msg.sessionKey.length})`);
+          writeClaudeAiSessionKey(msg.accountId, msg.sessionKey);
+          void claudeAiUsageStore.refresh(msg.accountId);
+          // Respond to the UI immediately so the spinner on the
+          // triggering account's Connect button clears. Mirroring to
+          // sibling accounts (same Google login → multiple Sentinel
+          // rows) runs async below.
+          respond({ requestType: 'set_claude_ai_session_key', success: true });
+
+          // Shared-session mirroring: one claude.ai sessionKey covers
+          // every org the user is a member of, so when a Sentinel
+          // account gets its key set we propagate the same key to every
+          // other Sentinel row whose orgUuid appears in the user's
+          // membership list. That turns a single Connect click into a
+          // simultaneous Connect for all sibling accounts the user has
+          // enrolled under the same login — no per-account Connect
+          // dance required.
+          void (async (): Promise<void> => {
+            // Pass the just-connected account's orgUuid as the
+            // edge-api hint — any membership the user has is a valid
+            // path param and the response enumerates every org.
+            const hintAccount = listAccounts(db).find((a) => a.id === msg.accountId);
+            const orgHint = hintAccount?.orgUuid || msg.accountId;
+            console.log(`[SessionMirror] calling fetchBootstrap (orgHint=${orgHint})…`);
+            const boot = await fetchBootstrap(msg.sessionKey, orgHint);
+            if (!boot) {
+              console.log('[SessionMirror] fetchBootstrap returned null, aborting sibling mirror/prompt');
+              return;
+            }
+            console.log(
+              `[SessionMirror] bootstrap result: email=${boot.email ?? '?'} orgs=${boot.orgs.length} (${boot.orgs.map((o) => o.orgName || o.orgUuid).join(', ')})`,
+            );
+            const allAccounts = listAccounts(db);
+            let mirrored = 0;
+            for (const acc of allAccounts) {
+              if (acc.id === msg.accountId) continue;
+              if (!acc.orgUuid || !boot.orgUuids.includes(acc.orgUuid)) continue;
+              try {
+                writeClaudeAiSessionKey(acc.id, msg.sessionKey);
+                void claudeAiUsageStore.refresh(acc.id);
+                mirrored++;
+              } catch (e) {
+                console.warn('[SessionMirror] write failed for', acc.id, e instanceof Error ? e.message : String(e));
+              }
+            }
+            if (mirrored > 0) {
+              console.log('[SessionMirror] mirrored sessionKey to', mirrored, 'sibling account(s) for email', boot.email);
+            }
+
+            // Sibling enrollment prompt: bootstrap lists every chat-capable
+            // org the user can access with this login. Any of those that
+            // DON'T have a Sentinel row yet are candidates for the "add
+            // remaining accounts" prompt. The UI surfaces them so the user
+            // can sign in once more per org without having to remember they
+            // exist. We broadcast even when the list is empty? No — stay
+            // quiet in that case so the user isn't interrupted on the
+            // normal happy path.
+            const enrolledOrgUuids = new Set(
+              allAccounts.map((a) => a.orgUuid).filter((u): u is string => !!u),
+            );
+            const missing = boot.orgs.filter(
+              (o) => !enrolledOrgUuids.has(o.orgUuid),
+            );
+            console.log(
+              `[SessionMirror] enrolled orgs: [${Array.from(enrolledOrgUuids).join(', ')}]; missing: [${missing.map((o) => o.orgName || o.orgUuid).join(', ')}]`,
+            );
+            if (boot.email) {
+              // Always broadcast — even with empty missing list.
+              // The UI clears its banner when it receives an empty
+              // list, which is how the sibling-add walk knows "I'm
+              // done, hide the prompt." Previously we suppressed
+              // empty broadcasts and the banner got stuck after the
+              // last sibling was added because the UI never got the
+              // signal.
+              console.log(
+                `[SessionMirror] broadcasting additional_orgs_available for ${boot.email} — ${missing.length === 0 ? '(empty: all siblings enrolled)' : missing.map((o) => o.orgName || o.orgUuid).join(', ')}`,
+              );
+              ipcServer.broadcast({
+                type: 'additional_orgs_available',
+                email: boot.email,
+                orgs: missing,
+              });
+            }
+          })();
+        } catch (err) {
+          respond({ requestType: 'set_claude_ai_session_key', success: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        break;
+      }
+
+      case 'clear_claude_ai_session_key': {
+        // Read the key BEFORE deleting so we can enumerate siblings via
+        // /api/bootstrap. The endpoint needs a live sessionKey; once
+        // we've deleted ours we can't ask Anthropic "which orgs did
+        // this token cover?"
+        const keyBeforeDelete = readClaudeAiSessionKey(msg.accountId);
+        deleteClaudeAiSessionKey(msg.accountId);
+        void claudeAiUsageStore.refresh(msg.accountId);
+        respond({ requestType: 'clear_claude_ai_session_key', success: true });
+
+        // Mirror the disconnect to siblings the same way Connect
+        // mirrors writes. If bootstrap fails (network, already
+        // server-side expired) we fall back to a local-match strategy:
+        // clear the session-key for every account whose stored value
+        // equals the one we just deleted, since shared-session siblings
+        // all hold byte-for-byte identical copies in keychain.
+        if (keyBeforeDelete) {
+          // Do the byte-match cascade SYNCHRONOUSLY first — it's a
+          // keychain read per account, fast and reliable. Then fire
+          // the /api/bootstrap lookup async as a belt-and-suspenders
+          // catch for accounts whose keychain entry got out of sync
+          // but are still listed as a sibling membership (e.g. one
+          // was written by an older daemon version that didn't
+          // mirror).
+          //
+          // The previous implementation gated stored-key matching
+          // behind "only if bootstrap failed" — that left the door
+          // open for accounts where the stored value matched
+          // perfectly but bootstrap happened to not return their
+          // orgUuid (different routing region, billing state, etc.),
+          // producing exactly the "I disconnected one, the sibling
+          // stayed Connected" bug. Always matching by bytes eliminates
+          // that class entirely.
+          const allAccounts = listAccounts(db);
+          let cleared = 0;
+          for (const acc of allAccounts) {
+            if (acc.id === msg.accountId) continue;
+            if (readClaudeAiSessionKey(acc.id) !== keyBeforeDelete) continue;
+            try {
+              deleteClaudeAiSessionKey(acc.id);
+              void claudeAiUsageStore.refresh(acc.id);
+              cleared++;
+            } catch (e) {
+              console.warn('[SessionMirror] clear failed for', acc.id, e instanceof Error ? e.message : String(e));
+            }
+          }
+          if (cleared > 0) {
+            console.log('[SessionMirror] byte-match cleared sessionKey for', cleared, 'sibling account(s)');
+          }
+
+          // Async bootstrap pass — catches siblings whose stored key
+          // drifted or was never written (legacy data). Fire-and-forget.
+          // Use the disconnecting account's orgUuid as the edge-api
+          // hint so the enumeration runs on the same path as Connect.
+          void (async (): Promise<void> => {
+            const disconnectHint =
+              allAccounts.find((a) => a.id === msg.accountId)?.orgUuid || msg.accountId;
+            const boot = await fetchBootstrap(keyBeforeDelete, disconnectHint);
+            if (!boot) return;
+            let clearedByBoot = 0;
+            for (const acc of allAccounts) {
+              if (acc.id === msg.accountId) continue;
+              if (!acc.orgUuid || !boot.orgUuids.includes(acc.orgUuid)) continue;
+              if (!hasClaudeAiSessionKey(acc.id)) continue; // already byte-cleared or never had one
+              try {
+                deleteClaudeAiSessionKey(acc.id);
+                void claudeAiUsageStore.refresh(acc.id);
+                clearedByBoot++;
+              } catch (e) {
+                console.warn('[SessionMirror] bootstrap-clear failed for', acc.id, e instanceof Error ? e.message : String(e));
+              }
+            }
+            if (clearedByBoot > 0) {
+              console.log('[SessionMirror] bootstrap-match cleared', clearedByBoot, 'extra sibling(s) for email', boot.email);
+            }
+          })();
+        }
+        break;
+      }
+
+      case 'has_claude_ai_session_key': {
+        respond({
+          requestType: 'has_claude_ai_session_key',
+          success: true,
+          data: { hasKey: hasClaudeAiSessionKey(msg.accountId) },
+        });
+        break;
+      }
+
+      case 'get_claude_ai_usage': {
+        respond({
+          requestType: 'get_claude_ai_usage',
+          success: true,
+          data: {
+            snapshot: claudeAiUsageStore.getSnapshot(msg.accountId),
+            error: claudeAiUsageStore.getLastError(msg.accountId),
+          },
+        });
+        break;
+      }
+
+      case 'refresh_claude_ai_usage': {
+        // Kick off the fetch and respond immediately; the result lands via
+        // the usual claude_ai_usage_updated broadcast when it completes.
+        // Avoiding `await` keeps this handler sync-friendly (the outer
+        // switch isn't an async fn).
+        void claudeAiUsageStore.refresh(msg.accountId);
+        respond({ requestType: 'refresh_claude_ai_usage', success: true });
+        break;
+      }
+
       case 'update_settings': {
+        const prev = currentSettings;
         const next = writeSettings(msg.settings);
         currentSettings = next;
         // Mode flipping to round-robin may need a fresh token pool (e.g. new
         // account was just added). Cheap to refresh unconditionally.
         tokenRotator.refresh();
+        // Budget field changes should re-evaluate paused state + alerts
+        // immediately so the UI reflects the new caps without waiting on
+        // another OTEL batch. Also covers setting a cap lower than the
+        // current spend — the pause fires right away.
+        const budgetsChanged =
+          prev.budgetWeeklyUsdGlobal !== next.budgetWeeklyUsdGlobal ||
+          JSON.stringify(prev.budgetWeeklyUsdByAccount) !== JSON.stringify(next.budgetWeeklyUsdByAccount);
+        if (budgetsChanged) spendTracker.recompute();
+        // Pool composition may have changed (mode toggle or exclusion list
+        // edit). Re-evaluate pool alerts so crossings visible to the new
+        // pool fire now instead of waiting for the next rate-limit header.
+        const poolChanged =
+          prev.switchingMode !== next.switchingMode ||
+          prev.poolExcludedIds.length !== next.poolExcludedIds.length ||
+          prev.poolExcludedIds.some((id, i) => id !== next.poolExcludedIds[i]);
+        if (poolChanged) evaluatePoolOnce(poolAlertDeps);
+        // Interval change → restart the background prober so the new cadence
+        // takes effect immediately (no daemon restart).
+        if (prev.backgroundProbeIntervalSec !== next.backgroundProbeIntervalSec) {
+          usageProber?.restart();
+        }
+        // Log level change — single mutation on the logger; next emit sees it.
+        if (prev.logLevel !== next.logLevel) {
+          log.setLevel(next.logLevel);
+          log.info(`[Logger] Level changed to ${next.logLevel}`);
+        }
         ipcServer.broadcast({ type: 'settings_changed', settings: next });
         respond({ requestType: 'update_settings', success: true, data: next });
+        break;
+      }
+
+      case 'update_account': {
+        // Only the fields the message carries are persisted; others are
+        // left untouched. Currently just `color` (with `null` meaning reset).
+        if (msg.color !== undefined) {
+          setAccountColor(db, msg.accountId, msg.color);
+        }
+        const updated = getAccount(db, msg.accountId);
+        if (updated) {
+          ipcServer.broadcast({ type: 'account_updated', accountId: msg.accountId });
+        }
+        respond({
+          requestType: 'update_account',
+          success: updated !== null,
+          ...(updated ? { data: updated } : { error: `unknown accountId: ${msg.accountId}` }),
+        });
+        break;
+      }
+
+      case 'get_daemon_logs': {
+        respond({
+          requestType: 'get_daemon_logs',
+          success: true,
+          data: log.getHistory(msg.limit ?? 2000),
+        });
+        break;
+      }
+
+      case 'clear_daemon_logs': {
+        const { count } = log.clear();
+        ipcServer.broadcast({ type: 'daemon_logs_cleared' });
+        respond({ requestType: 'clear_daemon_logs', success: true, data: { count } });
         break;
       }
 
@@ -658,8 +1139,134 @@ export async function startDaemon(): Promise<void> {
         break;
       }
 
+      case 'get_security_events': {
+        const minConfidence = msg.includeWeakSignals === true ? 0 : 0.7;
+        const rows = listSecurityEvents(db, {
+          ...(msg.accountId !== undefined ? { accountId: msg.accountId } : {}),
+          limit: msg.limit ?? 200,
+          minConfidence,
+        });
+        respond({ requestType: 'get_security_events', success: true, data: rows });
+        break;
+      }
+
+      case 'acknowledge_security_event': {
+        const ok = acknowledgeSecurityEvent(db, msg.id);
+        respond({ requestType: 'acknowledge_security_event', success: ok });
+        break;
+      }
+
+      case 'acknowledge_all_security_events': {
+        const n = acknowledgeAllSecurityEvents(db, msg.accountId);
+        respond({ requestType: 'acknowledge_all_security_events', success: true, data: { count: n } });
+        break;
+      }
+
+      case 'clear_security_events': {
+        const n = clearSecurityEvents(db, msg.accountId);
+        respond({ requestType: 'clear_security_events', success: true, data: { count: n } });
+        break;
+      }
+
+      case 'get_security_allowlist': {
+        const entries = listSecurityAllowlist(db);
+        respond({ requestType: 'get_security_allowlist', success: true, data: entries });
+        break;
+      }
+
+      case 'add_to_security_allowlist': {
+        let args: {
+          matchHash: string;
+          detectorId: string;
+          matchMask?: string | null;
+          title?: string | null;
+          note?: string | null;
+        } | null = null;
+
+        if (msg.eventId !== undefined) {
+          const row = db
+            .prepare('SELECT match_hash, detector_id, match_mask, title FROM security_events WHERE id = ?')
+            .get(msg.eventId) as
+              | { match_hash: string; detector_id: string; match_mask: string | null; title: string }
+              | undefined;
+          if (!row) {
+            respond({ requestType: 'add_to_security_allowlist', success: false, error: 'event not found' });
+            break;
+          }
+          args = {
+            matchHash: row.match_hash,
+            detectorId: row.detector_id,
+            matchMask: row.match_mask,
+            title: row.title,
+            note: msg.note ?? null,
+          };
+        } else if (msg.matchHash && msg.detectorId) {
+          args = {
+            matchHash: msg.matchHash,
+            detectorId: msg.detectorId,
+            matchMask: msg.matchMask ?? null,
+            title: msg.title ?? null,
+            note: msg.note ?? null,
+          };
+        } else {
+          respond({ requestType: 'add_to_security_allowlist', success: false, error: 'eventId or (matchHash, detectorId) required' });
+          break;
+        }
+
+        const result = addSecurityAllowlist(db, args);
+        respond({ requestType: 'add_to_security_allowlist', success: true, data: result });
+        break;
+      }
+
+      case 'remove_from_security_allowlist': {
+        const ok = removeSecurityAllowlist(db, msg.id);
+        respond({ requestType: 'remove_from_security_allowlist', success: ok });
+        break;
+      }
+
+      case 'approve_blocked_request': {
+        const ok = securityScanner.resolvePending(msg.pendingId, 'approve');
+        respond({ requestType: 'approve_blocked_request', success: ok });
+        break;
+      }
+
+      case 'deny_blocked_request': {
+        const ok = securityScanner.resolvePending(msg.pendingId, 'deny');
+        respond({ requestType: 'deny_blocked_request', success: ok });
+        break;
+      }
+
+      case 'list_pending_blocks': {
+        const rows = securityScanner.listPending();
+        respond({ requestType: 'list_pending_blocks', success: true, data: rows });
+        break;
+      }
+
+      case 'dev_trigger_security_event': {
+        // Fire a synthetic security event through the normal scanner
+        // plumbing. Exposed for `pnpm security:test`; see
+        // packages/daemon/src/security/scanner.ts for the scenario set.
+        const targetAccountId = msg.accountId
+          ?? activeAccountId.value
+          ?? 'default';
+        try {
+          securityScanner.triggerTestScenario(msg.scenario, targetAccountId);
+          respond({ requestType: 'dev_trigger_security_event', success: true });
+        } catch (err) {
+          respond({
+            requestType: 'dev_trigger_security_event',
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+
       case 'list_alerts': {
-        const rows = listAlerts(db, msg.accountId);
+        const opts: { scope?: 'account' | 'pool' | 'budget'; accountId?: string } = {};
+        if (msg.scope && msg.scope !== 'all') opts.scope = msg.scope;
+        if (msg.accountId) opts.accountId = msg.accountId;
+        const rows = listAlerts(db, opts);
         respond({ requestType: 'list_alerts', success: true, data: rows });
         break;
       }
@@ -669,14 +1276,36 @@ export async function startDaemon(): Promise<void> {
           respond({ requestType: 'upsert_alert', success: false, error: 'thresholdPct must be between 1 and 99' });
           break;
         }
+        const scope = msg.scope ?? 'account';
+        if (scope === 'pool' && msg.accountId != null) {
+          respond({ requestType: 'upsert_alert', success: false, error: 'pool alerts must have accountId = null' });
+          break;
+        }
+        if (scope === 'account' && !msg.accountId) {
+          respond({ requestType: 'upsert_alert', success: false, error: 'account alerts require an accountId' });
+          break;
+        }
+        if (scope === 'budget') {
+          const budgetScope = msg.budgetScope ?? 'account';
+          if (budgetScope === 'account' && !msg.accountId) {
+            respond({ requestType: 'upsert_alert', success: false, error: 'budget account alerts require an accountId' });
+            break;
+          }
+          if (budgetScope === 'global' && msg.accountId != null) {
+            respond({ requestType: 'upsert_alert', success: false, error: 'budget global alerts must have accountId = null' });
+            break;
+          }
+        }
         const isNew = msg.id === undefined;
         const saved = upsertAlert(db, {
           ...(msg.id !== undefined ? { id: msg.id } : {}),
+          scope,
           accountId: msg.accountId,
           thresholdPct: msg.thresholdPct,
           enabled: msg.enabled,
+          ...(scope === 'budget' ? { budgetScope: msg.budgetScope ?? 'account' } : {}),
         });
-        if (isNew) primeNewAlertAgainstCurrentWindow(db, rateLimitStore, saved);
+        if (isNew) primeNewAlertAgainstCurrentWindow(db, rateLimitStore, saved, getSettings);
         respond({ requestType: 'upsert_alert', success: true, data: saved });
         break;
       }
@@ -694,7 +1323,7 @@ export async function startDaemon(): Promise<void> {
           break;
         }
         refreshIfNeeded(
-          { db, activeToken, activeAccountId, ipcServer },
+          { db, activeToken, activeAccountId, ipcServer, tokenRotator },
           msg.accountId,
           acct.email,
           true,
@@ -726,6 +1355,195 @@ export async function startDaemon(): Promise<void> {
         break;
       }
 
+      case 'get_sibling_candidates': {
+        // Enumerate unenrolled chat-capable siblings per email. For
+        // each distinct email among active accounts that has at
+        // least one stored sessionKey, call bootstrap once (sessionKey
+        // is shared across orgs so the first one is enough), filter
+        // out orgs we already have a Sentinel row for, return the
+        // leftovers keyed by email.
+        //
+        // Async so respond() fires after the bootstrap round trips
+        // complete — callers rely on the response for their initial
+        // state.
+        void (async (): Promise<void> => {
+          const all = listAccounts(db);
+          const emails = Array.from(
+            new Set(all.map((a) => a.email).filter((e) => e.length > 0)),
+          );
+          const out: Record<string, Array<{ orgUuid: string; orgName: string }>> = {};
+          for (const email of emails) {
+            const bearer = all.find(
+              (a) => a.email === email && hasClaudeAiSessionKey(a.id),
+            );
+            if (!bearer) continue;
+            const key = readClaudeAiSessionKey(bearer.id);
+            if (!key) continue;
+            const boot = await fetchBootstrap(key, bearer.orgUuid || bearer.id);
+            if (!boot) continue;
+            const enrolled = new Set(
+              all
+                .filter((a) => a.email === email)
+                .map((a) => a.orgUuid)
+                .filter((u): u is string => !!u),
+            );
+            const missing = boot.orgs.filter((o) => !enrolled.has(o.orgUuid));
+            if (missing.length > 0) {
+              out[email] = missing.map((o) => ({
+                orgUuid: o.orgUuid,
+                orgName: o.orgName,
+              }));
+            }
+          }
+          respond({ requestType: 'get_sibling_candidates', success: true, data: out });
+        })();
+        break;
+      }
+
+      case 'silent_sibling_login': {
+        // Silent (no-window) sibling enrollment.
+        //
+        // Approach: since claude.ai's sessionKey is shared across every
+        // org the user belongs to, an "enrollment" for a sibling org
+        // doesn't strictly need an OAuth token to exist in Sentinel —
+        // usage fetching is sessionKey-authenticated, and the DB row
+        // plus the mirrored sessionKey are enough to show the account
+        // with full visibility. The tradeoff is that Claude Code
+        // switching + the Sentinel proxy route-per-account can't use
+        // this stub until the user triggers a real OAuth flow later.
+        //
+        // Flow:
+        //   1. Find the parent account that owns a live sessionKey
+        //      for this email.
+        //   2. Hit /api/organizations/{target}/sync/settings to flip
+        //      claude.ai's server-side "active org" for this session
+        //      — mirrors what the web client does when you switch
+        //      orgs in the UI, and primes any subsequent org-scoped
+        //      API call we make with this sessionKey.
+        //   3. Re-fetch bootstrap with the target org uuid as the
+        //      hint. The response carries the org's name + raven_type
+        //      + the user's email/displayName — everything Sentinel
+        //      needs for the DB row.
+        //   4. Upsert the Sentinel account (no keychain credential
+        //      entry — zero OAuth tokens to store) and mirror the
+        //      sessionKey under the new account id so the usage
+        //      fetcher starts returning real data on the next tick.
+        //   5. Broadcast login_complete with `silent: true` so the
+        //      UI shows the account and skips the auto-Connect
+        //      claude.ai flow (which would pop a window and defeat
+        //      the whole point).
+        respond({ requestType: 'silent_sibling_login', success: true });
+
+        void (async (): Promise<void> => {
+          const parentAccount = listAccounts(db).find(
+            (a) => a.email === msg.email && hasClaudeAiSessionKey(a.id),
+          );
+          const parentSessionKey = parentAccount
+            ? readClaudeAiSessionKey(parentAccount.id)
+            : null;
+          if (!parentSessionKey) {
+            console.warn(
+              `[SilentSibling] no sessionKey on file for ${msg.email} — aborting silent enrollment`,
+            );
+            ipcServer.broadcast({ type: 'login_complete', email: '' });
+            return;
+          }
+
+          // 2. Flip server-side active org.
+          await switchActiveOrg(parentSessionKey, msg.orgUuidHint);
+
+          // 3. Fetch bootstrap scoped to the target org for fresh
+          //    metadata.
+          const boot = await fetchBootstrap(parentSessionKey, msg.orgUuidHint);
+          if (!boot) {
+            console.warn('[SilentSibling] bootstrap returned null — aborting silent enrollment');
+            ipcServer.broadcast({ type: 'login_complete', email: '' });
+            return;
+          }
+          const target = boot.orgs.find((o) => o.orgUuid === msg.orgUuidHint);
+          if (!target) {
+            console.warn(
+              `[SilentSibling] target org ${msg.orgUuidHint} not present in bootstrap memberships — aborting`,
+            );
+            ipcServer.broadcast({ type: 'login_complete', email: '' });
+            return;
+          }
+
+          const email = boot.email ?? msg.email;
+          const displayName = boot.displayName ?? '';
+          const accountUuid = boot.accountUuid ?? '';
+          const orgName = target.orgName;
+          const orgUuid = target.orgUuid;
+
+          // Map claude.ai's raven_type to Sentinel's planType.
+          // 'team' / 'claude_pro' / 'claude_max' / 'claude_enterprise'
+          // are the values we've observed. Anything else → 'pro' as
+          // the safe default.
+          const planType: PlanType =
+            target.ravenType === 'team'              ? 'team' :
+            target.ravenType === 'claude_max'        ? 'max' :
+            target.ravenType === 'max'               ? 'max' :
+            target.ravenType === 'claude_pro'        ? 'pro' :
+            target.ravenType === 'pro'               ? 'pro' :
+            target.ravenType === 'claude_enterprise' ? 'enterprise' :
+            'pro';
+
+          const credKey = sentinelKey(orgUuid, accountUuid) || email;
+
+          // 4. Upsert DB row. No credentials are written — the account
+          //    has no accessToken/refreshToken, which is the stub
+          //    marker performSwitch already handles (it refuses to
+          //    switch with a friendly error).
+          const wasReauth = hasActiveAccount(db, credKey);
+          reactivateAccount(db, credKey);
+          upsertAccount(db, {
+            id:          credKey,
+            accountUuid: accountUuid || email,
+            email,
+            displayName,
+            orgUuid,
+            orgName,
+            planType,
+            isActive:    false,
+            createdAt:   Date.now(),
+            color:       null,
+          });
+
+          // Seed a default alert on first enrollment (same policy as
+          // full OAuth path so stub vs full parity is preserved).
+          if (listAlerts(db, { scope: 'account', accountId: credKey }).length === 0) {
+            upsertAlert(db, { scope: 'account', accountId: credKey, thresholdPct: 95, enabled: true });
+          }
+
+          // 5. Mirror the sessionKey into the sibling's keychain
+          //    entry so the usage fetcher can start hitting
+          //    claude.ai on its behalf immediately.
+          try {
+            writeClaudeAiSessionKey(credKey, parentSessionKey);
+            void claudeAiUsageStore.refresh(credKey);
+          } catch (e) {
+            console.warn(
+              '[SilentSibling] mirrored sessionKey write failed:',
+              e instanceof Error ? e.message : String(e),
+            );
+          }
+
+          tokenRotator.refresh();
+
+          console.log(
+            `[SilentSibling] enrolled ${email} / ${orgName} (${planType}, reauth=${wasReauth}) without OAuth`,
+          );
+          ipcServer.broadcast({
+            type: 'login_complete',
+            email,
+            orgName,
+            reauth: wasReauth,
+            silent: true,
+          });
+        })();
+        break;
+      }
+
       case 'start_login': {
         // If a login is already pending, abort it silently before starting a new
         // one. This happens when the user clicks Cancel in the UI (which only
@@ -742,84 +1560,36 @@ export async function startDaemon(): Promise<void> {
         // Respond immediately — the login is async and we broadcast when done
         respond({ requestType: 'start_login', success: true });
 
-        startOAuthLogin(abortController.signal)
-          .then(({ credentials, email, displayName, accountUuid, orgUuid, orgName, subscriptionType, organizationRole, workspaceRole, hasExtraUsageEnabled }) => {
+        startOAuthLogin({
+          signal: abortController.signal,
+          ...(msg.orgUuidHint ? { orgUuidHint: msg.orgUuidHint } : {}),
+          // Surface the authorize URL via IPC broadcast instead of
+          // exec('open URL'). The Tauri app listens for
+          // `oauth_authorize_url` and opens the URL inside a
+          // WebviewWindow so claude.ai's cookies (sessionKey
+          // included) land in the shared WKHTTPCookieStore — the
+          // Connect claude.ai flow that auto-triggers after the
+          // account is created then finds those cookies instantly,
+          // skipping the second-login hop. We also ALWAYS call
+          // openBrowser as a safety net: if the frontend isn't
+          // listening (daemon running headless during dev, or an
+          // IPC hiccup), the user still gets their system browser
+          // open so the flow isn't stuck.
+          openAuthUrl: (url) => {
+            try {
+              ipcServer.broadcast({
+                type: 'oauth_authorize_url',
+                url,
+                ...(msg.orgUuidHint ? { orgUuidHint: msg.orgUuidHint } : {}),
+              });
+            } catch (e) {
+              console.warn('[OAuth] broadcast failed:', e instanceof Error ? e.message : String(e));
+            }
+          },
+        })
+          .then((result) => {
             loginAbortController = null;
-            // Store under sentinelKey so two subscriptions for the same Anthropic user
-            // (same accountUuid, different orgUuid) each get their own keychain entry.
-            const credKey = sentinelKey(orgUuid, accountUuid) || email;
-
-            // Detect whether the OAuth flow authorized an org the user already
-            // had. This happens when the user clicks "Add Account" while their
-            // claude.ai browser is still on an org they already added — the
-            // token comes back for that same org, not the new one they wanted.
-            // We let the write/upsert proceed (refreshes the token harmlessly)
-            // and surface the fact to the UI.
-            const wasReauth = hasNonPurgedAccount(db, credKey);
-
-            writeSentinelCredentials(credKey, credentials);
-
-            // Build an OAuthAccount record so Claude Code can use this account
-            const newAccount: OAuthAccount = {
-              accountUuid:          accountUuid || email,
-              emailAddress:         email,
-              organizationUuid:     orgUuid,
-              hasExtraUsageEnabled,
-              billingType:          subscriptionType ?? 'unknown',
-              accountCreatedAt:     new Date().toISOString(),
-              subscriptionCreatedAt: new Date().toISOString(),
-              displayName:          displayName,
-              organizationRole:     (organizationRole as OAuthAccount['organizationRole']) || 'user',
-              workspaceRole:        workspaceRole,
-              organizationName:     orgName,
-            };
-
-            // If this account was previously soft-deleted, clear the flag so it
-            // shows in the active list again. An explicit re-login is user intent.
-            reactivateAccount(db, credKey);
-
-            // Clear any prior "refresh token expired" mark so the background
-            // refresher resumes keeping this account warm.
-            markAccountReauthenticated(credKey);
-
-            // Upsert into DB using sentinelKey as id so same-UUID accounts in
-            // different orgs get separate rows.
-            const planType = inferPlanType(newAccount, credentials);
-            upsertAccount(db, {
-              id:          credKey,
-              accountUuid: newAccount.accountUuid,
-              email:       newAccount.emailAddress,
-              displayName: newAccount.displayName,
-              orgUuid:     newAccount.organizationUuid,
-              orgName:     newAccount.organizationName,
-              planType,
-              isActive:    false, // don't switch automatically — let the user choose
-              createdAt:   Date.now(),
-            });
-
-            // Seed a default 95% usage alert for first-time enrollments so users
-            // get notified before they cap the 5-hour window. Re-auths skip this
-            // so we don't stack duplicate alerts every time the OAuth token
-            // refreshes. Threshold picked high (95 vs 80) because the alert is
-            // meant as a surprise-minimizer, not a cost governor.
-            if (listAlerts(db, credKey).length === 0) {
-              upsertAlert(db, { accountId: credKey, thresholdPct: 95, enabled: true });
-              console.log(`[OAuth] Seeded default 95% alert for ${credKey}`);
-            }
-
-            // If no active account exists yet, make this one active
-            const current = getActiveAccount();
-            if (!current) {
-              setActiveAccount(newAccount);
-              activeToken.value = credentials.accessToken;
-            }
-
-            // Freshly added account means a new token is available to
-            // round-robin rotation.
-            tokenRotator.refresh();
-
-            console.log(`[OAuth] Login complete for ${email} (org: ${orgName || '?'}, reauth: ${wasReauth}), broadcasting to ${ipcServer.connectedClients} client(s)`);
-            ipcServer.broadcast({ type: 'login_complete', email, orgName, reauth: wasReauth });
+            persistOAuthResult(result);
           })
           .catch((err: unknown) => {
             loginAbortController = null;
@@ -839,27 +1609,62 @@ export async function startDaemon(): Promise<void> {
     }
   });
 
-  // Wire up auto-switch. Safe to register even when mode=off — the handler
-  // early-returns based on currentSettings on every rate-limit update.
-  startAutoSwitch({
+  // Evaluate user-created per-account alerts on every rate-limit update.
+  const alertEvaluatorDeps = {
     db,
     rateLimitStore,
     ipcServer,
-    getSettings: () => currentSettings,
-    getActiveAccount,
-    sentinelKey,
-    performSwitch,
-  });
-
-  // Evaluate user-created alerts on every rate-limit update.
-  startAlertEvaluator({
-    db,
-    rateLimitStore,
-    ipcServer,
-    getEmailForAccount: (accountId) => {
+    getEmailForAccount: (accountId: string): string | null => {
       const acct = listAccounts(db).find((a) => a.id === accountId);
       return acct?.email ?? null;
     },
+  };
+  startAlertEvaluator(alertEvaluatorDeps);
+
+  // Pool-wide alerts (round-robin only). No-ops outside round-robin mode.
+  // Also called eagerly from the update_settings handler when the user
+  // changes pool membership or switches into round-robin, so the new pool's
+  // utilization is checked without waiting for the next rate-limit update.
+  const poolAlertDeps = { ...alertEvaluatorDeps, getSettings };
+  startPoolAlertEvaluator(poolAlertDeps);
+
+  // Purge stale security events per the retention window. Runs once at
+  // startup; rows continue to accumulate between restarts.
+  try {
+    const cutoff = Date.now() - currentSettings.securityEventRetentionDays * 24 * 60 * 60 * 1000;
+    const purged = purgeSecurityEventsOlderThan(db, cutoff);
+    if (purged > 0) {
+      console.log(`[Security] Purged ${purged} security event(s) older than ${currentSettings.securityEventRetentionDays} days`);
+    }
+  } catch (err) {
+    console.error('[Security] retention purge failed:', err);
+  }
+
+  // Purge stale OTEL telemetry (usage_events, tool_events, api_errors,
+  // activity_events) per the retention window. Runs once at startup and
+  // re-runs every 24h so an always-on daemon doesn't accumulate data
+  // indefinitely.
+  const runTelemetryPurge = (): void => {
+    try {
+      const cutoff = Date.now() - currentSettings.telemetryRetentionDays * 24 * 60 * 60 * 1000;
+      const purged = purgeTelemetryOlderThan(db, cutoff);
+      if (purged > 0) {
+        console.log(`[Telemetry] Purged ${purged} row(s) older than ${currentSettings.telemetryRetentionDays} days`);
+      }
+    } catch (err) {
+      console.error('[Telemetry] retention purge failed:', err);
+    }
+  };
+  runTelemetryPurge();
+  const telemetryPurgeTimer = setInterval(runTelemetryPurge, 24 * 60 * 60 * 1000);
+
+  // Build the security scanner. Settings getter is passed as a thunk so the
+  // scanner re-reads toggles and enforcement-mode on every request without
+  // needing a restart.
+  const securityScanner = createSecurityScanner({
+    db,
+    ipcServer,
+    getSettings: () => currentSettings,
   });
 
   // Start IPC server
@@ -881,6 +1686,12 @@ export async function startDaemon(): Promise<void> {
         if (currentSettings.switchingMode !== 'round-robin') return null;
         return tokenRotator.pick();
       },
+      getPausedAccountIds: () => spendTracker.getPausedIds(),
+      getSessionResetAt: (accountId) => {
+        const w = rateLimitStore.getAll(accountId).find((x) => x.name === 'unified-5h');
+        return w?.reset ?? null;
+      },
+      securityScanner,
     },
     (req, res) => {
       const url = req.url ?? '/';
@@ -903,12 +1714,23 @@ export async function startDaemon(): Promise<void> {
 
   // Keep OAuth tokens fresh in the background. Runs once immediately (catching
   // any account whose token expired overnight) then every 15 minutes.
-  const stopTokenRefresher = startTokenRefresher({ db, activeToken, activeAccountId, ipcServer });
+  const stopTokenRefresher = startTokenRefresher({ db, activeToken, activeAccountId, ipcServer, tokenRotator });
+
+  // Keep rate-limit / usage state fresh for all non-active accounts so the
+  // Usage tab reflects consumption from other Anthropic surfaces (claude.ai,
+  // Claude Desktop, direct API) even when Claude Code isn't driving them.
+  usageProber = startUsageProber({
+    db,
+    ipcServer,
+    getIntervalSec: () => currentSettings.backgroundProbeIntervalSec,
+  });
 
   // Graceful shutdown
   const shutdown = (server: Server) => {
     console.log('[Sentinel] Shutting down...');
     stopTokenRefresher();
+    usageProber?.stop();
+    clearInterval(telemetryPurgeTimer);
     ipcServer.close();
     server.close();
     closeDb();

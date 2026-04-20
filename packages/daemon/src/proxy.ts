@@ -6,6 +6,7 @@ import { OverageStateMachine } from './overage.js';
 import { insertOverageEvent, insertNotification } from './db.js';
 import type { IpcServer } from './ipc.js';
 import type { RateLimitStore } from './rate-limit-store.js';
+import type { SecurityScanner } from './security/scanner.js';
 
 export const DAEMON_PORT = 47284;
 export const ANTHROPIC_HOST = 'api.anthropic.com';
@@ -47,6 +48,22 @@ interface ProxyOptions {
    *  basis — used for round-robin mode. Returning null falls back to the
    *  activeToken/activeAccountId refs. */
   tokenProvider?: () => TokenSelection | null;
+  /** Live accessor for the Sentinel-side paused-account set. When the
+   *  account that a request is about to be attributed to is paused, the
+   *  proxy short-circuits the request with 503 + Retry-After pointing at
+   *  the 5h rollover. Needed for `off` mode where the rotator's pause gate
+   *  is bypassed. Ignored in round-robin (the rotator already skips paused
+   *  accounts so no short-circuit is needed there). */
+  getPausedAccountIds?: () => ReadonlySet<string>;
+  /** Live accessor for the 5h reset timestamp (Unix seconds) per account.
+   *  Used to populate the Retry-After header on the 503 short-circuit.
+   *  Returning null means "no reset info available"; the proxy picks a
+   *  conservative default. */
+  getSessionResetAt?: (accountId: string) => number | null;
+  /** When set, every outbound /v1/messages POST is scanned (and optionally
+   *  blocked) before upstream forwarding, and every response is tapped to
+   *  surface risky tool_use proposals. No-op when settings disable it. */
+  securityScanner?: SecurityScanner;
 }
 
 // Minimum milliseconds between rate_limits_updated broadcasts per account
@@ -95,8 +112,13 @@ export function createProxyServer(
     const { accountId, transition, state } = event;
     const now = Date.now();
 
-    // Persist overage event
-    insertOverageEvent(opts.db, {
+    // Persist overage event. `INSERT OR IGNORE` returns null when a row for
+    // the same (accountId, resetsAt, transition) already exists — a defensive
+    // layer under the state-machine dedup, catches daemon-restart races where
+    // the in-memory `fired` map was not rehydrated yet. When skipped, we also
+    // swallow the in-app notification row and IPC broadcast so the UI does
+    // not see a ghost transition.
+    const rowId = insertOverageEvent(opts.db, {
       ts: now,
       accountId,
       transition,
@@ -104,6 +126,7 @@ export function createProxyServer(
       resetsAt: state.resetsAt,
       disabledReason: state.disabledReason,
     });
+    if (rowId === null) return;
 
     // Build notification
     let title: string;
@@ -152,17 +175,30 @@ export function createProxyServer(
   const activeAccountId = opts.activeAccountId;
   const rateLimitStore = opts.rateLimitStore;
   const tokenProvider = opts.tokenProvider;
-  const { ipcServer } = opts;
+  const { ipcServer, securityScanner } = opts;
+  const getPausedAccountIds = opts.getPausedAccountIds ?? (() => new Set<string>());
+  const getSessionResetAt = opts.getSessionResetAt ?? (() => null);
 
   // Tracks the last broadcast time per account to debounce rapid-fire requests
   const lastBroadcast = new Map<string, number>();
 
   /**
-   * Resolve the (token, accountId) pair for an outgoing request. When a
-   * tokenProvider is configured (round-robin mode) it wins; otherwise we fall
-   * back to the shared activeToken/activeAccountId refs.
+   * Resolve the (token, accountId) pair for an outgoing request. Precedence:
+   *   1. Per-request override via `x-sentinel-probe-token` + `x-sentinel-probe-account`
+   *      — used by the background usage-probe to probe a non-active account
+   *      without mutating the active-token refs. Headers are stripped before
+   *      upstream forwarding so they never leak to Anthropic.
+   *   2. `tokenProvider` (round-robin mode).
+   *   3. Shared `activeToken` / `activeAccountId` refs (default flow).
    */
-  const selectCredential = (): TokenSelection | null => {
+  const selectCredential = (req: IncomingMessage): TokenSelection | null => {
+    const probeToken = req.headers['x-sentinel-probe-token'];
+    const probeAccount = req.headers['x-sentinel-probe-account'];
+    if (typeof probeToken === 'string' && typeof probeAccount === 'string' && probeToken && probeAccount) {
+      delete req.headers['x-sentinel-probe-token'];
+      delete req.headers['x-sentinel-probe-account'];
+      return { token: probeToken, accountId: probeAccount };
+    }
     const fromProvider = tokenProvider?.();
     if (fromProvider) return fromProvider;
     if (activeToken.value) {
@@ -182,7 +218,7 @@ export function createProxyServer(
       return;
     }
 
-    const credential = selectCredential();
+    const credential = selectCredential(req);
     if (credential) {
       req.headers['authorization'] = `Bearer ${credential.token}`;
     }
@@ -200,8 +236,40 @@ export function createProxyServer(
     // specific account whose token was used for this request (matters for
     // round-robin where that may differ from the primary active account).
     const perRequestAccountId = credential?.accountId ?? activeAccountId?.value;
+
+    // Sentinel-side pause short-circuit. The rotator already skips paused
+    // accounts in round-robin, so this only matters when the credential came
+    // from the active-token fallback (typical `off` mode) or the per-request
+    // probe headers landed on a paused account. Respond 503 with Retry-After
+    // pointing at the 5h rollover so Claude Code backs off until Sentinel
+    // re-evaluates.
+    if (perRequestAccountId && getPausedAccountIds().has(perRequestAccountId)) {
+      const resetSec = getSessionResetAt(perRequestAccountId);
+      // Retry-After accepts delta-seconds; fall back to 5 minutes when the
+      // reset is missing (unlikely in practice — rate-limit headers arrive
+      // on the first response for a new account).
+      const retryAfter =
+        resetSec != null
+          ? Math.max(1, resetSec - Math.floor(Date.now() / 1000))
+          : 300;
+      res.writeHead(503, {
+        'Content-Type': 'application/json',
+        'Retry-After': String(retryAfter),
+      });
+      res.end(JSON.stringify({
+        error: {
+          type: 'sentinel_budget_paused',
+          message:
+            'Sentinel has paused this account because its weekly budget was reached. ' +
+            'It will resume automatically when the 5-hour window resets. ' +
+            'Switch accounts or raise the Sentinel budget in Settings to unblock sooner.',
+        },
+      }));
+      return;
+    }
+
     if (ANTHROPIC_PATHS.some((p) => url.startsWith(p))) {
-      proxyToAnthropic(req, res, machine, rateLimitStore, perRequestAccountId, ipcServer, lastBroadcast).catch((err) => {
+      proxyToAnthropic(req, res, machine, rateLimitStore, perRequestAccountId, ipcServer, lastBroadcast, securityScanner).catch((err) => {
         console.error('[Proxy] Proxy error:', err);
         res.writeHead(502);
         res.end();
@@ -233,6 +301,7 @@ async function proxyToAnthropic(
   attributionAccountId?: string,
   ipcServer?: IpcServer,
   lastBroadcast?: Map<string, number>,
+  securityScanner?: SecurityScanner,
 ): Promise<void> {
   const body = await readBody(req);
 
@@ -241,6 +310,63 @@ async function proxyToAnthropic(
     (req.headers['x-account-uuid'] as string | undefined) ??
     extractAccountFromAuth(req.headers['authorization'] as string | undefined) ??
     'default';
+
+  const rlKey = attributionAccountId ?? accountId;
+
+  // Security scan — runs against the outbound JSON before we forward. In
+  // block-mode, a finding at or above the severity floor triggers one of:
+  //  - `pending`: the request is held open up to `securityApproveHoldSec`
+  //    while the user decides whether to approve. On approve, the held
+  //    body is forwarded upstream as if nothing happened. On deny or
+  //    timeout, a 403 is synthesized.
+  //  - `block_immediate`: 403 fires without any hold (user disabled the
+  //    hold feature).
+  if (
+    securityScanner &&
+    req.method === 'POST' &&
+    req.url?.startsWith('/v1/messages')
+  ) {
+    const decision = securityScanner.scanOutbound(body, rlKey);
+
+    const synthesize403 = (reason: string, tag: string): void => {
+      const payload = JSON.stringify({
+        type: 'error',
+        error: {
+          type: 'permission_denied',
+          message: `Blocked by Claude Sentinel: ${reason}`,
+        },
+      });
+      console.log(`[Proxy] ${tag} ${req.method} ${req.url} (account: ${rlKey}) — ${reason}`);
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(payload);
+    };
+
+    if (decision.action === 'block_immediate') {
+      synthesize403(decision.blockReason, 'BLOCKED');
+      return;
+    }
+
+    if (decision.action === 'pending') {
+      // Abandon the hold if Claude Code hangs up before we decide, so the
+      // pendingBlocks map doesn't leak stale entries. Any outcome is fine;
+      // `timeout` is the semantically clearest for an upstream abort.
+      const onClientClose = (): void => {
+        securityScanner.resolvePending(decision.pendingId, 'deny');
+      };
+      req.on('close', onClientClose);
+
+      const outcome = await securityScanner.awaitPendingResolution(decision.pendingId);
+      req.off('close', onClientClose);
+
+      if (outcome !== 'approve') {
+        synthesize403(decision.blockReason, outcome === 'timeout' ? 'BLOCKED (timeout)' : 'BLOCKED (denied)');
+        return;
+      }
+      console.log(`[Proxy] APPROVED ${req.method} ${req.url} (account: ${rlKey}) — ${decision.blockReason}`);
+      // Fall through to normal upstream forwarding using the already-
+      // buffered body.
+    }
+  }
 
   return new Promise((resolve, reject) => {
     const proxyReq = httpsRequest(
@@ -255,7 +381,6 @@ async function proxyToAnthropic(
         },
       },
       (proxyRes) => {
-        const rlKey = attributionAccountId ?? accountId;
         console.log(`[Proxy] ${req.method} ${req.url} → ${proxyRes.statusCode} (account: ${rlKey})`);
 
         // Inspect overage + rate-limit headers
@@ -287,12 +412,38 @@ async function proxyToAnthropic(
           }
         }
 
-        // Forward response to Claude Code unmodified
+        // Forward response to Claude Code. When a security tap is active,
+        // we hand chunks to the client synchronously and also feed a
+        // non-blocking copy to the scanner. A slow tap can NEVER delay the
+        // client because we don't let its backpressure reach proxyRes.
         /* v8 ignore next 1 */
         res.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers);
-        proxyRes.pipe(res);
-        proxyRes.on('end', resolve);
-        proxyRes.on('error', reject);
+        const tap = securityScanner?.startResponseTap(rlKey, req.url) ?? null;
+        const encoding = proxyRes.headers['content-encoding'];
+        const tapActive = tap !== null && !encoding;
+        if (tap !== null && encoding) {
+          // Gzipped responses aren't scanned in v1 — keep parity honest.
+          tap.destroy();
+        }
+        if (tapActive && tap !== null) {
+          proxyRes.on('data', (chunk: Buffer) => {
+            res.write(chunk);
+            tap.push(chunk);
+          });
+          proxyRes.on('end', () => {
+            res.end();
+            tap.flush();
+            resolve();
+          });
+          proxyRes.on('error', (err) => {
+            tap.destroy();
+            reject(err);
+          });
+        } else {
+          proxyRes.pipe(res);
+          proxyRes.on('end', resolve);
+          proxyRes.on('error', reject);
+        }
       },
     );
 

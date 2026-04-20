@@ -74,7 +74,11 @@ describe('OtelReceiver', () => {
       expect(code).toBe(200);
     });
 
-    it('persists cost usage metric to DB', async () => {
+    it('does NOT persist cost.usage metric to DB (api_request log is source of truth)', async () => {
+      // Claude Code emits cost twice per request — once as this metric and
+      // once as the `cost_usd` attribute on `claude_code.api_request` logs.
+      // Persisting both doubled every request's cost. The metric path is
+      // now a deliberate no-op; the log path retains full responsibility.
       const payload = {
         resourceMetrics: [
           {
@@ -113,10 +117,9 @@ describe('OtelReceiver', () => {
       await receiver.handleMetrics(req, mockRes);
       expect(code).toBe(200);
 
+      // Metric is intentionally dropped — no usage_events row written.
       const events = getUsageEvents(db, { accountId: 'acc-otel-1' });
-      expect(events).toHaveLength(1);
-      expect(events[0]?.model).toBe('claude-sonnet-4-6');
-      expect(events[0]?.costUsd).toBe(0.05);
+      expect(events).toHaveLength(0);
     });
 
     it('returns 400 for invalid JSON', async () => {
@@ -145,7 +148,7 @@ describe('OtelReceiver', () => {
       expect(code).toBe(400);
     });
 
-    it('handles gauge metric type', async () => {
+    it('accepts gauge metric type without crashing (cost.usage still dropped)', async () => {
       const payload = {
         resourceMetrics: [
           {
@@ -183,8 +186,10 @@ describe('OtelReceiver', () => {
       await receiver.handleMetrics(req, mockRes);
       expect(code).toBe(200);
 
+      // Cost metric is always skipped — no row persisted even when the
+      // incoming data point looks valid.
       const events = getUsageEvents(db, { accountId: 'acc-gauge' });
-      expect(events).toHaveLength(1);
+      expect(events).toHaveLength(0);
     });
   });
 
@@ -505,6 +510,54 @@ describe('OtelReceiver', () => {
       expect(row['success']).toBe(1);
       expect(row['duration_ms']).toBe(234);
       expect(row['tool_result_size_bytes']).toBe(1024);
+    });
+
+    it('tool_result persists decision_source AND decision_type', async () => {
+      await runLogs(logPayload('tool_result', {
+        'user.account_uuid': 'acc-a',
+        tool_name: 'Edit',
+        success: 'true',
+        decision_source: 'user_temporary',
+        decision_type: 'accept',
+      }));
+      const row = db.prepare('SELECT decision_source, decision_type FROM tool_events').get() as { decision_source: string; decision_type: string };
+      expect(row.decision_source).toBe('user_temporary');
+      expect(row.decision_type).toBe('accept');
+    });
+
+    it('tool_decision → activity_events(kind=tool_decision) with tool_name/decision/source', async () => {
+      await runLogs(logPayload('tool_decision', {
+        'user.account_uuid': 'acc-a',
+        tool_name: 'Bash',
+        decision: 'reject',
+        source: 'user_permanent',
+      }));
+      const row = db.prepare('SELECT kind, tool_name, decision, source FROM activity_events').get() as Record<string, string>;
+      expect(row).toEqual({
+        kind: 'tool_decision',
+        tool_name: 'Bash',
+        decision: 'reject',
+        source: 'user_permanent',
+      });
+    });
+
+    it('user_prompt → activity_events(kind=user_prompt) storing prompt_length in value', async () => {
+      await runLogs(logPayload('user_prompt', {
+        'user.account_uuid': 'acc-a',
+        prompt_length: 142,
+      }));
+      const row = db.prepare('SELECT kind, value FROM activity_events').get() as { kind: string; value: number };
+      expect(row.kind).toBe('user_prompt');
+      expect(row.value).toBe(142);
+    });
+
+    it('user_prompt without prompt_length stores null value', async () => {
+      await runLogs(logPayload('user_prompt', {
+        'user.account_uuid': 'acc-a',
+      }));
+      const row = db.prepare('SELECT kind, value FROM activity_events').get() as { kind: string; value: number | null };
+      expect(row.kind).toBe('user_prompt');
+      expect(row.value).toBeNull();
     });
 
     it('tool_result captures failure with error attribute', async () => {

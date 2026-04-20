@@ -11,7 +11,7 @@
 /// by `requestType`. When the read loop in `connect_daemon` receives a response
 /// it delivers it to the waiting command, then also emits a Tauri event so
 /// unsolicited broadcasts (overage_entered, etc.) still reach the frontend.
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
@@ -33,7 +33,21 @@ type DaemonStream = NamedPipeClient;
 static DAEMON_SOCKET: Mutex<Option<tokio::io::WriteHalf<DaemonStream>>> = Mutex::const_new(None);
 
 /// Pending request/response correlations keyed by `requestType`.
-static PENDING: LazyLock<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>> =
+///
+/// A FIFO queue per type, not a single slot — the daemon's response
+/// protocol uses the message `type` as the correlation key, but nothing
+/// about that mandates "only one in flight per type". Two components
+/// calling `sendToSentinel({type:'get_rate_limits'})` concurrently is
+/// entirely legitimate (e.g., UsageView and AccountSwitcher both
+/// refreshing on mount). Without a queue, the second `insert` would
+/// replace the first Sender and the first caller's Receiver would raise
+/// "Response channel dropped" (see send_internal's mapping below).
+///
+/// The daemon processes messages on the socket in order (single async
+/// read loop in `packages/daemon/src/ipc.ts`), so responses for the same
+/// type come back in the order the requests were sent. Pop from the
+/// front on response delivery.
+static PENDING: LazyLock<Mutex<HashMap<String, VecDeque<oneshot::Sender<serde_json::Value>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(unix)]
@@ -75,15 +89,24 @@ pub async fn connect_daemon(app: AppHandle) {
                         continue;
                     }
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-                        // Resolve a pending ipc_send call if the requestType matches
+                        // Resolve the oldest pending ipc_send call for this
+                        // requestType. The daemon's FIFO ordering on the
+                        // socket means the front of the queue is always the
+                        // one this response belongs to. When the queue
+                        // empties, remove the entry to bound memory.
                         if let Some(req_type) = value
                             .get("requestType")
                             .and_then(|v| v.as_str())
                             .map(str::to_owned)
                         {
                             let mut pending = PENDING.lock().await;
-                            if let Some(tx) = pending.remove(&req_type) {
-                                let _ = tx.send(value.clone());
+                            if let Some(queue) = pending.get_mut(&req_type) {
+                                if let Some(tx) = queue.pop_front() {
+                                    let _ = tx.send(value.clone());
+                                }
+                                if queue.is_empty() {
+                                    pending.remove(&req_type);
+                                }
                             }
                         }
                         // Always forward to frontend for broadcasts
@@ -100,10 +123,22 @@ pub async fn connect_daemon(app: AppHandle) {
                     }
                 }
 
-                // Socket closed — clear the writer and reconnect
+                // Socket closed — clear the writer and reconnect.
                 {
                     let mut guard = DAEMON_SOCKET.lock().await;
                     *guard = None;
+                }
+                // Drain PENDING. Any senders whose write went out on the
+                // now-dead socket will never get a response; leaving them
+                // in place orphans them at the front of each FIFO queue,
+                // which eats subsequent real responses and deadlocks every
+                // future call of the same request_type until the app is
+                // restarted. Clearing lets callers see their oneshot
+                // Receiver drop ("Response channel dropped") and retry
+                // cleanly against the new connection.
+                {
+                    let mut pending = PENDING.lock().await;
+                    pending.clear();
                 }
             }
             Err(_) => {
@@ -142,24 +177,51 @@ pub async fn send_internal(message: serde_json::Value) -> Result<IpcResponse, St
 
     let (tx, rx) = oneshot::channel::<serde_json::Value>();
 
+    // Register the sender BEFORE writing so the read loop never finds an
+    // empty queue when a racing response comes back — FIFO correlation by
+    // request_type depends on this ordering.
     {
         let mut pending = PENDING.lock().await;
-        pending.insert(request_type.clone(), tx);
+        pending
+            .entry(request_type.clone())
+            .or_default()
+            .push_back(tx);
     }
 
-    // Send the message to the daemon
-    {
+    // Send the message to the daemon. If the write fails we must un-push
+    // the sender we just registered; otherwise it sits in the queue
+    // forever, gets popped by a later response that belongs to someone
+    // else, and silently swallows it (the caller then times out at 5s).
+    let write_result: Result<(), String> = async {
         let mut guard = DAEMON_SOCKET.lock().await;
         let writer = guard
             .as_mut()
             .ok_or_else(|| "Daemon not connected".to_string())?;
-
         let mut line = serde_json::to_string(&message).map_err(|e| e.to_string())?;
         line.push('\n');
         writer
             .write_all(line.as_bytes())
             .await
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    .await;
+
+    if let Err(e) = write_result {
+        let mut pending = PENDING.lock().await;
+        if let Some(queue) = pending.get_mut(&request_type) {
+            // pop_back removes the sender most recently pushed, which is
+            // ours under normal conditions. A concurrent caller racing in
+            // between our push and the failed write would also be failing
+            // (same dead socket), so if we pop theirs by accident their
+            // own failure path removes ours — net result: both senders
+            // drop, both callers see an error, queue stays consistent.
+            queue.pop_back();
+            if queue.is_empty() {
+                pending.remove(&request_type);
+            }
+        }
+        return Err(e);
     }
 
     // Wait for the daemon's response (5 s timeout)
@@ -169,9 +231,15 @@ pub async fn send_internal(message: serde_json::Value) -> Result<IpcResponse, St
         }
         Ok(Err(_)) => Err("Response channel dropped".to_string()),
         Err(_) => {
-            // Clean up the dangling sender on timeout
-            let mut pending = PENDING.lock().await;
-            pending.remove(&request_type);
+            // On timeout we DON'T try to remove our specific Sender from
+            // the VecDeque — we have no way to identify it without adding
+            // per-call IDs, and arbitrary removal would misalign FIFO
+            // delivery. Instead, we let the Sender stay in the queue; our
+            // `rx` is already dropped so when the daemon's (late) response
+            // eventually arrives, the read loop pops the stale Sender,
+            // calls `tx.send(..)`, and the value is dropped harmlessly
+            // (Receiver is gone). Total overhead: one dead slot in the
+            // queue, cleared on the next matching response.
             Err(format!("Timeout waiting for daemon response to '{request_type}'"))
         }
     }

@@ -108,6 +108,76 @@ grep '\[Switch\]'   ~/.claude-sentinel/daemon.log
 grep 'ERROR'        ~/.claude-sentinel/daemon.log
 ```
 
+## DevTools for frontend / webview diagnosis
+
+We use the platform's native Web Inspector, in a separate window, on
+every OS. No custom debugger UI — Safari / Edge / WebKit already ship
+Console + Network + Elements + Sources + breakpoints.
+
+### Main tray window — click the `dev` badge in the footer
+
+Toggles DevTools via the standard Tauri
+[`open_devtools`/`close_devtools`](https://v2.tauri.app/develop/debug/)
+APIs. The catch: our tray window is pinned to 540×628 non-resizable for
+tray-menu ergonomics, so a docked inspector has nowhere to live out of
+the box. The `toggle_devtools` command in
+`packages/app/src-tauri/src/main.rs` handles both sides:
+
+- **Opening**: clears max_size, enables resizable, grows window to
+  1280×900, calls `open_devtools()`, emits `devtools_state_changed`
+  with `{ open: true }`.
+- **Closing**: `close_devtools()`, sets window to 540×628, restores
+  max_size cap, disables resizable, emits `{ open: false }`.
+
+The frontend's `useAutoResizeWindow` hook listens for
+`devtools_state_changed` and pauses itself while DevTools is open — if
+it didn't, the auto-resize loop would immediately shrink the window
+back to content height and the docked inspector would have no room.
+When DevTools closes, the hook resets calibration (`calibrated = false`)
+so the next frame re-measures chrome overhead against the freshly
+restored tray size.
+
+No AppleScript, no platform-specific permissions — cross-platform via
+Tauri's standard API. Prior iterations tried AppleScript-driving
+Safari's Develop menu for a separate windowed inspector; that path
+required Accessibility permission + Develop menu enabled + fragile
+menu traversal. The expand-then-restore approach sidesteps all of it.
+
+### claude.ai login webview
+
+Right-click → Inspect (always available thanks to `.devtools(true)` on
+the login window's `WebviewWindowBuilder`). Use this when Connect
+claude.ai fails — the Network tab surfaces the exact failing request +
+response body.
+
+### Build feature requirement
+
+The `devtools` Cargo feature on tauri is enabled in `Cargo.toml` so all
+of this works in release builds too. On macOS, this feature sets
+`WKWebView.isInspectable = true`, which is what makes our app appear in
+Safari's Develop menu — without it, the AppleScript would find nothing
+to click.
+
+### Asking users for DevTools output
+
+Ask for screenshots / Console tab contents / Network tab entries when
+diagnosing frontend or auth issues. The usual culprits:
+- Google OAuth rejecting the embedded webview (UA/fingerprint related)
+- claude.ai returning 401/403 on a stored sessionKey (cookie expired)
+- Tauri IPC errors between frontend and daemon
+- React render errors that don't show up in the daemon log
+
+**Ask the user for DevTools logs when diagnosing frontend / auth issues.**
+Console and Network tab contents are usually enough to pinpoint:
+- Google OAuth rejecting the embedded webview (stealth patches may need updating)
+- claude.ai returning 401/403 on a stored sessionKey (cookie expired)
+- Tauri IPC errors between frontend and daemon
+- React render errors that don't show up in the daemon log
+
+Typical diagnostic request: "Can you open DevTools on the login webview,
+try Connect with Google again, and paste the Console + Network tab
+contents (screenshot or copy-paste)?"
+
 ## Project structure (key files)
 
 ```
@@ -121,8 +191,9 @@ packages/daemon/src/
   ipc.ts            — Unix socket IPC server/client
   settings.ts       — ~/.claude-sentinel/settings.json load/save
   token-rotator.ts  — round-robin {accountId, token} selector
-  auto-switch.ts    — threshold monitor + switch trigger + exhaustion broadcast
+                      (strategy: balance | earliest-reset)
   alerts.ts         — user-configured usage-alert evaluator
+                      (per-account + pool-wide)
 
 packages/app/src-tauri/src/
   ipc.rs            — Rust IPC bridge (connects to daemon socket)
@@ -135,14 +206,14 @@ packages/app/src-tauri/src/
 ## IPC message reference (shared types)
 
 **App → Daemon** (in addition to the core account/usage ones):
-- `get_settings` / `update_settings` — `Settings` is `{ launchAtLogin, switchingMode, autoSwitchThresholdPct }`
-- `list_alerts` / `upsert_alert` / `delete_alert` — alerts bound by Sentinel `accountId`
+- `get_settings` / `update_settings` — `Settings` is `{ launchAtLogin, switchingMode, roundRobinStrategy, poolExcludedIds, … }`
+- `list_alerts` / `upsert_alert` / `delete_alert` — alerts carry a `scope`
+  (`'account'` bound to a Sentinel key, or `'pool'` for round-robin-wide)
 - `get_notifications` — history for the Alerts tab
 
 **Daemon → App** broadcasts (in addition to the core ones):
 - `settings_changed` — fires on every `update_settings` write
-- `alert_triggered` — a user alert crossed its threshold; UI fires a native notification
-- `all_accounts_exhausted` — auto-switch gave up because every account is above threshold
+- `alert_triggered` — a user alert crossed its threshold (per-account or pool); UI fires a native notification
 
 ## Manual test helpers (send IPC from shell)
 

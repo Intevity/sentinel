@@ -58,6 +58,11 @@ export function useSettings(): UseSettingsResult {
         setError(e instanceof Error ? e.message : String(e));
       }
       if (cancelled) return;
+      // Clear the loading flag on failure so consumers (SettingsPanel)
+      // render the `error` branch instead of an indefinite spinner. The
+      // retry below keeps trying in the background, so a transient IPC
+      // failure still recovers without user action.
+      setLoading(false);
       timer = setTimeout(() => { void attempt(); }, STARTUP_RETRY_MS);
     };
 

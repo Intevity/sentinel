@@ -2,15 +2,26 @@ import type { Database } from 'better-sqlite3';
 import { listAccounts } from './db.js';
 import { readActiveCredentials, readSentinelCredentials } from './accounts.js';
 import type { RateLimitStore } from './rate-limit-store.js';
+import type { RoundRobinStrategy } from '@claude-sentinel/shared';
 
-/** Mirror of `auto-switch.ts`'s SESSION_WINDOW — the 5-hour rolling window
- *  is the one users think of as "session limit". */
+/** The 5-hour rolling window is the one users think of as "session limit",
+ *  so the rotator evaluates rotation decisions against it exclusively. */
 const SESSION_WINDOW = 'unified-5h';
+
+/** Name of the overage RateLimitWindow as reported by Anthropic headers. */
+const OVERAGE_WINDOW = 'unified-overage';
 
 /** Candidates within this much of the minimum utilization are treated as
  *  equals and cycled through via the round-robin cursor. Prevents
  *  oscillation once accounts have converged. */
 const TIE_BAND = 0.01; // 1 percentage point
+
+/** Minimum buffer the rotator is willing to apply. A buffer of 0% means the
+ *  threshold is exactly 1.0, which — given Anthropic's 2-decimal-truncated
+ *  utilization header — matches full saturation. That preserves the old
+ *  pre-buffer behavior when the user slides the setting to zero. */
+const MIN_BUFFER_PCT = 0;
+const MAX_BUFFER_PCT = 50;
 
 /**
  * A (accountId, token) pair drawn from the rotator's current pool.
@@ -26,11 +37,18 @@ export interface RotatedCredential {
  * {accountId, token} pairs for every account whose credentials Sentinel
  * can resolve from the OS keychain.
  *
- * On each `pick()`, prefers the account with the lowest `unified-5h`
- * utilization so hot accounts drain last and cold accounts catch up. When
- * multiple candidates are within `TIE_BAND` of the minimum, the
- * round-robin cursor decides — keeping fair rotation once accounts have
- * converged.
+ * Two strategies, chosen live via the `getStrategy` getter:
+ *
+ *   balance (default) — prefer the account with the lowest `unified-5h`
+ *     utilization so hot accounts drain last and cold accounts catch up.
+ *     Candidates within `TIE_BAND` of the minimum rotate fairly via a
+ *     cursor, keeping distribution even once accounts have converged.
+ *
+ *   earliest-reset — hard-target the non-blocked pool account whose
+ *     `unified-5h` window resets soonest. Accounts without reset data are
+ *     deprioritized. No tie band, no cursor advance: traffic sticks to one
+ *     account until it blocks or its window rolls over, maximizing usage
+ *     of headroom that's about to be reclaimed anyway.
  *
  * Blocked or overage-disabled accounts are skipped. If the pool is empty or
  * every account is unavailable, `pick()` returns null so the proxy can fall
@@ -50,6 +68,25 @@ export class TokenRotator {
      *  `refresh()` so mode/settings changes take effect immediately.
      *  Defaults to an empty set — every enrolled account rotates. */
     private readonly getExcludedIds: () => ReadonlySet<string> = () => new Set(),
+    /** Live accessor for the active round-robin sub-strategy. Read on every
+     *  `pick()` so toggling the strategy in Settings takes effect for the
+     *  next request with no restart. Defaults to `'balance'`. */
+    private readonly getStrategy: () => RoundRobinStrategy = () => 'balance',
+    /** Live accessor for the user's overage opt-in allow-list (Sentinel ids).
+     *  An account NOT on this list whose 5h window is saturated — i.e. the
+     *  next request would consume Anthropic's overage budget — is skipped by
+     *  `pick()`. Defaults to an empty set (opt-in: no overage spending). */
+    private readonly getOverageAllowedIds: () => ReadonlySet<string> = () => new Set(),
+    /** Live accessor for the Sentinel-side paused-account set. An account
+     *  in this set is never returned from `pick()` regardless of rate-limit
+     *  state (see SpendTracker for the membership rules). Defaults to empty. */
+    private readonly getPausedAccountIds: () => ReadonlySet<string> = () => new Set(),
+    /** Live accessor for the user-tunable overage safety buffer. Rotator
+     *  treats an account as "will use overage" when its unified-5h
+     *  utilization is ≥ (1 − bufferPct/100). Default 10 (cut-off at 90%).
+     *  Integer range [0, 50]; clamped inside `pick()` for safety. 0 reverts
+     *  to the legacy "cut off only at saturation" behavior. */
+    private readonly getOverageBufferPct: () => number = () => 10,
   ) {
     this.refresh();
   }
@@ -91,38 +128,100 @@ export class TokenRotator {
   }
 
   /**
-   * Return the account with the most session-window headroom, advancing
-   * the round-robin cursor within the tie band. Returns null when every
-   * account is unavailable or the pool is empty.
+   * Return the account to bill the next request to. Behavior depends on
+   * the live strategy getter — see the class docstring for the two modes.
+   * Returns null when every account is unavailable or the pool is empty.
+   *
+   * Account eligibility (in order):
+   *   1. Pool membership (not in `poolExcludedIds`, has a token) — handled in
+   *      refresh(), not here.
+   *   2. Not blocked (`status === 'blocked'` on any window).
+   *   3. Not paused by SpendTracker (Sentinel-side weekly cap hit).
+   *   4. Two-tier overage gate: candidates whose next request would draw
+   *      Anthropic overage (5h saturated with overage status 'allowed', or
+   *      overage-inUse=true) are set aside. The rotator prefers candidates
+   *      that will NOT spend overage so pool-wide 5h quota drains first.
+   *      Only when no "fresh" candidates remain do we fall through to the
+   *      overage tier — and even then, only accounts the user has explicitly
+   *      opted in via `overageEnabledIds` are eligible.
    */
   pick(): RotatedCredential | null {
     if (this.pool.length === 0) return null;
 
-    // Score every non-blocked candidate by its unified-5h utilization.
-    // Missing/null utilization is treated as 0 — same convention as
-    // auto-switch.ts so fresh accounts are preferred over known-hot ones.
-    const candidates: { idx: number; util: number }[] = [];
-    let minUtil = Infinity;
+    const overageAllowed = this.getOverageAllowedIds();
+    const paused = this.getPausedAccountIds();
+    // Buffer is read once per pick(). Clamp here so malformed settings
+    // (from a bad in-memory patch or a future schema drift) can't push the
+    // threshold outside [0, 1].
+    const rawBuffer = this.getOverageBufferPct();
+    const clampedBuffer = Math.max(MIN_BUFFER_PCT, Math.min(MAX_BUFFER_PCT, rawBuffer));
+    const overageThreshold = 1 - clampedBuffer / 100;
+
+    // Partition viable candidates into two tiers:
+    //   fresh    — next request will NOT draw overage
+    //   overage  — next request WILL draw overage AND account is opted-in
+    //
+    // Accounts that would draw overage but aren't opted in are skipped
+    // entirely — they're never eligible in round-robin.
+    const fresh: { idx: number; util: number; reset: number }[] = [];
+    const overage: { idx: number; util: number; reset: number }[] = [];
+    let minUtilFresh = Infinity;
+    let minUtilOverage = Infinity;
+
     for (let i = 0; i < this.pool.length; i++) {
       const entry = this.pool[i]!;
+      if (paused.has(entry.accountId)) continue;
       const windows = this.rateLimitStore.getAll(entry.accountId);
       if (windows.some((w) => w.status === 'blocked')) continue;
       const sessionWindow = windows.find((w) => w.name === SESSION_WINDOW);
+      const overageWindow = windows.find((w) => w.name === OVERAGE_WINDOW);
       const util = sessionWindow?.utilization ?? 0;
-      candidates.push({ idx: i, util });
-      if (util < minUtil) minUtil = util;
-    }
-    if (candidates.length === 0) return null;
+      const reset = sessionWindow?.reset ?? Number.POSITIVE_INFINITY;
+      // "Will this request draw overage?" — either Anthropic has flagged the
+      // overage window as actively consuming, OR the 5h is within the
+      // configured safety buffer of saturation and overage is allowed so
+      // the next request could spill into overage territory.
+      const willUseOverage =
+        overageWindow?.inUse === true ||
+        (util >= overageThreshold && overageWindow?.status === 'allowed');
 
-    // Tie band: candidates within TIE_BAND of the minimum rotate fairly.
+      if (willUseOverage) {
+        if (!overageAllowed.has(entry.accountId)) continue;
+        overage.push({ idx: i, util, reset });
+        if (util < minUtilOverage) minUtilOverage = util;
+      } else {
+        fresh.push({ idx: i, util, reset });
+        if (util < minUtilFresh) minUtilFresh = util;
+      }
+    }
+
+    // Prefer the fresh tier: drain pool-wide 5h quota before spilling to
+    // overage, regardless of which strategy the user picked.
+    const tier = fresh.length > 0 ? fresh : overage;
+    const minUtil = fresh.length > 0 ? minUtilFresh : minUtilOverage;
+    if (tier.length === 0) return null;
+
+    const strategy = this.getStrategy();
+    if (strategy === 'earliest-reset') {
+      // Hard-target the account whose window rolls over soonest. Tie-break
+      // by lower utilization (so we don't hammer a nearly-exhausted tie),
+      // then by pool index for determinism. Do NOT advance the cursor —
+      // traffic sticks to the chosen account until it blocks or resets.
+      const ranked = [...tier].sort(
+        (a, b) => a.reset - b.reset || a.util - b.util || a.idx - b.idx,
+      );
+      return this.pool[ranked[0]!.idx]!;
+    }
+
+    // balance (default): tie band around minUtil rotates fairly via cursor.
     const tieCutoff = minUtil + TIE_BAND;
-    const tier = candidates.filter((c) => c.util <= tieCutoff);
+    const banded = tier.filter((c) => c.util <= tieCutoff);
 
     // Walk the pool starting at the cursor; take the first tier member we
     // hit so rotation inside the band is stable and fair.
     for (let i = 0; i < this.pool.length; i++) {
       const idx = (this.cursor + i) % this.pool.length;
-      const hit = tier.find((c) => c.idx === idx);
+      const hit = banded.find((c) => c.idx === idx);
       if (hit) {
         this.cursor = (idx + 1) % this.pool.length;
         return this.pool[idx]!;

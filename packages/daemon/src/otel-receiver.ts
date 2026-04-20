@@ -7,6 +7,7 @@ import {
   insertActivityEvent,
 } from './db.js';
 import type { ActiveAccountId } from './proxy.js';
+import type { IpcServer } from './ipc.js';
 
 /**
  * Known Claude Code OTEL metric names. Full list:
@@ -30,6 +31,8 @@ const METRIC_ACTIVE_TIME = 'claude_code.active_time.total';
 const EVENT_API_REQUEST = 'api_request';
 const EVENT_API_ERROR = 'api_error';
 const EVENT_TOOL_RESULT = 'tool_result';
+const EVENT_TOOL_DECISION = 'tool_decision';
+const EVENT_USER_PROMPT = 'user_prompt';
 const EVENT_SKILL_ACTIVATED = 'skill_activated';
 const EVENT_PLUGIN_INSTALLED = 'plugin_installed';
 
@@ -156,13 +159,47 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
  * future Claude Code signals surface as "known unknowns".
  */
 export class OtelReceiver {
+  /** Set to true by handleMetricDataPoint / handleLogRecord whenever a row is
+   *  inserted into any telemetry table. handleMetrics and handleLogs read +
+   *  clear this at the end of a batch to decide whether to broadcast
+   *  `metrics_updated`. Batches that only contained unknown metric/event
+   *  names (silently dropped) don't trigger a broadcast. */
+  private wroteInBatch = false;
+
+  /** Subscribers invoked after every batch that wrote at least one row.
+   *  Used by SpendTracker to recompute rolling 7d spend + evaluate budget
+   *  alerts. Kept separate from the `metrics_updated` broadcast so we don't
+   *  round-trip through IPC for an in-process signal. */
+  private batchSubscribers: (() => void)[] = [];
+
   constructor(
     private readonly db: Database,
     /** When set, new events are attributed to the currently active sentinel key
      *  rather than the raw `user.account_uuid` from OTEL attributes. This allows
      *  per-org usage tracking when the same Anthropic user belongs to multiple orgs. */
     private readonly activeAccountId?: ActiveAccountId,
+    /** Optional IPC server for broadcasting `metrics_updated` after each OTEL
+     *  batch so the Metrics tab refreshes live. When omitted (e.g. in tests),
+     *  writes still happen but no broadcast fires. */
+    private readonly ipcServer?: IpcServer,
   ) {}
+
+  /** Register a callback invoked after every batch that persisted at least
+   *  one row. Batches with no writes don't fire the subscribers (parallel
+   *  to the `metrics_updated` IPC broadcast). */
+  onBatchWritten(cb: () => void): void {
+    this.batchSubscribers.push(cb);
+  }
+
+  /** Fire batch subscribers. Exceptions from any one subscriber are
+   *  swallowed so an unrelated failure can't break the OTEL request path. */
+  private fireBatchSubscribers(): void {
+    for (const cb of this.batchSubscribers) {
+      try { cb(); } catch (err) {
+        console.error('[OTEL] batch subscriber threw:', err);
+      }
+    }
+  }
 
   /**
    * Handle POST /v1/metrics
@@ -171,9 +208,14 @@ export class OtelReceiver {
     try {
       const body = await readBody(req);
       const payload = JSON.parse(body.toString('utf-8')) as OtelMetricsBody;
+      this.wroteInBatch = false;
       this.processMetrics(payload);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('{}');
+      if (this.wroteInBatch) {
+        this.ipcServer?.broadcast({ type: 'metrics_updated' });
+        this.fireBatchSubscribers();
+      }
     } catch (err) {
       console.error('[OTEL] Metrics parse error:', err);
       res.writeHead(400);
@@ -188,9 +230,14 @@ export class OtelReceiver {
     try {
       const body = await readBody(req);
       const payload = JSON.parse(body.toString('utf-8')) as OtelLogsBody;
+      this.wroteInBatch = false;
       this.processLogs(payload);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('{}');
+      if (this.wroteInBatch) {
+        this.ipcServer?.broadcast({ type: 'metrics_updated' });
+        this.fireBatchSubscribers();
+      }
     } catch (err) {
       console.error('[OTEL] Logs parse error:', err);
       res.writeHead(400);
@@ -222,22 +269,15 @@ export class OtelReceiver {
   private handleMetricDataPoint(name: string, attrs: OtelAttributes, value: number, ts: number): void {
     const accountId = this.resolveAccountId(attrs);
     const sessionId = (attrs['session.id'] as string | undefined) ?? null;
-    const model = (attrs['model'] as string | undefined) ?? 'unknown';
 
     switch (name) {
       case METRIC_COST: {
-        insertUsageEvent(this.db, {
-          ts,
-          accountId,
-          sessionId,
-          model,
-          costUsd: value,
-          inputTokens: null,
-          outputTokens: null,
-          cacheRead: null,
-          cacheCreate: null,
-          durationMs: null,
-        });
+        // SKIP: Claude Code emits cost twice per request — once as this
+        // `claude_code.cost.usage` metric, and once as the `cost_usd`
+        // attribute on the `claude_code.api_request` log event. Persisting
+        // both double-counts every request. The log event wins because it
+        // also carries token breakdown + model (with the `[1m]` variant
+        // suffix cleaned up), so keep that path exclusively.
         return;
       }
 
@@ -254,36 +294,36 @@ export class OtelReceiver {
       }
 
       case METRIC_SESSION: {
-        insertActivityEvent(this.db, { ts, accountId, sessionId, kind: 'session', value });
+        this.insertActivity( { ts, accountId, sessionId, kind: 'session', value });
         return;
       }
 
       case METRIC_LINES: {
         const type = (attrs['type'] as string | undefined) ?? 'added';
         const kind = type === 'removed' ? 'lines_removed' : 'lines_added';
-        insertActivityEvent(this.db, { ts, accountId, sessionId, kind, value });
+        this.insertActivity( { ts, accountId, sessionId, kind, value });
         return;
       }
 
       case METRIC_PR: {
-        insertActivityEvent(this.db, { ts, accountId, sessionId, kind: 'pull_request', value });
+        this.insertActivity( { ts, accountId, sessionId, kind: 'pull_request', value });
         return;
       }
 
       case METRIC_COMMIT: {
-        insertActivityEvent(this.db, { ts, accountId, sessionId, kind: 'commit', value });
+        this.insertActivity( { ts, accountId, sessionId, kind: 'commit', value });
         return;
       }
 
       case METRIC_ACTIVE_TIME: {
         const type = (attrs['type'] as string | undefined) ?? 'user';
         const kind = type === 'cli' ? 'active_cli_seconds' : 'active_user_seconds';
-        insertActivityEvent(this.db, { ts, accountId, sessionId, kind, value });
+        this.insertActivity( { ts, accountId, sessionId, kind, value });
         return;
       }
 
       case METRIC_EDIT_DECISION: {
-        insertActivityEvent(this.db, {
+        this.insertActivity( {
           ts,
           accountId,
           sessionId,
@@ -333,7 +373,7 @@ export class OtelReceiver {
 
     switch (eventName) {
       case EVENT_API_REQUEST: {
-        insertUsageEvent(this.db, {
+        this.insertUsage( {
           ts,
           accountId,
           sessionId,
@@ -349,7 +389,7 @@ export class OtelReceiver {
       }
 
       case EVENT_API_ERROR: {
-        insertApiError(this.db, {
+        this.insertError( {
           ts,
           accountId,
           sessionId,
@@ -369,7 +409,7 @@ export class OtelReceiver {
       case EVENT_TOOL_RESULT: {
         const successAttr = attrs['success'];
         const success = successAttr === true || successAttr === 'true' || successAttr === 1;
-        insertToolEvent(this.db, {
+        this.insertTool( {
           ts,
           accountId,
           sessionId,
@@ -378,14 +418,47 @@ export class OtelReceiver {
           durationMs: (attrs['duration_ms'] as number | undefined) ?? null,
           error: asString(attrs['error']),
           decisionSource: asString(attrs['decision_source']),
+          decisionType: asString(attrs['decision_type']),
           mcpServerScope: asString(attrs['mcp_server_scope']),
           toolResultSizeBytes: (attrs['tool_result_size_bytes'] as number | undefined) ?? null,
         });
         return;
       }
 
+      case EVENT_TOOL_DECISION: {
+        // Fires when the user accepts/rejects a tool-permission prompt. Distinct
+        // from the `code_edit_tool.decision` metric which is limited to Edit /
+        // Write / NotebookEdit — tool_decision covers ALL tools (Bash, Read,
+        // WebFetch, MCP, etc.).
+        this.insertActivity( {
+          ts,
+          accountId,
+          sessionId,
+          kind: 'tool_decision',
+          value: 1,
+          toolName: asString(attrs['tool_name']),
+          decision: asString(attrs['decision']),
+          source: asString(attrs['source']),
+        });
+        return;
+      }
+
+      case EVENT_USER_PROMPT: {
+        // Fires when the user submits a prompt. `prompt` body is redacted
+        // unless OTEL_LOG_USER_PROMPTS=1 is set — we only persist the length
+        // for now (pairs nicely with active_time for an engagement signal).
+        this.insertActivity( {
+          ts,
+          accountId,
+          sessionId,
+          kind: 'user_prompt',
+          value: (attrs['prompt_length'] as number | undefined) ?? null,
+        });
+        return;
+      }
+
       case EVENT_SKILL_ACTIVATED: {
-        insertActivityEvent(this.db, {
+        this.insertActivity( {
           ts,
           accountId,
           sessionId,
@@ -401,7 +474,7 @@ export class OtelReceiver {
       }
 
       case EVENT_PLUGIN_INSTALLED: {
-        insertActivityEvent(this.db, {
+        this.insertActivity( {
           ts,
           accountId,
           sessionId,
@@ -418,6 +491,32 @@ export class OtelReceiver {
       default:
         console.log(`[OTEL] Unhandled event: ${eventName}`);
     }
+  }
+
+  // ─── Insert wrappers ───────────────────────────────────────────────────────
+  // Every DB write goes through one of these so the OTEL batch handler can
+  // tell whether any row was actually persisted (vs a batch that matched only
+  // unknown metric/event names). Keeps the per-case switch code unchanged
+  // apart from the method-name rewrite.
+
+  private insertUsage(ev: Parameters<typeof insertUsageEvent>[1]): void {
+    this.wroteInBatch = true;
+    insertUsageEvent(this.db, ev);
+  }
+
+  private insertActivity(ev: Parameters<typeof insertActivityEvent>[1]): void {
+    this.wroteInBatch = true;
+    insertActivityEvent(this.db, ev);
+  }
+
+  private insertTool(ev: Parameters<typeof insertToolEvent>[1]): void {
+    this.wroteInBatch = true;
+    insertToolEvent(this.db, ev);
+  }
+
+  private insertError(ev: Parameters<typeof insertApiError>[1]): void {
+    this.wroteInBatch = true;
+    insertApiError(this.db, ev);
   }
 
   /** Prefer the active sentinel key so per-org attribution works when one

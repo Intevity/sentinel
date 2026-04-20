@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Users, Activity, BarChart3, AlertTriangle, Bell, Loader2, Settings as SettingsIcon, Repeat } from 'lucide-react';
+import { Users, Activity, BarChart3, AlertTriangle, Bell, Shield, ScrollText, Loader2, Settings as SettingsIcon, Repeat } from 'lucide-react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import AccountSwitcher from './components/AccountSwitcher.js';
+import AccountColorDot from './components/AccountColorDot.js';
 import AccountViewPicker, { POOL_VIEW, type PickerValue } from './components/AccountViewPicker.js';
+import { accountColor } from './lib/accountColor.js';
 import UsageView from './components/UsageView.js';
 import MetricsDashboard from './components/MetricsDashboard.js';
 import OverageTimeline from './components/OverageTimeline.js';
@@ -11,14 +13,19 @@ import ActivationBanner from './components/ActivationBanner.js';
 import HeaderMenu from './components/HeaderMenu.js';
 import PersistenceBanner from './components/PersistenceBanner.js';
 import SettingsPanel from './components/SettingsPanel.js';
+import SecurityPanel from './components/SecurityPanel.js';
+import SecurityEnforcementModal from './components/SecurityEnforcementModal.js';
+import LogsViewer from './components/LogsViewer.js';
+import PendingBlockBanner from './components/PendingBlockBanner.js';
 import Footer from './components/Footer.js';
 import { useAutoResizeWindow } from './hooks/useAutoResizeWindow.js';
 import { useDaemon } from './hooks/useDaemon.js';
+import { useDaemonErrors } from './hooks/useDaemonErrors.js';
 import { useSettings } from './hooks/useSettings.js';
 import { planLabel, planColor } from './lib/plan.js';
 import { DUR, EASE_STD } from './lib/motion.js';
 
-type Tab = 'accounts' | 'usage' | 'metrics' | 'overage' | 'notifications';
+type Tab = 'accounts' | 'usage' | 'metrics' | 'overage' | 'notifications' | 'security' | 'logs';
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: 'accounts',      label: 'Accounts', icon: Users         },
@@ -26,14 +33,29 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: 'metrics',       label: 'Metrics',  icon: BarChart3     },
   { id: 'overage',       label: 'Overage',  icon: AlertTriangle },
   { id: 'notifications', label: 'Alerts',   icon: Bell          },
+  { id: 'security',      label: 'Security', icon: Shield        },
+  { id: 'logs',          label: 'Logs',     icon: ScrollText    },
 ];
 
 export default function App(): React.ReactElement {
   const [activeTab, setActiveTab] = useState<Tab>('accounts');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Deep-link target inside the Settings panel. When set before opening,
+  // SettingsPanel scrolls to the matching element id and flashes it.
+  const [settingsScrollTarget, setSettingsScrollTarget] = useState<string | null>(null);
+  const openSettingsAt = (target: string | null): void => {
+    setSettingsScrollTarget(target);
+    setSettingsOpen(true);
+  };
   const { connected, activeAccount, accounts, rateLimitsVersion, overageVersion, probingAccountId, initializing, refetch } = useDaemon();
+  const { recentErrors, hasUnseenErrors, markErrorsSeen } = useDaemonErrors();
   const { settings } = useSettings();
   const isRoundRobin = settings?.switchingMode === 'round-robin';
+  // Picker status props — pulled once here so every tab's AccountViewPicker
+  // renders identical status pills (Active / Excluded) driven by the same
+  // source of truth as AccountCard on the Accounts tab.
+  const pickerSwitchingMode = settings?.switchingMode ?? 'off';
+  const pickerPoolExcludedIds = settings?.poolExcludedIds ?? [];
 
   const { rootRef, contentRef, overlayRef, popoverRef } = useAutoResizeWindow();
 
@@ -45,6 +67,19 @@ export default function App(): React.ReactElement {
   const [metricsView,  setMetricsView]  = useState<string | undefined>(undefined);
   const [overageView,  setOverageView]  = useState<string | undefined>(undefined);
   const [alertsView,   setAlertsView]   = useState<string | undefined>(undefined);
+  const [securityView, setSecurityView] = useState<string | undefined>(undefined);
+
+  // First-run enforcement-mode picker. Shown once per install when scanning
+  // is enabled but the user hasn't picked a posture. Dismissing without
+  // choosing leaves the mode at null and the modal will re-appear on next
+  // launch until the user picks.
+  const [enforcementModalOpen, setEnforcementModalOpen] = useState(false);
+  useEffect(() => {
+    if (!settings) return;
+    if (settings.securityScanEnabled && settings.securityEnforcementMode === null) {
+      setEnforcementModalOpen(true);
+    }
+  }, [settings?.securityScanEnabled, settings?.securityEnforcementMode]);
 
   // Whenever the active account changes (manual switch, OAuth completion),
   // snap every per-tab picker back to the active account (or pool for Usage
@@ -54,9 +89,18 @@ export default function App(): React.ReactElement {
     setMetricsView(undefined);
     setOverageView(undefined);
     setAlertsView(undefined);
+    setSecurityView(undefined);
   }, [activeAccount?.accountUuid, activeAccount?.organizationUuid, isRoundRobin]);
 
   const planBadge = activeAccount ? planLabel(activeAccount.billingType) : '';
+  // Map the live OAuth active-account (carries accountUuid + orgUuid) back to
+  // an enrolled AccountInfo so we can pull its user-picked color for the dot.
+  // Matches the sentinel-key derivation (orgUuid when present, else accountUuid).
+  const activeInfo = activeAccount
+    ? accounts.find((a) => a.id === (activeAccount.organizationUuid || activeAccount.accountUuid))
+    : undefined;
+  const rrStrategyLabel =
+    settings?.roundRobinStrategy === 'earliest-reset' ? 'Earliest Reset' : 'Balance';
 
   return (
     <MotionConfig reducedMotion="user">
@@ -93,6 +137,7 @@ export default function App(): React.ReactElement {
               the account-card chip style. */}
           {activeAccount && !isRoundRobin && (
             <>
+              {activeInfo && <AccountColorDot color={accountColor(activeInfo)} size="xs" />}
               <span
                 className="text-[11px] text-[#8E8E93] truncate min-w-0"
                 title={activeAccount.emailAddress + (planBadge ? ` (${planBadge})` : '')}
@@ -116,10 +161,10 @@ export default function App(): React.ReactElement {
           {isRoundRobin && (
             <span
               className="inline-flex items-center gap-1 text-[9px] font-semibold text-ios-blue bg-ios-blue/10 px-1.5 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0 whitespace-nowrap"
-              title="Round-robin is on — requests rotate across every enrolled account"
+              title={`Round-robin is on — rotating requests using the "${rrStrategyLabel}" strategy`}
             >
               <Repeat size={9} strokeWidth={2.5} />
-              Round-Robin
+              Round-Robin · {rrStrategyLabel}
             </span>
           )}
           <button
@@ -137,8 +182,15 @@ export default function App(): React.ReactElement {
       </header>
 
       <AnimatePresence>
-        {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} measureRef={overlayRef} />}
+        {settingsOpen && <SettingsPanel onClose={() => { setSettingsOpen(false); setSettingsScrollTarget(null); }} measureRef={overlayRef} initialScrollTarget={settingsScrollTarget} />}
       </AnimatePresence>
+
+      {enforcementModalOpen && settings && (
+        <SecurityEnforcementModal
+          initial={settings.securityEnforcementMode}
+          onClose={() => setEnforcementModalOpen(false)}
+        />
+      )}
 
       {/* ── Startup splash: shown until the first successful IPC round-trip,
              so child components never get a chance to render their own
@@ -153,6 +205,11 @@ export default function App(): React.ReactElement {
         </main>
       ) : (
         <>
+          {/* ── Security: pending block approval banner ──────────── */}
+          {/* Rendered above the other banners so a blocked request can't be
+              missed. Takes visual priority while any block is held. */}
+          <PendingBlockBanner />
+
           {/* ── Activation banner (patches ~/.claude/settings.json) ─ */}
           <ActivationBanner />
 
@@ -192,8 +249,26 @@ export default function App(): React.ReactElement {
           </div>
 
           {/* ── Tab content ─────────────────────────────────────── */}
-          <main className="flex-1 overflow-y-auto px-4 pb-4">
-            <div ref={contentRef}>
+          {/* Logs tab wants a single internal scroll — the log list inside
+              LogsViewer uses flex-1 + overflow-y-auto, so <main> must NOT
+              also scroll and must hand down a bounded height. Other tabs
+              keep the outer overflow-y-auto so their content grows naturally
+              under the auto-resize hook. */}
+          <main
+            // Force the 5px custom scrollbar track to always be rendered (not
+            // just on overflow). The app's ::-webkit-scrollbar in index.css is
+            // non-overlay so it occupies real layout space; with `auto`, the
+            // track toggles on/off at the overflow boundary, reflowing card
+            // widths and feeding useAutoResizeWindow → a visible flash on the
+            // right edge. `scroll` reserves the track permanently; the thumb
+            // still only renders when there's actually content to scroll.
+            className={`flex-1 min-h-0 px-4 pb-4 ${
+            activeTab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-y-scroll'
+          }`}>
+            <div
+              ref={contentRef}
+              className={activeTab === 'logs' ? 'flex-1 min-h-0 flex flex-col' : undefined}
+            >
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div
                   key={activeTab}
@@ -201,6 +276,7 @@ export default function App(): React.ReactElement {
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -6 }}
                   transition={{ duration: DUR.fast, ease: EASE_STD }}
+                  className={activeTab === 'logs' ? 'flex-1 min-h-0 flex flex-col' : undefined}
                 >
                   {(() => {
                     // Only show the "no accounts" empty state when the daemon confirms it
@@ -209,6 +285,10 @@ export default function App(): React.ReactElement {
                     // so each component can show its own disconnected state.
                     const noAccounts = connected && accounts.length === 0;
                     if (activeTab === 'accounts') return <AccountSwitcher onAccountsChanged={refetch} />;
+                    // Logs reads the daemon — no account required. Surface
+                    // it on fresh installs (users may want to see enrollment
+                    // activity before any account is added).
+                    if (activeTab === 'logs') return <LogsViewer />;
                     if (noAccounts) return (
                       <div className="rounded-2xl bg-white dark:bg-[#1E1E1E] shadow-card px-4 py-10 text-center mt-1">
                         <p className="text-[14px] font-medium text-black dark:text-white">No accounts</p>
@@ -221,6 +301,8 @@ export default function App(): React.ReactElement {
                           accounts={accounts}
                           activeAccount={activeAccount}
                           showPoolOption={isRoundRobin}
+                          switchingMode={pickerSwitchingMode}
+                          poolExcludedIds={pickerPoolExcludedIds}
                           {...(usageView !== undefined ? { value: usageView } : {})}
                           onChange={setUsageView}
                         />
@@ -232,6 +314,8 @@ export default function App(): React.ReactElement {
                         <AccountViewPicker
                           accounts={accounts}
                           activeAccount={activeAccount}
+                          switchingMode={pickerSwitchingMode}
+                          poolExcludedIds={pickerPoolExcludedIds}
                           {...(metricsView !== undefined ? { value: metricsView } : {})}
                           onChange={(v) => setMetricsView(v === POOL_VIEW ? undefined : v)}
                         />
@@ -243,6 +327,8 @@ export default function App(): React.ReactElement {
                         <AccountViewPicker
                           accounts={accounts}
                           activeAccount={activeAccount}
+                          switchingMode={pickerSwitchingMode}
+                          poolExcludedIds={pickerPoolExcludedIds}
                           {...(overageView !== undefined ? { value: overageView } : {})}
                           onChange={(v) => setOverageView(v === POOL_VIEW ? undefined : v)}
                         />
@@ -254,11 +340,26 @@ export default function App(): React.ReactElement {
                         <AccountViewPicker
                           accounts={accounts}
                           activeAccount={activeAccount}
+                          switchingMode={pickerSwitchingMode}
+                          poolExcludedIds={pickerPoolExcludedIds}
                           {...(alertsView !== undefined ? { value: alertsView } : {})}
                           onChange={(v) => setAlertsView(v === POOL_VIEW ? undefined : v)}
                         />
                       );
                       return <>{picker}<AlertsEditor activeAccount={activeAccount} accounts={accounts} viewAccountId={alertsView} /></>;
+                    }
+                    if (activeTab === 'security') {
+                      const picker = (
+                        <AccountViewPicker
+                          accounts={accounts}
+                          activeAccount={activeAccount}
+                          switchingMode={pickerSwitchingMode}
+                          poolExcludedIds={pickerPoolExcludedIds}
+                          {...(securityView !== undefined ? { value: securityView } : {})}
+                          onChange={(v) => setSecurityView(v === POOL_VIEW ? undefined : v)}
+                        />
+                      );
+                      return <>{picker}<SecurityPanel viewAccountId={securityView} onRequestOpenSettings={openSettingsAt} /></>;
                     }
                     return null;
                   })()}
@@ -269,7 +370,11 @@ export default function App(): React.ReactElement {
         </>
       )}
 
-      <Footer />
+      <Footer
+        daemonErrors={recentErrors}
+        hasUnseenErrors={hasUnseenErrors}
+        markErrorsSeen={markErrorsSeen}
+      />
 
     </div>
     </MotionConfig>

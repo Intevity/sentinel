@@ -16,8 +16,14 @@ import type {
   CacheHitRate,
   ToolStat,
   EditAcceptRate,
+  ToolDecisionBreakdown,
+  PromptStats,
   SkillUsage,
   PluginInstall,
+  SecurityEvent,
+  SecurityKind,
+  SecuritySeverity,
+  SecurityAllowlistEntry,
 } from '@claude-sentinel/shared';
 
 export const SENTINEL_DIR = join(homedir(), '.claude-sentinel');
@@ -33,6 +39,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   org_name      TEXT,
   plan_type     TEXT,
   removed       INTEGER NOT NULL DEFAULT 0,
+  color         TEXT,
   created_at    INTEGER NOT NULL
 );
 
@@ -83,8 +90,17 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   PRIMARY KEY (account_id, name)
 );
 
+-- Alerts come in two scopes:
+--   'account' → bound to a specific account; fires on that account's
+--               unified-5h utilization. account_id stores the Sentinel key.
+--   'pool'    → round-robin only; fires on the pool-wide MEAN unified-5h
+--               utilization across every account not in poolExcludedIds.
+--               account_id is stored as '' so the NOT NULL constraint still
+--               holds on legacy databases (see rowToAlert for the mapping
+--               back to null in the TS type).
 CREATE TABLE IF NOT EXISTS alerts (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope                      TEXT    NOT NULL DEFAULT 'account',
   account_id                 TEXT NOT NULL,
   threshold_pct              INTEGER NOT NULL,
   enabled                    INTEGER NOT NULL DEFAULT 1,
@@ -105,6 +121,7 @@ CREATE TABLE IF NOT EXISTS tool_events (
   duration_ms              INTEGER,
   error                    TEXT,
   decision_source          TEXT,
+  decision_type            TEXT,
   mcp_server_scope         TEXT,
   tool_result_size_bytes   INTEGER
 );
@@ -155,8 +172,16 @@ CREATE TABLE IF NOT EXISTS activity_events (
 CREATE INDEX IF NOT EXISTS idx_usage_ts      ON usage_events(ts);
 CREATE INDEX IF NOT EXISTS idx_usage_account ON usage_events(account_id);
 CREATE INDEX IF NOT EXISTS idx_overage_account ON overage_events(account_id);
+-- Dedup guarantee: at most one row per (account_id, overage window, transition).
+-- COALESCE on resets_at keeps NULL-reset rows comparable — SQLite otherwise
+-- treats each NULL as distinct, which would defeat the dedup.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_overage_window_transition
+  ON overage_events(account_id, COALESCE(resets_at, 0), transition);
 CREATE INDEX IF NOT EXISTS idx_notif_ts      ON notifications(ts);
 CREATE INDEX IF NOT EXISTS idx_alerts_account ON alerts(account_id);
+-- idx_alerts_scope is created after the scope-column migration runs (see
+-- getDb below) so legacy DBs whose alerts table predates the column aren't
+-- tripped up by a CREATE INDEX referencing a column that doesn't exist yet.
 CREATE INDEX IF NOT EXISTS idx_tool_events_ts        ON tool_events(ts);
 CREATE INDEX IF NOT EXISTS idx_tool_events_account   ON tool_events(account_id);
 CREATE INDEX IF NOT EXISTS idx_tool_events_tool      ON tool_events(tool_name);
@@ -164,6 +189,59 @@ CREATE INDEX IF NOT EXISTS idx_api_errors_ts         ON api_errors(ts);
 CREATE INDEX IF NOT EXISTS idx_api_errors_account    ON api_errors(account_id);
 CREATE INDEX IF NOT EXISTS idx_activity_ts           ON activity_events(ts);
 CREATE INDEX IF NOT EXISTS idx_activity_account_kind ON activity_events(account_id, kind);
+
+-- Findings surfaced by the security scanner. Secrets are never stored
+-- verbatim — only the masked form (first 4 + last 4 + length) plus a
+-- hash for dedup. See packages/daemon/src/security/scanner.ts for the
+-- full redaction contract.
+CREATE TABLE IF NOT EXISTS security_events (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts              INTEGER NOT NULL,
+  last_seen_ts    INTEGER NOT NULL,
+  account_id      TEXT NOT NULL,
+  session_id      TEXT,
+  direction       TEXT NOT NULL,     -- 'outbound' | 'tool_use'
+  severity        TEXT NOT NULL,     -- 'low' | 'medium' | 'high'
+  kind            TEXT NOT NULL,
+  detector_id     TEXT NOT NULL,
+  confidence      REAL NOT NULL,
+  title           TEXT NOT NULL,
+  reason          TEXT NOT NULL,
+  match_mask      TEXT,
+  match_hash      TEXT NOT NULL,
+  context_hash    TEXT,
+  snippet         TEXT,
+  source_hint     TEXT,
+  details_json    TEXT,
+  occurrences     INTEGER NOT NULL DEFAULT 1,
+  blocked         INTEGER NOT NULL DEFAULT 0,
+  approved        INTEGER NOT NULL DEFAULT 0,
+  acknowledged    INTEGER NOT NULL DEFAULT 0,
+  provenance      TEXT NOT NULL DEFAULT 'conversation'
+);
+
+CREATE INDEX IF NOT EXISTS idx_sec_ts          ON security_events(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_sec_account_ts  ON security_events(account_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_sec_ack         ON security_events(acknowledged, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_sec_kind_ack    ON security_events(kind, acknowledged);
+CREATE INDEX IF NOT EXISTS idx_sec_dedup       ON security_events(match_hash, detector_id, account_id, last_seen_ts);
+
+-- Suppress-list for security findings. Adding a (match_hash, detector_id)
+-- pair stops all future detections of that exact match from creating
+-- events or firing broadcasts. Populated via the "Always allow" UI action
+-- on a Security-tab row; the user manages entries from Settings.
+CREATE TABLE IF NOT EXISTS security_allowlist (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  match_hash   TEXT NOT NULL,
+  detector_id  TEXT NOT NULL,
+  match_mask   TEXT,
+  title        TEXT,
+  note         TEXT,
+  created_at   INTEGER NOT NULL,
+  UNIQUE (match_hash, detector_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sec_allow_lookup ON security_allowlist(match_hash, detector_id);
 `;
 
 let _db: Database.Database | null = null;
@@ -182,6 +260,23 @@ export function getDb(dbPath: string = DB_PATH): Database.Database {
   _db = new Database(dbPath);
   _db.pragma('journal_mode = WAL');
   _db.pragma('foreign_keys = ON');
+
+  // Collapse legacy duplicates before the unique index is created in SCHEMA.
+  // Older daemons persisted every transition blindly, so a single overage
+  // window could have many identical (account_id, resets_at, transition) rows.
+  // Keep the earliest row per key; drop the rest. Safe no-op on fresh DBs.
+  try {
+    _db.exec(`
+      DELETE FROM overage_events
+      WHERE id NOT IN (
+        SELECT MIN(id) FROM overage_events
+        GROUP BY account_id, COALESCE(resets_at, 0), transition
+      )
+    `);
+  } catch {
+    /* table may not exist yet on a brand-new DB — SCHEMA will create it */
+  }
+
   _db.exec(SCHEMA);
 
   // Migrate existing databases that predate the account_uuid column.
@@ -195,11 +290,85 @@ export function getDb(dbPath: string = DB_PATH): Database.Database {
   if (!cols.some((c) => c.name === 'removed')) {
     _db.exec('ALTER TABLE accounts ADD COLUMN removed INTEGER NOT NULL DEFAULT 0');
   }
+  if (!cols.some((c) => c.name === 'color')) {
+    _db.exec('ALTER TABLE accounts ADD COLUMN color TEXT');
+  }
 
   // Migrate rate_limits for pre-in_use databases.
   const rlCols = _db.pragma('table_info(rate_limits)') as Array<{ name: string }>;
   if (!rlCols.some((c) => c.name === 'in_use')) {
     _db.exec('ALTER TABLE rate_limits ADD COLUMN in_use INTEGER');
+  }
+
+  // Migrate tool_events for the decision_type column (added with tool_decision
+  // event support — distinguishes accept vs. reject for tool-permission prompts).
+  const teCols = _db.pragma('table_info(tool_events)') as Array<{ name: string }>;
+  if (!teCols.some((c) => c.name === 'decision_type')) {
+    _db.exec('ALTER TABLE tool_events ADD COLUMN decision_type TEXT');
+  }
+
+  // Migrate security_events for the `approved` column (added in v1.2 for
+  // the approve-in-notification flow). Existing rows default to 0.
+  const seCols = _db.pragma('table_info(security_events)') as Array<{ name: string }>;
+  if (seCols.length > 0 && !seCols.some((c) => c.name === 'approved')) {
+    _db.exec('ALTER TABLE security_events ADD COLUMN approved INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Migrate security_events for the `provenance` column (added in v1.4
+  // for provenance-gated blocking — see detectors.ts:classifyProvenance).
+  // Historical rows back-fill to 'conversation' since their actual
+  // provenance isn't recoverable; new rows are tagged correctly.
+  const seCols2 = _db.pragma('table_info(security_events)') as Array<{ name: string }>;
+  if (seCols2.length > 0 && !seCols2.some((c) => c.name === 'provenance')) {
+    _db.exec("ALTER TABLE security_events ADD COLUMN provenance TEXT NOT NULL DEFAULT 'conversation'");
+  }
+
+  // Migrate alerts for the `scope` column (added for pooled round-robin
+  // alerts). Legacy rows are per-account — back-fill 'account'. Pool rows
+  // store account_id = '' because legacy tables kept NOT NULL on that column;
+  // rowToAlert normalizes the empty string back to null in the TS type.
+  const alertCols = _db.pragma('table_info(alerts)') as Array<{ name: string }>;
+  if (alertCols.length > 0 && !alertCols.some((c) => c.name === 'scope')) {
+    _db.exec("ALTER TABLE alerts ADD COLUMN scope TEXT NOT NULL DEFAULT 'account'");
+  }
+  // Budget-scope alerts (scope='budget') use an extra column to discriminate
+  // per-account vs. global. Nullable because existing account/pool rows have
+  // no meaningful value. Re-read column list so we pick up the scope column
+  // we just added (if any) without an extra round trip.
+  const alertCols2 = _db.pragma('table_info(alerts)') as Array<{ name: string }>;
+  if (alertCols2.length > 0 && !alertCols2.some((c) => c.name === 'budget_scope')) {
+    _db.exec('ALTER TABLE alerts ADD COLUMN budget_scope TEXT');
+  }
+  // Index on the newly-added column. Done here (not in SCHEMA) so legacy
+  // databases whose alerts table predates the column aren't tripped up.
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_alerts_scope ON alerts(scope)');
+
+  // One-time cleanup of double-counted usage_events. A prior version of the
+  // OTEL receiver wrote two rows per request: one from the `api_request` log
+  // (full token breakdown) and one from the `claude_code.cost.usage` metric
+  // (cost only, null tokens). Summing both inflated weekly spend 2x+. The
+  // metric path is now skipped; delete rows that came from it so existing
+  // SQLite databases get the correct totals without a full wipe. Guarded by
+  // a flag so this runs once per DB.
+  _db.exec('CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)');
+  const applied = _db
+    .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+    .get('dedup_cost_metric_rows_v1') as { ok: number } | undefined;
+  if (!applied) {
+    const result = _db
+      .prepare(`
+        DELETE FROM usage_events
+        WHERE input_tokens IS NULL
+          AND output_tokens IS NULL
+          AND cost_usd IS NOT NULL
+          AND cost_usd > 0
+      `)
+      .run();
+    _db.prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)')
+      .run('dedup_cost_metric_rows_v1', Date.now());
+    if (result.changes > 0) {
+      console.log(`[DB] Removed ${result.changes} duplicate cost-metric rows (one-time cleanup)`);
+    }
   }
 
   return _db;
@@ -296,11 +465,12 @@ export function markAccountRemoved(db: Database.Database, id: string): boolean {
  * continue to operate even when the last account is purged from the UI.
  */
 export function purgeAccount(db: Database.Database, id: string): boolean {
-  db.prepare('DELETE FROM usage_events   WHERE account_id = ?').run(id);
-  db.prepare('DELETE FROM rate_limits    WHERE account_id = ?').run(id);
-  db.prepare('DELETE FROM overage_events WHERE account_id = ?').run(id);
-  db.prepare('DELETE FROM notifications  WHERE account_id = ?').run(id);
-  db.prepare('DELETE FROM alerts         WHERE account_id = ?').run(id);
+  db.prepare('DELETE FROM usage_events    WHERE account_id = ?').run(id);
+  db.prepare('DELETE FROM rate_limits     WHERE account_id = ?').run(id);
+  db.prepare('DELETE FROM overage_events  WHERE account_id = ?').run(id);
+  db.prepare('DELETE FROM notifications   WHERE account_id = ?').run(id);
+  db.prepare('DELETE FROM alerts          WHERE account_id = ?').run(id);
+  db.prepare('DELETE FROM security_events WHERE account_id = ?').run(id);
   // Mark as purged (removed = 2). If the row does not exist yet, insert a bare
   // tombstone so refresh_accounts cannot create a fresh removed = 0 row later.
   const upd = db.prepare('UPDATE accounts SET removed = 2 WHERE id = ?').run(id);
@@ -340,6 +510,23 @@ export function hasNonPurgedAccount(db: Database.Database, id: string): boolean 
   return row !== undefined && row.removed !== 2;
 }
 
+/**
+ * Returns true when an account with this id exists AND is currently active
+ * (removed = 0). Unlike `hasNonPurgedAccount`, soft-removed rows (removed = 1)
+ * don't count as "existing". Used by the OAuth login flow to decide whether
+ * a fresh authorization is really a re-auth of a live account or a genuine
+ * re-enrollment of one the user had previously removed. Treating a soft-
+ * removed account as "re-auth" skips the post-login Connect claude.ai step
+ * and leaves the account without a sessionKey, which is exactly wrong when
+ * the user just deliberately put the account back.
+ */
+export function hasActiveAccount(db: Database.Database, id: string): boolean {
+  const row = db
+    .prepare('SELECT removed FROM accounts WHERE id = ?')
+    .get(id) as { removed: number } | undefined;
+  return row !== undefined && row.removed === 0;
+}
+
 export function getAccount(
   db: Database.Database,
   accountId: string,
@@ -353,6 +540,20 @@ export function getAccount(
 export function listAccounts(db: Database.Database): AccountInfo[] {
   const rows = db.prepare('SELECT * FROM accounts WHERE removed = 0 ORDER BY email').all() as DbAccountRow[];
   return rows.map(rowToAccount);
+}
+
+/**
+ * Persist the user-picked avatar color for an account. Pass `null` to clear
+ * the custom color so the UI reverts to the hash-derived default gradient.
+ * Returns true when the row existed and was updated.
+ */
+export function setAccountColor(
+  db: Database.Database,
+  id: string,
+  color: string | null,
+): boolean {
+  const result = db.prepare('UPDATE accounts SET color = ? WHERE id = ?').run(color, id);
+  return result.changes > 0;
 }
 
 // ─── Usage event queries ──────────────────────────────────────────────────────
@@ -478,10 +679,17 @@ export function getUsageByDayModel(
 
 export type InsertOverageEvent = Omit<OverageEvent, 'id'>;
 
-export function insertOverageEvent(db: Database.Database, event: InsertOverageEvent): number {
+/**
+ * Persist an overage transition. Uses `INSERT OR IGNORE` against the unique
+ * index on (account_id, resets_at, transition), so a duplicate within the
+ * same overage window silently drops. Returns the new row id, or `null` when
+ * the insert was skipped — callers use the null to suppress a redundant
+ * broadcast / notification.
+ */
+export function insertOverageEvent(db: Database.Database, event: InsertOverageEvent): number | null {
   const result = db
     .prepare(`
-      INSERT INTO overage_events (ts, account_id, transition, status, resets_at, disabled_reason)
+      INSERT OR IGNORE INTO overage_events (ts, account_id, transition, status, resets_at, disabled_reason)
       VALUES (@ts, @accountId, @transition, @status, @resetsAt, @disabledReason)
     `)
     .run({
@@ -493,6 +701,7 @@ export function insertOverageEvent(db: Database.Database, event: InsertOverageEv
       resetsAt: event.resetsAt ?? null,
       disabledReason: event.disabledReason ?? null,
     });
+  if (result.changes === 0) return null;
   return Number(result.lastInsertRowid);
 }
 
@@ -514,6 +723,37 @@ export function getOverageEvents(
   }
 
   const rows = db.prepare(sql).all(params) as DbOverageRow[];
+  return rows.map(rowToOverageEvent);
+}
+
+/**
+ * Delete overage event rows. Scopes to a single account when `accountId` is
+ * provided; otherwise wipes every row. Returns the deleted row count.
+ */
+export function clearOverageEvents(db: Database.Database, accountId?: string): number {
+  const result =
+    accountId !== undefined
+      ? db.prepare('DELETE FROM overage_events WHERE account_id = ?').run(accountId)
+      : db.prepare('DELETE FROM overage_events').run();
+  return result.changes;
+}
+
+/**
+ * Return the newest recorded overage event for each account. Used at daemon
+ * startup to rehydrate the in-memory state machine so a restart inside an
+ * active overage window doesn't re-fire an `entered` transition.
+ */
+export function getLastOverageEventPerAccount(db: Database.Database): OverageEvent[] {
+  const rows = db
+    .prepare(`
+      SELECT e.* FROM overage_events e
+      INNER JOIN (
+        SELECT account_id, MAX(ts) AS max_ts
+        FROM overage_events
+        GROUP BY account_id
+      ) m ON e.account_id = m.account_id AND e.ts = m.max_ts
+    `)
+    .all() as DbOverageRow[];
   return rows.map(rowToOverageEvent);
 }
 
@@ -587,6 +827,341 @@ export function listNotifications(
 
   const rows = db.prepare(sql).all(params) as DbNotificationRow[];
   return rows.map(rowToNotification);
+}
+
+// ─── Security event queries ──────────────────────────────────────────────────
+
+export type InsertSecurityEvent = Omit<
+  SecurityEvent,
+  'id' | 'occurrences' | 'acknowledged' | 'lastSeenTs' | 'approved'
+> & {
+  /** Optional on insert — defaults to false. Set true when the user has
+   *  explicitly approved a pending block via the in-app banner; mirrored
+   *  into the security_allowlist in that case. */
+  approved?: boolean;
+};
+
+/** Dedup window in ms. Identical findings seen within this window bump
+ *  `occurrences` + `last_seen_ts` instead of creating a new row. */
+export const SECURITY_DEDUP_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Insert a security event, deduping against rows with the same match_hash +
+ * detector_id + account_id within the last hour. When an active dedup row is
+ * found, increments `occurrences` and bumps `last_seen_ts` instead. Returns
+ * the row id (new or existing) plus a boolean flag indicating whether a new
+ * row was created (so callers can decide whether to fire a fresh broadcast
+ * and native notification).
+ */
+export function insertSecurityEvent(
+  db: Database.Database,
+  event: InsertSecurityEvent,
+): { id: number; isNew: boolean } {
+  const dedupCutoff = event.ts - SECURITY_DEDUP_WINDOW_MS;
+  const existing = db
+    .prepare(
+      `SELECT id, occurrences FROM security_events
+       WHERE match_hash = @matchHash
+         AND detector_id = @detectorId
+         AND account_id = @accountId
+         AND last_seen_ts > @cutoff
+       ORDER BY last_seen_ts DESC
+       LIMIT 1`,
+    )
+    .get({
+      matchHash: event.matchHash,
+      detectorId: event.detectorId,
+      accountId: event.accountId,
+      cutoff: dedupCutoff,
+    }) as { id: number; occurrences: number } | undefined;
+
+  if (existing) {
+    // Propagate the block + approved flags on dedup. A repeat hit that
+    // escalates an observe row to a block row (or approves one) needs to
+    // flip the flag; silently bumping only occurrences loses that signal
+    // (v1.1 regression identified in testing).
+    db.prepare(
+      `UPDATE security_events
+       SET occurrences = occurrences + 1,
+           last_seen_ts = @lastSeenTs,
+           blocked  = CASE WHEN @blocked  = 1 THEN 1 ELSE blocked  END,
+           approved = CASE WHEN @approved = 1 THEN 1 ELSE approved END
+       WHERE id = @id`,
+    ).run({
+      lastSeenTs: event.ts,
+      blocked: event.blocked ? 1 : 0,
+      approved: event.approved ? 1 : 0,
+      id: existing.id,
+    });
+    return { id: existing.id, isNew: false };
+  }
+
+  const result = db
+    .prepare(
+      `INSERT INTO security_events (
+         ts, last_seen_ts, account_id, session_id, direction,
+         severity, kind, detector_id, confidence, title, reason,
+         match_mask, match_hash, context_hash, snippet, source_hint,
+         details_json, blocked, approved, provenance
+       ) VALUES (
+         @ts, @ts, @accountId, @sessionId, @direction,
+         @severity, @kind, @detectorId, @confidence, @title, @reason,
+         @matchMask, @matchHash, @contextHash, @snippet, @sourceHint,
+         @detailsJson, @blocked, @approved, @provenance
+       )`,
+    )
+    .run({
+      ts: event.ts,
+      accountId: event.accountId,
+      sessionId: event.sessionId ?? null,
+      direction: event.direction,
+      severity: event.severity,
+      kind: event.kind,
+      detectorId: event.detectorId,
+      confidence: event.confidence,
+      title: event.title,
+      reason: event.reason,
+      matchMask: event.matchMask ?? null,
+      matchHash: event.matchHash,
+      contextHash: event.contextHash ?? null,
+      snippet: event.snippet ?? null,
+      sourceHint: event.sourceHint ?? null,
+      detailsJson: event.details ? JSON.stringify(event.details) : null,
+      blocked: event.blocked ? 1 : 0,
+      approved: event.approved ? 1 : 0,
+      // Provenance is immutable after first insert — the dedup UPDATE
+      // above does not touch it, so the first observation's origin
+      // category stays authoritative.
+      provenance: event.provenance,
+    });
+
+  return { id: Number(result.lastInsertRowid), isNew: true };
+}
+
+export function listSecurityEvents(
+  db: Database.Database,
+  opts: {
+    accountId?: string;
+    limit?: number;
+    minConfidence?: number;
+  } = {},
+): SecurityEvent[] {
+  let sql = 'SELECT * FROM security_events WHERE 1=1';
+  const params: Record<string, string | number> = {};
+
+  if (opts.accountId !== undefined) {
+    sql += ' AND account_id = @accountId';
+    params['accountId'] = opts.accountId;
+  }
+  if (opts.minConfidence !== undefined) {
+    sql += ' AND confidence >= @minConfidence';
+    params['minConfidence'] = opts.minConfidence;
+  }
+
+  sql += ' ORDER BY ts DESC';
+  if (opts.limit !== undefined) {
+    sql += ' LIMIT @limit';
+    params['limit'] = opts.limit;
+  }
+
+  const rows = db.prepare(sql).all(params) as DbSecurityEventRow[];
+  return rows.map(rowToSecurityEvent);
+}
+
+export function acknowledgeSecurityEvent(db: Database.Database, id: number): boolean {
+  const result = db
+    .prepare('UPDATE security_events SET acknowledged = 1 WHERE id = ?')
+    .run(id);
+  return result.changes > 0;
+}
+
+export function acknowledgeAllSecurityEvents(
+  db: Database.Database,
+  accountId?: string,
+): number {
+  const result = accountId !== undefined
+    ? db
+        .prepare('UPDATE security_events SET acknowledged = 1 WHERE acknowledged = 0 AND account_id = ?')
+        .run(accountId)
+    : db
+        .prepare('UPDATE security_events SET acknowledged = 1 WHERE acknowledged = 0')
+        .run();
+  return result.changes;
+}
+
+export function clearSecurityEvents(db: Database.Database, accountId?: string): number {
+  const result = accountId !== undefined
+    ? db.prepare('DELETE FROM security_events WHERE account_id = ?').run(accountId)
+    : db.prepare('DELETE FROM security_events').run();
+  return result.changes;
+}
+
+/** Delete OTEL-derived telemetry rows older than the retention window.
+ *  Covers usage_events, tool_events, api_errors, and activity_events —
+ *  the four tables that grow linearly with Claude Code activity.
+ *  Intended to run at daemon startup AND every 24h. Returns the total
+ *  number of rows removed across all tables. */
+export function purgeTelemetryOlderThan(
+  db: Database.Database,
+  cutoffMs: number,
+): number {
+  let total = 0;
+  for (const table of ['usage_events', 'tool_events', 'api_errors', 'activity_events'] as const) {
+    const result = db.prepare(`DELETE FROM ${table} WHERE ts < ?`).run(cutoffMs);
+    total += Number(result.changes);
+  }
+  return total;
+}
+
+/** Delete rows older than the retention window. Intended to run at daemon
+ *  startup. Returns the number of rows removed. */
+export function purgeSecurityEventsOlderThan(
+  db: Database.Database,
+  cutoffMs: number,
+): number {
+  const result = db.prepare('DELETE FROM security_events WHERE ts < ?').run(cutoffMs);
+  return result.changes;
+}
+
+/** Unread security event count, optionally scoped to an account. Drives the
+ *  Security tab badge. */
+export function countUnacknowledgedSecurityEvents(
+  db: Database.Database,
+  accountId?: string,
+): number {
+  const row = accountId !== undefined
+    ? db
+        .prepare('SELECT COUNT(*) AS n FROM security_events WHERE acknowledged = 0 AND account_id = ?')
+        .get(accountId) as { n: number }
+    : db
+        .prepare('SELECT COUNT(*) AS n FROM security_events WHERE acknowledged = 0')
+        .get() as { n: number };
+  return row.n;
+}
+
+// ─── Security allowlist queries ──────────────────────────────────────────────
+
+/**
+ * True when a (match_hash, detector_id) pair is on the user's allowlist.
+ * Called on every finding before persistence so suppressed matches never
+ * create events, fire broadcasts, or block outbound requests.
+ */
+export function isSecurityAllowlisted(
+  db: Database.Database,
+  matchHash: string,
+  detectorId: string,
+): boolean {
+  const row = db
+    .prepare('SELECT 1 FROM security_allowlist WHERE match_hash = ? AND detector_id = ? LIMIT 1')
+    .get(matchHash, detectorId);
+  return row !== undefined;
+}
+
+export interface AddSecurityAllowlistArgs {
+  matchHash: string;
+  detectorId: string;
+  matchMask?: string | null;
+  title?: string | null;
+  note?: string | null;
+}
+
+/**
+ * Add a (match_hash, detector_id) pair to the allowlist. Idempotent —
+ * duplicates are silently ignored. Also retroactively deletes any existing
+ * security_events rows and mirrored notifications for that same match so
+ * the badges clear and the Security tab stops showing them.
+ *
+ * Returns the allowlist row id plus counts of events/notifications removed
+ * so callers can surface a confirmation toast if desired.
+ */
+export function addSecurityAllowlist(
+  db: Database.Database,
+  args: AddSecurityAllowlistArgs,
+): { id: number; deletedEvents: number; deletedNotifications: number } {
+  const now = Date.now();
+  // ON CONFLICT DO NOTHING — lastInsertRowid reflects the row if inserted,
+  // but we want to return the id of the matched/existing row either way.
+  db.prepare(
+    `INSERT INTO security_allowlist (match_hash, detector_id, match_mask, title, note, created_at)
+     VALUES (@matchHash, @detectorId, @matchMask, @title, @note, @createdAt)
+     ON CONFLICT(match_hash, detector_id) DO NOTHING`,
+  ).run({
+    matchHash: args.matchHash,
+    detectorId: args.detectorId,
+    matchMask: args.matchMask ?? null,
+    title: args.title ?? null,
+    note: args.note ?? null,
+    createdAt: now,
+  });
+  const row = db
+    .prepare('SELECT id FROM security_allowlist WHERE match_hash = ? AND detector_id = ?')
+    .get(args.matchHash, args.detectorId) as { id: number };
+
+  // Retroactively clear the noise. Collect notification titles matching the
+  // allowlisted events first so we can scrub them from the notifications
+  // table — the scanner mirrors each new finding into a notification with a
+  // predictable title prefix, but the simplest join is via the shared
+  // ts + account_id tuple.
+  const victims = db
+    .prepare(
+      `SELECT ts, account_id, title FROM security_events
+       WHERE match_hash = ? AND detector_id = ?`,
+    )
+    .all(args.matchHash, args.detectorId) as Array<{
+      ts: number;
+      account_id: string;
+      title: string;
+    }>;
+
+  let deletedNotifications = 0;
+  const delNotif = db.prepare(
+    `DELETE FROM notifications
+     WHERE ts = ? AND account_id = ?
+       AND type IN ('security_low', 'security_medium', 'security_high')
+       AND (title LIKE 'Security: ' || ? OR title LIKE 'Blocked: ' || ?)`,
+  );
+  for (const v of victims) {
+    const res = delNotif.run(v.ts, v.account_id, v.title, v.title);
+    deletedNotifications += Number(res.changes);
+  }
+
+  const delEvents = db
+    .prepare('DELETE FROM security_events WHERE match_hash = ? AND detector_id = ?')
+    .run(args.matchHash, args.detectorId);
+
+  return {
+    id: row.id,
+    deletedEvents: Number(delEvents.changes),
+    deletedNotifications,
+  };
+}
+
+export function removeSecurityAllowlist(db: Database.Database, id: number): boolean {
+  const res = db.prepare('DELETE FROM security_allowlist WHERE id = ?').run(id);
+  return res.changes > 0;
+}
+
+export function listSecurityAllowlist(db: Database.Database): SecurityAllowlistEntry[] {
+  const rows = db
+    .prepare('SELECT * FROM security_allowlist ORDER BY created_at DESC')
+    .all() as Array<{
+      id: number;
+      match_hash: string;
+      detector_id: string;
+      match_mask: string | null;
+      title: string | null;
+      note: string | null;
+      created_at: number;
+    }>;
+  return rows.map((r) => ({
+    id: r.id,
+    matchHash: r.match_hash,
+    detectorId: r.detector_id,
+    matchMask: r.match_mask,
+    title: r.title,
+    note: r.note,
+    createdAt: r.created_at,
+  }));
 }
 
 // ─── Rate limit queries ───────────────────────────────────────────────────────
@@ -669,52 +1244,118 @@ export function loadRateLimits(db: Database.Database): Map<string, RateLimitWind
 
 interface DbAlertRow {
   id: number;
+  scope: string;
   account_id: string;
   threshold_pct: number;
   enabled: number;
   last_triggered_reset_ts: number | null;
   created_at: number;
+  budget_scope: string | null;
 }
 
 function rowToAlert(row: DbAlertRow): Alert {
-  return {
+  const scope: 'account' | 'pool' | 'budget' =
+    row.scope === 'pool' ? 'pool' : row.scope === 'budget' ? 'budget' : 'account';
+  // Budget-scope rows may be global (account_id = '') or per-account.
+  const hasAccountId =
+    scope === 'account' || (scope === 'budget' && row.budget_scope !== 'global');
+  const alert: Alert = {
     id: row.id,
-    accountId: row.account_id,
+    scope,
+    // Pool rows — and budget-global rows — are stored with account_id = ''
+    // to satisfy the legacy NOT NULL column; normalize back to null.
+    accountId: hasAccountId ? row.account_id || null : null,
     thresholdPct: row.threshold_pct,
     enabled: row.enabled === 1,
     lastTriggeredResetTs: row.last_triggered_reset_ts,
     createdAt: row.created_at,
   };
+  if (scope === 'budget') {
+    alert.budgetScope = row.budget_scope === 'global' ? 'global' : 'account';
+  }
+  return alert;
 }
 
-export function listAlerts(db: Database.Database, accountId?: string): Alert[] {
-  const sql = accountId
-    ? 'SELECT * FROM alerts WHERE account_id = ? ORDER BY threshold_pct ASC'
-    : 'SELECT * FROM alerts ORDER BY account_id, threshold_pct ASC';
-  const rows = (accountId
-    ? db.prepare(sql).all(accountId)
-    : db.prepare(sql).all()
-  ) as DbAlertRow[];
+export function listAlerts(
+  db: Database.Database,
+  opts: { scope?: 'account' | 'pool' | 'budget'; accountId?: string } = {},
+): Alert[] {
+  const { scope, accountId } = opts;
+  // accountId filter implies account scope; honour scope when explicitly set.
+  let sql: string;
+  let params: unknown[];
+  if (scope === 'pool') {
+    sql = "SELECT * FROM alerts WHERE scope = 'pool' ORDER BY threshold_pct ASC";
+    params = [];
+  } else if (scope === 'budget' && accountId) {
+    sql = "SELECT * FROM alerts WHERE scope = 'budget' AND account_id = ? ORDER BY threshold_pct ASC";
+    params = [accountId];
+  } else if (scope === 'budget') {
+    sql = "SELECT * FROM alerts WHERE scope = 'budget' ORDER BY budget_scope, account_id, threshold_pct ASC";
+    params = [];
+  } else if (scope === 'account' && accountId) {
+    sql = "SELECT * FROM alerts WHERE scope = 'account' AND account_id = ? ORDER BY threshold_pct ASC";
+    params = [accountId];
+  } else if (scope === 'account') {
+    sql = "SELECT * FROM alerts WHERE scope = 'account' ORDER BY account_id, threshold_pct ASC";
+    params = [];
+  } else if (accountId) {
+    sql = 'SELECT * FROM alerts WHERE account_id = ? ORDER BY threshold_pct ASC';
+    params = [accountId];
+  } else {
+    sql = 'SELECT * FROM alerts ORDER BY scope, account_id, threshold_pct ASC';
+    params = [];
+  }
+  const rows = db.prepare(sql).all(...params) as DbAlertRow[];
   return rows.map(rowToAlert);
 }
 
 export function upsertAlert(
   db: Database.Database,
-  input: { id?: number; accountId: string; thresholdPct: number; enabled: boolean },
+  input: {
+    id?: number;
+    scope?: 'account' | 'pool' | 'budget';
+    accountId: string | null;
+    thresholdPct: number;
+    enabled: boolean;
+    budgetScope?: 'account' | 'global';
+  },
 ): Alert {
+  const scope = input.scope ?? 'account';
+  if (scope === 'pool' && input.accountId != null) {
+    throw new Error("pool-scoped alerts must have accountId = null");
+  }
+  if (scope === 'account' && !input.accountId) {
+    throw new Error("account-scoped alerts require a non-empty accountId");
+  }
+  const budgetScope: 'account' | 'global' | null =
+    scope === 'budget' ? (input.budgetScope ?? 'account') : null;
+  if (scope === 'budget' && budgetScope === 'account' && !input.accountId) {
+    throw new Error("budget-scoped account alerts require a non-empty accountId");
+  }
+  if (scope === 'budget' && budgetScope === 'global' && input.accountId != null) {
+    throw new Error("budget-scoped global alerts must have accountId = null");
+  }
+  // Pool rows and budget-global rows store '' for the legacy NOT NULL column;
+  // normalized back to null by rowToAlert when reading.
+  const dbAccountId =
+    scope === 'pool' || (scope === 'budget' && budgetScope === 'global')
+      ? ''
+      : (input.accountId as string);
+
   if (input.id !== undefined) {
     db.prepare(`
-      UPDATE alerts SET account_id = ?, threshold_pct = ?, enabled = ? WHERE id = ?
-    `).run(input.accountId, input.thresholdPct, input.enabled ? 1 : 0, input.id);
+      UPDATE alerts SET scope = ?, account_id = ?, threshold_pct = ?, enabled = ?, budget_scope = ? WHERE id = ?
+    `).run(scope, dbAccountId, input.thresholdPct, input.enabled ? 1 : 0, budgetScope, input.id);
     const row = db.prepare('SELECT * FROM alerts WHERE id = ?').get(input.id) as DbAlertRow | undefined;
     /* v8 ignore next 1 */
     if (!row) throw new Error(`alert ${input.id} not found after update`);
     return rowToAlert(row);
   }
   const result = db.prepare(`
-    INSERT INTO alerts (account_id, threshold_pct, enabled, created_at)
-    VALUES (?, ?, ?, ?)
-  `).run(input.accountId, input.thresholdPct, input.enabled ? 1 : 0, Date.now());
+    INSERT INTO alerts (scope, account_id, threshold_pct, enabled, budget_scope, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(scope, dbAccountId, input.thresholdPct, input.enabled ? 1 : 0, budgetScope, Date.now());
   const row = db.prepare('SELECT * FROM alerts WHERE id = ?').get(Number(result.lastInsertRowid)) as DbAlertRow;
   return rowToAlert(row);
 }
@@ -743,6 +1384,7 @@ interface DbAccountRow {
   org_name: string | null;
   plan_type: string | null;
   removed: number;
+  color: string | null;
   created_at: number;
 }
 
@@ -780,6 +1422,32 @@ interface DbNotificationRow {
   acknowledged: number;
 }
 
+interface DbSecurityEventRow {
+  id: number;
+  ts: number;
+  last_seen_ts: number;
+  account_id: string;
+  session_id: string | null;
+  direction: string;
+  severity: string;
+  kind: string;
+  detector_id: string;
+  confidence: number;
+  title: string;
+  reason: string;
+  match_mask: string | null;
+  match_hash: string;
+  context_hash: string | null;
+  snippet: string | null;
+  source_hint: string | null;
+  details_json: string | null;
+  occurrences: number;
+  blocked: number;
+  approved: number;
+  acknowledged: number;
+  provenance: string;
+}
+
 function rowToAccount(row: DbAccountRow): AccountInfo {
   // Nullable columns default to empty strings; ?? branches are type-safety guards
   // account_uuid falls back to id for rows created before the column was added
@@ -794,6 +1462,7 @@ function rowToAccount(row: DbAccountRow): AccountInfo {
     planType: (row.plan_type as PlanType) ?? 'pro',
     isActive: false, // resolved at call site
     createdAt: row.created_at,
+    color: row.color ?? null,
   };
 }
 
@@ -837,6 +1506,42 @@ function rowToNotification(row: DbNotificationRow): NotificationRecord {
   };
 }
 
+function rowToSecurityEvent(row: DbSecurityEventRow): SecurityEvent {
+  let details: Record<string, unknown> | null = null;
+  if (row.details_json) {
+    try {
+      details = JSON.parse(row.details_json) as Record<string, unknown>;
+    } catch {
+      details = null;
+    }
+  }
+  return {
+    id: row.id,
+    ts: row.ts,
+    lastSeenTs: row.last_seen_ts,
+    accountId: row.account_id,
+    sessionId: row.session_id,
+    direction: row.direction as SecurityEvent['direction'],
+    severity: row.severity as SecuritySeverity,
+    kind: row.kind as SecurityKind,
+    detectorId: row.detector_id,
+    confidence: row.confidence,
+    title: row.title,
+    reason: row.reason,
+    matchMask: row.match_mask,
+    matchHash: row.match_hash,
+    contextHash: row.context_hash,
+    snippet: row.snippet,
+    sourceHint: row.source_hint,
+    details,
+    occurrences: row.occurrences,
+    blocked: row.blocked === 1,
+    approved: row.approved === 1,
+    acknowledged: row.acknowledged === 1,
+    provenance: row.provenance as SecurityEvent['provenance'],
+  };
+}
+
 // ─── Tool / API error / activity event inserts ────────────────────────────────
 
 export interface InsertToolEvent {
@@ -848,14 +1553,16 @@ export interface InsertToolEvent {
   durationMs: number | null;
   error: string | null;
   decisionSource: string | null;
+  /** accept | reject — from the tool_result event's decision_type attribute. */
+  decisionType: string | null;
   mcpServerScope: string | null;
   toolResultSizeBytes: number | null;
 }
 
 export function insertToolEvent(db: Database.Database, e: InsertToolEvent): number {
   const result = db.prepare(`
-    INSERT INTO tool_events (ts, account_id, session_id, tool_name, success, duration_ms, error, decision_source, mcp_server_scope, tool_result_size_bytes)
-    VALUES (@ts, @accountId, @sessionId, @toolName, @success, @durationMs, @error, @decisionSource, @mcpServerScope, @toolResultSizeBytes)
+    INSERT INTO tool_events (ts, account_id, session_id, tool_name, success, duration_ms, error, decision_source, decision_type, mcp_server_scope, tool_result_size_bytes)
+    VALUES (@ts, @accountId, @sessionId, @toolName, @success, @durationMs, @error, @decisionSource, @decisionType, @mcpServerScope, @toolResultSizeBytes)
   `).run({
     ts: e.ts,
     accountId: e.accountId,
@@ -865,6 +1572,7 @@ export function insertToolEvent(db: Database.Database, e: InsertToolEvent): numb
     durationMs: e.durationMs,
     error: e.error,
     decisionSource: e.decisionSource,
+    decisionType: e.decisionType,
     mcpServerScope: e.mcpServerScope,
     toolResultSizeBytes: e.toolResultSizeBytes,
   });
@@ -902,6 +1610,8 @@ export type ActivityKind =
   | 'active_user_seconds'
   | 'active_cli_seconds'
   | 'edit_decision'
+  | 'tool_decision'
+  | 'user_prompt'
   | 'skill_activated'
   | 'plugin_installed';
 
@@ -1198,6 +1908,108 @@ export function getEditAcceptRate(
       rate: overallTotal > 0 ? overallAccepts / overallTotal : 0,
     },
     byLanguage,
+  };
+}
+
+/**
+ * Accept/reject breakdown from `tool_decision` OTEL events over the window.
+ * Covers ALL tools that hit a permission prompt (Bash, Read, WebFetch, MCP,
+ * etc.) — distinct from getEditAcceptRate which is the Edit/Write/NotebookEdit
+ * metric only.
+ */
+export function getToolDecisionBreakdown(
+  db: Database.Database,
+  accountId: string,
+  days: number,
+): ToolDecisionBreakdown {
+  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db.prepare(
+    `SELECT
+       COALESCE(tool_name, 'unknown') AS tool_name,
+       COALESCE(source, 'unknown')    AS source,
+       decision,
+       COUNT(*)                       AS n
+     FROM activity_events
+     WHERE account_id = ? AND ts >= ? AND kind = 'tool_decision'
+     GROUP BY tool_name, source, decision`,
+  ).all(accountId, sinceTs) as Array<{ tool_name: string; source: string; decision: string | null; n: number }>;
+
+  let overallAccepts = 0;
+  let overallRejects = 0;
+  const byToolAccum: Record<string, { accepts: number; rejects: number }> = {};
+  const bySourceAccum: Record<string, { accepts: number; rejects: number }> = {};
+  for (const r of rows) {
+    const toolBucket = (byToolAccum[r.tool_name] ??= { accepts: 0, rejects: 0 });
+    const sourceBucket = (bySourceAccum[r.source] ??= { accepts: 0, rejects: 0 });
+    if (r.decision === 'accept') {
+      toolBucket.accepts += r.n;
+      sourceBucket.accepts += r.n;
+      overallAccepts += r.n;
+    } else if (r.decision === 'reject') {
+      toolBucket.rejects += r.n;
+      sourceBucket.rejects += r.n;
+      overallRejects += r.n;
+    }
+  }
+  const toRate = (b: { accepts: number; rejects: number }): EditAcceptRate => {
+    const total = b.accepts + b.rejects;
+    return { accepts: b.accepts, rejects: b.rejects, rate: total > 0 ? b.accepts / total : 0 };
+  };
+  const byTool: Record<string, EditAcceptRate> = {};
+  for (const [k, v] of Object.entries(byToolAccum)) byTool[k] = toRate(v);
+  const bySource: Record<string, EditAcceptRate> = {};
+  for (const [k, v] of Object.entries(bySourceAccum)) bySource[k] = toRate(v);
+  const overallTotal = overallAccepts + overallRejects;
+  return {
+    overall: {
+      accepts: overallAccepts,
+      rejects: overallRejects,
+      rate: overallTotal > 0 ? overallAccepts / overallTotal : 0,
+    },
+    byTool,
+    bySource,
+  };
+}
+
+/**
+ * Per-day rollup of `user_prompt` OTEL events over the window. `value` on
+ * the activity row carries prompt character length (or NULL when the event
+ * arrived without `prompt_length`).
+ */
+export function getUserPromptStats(
+  db: Database.Database,
+  accountId: string,
+  days: number,
+): PromptStats {
+  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db.prepare(
+    `SELECT
+       strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime') AS day,
+       COUNT(*)                                                  AS n,
+       AVG(value)                                                AS avg_len
+     FROM activity_events
+     WHERE account_id = ? AND ts >= ? AND kind = 'user_prompt'
+     GROUP BY day
+     ORDER BY day`,
+  ).all(accountId, sinceTs) as Array<{ day: string; n: number; avg_len: number | null }>;
+
+  let total = 0;
+  let weightedLenSum = 0;
+  let weightedLenDenom = 0;
+  const perDay: Record<string, { count: number; avgLength: number }> = {};
+  for (const r of rows) {
+    total += r.n;
+    const avgLen = r.avg_len ?? 0;
+    perDay[r.day] = { count: r.n, avgLength: avgLen };
+    if (r.avg_len !== null) {
+      weightedLenSum += avgLen * r.n;
+      weightedLenDenom += r.n;
+    }
+  }
+  return {
+    total,
+    avgLength: weightedLenDenom > 0 ? weightedLenSum / weightedLenDenom : 0,
+    perDay,
   };
 }
 

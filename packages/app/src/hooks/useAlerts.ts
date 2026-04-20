@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { Alert } from '@claude-sentinel/shared';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { Alert, AlertScope, BudgetAlertScope } from '@claude-sentinel/shared';
 import { sendToSentinel } from '../lib/ipc.js';
 
 interface UseAlertsResult {
@@ -14,32 +14,75 @@ interface UseAlertsResult {
 }
 
 /**
- * CRUD hook for the alerts bound to a specific Claude account. Alerts are
- * scoped by the Sentinel account key (orgUuid || accountUuid) the caller
- * passes in — typically the currently active account from `useDaemon()`.
+ * Target for the alerts being edited. Two shapes:
+ *   { scope: 'account', accountId } — per-account alerts (current behavior).
+ *   { scope: 'pool' }               — pool-wide alerts (round-robin only);
+ *                                     fire on mean unified-5h utilization
+ *                                     across every pool member.
  */
-export function useAlerts(accountId: string | undefined): UseAlertsResult {
+export type UseAlertsTarget =
+  | { scope: 'account'; accountId: string | undefined }
+  | { scope: 'pool' }
+  | { scope: 'budget'; budgetScope: BudgetAlertScope; accountId?: string | undefined };
+
+/**
+ * Back-compat overload: `useAlerts(accountId)` is equivalent to
+ * `useAlerts({ scope: 'account', accountId })`. Call sites that predated
+ * pool alerts keep working.
+ */
+export function useAlerts(accountId: string | undefined): UseAlertsResult;
+export function useAlerts(target: UseAlertsTarget): UseAlertsResult;
+export function useAlerts(arg: string | undefined | UseAlertsTarget): UseAlertsResult {
+  const target: UseAlertsTarget = useMemo(() => {
+    if (arg == null || typeof arg === 'string') {
+      return { scope: 'account', accountId: arg };
+    }
+    return arg;
+  }, [arg]);
+
+  const scope: AlertScope = target.scope;
+  const accountId =
+    target.scope === 'account' ? target.accountId
+    : target.scope === 'budget' ? target.accountId
+    : undefined;
+  const budgetScope: BudgetAlertScope | undefined =
+    target.scope === 'budget' ? target.budgetScope : undefined;
+
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // Drop any alerts state the moment the scoping key changes so the UI can
-  // never flash the previous account's rows while the new fetch is in flight.
+  // never flash the previous account's (or the wrong scope's) rows while
+  // the new fetch is in flight.
   useEffect(() => {
     setAlerts([]);
-  }, [accountId]);
+  }, [scope, accountId]);
 
   const refetch = useCallback(async () => {
-    if (!accountId) {
+    if ((scope === 'account' || (scope === 'budget' && budgetScope === 'account')) && !accountId) {
       setAlerts([]);
       setLoading(false);
       return;
     }
     setLoading(true);
     try {
-      const res = await sendToSentinel<Alert[]>({ type: 'list_alerts', accountId });
+      const res = await sendToSentinel<Alert[]>(
+        scope === 'pool'
+          ? { type: 'list_alerts', scope: 'pool' }
+          : scope === 'budget'
+            ? (accountId
+                ? { type: 'list_alerts', scope: 'budget', accountId }
+                : { type: 'list_alerts', scope: 'budget' })
+            : { type: 'list_alerts', scope: 'account', accountId: accountId as string },
+      );
       if (res.success) {
-        setAlerts(res.data ?? []);
+        const filtered = (res.data ?? []).filter((a) =>
+          scope === 'budget' && budgetScope
+            ? a.budgetScope === budgetScope
+            : true,
+        );
+        setAlerts(filtered);
         setError(null);
       } else {
         setError(res.error ?? 'Failed to load alerts');
@@ -49,29 +92,38 @@ export function useAlerts(accountId: string | undefined): UseAlertsResult {
     } finally {
       setLoading(false);
     }
-  }, [accountId]);
+  }, [scope, accountId, budgetScope]);
 
   useEffect(() => { void refetch(); }, [refetch]);
 
   const create = useCallback(async (thresholdPct: number): Promise<void> => {
-    if (!accountId) return;
+    if (scope === 'account' && !accountId) return;
+    if (scope === 'budget' && budgetScope === 'account' && !accountId) return;
+    const payloadAccountId =
+      scope === 'pool' ? null
+      : scope === 'budget' && budgetScope === 'global' ? null
+      : (accountId as string);
     const res = await sendToSentinel<Alert>({
       type: 'upsert_alert',
-      accountId,
+      scope,
+      accountId: payloadAccountId,
       thresholdPct,
       enabled: true,
+      ...(scope === 'budget' && budgetScope ? { budgetScope } : {}),
     });
     if (!res.success) throw new Error(res.error ?? 'create failed');
     await refetch();
-  }, [accountId, refetch]);
+  }, [scope, accountId, budgetScope, refetch]);
 
   const update = useCallback(async (alert: Alert, thresholdPct: number): Promise<void> => {
     const res = await sendToSentinel<Alert>({
       type: 'upsert_alert',
       id: alert.id,
+      scope: alert.scope,
       accountId: alert.accountId,
       thresholdPct,
       enabled: alert.enabled,
+      ...(alert.scope === 'budget' && alert.budgetScope ? { budgetScope: alert.budgetScope } : {}),
     });
     if (!res.success) throw new Error(res.error ?? 'update failed');
     await refetch();
@@ -81,6 +133,7 @@ export function useAlerts(accountId: string | undefined): UseAlertsResult {
     const res = await sendToSentinel<Alert>({
       type: 'upsert_alert',
       id: alert.id,
+      scope: alert.scope,
       accountId: alert.accountId,
       thresholdPct: alert.thresholdPct,
       enabled: !alert.enabled,

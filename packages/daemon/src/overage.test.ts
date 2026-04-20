@@ -249,6 +249,132 @@ describe('OverageStateMachine', () => {
     });
   });
 
+  describe('window-level dedup', () => {
+    it('within a single window, emits entered and exited at most once each despite oscillation', () => {
+      const handler = vi.fn();
+      machine.onTransition(handler);
+
+      const headers = (inUse: boolean) => ({
+        [OVERAGE_STATUS_HEADER]: 'allowed',
+        [OVERAGE_RESET_HEADER]: '1776700800',
+        [OVERAGE_IN_USE_HEADER]: inUse ? 'true' : 'false',
+      });
+
+      // Simulated backend oscillation around the threshold, all within the
+      // same overage window (identical resetsAt).
+      machine.handleHeaders('acc1', headers(true));   // entered
+      machine.handleHeaders('acc1', headers(false));  // exited
+      machine.handleHeaders('acc1', headers(true));   // swallowed (entered already fired)
+      machine.handleHeaders('acc1', headers(false));  // swallowed (exited already fired)
+      machine.handleHeaders('acc1', headers(true));   // swallowed
+      machine.handleHeaders('acc1', headers(false));  // swallowed
+
+      const transitions = handler.mock.calls.map((c) => (c[0] as { transition: string }).transition);
+      expect(transitions).toEqual(['entered', 'exited']);
+    });
+
+    it('a new resetsAt opens a fresh window and allows entered to fire again', () => {
+      const headers = (inUse: boolean, resetsAt: string) => ({
+        [OVERAGE_STATUS_HEADER]: 'allowed',
+        [OVERAGE_RESET_HEADER]: resetsAt,
+        [OVERAGE_IN_USE_HEADER]: inUse ? 'true' : 'false',
+      });
+
+      const first = machine.handleHeaders('acc1', headers(true, '1776700800'));
+      const firstDupe = machine.handleHeaders('acc1', headers(true, '1776700800'));
+      const secondWindow = machine.handleHeaders('acc1', headers(true, '1776800000'));
+
+      expect(first?.transition).toBe('entered');
+      expect(firstDupe).toBeNull();
+      expect(secondWindow?.transition).toBe('entered');
+      expect(secondWindow?.state.resetsAt).toBe(1776800000);
+    });
+
+    it('disabled fires at most once per window', () => {
+      const r1 = machine.handleHeaders('acc1', {
+        [OVERAGE_STATUS_HEADER]: 'disabled',
+        [OVERAGE_RESET_HEADER]: '1776700800',
+        [OVERAGE_REASON_HEADER]: 'budget_exhausted',
+      });
+      const r2 = machine.handleHeaders('acc1', {
+        [OVERAGE_STATUS_HEADER]: 'disabled',
+        [OVERAGE_RESET_HEADER]: '1776700800',
+        [OVERAGE_REASON_HEADER]: 'budget_exhausted',
+      });
+      expect(r1?.transition).toBe('disabled');
+      expect(r2).toBeNull();
+    });
+  });
+
+  describe('rehydrate', () => {
+    it('suppresses entered when the rehydrated window already recorded it', () => {
+      machine.rehydrate(
+        'acc1',
+        {
+          isUsingOverage: true,
+          status: 'allowed',
+          resetsAt: 1776700800,
+          disabledReason: null,
+          lastUpdated: Date.now(),
+        },
+        ['entered'],
+      );
+      const result = machine.handleHeaders('acc1', {
+        [OVERAGE_STATUS_HEADER]: 'allowed',
+        [OVERAGE_RESET_HEADER]: '1776700800',
+        [OVERAGE_IN_USE_HEADER]: 'true',
+      });
+      expect(result).toBeNull();
+    });
+
+    it('allows exited to fire once after rehydration when in-use drops', () => {
+      machine.rehydrate(
+        'acc1',
+        {
+          isUsingOverage: true,
+          status: 'allowed',
+          resetsAt: 1776700800,
+          disabledReason: null,
+          lastUpdated: Date.now(),
+        },
+        ['entered'],
+      );
+      const first = machine.handleHeaders('acc1', {
+        [OVERAGE_STATUS_HEADER]: 'allowed',
+        [OVERAGE_RESET_HEADER]: '1776700800',
+        [OVERAGE_IN_USE_HEADER]: 'false',
+      });
+      const second = machine.handleHeaders('acc1', {
+        [OVERAGE_STATUS_HEADER]: 'allowed',
+        [OVERAGE_RESET_HEADER]: '1776700800',
+        [OVERAGE_IN_USE_HEADER]: 'false',
+      });
+      expect(first?.transition).toBe('exited');
+      expect(second).toBeNull();
+    });
+
+    it('resetState clears both the state and the fired-window cache', () => {
+      machine.rehydrate(
+        'acc1',
+        {
+          isUsingOverage: true,
+          status: 'allowed',
+          resetsAt: 1776700800,
+          disabledReason: null,
+          lastUpdated: Date.now(),
+        },
+        ['entered'],
+      );
+      machine.resetState('acc1');
+      const result = machine.handleHeaders('acc1', {
+        [OVERAGE_STATUS_HEADER]: 'allowed',
+        [OVERAGE_RESET_HEADER]: '1776700800',
+        [OVERAGE_IN_USE_HEADER]: 'true',
+      });
+      expect(result?.transition).toBe('entered');
+    });
+  });
+
   describe('getTrackedAccounts', () => {
     it('returns empty array initially', () => {
       expect(machine.getTrackedAccounts()).toEqual([]);

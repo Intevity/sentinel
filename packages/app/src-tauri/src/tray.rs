@@ -13,7 +13,7 @@
 /// `account_switched`, `settings_changed`, `login_complete`). On startup
 /// `main.rs` seeds it once via `get_settings`, `refresh_accounts`, and
 /// `get_all_rate_limits`.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -38,13 +38,18 @@ pub struct TrayState {
     /// Sentinel-keyed utilization, 0.0..=1.0. `None` = account known but
     /// no data yet; missing key = account never enrolled here.
     utilizations: HashMap<String, Option<f32>>,
+    /// Sentinel account ids the user has excluded from the round-robin
+    /// pool. Must be filtered out of the RR-mode aggregate so the tray
+    /// reflects the accounts that are actually rotating, not every
+    /// enrolled account. Synced from the `poolExcludedIds` field of
+    /// `settings_changed` broadcasts. Ignored in Off mode.
+    pool_excluded_ids: HashSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum SwitchingMode {
     #[default]
     Off,
-    AutoSwitch,
     RoundRobin,
 }
 
@@ -52,7 +57,6 @@ impl SwitchingMode {
     fn from_str(s: &str) -> Self {
         match s {
             "round-robin" => Self::RoundRobin,
-            "auto-switch" => Self::AutoSwitch,
             _ => Self::Off,
         }
     }
@@ -134,6 +138,7 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         active_id: None,
         active_email: None,
         utilizations: HashMap::new(),
+        pool_excluded_ids: HashSet::new(),
     }));
     app.manage(state);
 
@@ -237,6 +242,20 @@ impl TrayState {
             .map(SwitchingMode::from_str)
             .unwrap_or_default();
         self.switching_mode = mode;
+        // Pool exclusions feed into compute_display so the tray average
+        // doesn't include accounts the user has explicitly taken out of
+        // rotation. Treat a missing / malformed field as "no exclusions"
+        // rather than dropping state — keeps the tray stable across
+        // partial settings payloads.
+        self.pool_excluded_ids = settings_json
+            .get("poolExcludedIds")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
     }
 
     fn apply_accounts(&mut self, accounts_json: &Value) {
@@ -254,8 +273,12 @@ impl TrayState {
                 }
             }
         }
-        // Prune utilizations for accounts that no longer exist.
+        // Prune utilizations + exclusion set for accounts that no longer
+        // exist. Without the second retain, a removed account's id could
+        // stay in pool_excluded_ids forever — harmless today (the filter
+        // ignores missing ids) but slowly grows the set.
         self.utilizations.retain(|k, _| live_ids.contains(k));
+        self.pool_excluded_ids.retain(|k| live_ids.contains(k));
         if arr.is_empty() {
             self.active_id = None;
             self.active_email = None;
@@ -302,10 +325,14 @@ impl TrayState {
 fn compute_display(state: &TrayState) -> Option<u8> {
     match state.switching_mode {
         SwitchingMode::RoundRobin => {
+            // Only accounts actually rotating contribute to the pool mean.
+            // An excluded account at 100% used to drag the displayed %
+            // upwards even though its traffic was zero — that's the bug.
             let known: Vec<f32> = state
                 .utilizations
-                .values()
-                .filter_map(|v| *v)
+                .iter()
+                .filter(|(id, _)| !state.pool_excluded_ids.contains(*id))
+                .filter_map(|(_, v)| *v)
                 .collect();
             if known.is_empty() {
                 return None;
@@ -313,7 +340,7 @@ fn compute_display(state: &TrayState) -> Option<u8> {
             let mean = known.iter().sum::<f32>() / known.len() as f32;
             Some(to_pct(mean))
         }
-        SwitchingMode::Off | SwitchingMode::AutoSwitch => {
+        SwitchingMode::Off => {
             let id = state.active_id.as_deref()?;
             let util = (*state.utilizations.get(id)?)?;
             Some(to_pct(util))
@@ -342,13 +369,21 @@ fn format_status_text(state: &TrayState, pct: Option<u8>) -> String {
     };
     match state.switching_mode {
         SwitchingMode::RoundRobin => {
-            if state.utilizations.is_empty() {
+            // Count only rotating members so the "pool" label agrees with
+            // the percentage (which is already filtered). An excluded-only
+            // view shows "Claude Sentinel" rather than a stale pool count.
+            let pool_size = state
+                .utilizations
+                .keys()
+                .filter(|k| !state.pool_excluded_ids.contains(*k))
+                .count();
+            if pool_size == 0 {
                 "Claude Sentinel".to_string()
             } else {
                 format!("Round-robin pool · {pct_str}")
             }
         }
-        SwitchingMode::Off | SwitchingMode::AutoSwitch => match &state.active_email {
+        SwitchingMode::Off => match &state.active_email {
             Some(email) => format!("{email} · {pct_str}"),
             None => "Claude Sentinel".to_string(),
         },
@@ -440,21 +475,37 @@ mod tests {
         switching_mode: SwitchingMode,
         active_id: Option<String>,
         utilizations: HashMap<String, Option<f32>>,
+        pool_excluded_ids: HashSet<String>,
+    }
+
+    impl StateMirror {
+        fn empty(mode: SwitchingMode) -> Self {
+            StateMirror {
+                switching_mode: mode,
+                active_id: None,
+                utilizations: HashMap::new(),
+                pool_excluded_ids: HashSet::new(),
+            }
+        }
     }
 
     fn compute_mirror(s: &StateMirror) -> Option<u8> {
         // Inlined copy of compute_display's logic against StateMirror.
         match s.switching_mode {
             SwitchingMode::RoundRobin => {
-                let known: Vec<f32> =
-                    s.utilizations.values().filter_map(|v| *v).collect();
+                let known: Vec<f32> = s
+                    .utilizations
+                    .iter()
+                    .filter(|(id, _)| !s.pool_excluded_ids.contains(*id))
+                    .filter_map(|(_, v)| *v)
+                    .collect();
                 if known.is_empty() {
                     return None;
                 }
                 let mean = known.iter().sum::<f32>() / known.len() as f32;
                 Some(to_pct(mean))
             }
-            SwitchingMode::Off | SwitchingMode::AutoSwitch => {
+            SwitchingMode::Off => {
                 let id = s.active_id.as_deref()?;
                 let util = (*s.utilizations.get(id)?)?;
                 Some(to_pct(util))
@@ -464,70 +515,70 @@ mod tests {
 
     #[test]
     fn compute_display_empty_returns_none() {
-        let s = StateMirror {
-            switching_mode: SwitchingMode::Off,
-            active_id: None,
-            utilizations: HashMap::new(),
-        };
+        let s = StateMirror::empty(SwitchingMode::Off);
         assert_eq!(compute_mirror(&s), None);
     }
 
     #[test]
     fn compute_display_active_account() {
-        let mut utilizations = HashMap::new();
-        utilizations.insert("acct-a".to_string(), Some(0.423));
-        let s = StateMirror {
-            switching_mode: SwitchingMode::AutoSwitch,
-            active_id: Some("acct-a".to_string()),
-            utilizations,
-        };
+        let mut s = StateMirror::empty(SwitchingMode::Off);
+        s.utilizations.insert("acct-a".to_string(), Some(0.423));
+        s.active_id = Some("acct-a".to_string());
         assert_eq!(compute_mirror(&s), Some(42));
     }
 
     #[test]
     fn compute_display_active_account_null_util_returns_none() {
-        let mut utilizations = HashMap::new();
-        utilizations.insert("acct-a".to_string(), None);
-        let s = StateMirror {
-            switching_mode: SwitchingMode::Off,
-            active_id: Some("acct-a".to_string()),
-            utilizations,
-        };
+        let mut s = StateMirror::empty(SwitchingMode::Off);
+        s.utilizations.insert("acct-a".to_string(), None);
+        s.active_id = Some("acct-a".to_string());
         assert_eq!(compute_mirror(&s), None);
     }
 
     #[test]
     fn compute_display_round_robin_mean() {
-        let mut utilizations = HashMap::new();
-        utilizations.insert("a".to_string(), Some(0.50));
-        utilizations.insert("b".to_string(), Some(0.90));
-        utilizations.insert("c".to_string(), None); // skipped
-        let s = StateMirror {
-            switching_mode: SwitchingMode::RoundRobin,
-            active_id: Some("a".to_string()),
-            utilizations,
-        };
+        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        s.utilizations.insert("a".to_string(), Some(0.50));
+        s.utilizations.insert("b".to_string(), Some(0.90));
+        s.utilizations.insert("c".to_string(), None); // skipped
+        s.active_id = Some("a".to_string());
         // mean of 0.50 and 0.90 = 0.70 → 70
         assert_eq!(compute_mirror(&s), Some(70));
     }
 
     #[test]
+    fn compute_display_round_robin_excludes_pool_excluded_ids() {
+        // Reproduces the bug: user has two accounts at 12% and 100%; the
+        // 100%-util one is excluded from round-robin. Pre-fix this showed
+        // 56% (the mean); post-fix it shows 12%.
+        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        s.utilizations.insert("rotating".to_string(), Some(0.12));
+        s.utilizations.insert("excluded".to_string(), Some(1.00));
+        s.pool_excluded_ids.insert("excluded".to_string());
+        assert_eq!(compute_mirror(&s), Some(12));
+    }
+
+    #[test]
+    fn compute_display_round_robin_all_excluded_returns_none() {
+        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        s.utilizations.insert("a".to_string(), Some(0.5));
+        s.utilizations.insert("b".to_string(), Some(0.8));
+        s.pool_excluded_ids.insert("a".to_string());
+        s.pool_excluded_ids.insert("b".to_string());
+        assert_eq!(compute_mirror(&s), None);
+    }
+
+    #[test]
     fn compute_display_round_robin_all_null_returns_none() {
-        let mut utilizations = HashMap::new();
-        utilizations.insert("a".to_string(), None);
-        utilizations.insert("b".to_string(), None);
-        let s = StateMirror {
-            switching_mode: SwitchingMode::RoundRobin,
-            active_id: None,
-            utilizations,
-        };
+        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        s.utilizations.insert("a".to_string(), None);
+        s.utilizations.insert("b".to_string(), None);
         assert_eq!(compute_mirror(&s), None);
     }
 
     #[test]
     fn switching_mode_from_str() {
         assert_eq!(SwitchingMode::from_str("off"), SwitchingMode::Off);
-        assert_eq!(SwitchingMode::from_str("auto-switch"), SwitchingMode::AutoSwitch);
         assert_eq!(SwitchingMode::from_str("round-robin"), SwitchingMode::RoundRobin);
         assert_eq!(SwitchingMode::from_str("garbage"), SwitchingMode::Off);
     }

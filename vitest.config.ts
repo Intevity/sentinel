@@ -19,6 +19,10 @@ export default defineConfig({
         // CLI entry points and external-integration modules (hard to unit test)
         'packages/daemon/src/cli.ts',
         'packages/daemon/src/index.ts',
+        // Rate-limit probe: fires an HTTP request through the running proxy.
+        // Extracted from index.ts into its own file to avoid a circular import
+        // with usage-probe.ts; inherits index.ts's coverage exemption.
+        'packages/daemon/src/rate-limit-probe.ts',
         // OAuth orchestration: opens browser, spins up local HTTP server, and
         // makes external API calls — better covered by integration tests.
         'packages/daemon/src/oauth.ts',

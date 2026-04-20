@@ -52,6 +52,10 @@ function makeReq(url: string, method = 'POST', body = '{"test": true}'): Incomin
       listeners[event]?.push(cb);
       return req;
     },
+    off: (event: string, cb: (arg?: unknown) => void) => {
+      listeners[event] = (listeners[event] ?? []).filter((fn) => fn !== cb);
+      return req;
+    },
     emit: (event: string, arg?: unknown) => listeners[event]?.forEach((cb) => cb(arg)),
   } as unknown as IncomingMessage;
 
@@ -179,6 +183,58 @@ describe('createProxyServer', () => {
     // Rate limits must be attributed to the rotated account, not the primary.
     expect(rateLimitStore.getAll('rotated-id')).toHaveLength(1);
     expect(rateLimitStore.getAll('primary-id')).toHaveLength(0);
+    server.close();
+  });
+
+  it('x-sentinel-probe-token/-account headers override activeToken and tokenProvider, then are stripped before upstream', async () => {
+    const capturedHeaders: Record<string, string> = {};
+    const mockProxyRes = {
+      statusCode: 200,
+      headers: {
+        'content-type': 'application/json',
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-5h-reset': '123',
+      },
+      on: vi.fn((event: string, cb: () => void) => {
+        if (event === 'end') setTimeout(cb, 10);
+        return mockProxyRes;
+      }),
+      pipe: vi.fn(),
+    };
+
+    httpsRequestMock.mockImplementation((opts, cb) => {
+      Object.assign(capturedHeaders, opts.headers);
+      if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 10);
+      return { on: vi.fn().mockReturnThis(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() } as unknown as ClientRequest;
+    });
+
+    const rateLimitStore = new RateLimitStore();
+    const server = createProxyServer({
+      db,
+      ipcServer,
+      rateLimitStore,
+      activeToken: { value: 'primary-token' },
+      activeAccountId: { value: 'primary-id' },
+      tokenProvider: () => ({ token: 'rotated-token', accountId: 'rotated-id' }),
+    }, otelHandler);
+    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+
+    const req = makeReq('/v1/messages', 'POST');
+    req.headers['x-sentinel-probe-token'] = 'probe-token';
+    req.headers['x-sentinel-probe-account'] = 'probe-account';
+    const { res } = makeRes();
+    handler?.(req, res);
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Probe headers must win over both activeToken and tokenProvider.
+    expect(capturedHeaders['authorization']).toBe('Bearer probe-token');
+    // Attribution must use the probe account.
+    expect(rateLimitStore.getAll('probe-account')).toHaveLength(1);
+    expect(rateLimitStore.getAll('primary-id')).toHaveLength(0);
+    expect(rateLimitStore.getAll('rotated-id')).toHaveLength(0);
+    // Internal headers must NOT leak upstream.
+    expect(capturedHeaders['x-sentinel-probe-token']).toBeUndefined();
+    expect(capturedHeaders['x-sentinel-probe-account']).toBeUndefined();
     server.close();
   });
 
@@ -657,6 +713,287 @@ describe('createProxyServer', () => {
     expect(vi.mocked(ipcServer.broadcast)).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'overage_entered', resetsAt: null }),
     );
+    server.close();
+  });
+
+  it('returns a 403 and does not forward when securityScanner.scanOutbound blocks', async () => {
+    const scanner = {
+      scanOutbound: vi.fn(() => ({ action: 'block_immediate', blockReason: 'AWS access key', findings: [] })),
+      startResponseTap: vi.fn(() => null),
+    };
+    const server = createProxyServer({ db, ipcServer, securityScanner: scanner as never }, otelHandler);
+    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+
+    const req = makeReq('/v1/messages', 'POST', JSON.stringify({ messages: [{ role: 'user', content: 'AKIA' }] }));
+    const { res } = makeRes();
+    let writtenBody = '';
+    let code = 0;
+    (res as unknown as { writeHead: (c: number) => void }).writeHead = (c: number) => { code = c; };
+    (res as unknown as { end: (data?: string) => void }).end = (data?: string) => { writtenBody = data ?? ''; };
+
+    handler?.(req, res);
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(code).toBe(403);
+    expect(writtenBody).toContain('Blocked by Claude Sentinel');
+    expect(writtenBody).toContain('AWS access key');
+    expect(httpsRequestMock).not.toHaveBeenCalled();
+    expect(scanner.scanOutbound).toHaveBeenCalledOnce();
+    server.close();
+  });
+
+  it('held-block + approve forwards the request upstream', async () => {
+    let resolveOutcome: ((o: 'approve' | 'deny' | 'timeout') => void) | null = null;
+    const scanner = {
+      scanOutbound: vi.fn(() => ({
+        action: 'pending', pendingId: 'abc', blockReason: 'AWS access key', findings: [],
+      })),
+      awaitPendingResolution: vi.fn(() =>
+        new Promise<'approve' | 'deny' | 'timeout'>((resolve) => { resolveOutcome = resolve; }),
+      ),
+      resolvePending: vi.fn(() => true),
+      listPending: vi.fn(() => []),
+      startResponseTap: vi.fn(() => null),
+    };
+
+    const capturedUpstream: Record<string, unknown> = {};
+    const mockProxyRes = {
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      on: vi.fn((event: string, cb: () => void) => {
+        if (event === 'end') setTimeout(cb, 5);
+        return mockProxyRes;
+      }),
+      pipe: vi.fn(),
+    };
+    httpsRequestMock.mockImplementation((opts, cb) => {
+      Object.assign(capturedUpstream, opts);
+      if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 5);
+      return { on: vi.fn().mockReturnThis(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() } as unknown as ClientRequest;
+    });
+
+    const server = createProxyServer({ db, ipcServer, securityScanner: scanner as never }, otelHandler);
+    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const req = makeReq('/v1/messages', 'POST');
+    const { res } = makeRes();
+    handler?.(req, res);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // The proxy is now waiting on awaitPendingResolution. Upstream hasn't
+    // been called yet.
+    expect(httpsRequestMock).not.toHaveBeenCalled();
+    expect(resolveOutcome).not.toBeNull();
+
+    // Approve. Proxy should fall through to upstream forwarding.
+    resolveOutcome!('approve');
+    await new Promise((r) => setTimeout(r, 30));
+    expect(httpsRequestMock).toHaveBeenCalled();
+    server.close();
+  });
+
+  it('held-block + deny synthesizes a 403', async () => {
+    let resolveOutcome: ((o: 'approve' | 'deny' | 'timeout') => void) | null = null;
+    const scanner = {
+      scanOutbound: vi.fn(() => ({
+        action: 'pending', pendingId: 'abc', blockReason: 'AWS access key', findings: [],
+      })),
+      awaitPendingResolution: vi.fn(() =>
+        new Promise<'approve' | 'deny' | 'timeout'>((resolve) => { resolveOutcome = resolve; }),
+      ),
+      resolvePending: vi.fn(() => true),
+      listPending: vi.fn(() => []),
+      startResponseTap: vi.fn(() => null),
+    };
+    const server = createProxyServer({ db, ipcServer, securityScanner: scanner as never }, otelHandler);
+    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const req = makeReq('/v1/messages', 'POST');
+    const { res } = makeRes();
+    let code = 0;
+    let writtenBody = '';
+    (res as unknown as { writeHead: (c: number) => void }).writeHead = (c: number) => { code = c; };
+    (res as unknown as { end: (data?: string) => void }).end = (data?: string) => { writtenBody = data ?? ''; };
+
+    handler?.(req, res);
+    await new Promise((r) => setTimeout(r, 20));
+    resolveOutcome!('deny');
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(code).toBe(403);
+    expect(writtenBody).toContain('Blocked by Claude Sentinel');
+    expect(httpsRequestMock).not.toHaveBeenCalled();
+    server.close();
+  });
+
+  it('feeds response chunks to a security tap and flushes at end', async () => {
+    const pushed: Buffer[] = [];
+    let flushCount = 0;
+    const tap = {
+      push: (chunk: Buffer) => pushed.push(chunk),
+      flush: () => { flushCount++; },
+      destroy: vi.fn(),
+    };
+    const scanner = {
+      scanOutbound: vi.fn(() => ({ action: 'allow', findings: [] })),
+      startResponseTap: vi.fn(() => tap),
+    };
+
+    // Mock an SSE response that emits two data chunks before end.
+    const dataListeners: Array<(c: Buffer) => void> = [];
+    const endListeners: Array<() => void> = [];
+    const mockProxyRes = {
+      statusCode: 200,
+      headers: { 'content-type': 'text/event-stream' },
+      on: vi.fn((event: string, cb: (arg?: unknown) => void) => {
+        if (event === 'data') dataListeners.push(cb as (c: Buffer) => void);
+        if (event === 'end') endListeners.push(cb as () => void);
+        return mockProxyRes;
+      }),
+      pipe: vi.fn(),
+    };
+    httpsRequestMock.mockImplementation((_opts, cb) => {
+      if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 5);
+      return { on: vi.fn().mockReturnThis(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() } as unknown as ClientRequest;
+    });
+
+    const server = createProxyServer({ db, ipcServer, securityScanner: scanner as never }, otelHandler);
+    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const req = makeReq('/v1/messages', 'POST');
+    const { res } = makeRes();
+    handler?.(req, res);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Simulate two SSE chunks and stream end.
+    dataListeners.forEach((cb) => cb(Buffer.from('data: {"type":"ping"}\n\n')));
+    dataListeners.forEach((cb) => cb(Buffer.from('data: {"type":"pong"}\n\n')));
+    endListeners.forEach((cb) => cb());
+
+    expect(pushed).toHaveLength(2);
+    expect(flushCount).toBe(1);
+    server.close();
+  });
+
+  it('skips the tap when the response is gzipped', async () => {
+    const tap = { push: vi.fn(), flush: vi.fn(), destroy: vi.fn() };
+    const scanner = {
+      scanOutbound: vi.fn(() => ({ action: 'allow', findings: [] })),
+      startResponseTap: vi.fn(() => tap),
+    };
+    const mockProxyRes = {
+      statusCode: 200,
+      headers: { 'content-encoding': 'gzip' },
+      on: vi.fn((event: string, cb: () => void) => {
+        if (event === 'end') setTimeout(cb, 5);
+        return mockProxyRes;
+      }),
+      pipe: vi.fn(),
+    };
+    httpsRequestMock.mockImplementation((_opts, cb) => {
+      if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 5);
+      return { on: vi.fn().mockReturnThis(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() } as unknown as ClientRequest;
+    });
+
+    const server = createProxyServer({ db, ipcServer, securityScanner: scanner as never }, otelHandler);
+    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const req = makeReq('/v1/messages', 'POST');
+    const { res } = makeRes();
+    handler?.(req, res);
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(tap.destroy).toHaveBeenCalled();
+    expect(tap.push).not.toHaveBeenCalled();
+    expect(mockProxyRes.pipe).toHaveBeenCalled();
+    server.close();
+  });
+
+  it('short-circuits with 503 + Retry-After when the active account is paused', async () => {
+    const server = createProxyServer({
+      db,
+      ipcServer,
+      activeToken: { value: 'tok' },
+      activeAccountId: { value: 'paused-acct' },
+      getPausedAccountIds: () => new Set(['paused-acct']),
+      getSessionResetAt: () => Math.floor(Date.now() / 1000) + 600, // 10 min from now
+    }, otelHandler);
+    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+
+    const req = makeReq('/v1/messages', 'POST');
+    let code = 0;
+    let capturedHeaders: Record<string, unknown> = {};
+    let bodyStr = '';
+    const res = {
+      writeHead: (c: number, hdrs?: unknown) => {
+        code = c;
+        if (hdrs && typeof hdrs === 'object') capturedHeaders = hdrs as Record<string, unknown>;
+      },
+      end: (data?: string) => { bodyStr = data ?? ''; },
+      write: vi.fn(),
+      pipe: vi.fn(),
+    } as unknown as ServerResponse;
+
+    handler?.(req, res);
+    // Upstream must NOT be called.
+    expect(httpsRequestMock).not.toHaveBeenCalled();
+    expect(code).toBe(503);
+    expect(capturedHeaders['Retry-After']).toBeDefined();
+    // Retry-After is seconds in delta form.
+    const retry = Number(capturedHeaders['Retry-After']);
+    expect(retry).toBeGreaterThan(0);
+    expect(retry).toBeLessThanOrEqual(600);
+    const parsed = JSON.parse(bodyStr);
+    expect(parsed.error?.type).toBe('sentinel_budget_paused');
+    server.close();
+  });
+
+  it('falls back to 300s Retry-After when no 5h reset is known', async () => {
+    const server = createProxyServer({
+      db,
+      ipcServer,
+      activeToken: { value: 'tok' },
+      activeAccountId: { value: 'paused-acct' },
+      getPausedAccountIds: () => new Set(['paused-acct']),
+      getSessionResetAt: () => null,
+    }, otelHandler);
+    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+
+    const req = makeReq('/v1/messages', 'POST');
+    let capturedHeaders: Record<string, unknown> = {};
+    const res = {
+      writeHead: (_c: number, hdrs?: unknown) => {
+        if (hdrs && typeof hdrs === 'object') capturedHeaders = hdrs as Record<string, unknown>;
+      },
+      end: vi.fn(),
+      write: vi.fn(),
+    } as unknown as ServerResponse;
+
+    handler?.(req, res);
+    expect(Number(capturedHeaders['Retry-After'])).toBe(300);
+    server.close();
+  });
+
+  it('does not short-circuit requests to non-Anthropic paths when paused', async () => {
+    const server = createProxyServer({
+      db,
+      ipcServer,
+      activeToken: { value: 'tok' },
+      activeAccountId: { value: 'paused-acct' },
+      getPausedAccountIds: () => new Set(['paused-acct']),
+      getSessionResetAt: () => null,
+    }, otelHandler);
+    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+
+    // Health check — pause gate fires BEFORE the path check, so this
+    // currently also returns 503. Worth documenting the behaviour so future
+    // refactors are intentional.
+    const req = makeReq('/health', 'GET', '');
+    let code = 0;
+    const res = {
+      writeHead: (c: number) => { code = c; },
+      end: vi.fn(),
+      write: vi.fn(),
+    } as unknown as ServerResponse;
+    handler?.(req, res);
+    // Health has no credential-selection so is not paused. /health returns 200.
+    expect(code).toBe(200);
     server.close();
   });
 });

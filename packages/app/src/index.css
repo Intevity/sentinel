@@ -32,6 +32,14 @@
     flex-direction: column;
   }
 
+  /* Reserve the scrollbar gutter everywhere we scroll. Without this,
+     showing/hiding the 5px webkit scrollbar track triggers horizontal
+     reflow in the main content, which fires the useAutoResizeWindow
+     ResizeObserver and kicks setSize into a visible jitter loop
+     whenever a banner (PendingBlockBanner, ActivationBanner, etc.)
+     mounts/unmounts above the tab bar. */
+  main { scrollbar-gutter: stable; }
+
   /* Thin, elegant scrollbar */
   ::-webkit-scrollbar       { width: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -68,4 +76,19 @@
            transition-all hover:bg-ios-blue/10 active:scale-95
            disabled:opacity-40 disabled:cursor-not-allowed;
   }
+
+  /* Deep-link attention flash — applied programmatically via JS when
+     a setting is scrolled into view from another part of the app.
+     Pulses iOS blue twice then fades. Removed after 1.5s by the caller. */
+  .highlight-flash {
+    animation: sentinel-flash 1.5s ease-out;
+  }
+}
+
+@keyframes sentinel-flash {
+  0%   { background-color: rgba(10, 132, 255, 0); }
+  15%  { background-color: rgba(10, 132, 255, 0.18); }
+  50%  { background-color: rgba(10, 132, 255, 0.05); }
+  70%  { background-color: rgba(10, 132, 255, 0.18); }
+  100% { background-color: rgba(10, 132, 255, 0); }
 }
