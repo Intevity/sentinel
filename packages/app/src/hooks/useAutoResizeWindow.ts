@@ -90,18 +90,28 @@ export function useAutoResizeWindow(): AutoResizeRefs {
 
     const computeInner = (): number => {
       const rootTop = root.getBoundingClientRect().top;
-      // Everything inside root but outside main — header, banners, tab
-      // control, AND the footer below main. Stable across window resizes
-      // because main absorbs all flex-1 space while the siblings have
-      // content-based heights. Using the arithmetic diff avoids needing
-      // an explicit ref per sibling.
-      const chromeAndFooter = root.offsetHeight - main.offsetHeight;
-      // Measure the inner wrapper's natural height — `main.scrollHeight`
-      // collapses to clientHeight when content fits, which would prevent the
-      // window from ever shrinking back down.
-      const mainPadBottom = parseFloat(getComputedStyle(main).paddingBottom) || 0;
-      let needed = chromeAndFooter + content.offsetHeight + mainPadBottom;
-      if (overlay) needed = Math.max(needed, overlay.scrollHeight);
+      let needed: number;
+      if (overlay) {
+        // Overlay is a full-surface panel (e.g. SettingsPanel) that
+        // visually replaces the main app. Its own content size drives
+        // the window — the main-app tab rendered behind it is irrelevant.
+        // Without this override, opening Settings from Metrics (tall) would
+        // peg the window to Metrics' height regardless of which Settings
+        // tab is active.
+        needed = overlay.scrollHeight;
+      } else {
+        // Everything inside root but outside main — header, banners, tab
+        // control, AND the footer below main. Stable across window resizes
+        // because main absorbs all flex-1 space while the siblings have
+        // content-based heights. Using the arithmetic diff avoids needing
+        // an explicit ref per sibling.
+        const chromeAndFooter = root.offsetHeight - main.offsetHeight;
+        // Measure the inner wrapper's natural height — `main.scrollHeight`
+        // collapses to clientHeight when content fits, which would prevent the
+        // window from ever shrinking back down.
+        const mainPadBottom = parseFloat(getComputedStyle(main).paddingBottom) || 0;
+        needed = chromeAndFooter + content.offsetHeight + mainPadBottom;
+      }
       if (popover) {
         // The popover is anchored inside the window (e.g. a header dropdown),
         // so its scrollHeight tells us nothing about where it ends visually.

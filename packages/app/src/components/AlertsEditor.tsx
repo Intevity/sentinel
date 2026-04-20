@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Trash2, Loader2, Pencil } from 'lucide-react';
+import { Plus, Trash2, Loader2, Pencil, Bell, BellOff } from 'lucide-react';
 import type { AccountInfo, Alert, OAuthAccount } from '@claude-sentinel/shared';
 import { useAlerts, type UseAlertsTarget } from '../hooks/useAlerts.js';
 import { useNotifications } from '../hooks/useNotifications.js';
@@ -33,8 +33,12 @@ interface AlertsEditorProps {
  * window (per-account or earliest-in-pool) rolls over.
  */
 export default function AlertsEditor({ activeAccount, accounts, viewAccountId }: AlertsEditorProps): React.ReactElement {
-  const { settings } = useSettings();
+  const { settings, update } = useSettings();
   const isRoundRobin = settings?.switchingMode === 'round-robin';
+  const overageOsNotify = settings?.overageOsNotify ?? true;
+  const toggleOverageNotify = (): void => {
+    void update({ overageOsNotify: !overageOsNotify }).catch(() => undefined);
+  };
 
   // View-scope (picker) wins over the proxy's active account. This lets the
   // user configure alerts for any enrolled account without switching tokens.
@@ -54,6 +58,32 @@ export default function AlertsEditor({ activeAccount, accounts, viewAccountId }:
 
   return (
     <div className="space-y-4 pt-1">
+      {/* Quick-access: mute OS notifications. Writes through useSettings so
+          the Settings panel's toggle mirrors instantly. Icon changes so
+          the muted state is visible at a glance. */}
+      {settings && (
+        <div className="flex items-center justify-end">
+          <button
+            type="button"
+            onClick={toggleOverageNotify}
+            aria-pressed={!overageOsNotify}
+            title={overageOsNotify
+              ? 'Overage notifications are ON — click to mute'
+              : 'Overage notifications are muted — click to re-enable'}
+            className={`flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-full transition-colors active:scale-95 ${
+              overageOsNotify
+                ? 'text-[#8E8E93] hover:text-black dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+                : 'text-ios-orange bg-ios-orange/10 hover:bg-ios-orange/15'
+            }`}
+          >
+            {overageOsNotify
+              ? <Bell size={12} strokeWidth={2.2} />
+              : <BellOff size={12} strokeWidth={2.2} />}
+            <span>{overageOsNotify ? 'Notifications on' : 'Muted'}</span>
+          </button>
+        </div>
+      )}
+
       {/* ── Pooled alerts (round-robin only) ───────────────────── */}
       {isRoundRobin && (
         <AlertList

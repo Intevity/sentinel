@@ -7,6 +7,9 @@ import { useAccounts } from '../hooks/useAccounts.js';
 import { useAllRateLimits, fiveHourUtilization, fiveHourResetAt } from '../hooks/useAllRateLimits.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { usePausedAccounts } from '../hooks/usePausedAccounts.js';
+import { QuickSegmented } from './settings/primitives.js';
+import RoundRobinStrategyMenu from './RoundRobinStrategyMenu.js';
+import type { SwitchingMode, RoundRobinStrategy } from '@claude-sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import { DUR, EASE_OUT } from '../lib/motion.js';
 
@@ -25,7 +28,7 @@ interface AccountSwitcherProps {
 export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherProps): React.ReactElement {
   const { accounts, removedAccounts, loading, error, switchAccount, removeAccount, purgeAccount, refreshAccounts, refreshToken } = useAccounts();
   const { byAccount: rateLimitsByAccount } = useAllRateLimits();
-  const { settings } = useSettings();
+  const { settings, update } = useSettings();
   const pausedMap = usePausedAccounts();
   const isRoundRobin = settings?.switchingMode === 'round-robin';
   // Pool-exclusion set (RR only). `poolExcludedIds` may contain stale IDs
@@ -394,7 +397,41 @@ export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherPr
 
       {/* Section header */}
       <div className="flex items-center justify-between mb-3">
-        <span className="section-label">Accounts</span>
+        <div className="flex items-center gap-2">
+          <span className="section-label">Accounts</span>
+          {settings && (
+            <div data-tour-id="switching-mode" className="flex items-center gap-1">
+              <QuickSegmented<SwitchingMode>
+                ariaLabel="Account switching mode"
+                value={settings.switchingMode}
+                onChange={(v) => void update({ switchingMode: v }).catch(() => undefined)}
+                options={[
+                  { value: 'off',         label: 'Manual',      title: 'You pick the active account manually' },
+                  { value: 'round-robin', label: 'Round-robin', title: 'Proxy rotates tokens across enrolled accounts per request' },
+                ]}
+              />
+              <AnimatePresence initial={false}>
+                {isRoundRobin && (
+                  <motion.div
+                    key="rr-strategy-menu"
+                    initial={{ opacity: 0, scale: 0.85 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.85 }}
+                    transition={{ duration: DUR.fast, ease: EASE_OUT }}
+                    className="flex items-center"
+                  >
+                    <RoundRobinStrategyMenu
+                      value={settings.roundRobinStrategy}
+                      onChange={(v: RoundRobinStrategy) =>
+                        void update({ roundRobinStrategy: v }).catch(() => undefined)
+                      }
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => void refreshAccounts()}
@@ -407,6 +444,7 @@ export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherPr
           <button
             onClick={() => void handleAddAccount()}
             disabled={loggingIn || loading}
+            data-tour-id="add-account"
             className="flex items-center gap-1 text-[11px] font-semibold text-ios-blue
                        disabled:opacity-40 transition-all active:scale-95"
             title="Add another account"

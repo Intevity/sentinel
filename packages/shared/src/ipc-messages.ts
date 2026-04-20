@@ -14,6 +14,9 @@ import type {
   PendingSecurityBlock,
   LogEntry,
   LogLevel,
+  PermissionRule,
+  PermissionRuleInput,
+  AutoModeStatus,
 } from './types.js';
 
 // ─── Daemon → App messages ────────────────────────────────────────────────────
@@ -371,7 +374,9 @@ export type DaemonToAppMessage =
   | DaemonLogMessage
   | DaemonLogsClearedMessage
   | OauthAuthorizeUrlMessage
-  | AdditionalOrgsAvailableMessage;
+  | AdditionalOrgsAvailableMessage
+  | PermissionRulesChangedMessage
+  | PermissionsStatusMessage;
 
 // ─── App → Daemon messages ────────────────────────────────────────────────────
 
@@ -736,6 +741,48 @@ export interface DevTriggerSecurityEventMessage {
   accountId?: string;
 }
 
+/** List every tool-permission rule in priority order. Response is
+ *  `PermissionRule[]`. */
+export interface ListPermissionRulesMessage {
+  type: 'list_permission_rules';
+}
+
+/** Create or update a tool-permission rule. Omit `id` on input to create.
+ *  Response is the persisted `PermissionRule`. */
+export interface UpsertPermissionRuleMessage {
+  type: 'upsert_permission_rule';
+  rule: PermissionRuleInput;
+}
+
+export interface DeletePermissionRuleMessage {
+  type: 'delete_permission_rule';
+  id: string;
+}
+
+/** Broadcast after any rule mutation (create/update/delete/reorder). Carries
+ *  the full new list so every connected UI can atomically re-render the
+ *  editor without an extra round-trip. */
+export interface PermissionRulesChangedMessage {
+  type: 'permission_rules_changed';
+  rules: PermissionRule[];
+}
+
+/** Fetch the current auto-mode status. Response payload is `AutoModeStatus`.
+ *  Used by the Security tab on mount to seed its indicator before any
+ *  broadcasts have fired. */
+export interface GetPermissionsStatusMessage {
+  type: 'get_permissions_status';
+}
+
+/** Broadcast when auto-mode status transitions (activated or deactivated, or
+ *  the trigger source changes). The UI's Security-tab indicator listens and
+ *  animates accordingly. The enforcer only emits on edges — no spam per
+ *  request. */
+export interface PermissionsStatusMessage {
+  type: 'permissions_status';
+  status: AutoModeStatus;
+}
+
 /** Fetch the daemon's mirror of `~/.claude.json:overageCreditGrantCache`.
  *  Response payload is `Record<accountUuid, OverageCreditGrant>`. Empty
  *  object when Claude Code hasn't populated the cache yet. */
@@ -849,10 +896,14 @@ export type AppToDaemonMessage =
   | HasClaudeAiSessionKeyMessage
   | GetClaudeAiUsageMessage
   | RefreshClaudeAiUsageMessage
-  | DevTriggerSecurityEventMessage;
+  | DevTriggerSecurityEventMessage
+  | ListPermissionRulesMessage
+  | UpsertPermissionRuleMessage
+  | DeletePermissionRuleMessage
+  | GetPermissionsStatusMessage;
 
 /** Response payload alias re-exports for convenience in consumers. */
-export type { Settings, Alert, NotificationRecord, MetricsSummary, OverageCreditGrant, SecurityEvent, SecurityAllowlistEntry, PendingSecurityBlock, LogEntry, LogLevel };
+export type { Settings, Alert, NotificationRecord, MetricsSummary, OverageCreditGrant, SecurityEvent, SecurityAllowlistEntry, PendingSecurityBlock, LogEntry, LogLevel, PermissionRule, PermissionRuleInput, AutoModeStatus };
 
 // ─── All IPC messages ─────────────────────────────────────────────────────────
 

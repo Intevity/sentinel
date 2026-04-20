@@ -6,6 +6,7 @@ import type {
   RoundRobinStrategy,
   SecurityEnforcementMode,
   SecurityOsNotifyThreshold,
+  PermissionDecision,
 } from '@claude-sentinel/shared';
 import { ALERT_SOUNDS } from '@claude-sentinel/shared';
 import { invoke } from '@tauri-apps/api/core';
@@ -17,9 +18,31 @@ import { useClaudeAiLogin } from '../hooks/useClaudeAiLogin.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { useAccounts } from '../hooks/useAccounts.js';
 import { useSiblingCandidates } from '../hooks/useSiblingCandidates.js';
-import { panelSlide } from '../lib/motion.js';
 import { accountColor } from '../lib/accountColor.js';
 import AccountColorDot from './AccountColorDot.js';
+import OverlayPanel from './OverlayPanel.js';
+import PermissionsEditor from './PermissionsEditor.js';
+import { Section, ToggleRow, RadioRow } from './settings/primitives.js';
+
+/**
+ * Which of the 4 Settings tabs a given deep-link anchor lives in. Used by
+ * the auto-scroll effect to switch tabs before scrolling. Keep this map in
+ * sync when new anchors are added to any tab.
+ */
+type SettingsTabId = 'general' | 'accounts' | 'security' | 'data';
+
+const ANCHOR_TO_TAB: Record<string, SettingsTabId> = {
+  // Security tab anchors
+  'security-enable-toggle': 'security',
+  'security-enforcement-heading': 'security',
+};
+
+const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string }> = [
+  { id: 'general', label: 'General' },
+  { id: 'accounts', label: 'Accounts' },
+  { id: 'security', label: 'Security' },
+  { id: 'data', label: 'Data' },
+];
 
 interface SettingsPanelProps {
   onClose: () => void;
@@ -31,6 +54,10 @@ interface SettingsPanelProps {
    *  from elsewhere in the app (e.g. the Security-tab disabled banner
    *  jumping straight to the "Enable security scanning" toggle). */
   initialScrollTarget?: string | null;
+  /** Close the panel and force-open the Security Setup Wizard. Provided
+   *  by the parent so the replay button in the Security tab can reopen
+   *  the wizard without tripping over `securitySetupCompleted`. */
+  onRunSetupWizard?: () => void;
 }
 
 /**
@@ -38,7 +65,7 @@ interface SettingsPanelProps {
  * tray window. Reached by the cog icon in the header. Writes propagate to the
  * daemon via `update_settings` — no Save button, every change persists live.
  */
-export default function SettingsPanel({ onClose, measureRef, initialScrollTarget }: SettingsPanelProps): React.ReactElement {
+export default function SettingsPanel({ onClose, measureRef, initialScrollTarget, onRunSetupWizard }: SettingsPanelProps): React.ReactElement {
   const { settings, loading, error, update } = useSettings();
   const { accounts } = useDaemon();
   const { refreshToken } = useAccounts();
@@ -47,19 +74,36 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
   // a spinner while silent_sibling_login round-trips through the daemon.
   const [siblingAdding, setSiblingAdding] = useState<string | null>(null);
 
+  // Active tab state. Settings is grouped into 4 tabs (General, Accounts,
+  // Security, Data) so no single scroll path exceeds the 628 px tray
+  // window. Default to General unless a deep-link target lives in a
+  // specific tab.
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(() => {
+    if (initialScrollTarget && ANCHOR_TO_TAB[initialScrollTarget]) {
+      return ANCHOR_TO_TAB[initialScrollTarget]!;
+    }
+    return 'general';
+  });
+
   // Deep-link scroll. Wait for the panel slide-in animation to settle
   // (~220 ms) before scrolling, otherwise scrollIntoView calculates against
-  // the pre-animation layout and lands in the wrong spot.
+  // the pre-animation layout and lands in the wrong spot. If the anchor
+  // belongs to a different tab, switch to it first.
   useEffect(() => {
     if (!initialScrollTarget) return;
+    const targetTab = ANCHOR_TO_TAB[initialScrollTarget];
+    if (targetTab && targetTab !== activeTab) setActiveTab(targetTab);
     const handle = window.setTimeout(() => {
       const el = document.getElementById(initialScrollTarget);
       if (!el) return;
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       el.classList.add('highlight-flash');
       window.setTimeout(() => el.classList.remove('highlight-flash'), 1500);
-    }, 220);
+    }, 260);
     return () => window.clearTimeout(handle);
+    // activeTab intentionally omitted — we only auto-switch on the initial
+    // target; later tab changes by the user shouldn't retrigger the flash.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialScrollTarget]);
 
   const setLaunch = (enabled: boolean): void => {
@@ -136,6 +180,20 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
   const setApproveHoldSec = (n: number): void => {
     void update({ securityApproveHoldSec: n }).catch(() => undefined);
   };
+  const setToolPermissionsEnabled = (v: boolean): void => {
+    void update({ toolPermissionsEnabled: v }).catch(() => undefined);
+  };
+  const setToolPermissionDefaultAction = (v: PermissionDecision): void => {
+    void update({ toolPermissionDefaultAction: v }).catch(() => undefined);
+  };
+  const setToolPermissionSkipInAutoMode = (v: boolean): void => {
+    void update({ toolPermissionSkipInAutoMode: v }).catch(() => undefined);
+  };
+  const setToolPermissionAutoModeActive = (v: boolean): void => {
+    void update({ toolPermissionAutoModeActive: v }).catch(() => undefined);
+  };
+
+  const [showRulesEditor, setShowRulesEditor] = useState(false);
 
   const clearAllSecurityEvents = async (): Promise<void> => {
     await sendToSentinel({ type: 'clear_security_events' }).catch(() => undefined);
@@ -156,11 +214,12 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
     await invoke('play_system_sound', { name }).catch(() => undefined);
   };
 
-  return (
-    <motion.div
-      {...panelSlide}
-      className="absolute inset-0 z-20 flex flex-col bg-[#F2F2F7] dark:bg-[#111111]"
-    >
+  // Sticky chrome — panel header + inner tab bar. Lifted into its own
+  // node so OverlayPanel can pin it with `position: sticky; top: 0`,
+  // keeping it visible while the body scrolls. See OverlayPanel.tsx for
+  // the full layout invariants.
+  const chrome = (
+    <>
       <header className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-black/5 dark:border-white/5">
         <span className="text-[15px] font-semibold text-black dark:text-white tracking-tight">Settings</span>
         <button
@@ -172,8 +231,41 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
           <X size={16} strokeWidth={2.2} />
         </button>
       </header>
+      <div
+        role="tablist"
+        aria-label="Settings categories"
+        className="flex gap-1 px-4 py-2 border-b border-black/5 dark:border-white/5"
+      >
+        {SETTINGS_TABS.map((tab) => {
+          const active = tab.id === activeTab;
+          return (
+            <button
+              key={tab.id}
+              role="tab"
+              aria-selected={active}
+              onClick={() => setActiveTab(tab.id)}
+              className={`relative flex-1 text-[11px] font-semibold px-2 py-1 rounded-full transition-colors ${
+                active ? 'text-white' : 'text-[#8E8E93] hover:text-black dark:hover:text-white'
+              }`}
+            >
+              {active && (
+                <motion.span
+                  layoutId="settings-tab-pill"
+                  className="absolute inset-0 bg-ios-blue rounded-full -z-[1]"
+                  transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                />
+              )}
+              <span className="relative">{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
 
-      <main ref={measureRef} className="flex-1 overflow-y-auto px-4 py-3">
+  return (
+    <OverlayPanel measureRef={measureRef} stickyChrome={chrome}>
+      <div className="px-4 py-3">
         {loading && (
           <div className="flex items-center justify-center py-10 gap-2 text-[#8E8E93]">
             <Loader2 size={14} className="animate-spin" />
@@ -187,6 +279,7 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
 
         {!loading && settings && (
           <>
+            {activeTab === 'general' && (
             <Section title="General">
               <ToggleRow
                 label="Launch at login"
@@ -195,7 +288,9 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
                 onChange={setLaunch}
               />
             </Section>
+            )}
 
+            {activeTab === 'general' && (
             <Section title="Updates">
               <ToggleRow
                 label="Automatically install updates"
@@ -210,7 +305,9 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
                 Check for updates now…
               </button>
             </Section>
+            )}
 
+            {activeTab === 'accounts' && (
             <Section title="Account switching">
               <RadioRow
                 label="Off"
@@ -278,8 +375,9 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
                 </div>
               )}
             </Section>
+            )}
 
-            {accounts.length > 0 && (
+            {activeTab === 'accounts' && accounts.length > 0 && (
               <Section title="Overage spend tracking">
                 <div className="px-3 pt-2.5 pb-1.5 space-y-1">
                   <p className="text-[11px] text-[#8E8E93] leading-snug">
@@ -402,6 +500,7 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
               </Section>
             )}
 
+            {activeTab === 'data' && (
             <Section title="Usage sync">
               <div className="px-3 py-2.5">
                 <div className="flex items-center justify-between text-[13px] mb-0.5">
@@ -430,7 +529,9 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
                 </div>
               </div>
             </Section>
+            )}
 
+            {activeTab === 'data' && (
             <Section title="Data retention">
               <div className="px-3 py-2.5">
                 <div className="flex items-center justify-between text-[13px] mb-0.5">
@@ -457,7 +558,9 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
                 </div>
               </div>
             </Section>
+            )}
 
+            {activeTab === 'general' && (
             <Section title="Notifications">
               <ToggleRow
                 label="Notify on overage events"
@@ -494,7 +597,29 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
                 </select>
               </div>
             </Section>
+            )}
 
+            {activeTab === 'security' && onRunSetupWizard && (
+            <Section title="Setup wizard">
+              <div className="px-3 py-2.5 flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-[12px] font-medium text-black dark:text-white">Run setup wizard</p>
+                  <p className="text-[11px] text-[#8E8E93] mt-0.5 leading-snug">
+                    Apply a risk profile (Low, Medium, High) that configures the scanner,
+                    notifications, and tool-permission rules in one step.
+                  </p>
+                </div>
+                <button
+                  onClick={onRunSetupWizard}
+                  className="flex-shrink-0 text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-ios-blue text-white hover:bg-ios-blue/90 active:scale-95 transition-all"
+                >
+                  Run wizard
+                </button>
+              </div>
+            </Section>
+            )}
+
+            {activeTab === 'security' && (
             <Section title="Security scanning">
               <div id="security-enable-toggle">
                 <ToggleRow
@@ -650,73 +775,63 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
                 </>
               )}
             </Section>
+            )}
+
+            {activeTab === 'security' && (
+            <Section title="Tool permissions">
+              <ToggleRow
+                label="Enforce tool permissions"
+                description="Block denied tool calls at the proxy layer. Works independently of Claude Code's own permission settings — a second enforcement layer you control."
+                checked={settings.toolPermissionsEnabled}
+                onChange={setToolPermissionsEnabled}
+              />
+              {settings.toolPermissionsEnabled && (
+                <>
+                  <div className="px-3 pt-2.5 pb-1">
+                    <p className="text-[11px] text-[#8E8E93] mb-1">Default for unmatched tool calls</p>
+                  </div>
+                  <RadioRow
+                    label="Allow unmatched"
+                    description="Only explicit deny rules block. Recommended for most users."
+                    checked={settings.toolPermissionDefaultAction === 'allow'}
+                    onChange={() => setToolPermissionDefaultAction('allow')}
+                  />
+                  <RadioRow
+                    label="Deny unmatched"
+                    description="Only explicit allow rules pass. Strictest policy."
+                    checked={settings.toolPermissionDefaultAction === 'deny'}
+                    onChange={() => setToolPermissionDefaultAction('deny')}
+                  />
+                  <button
+                    onClick={() => setShowRulesEditor(true)}
+                    className="w-full text-left px-3 py-2.5 text-[13px] font-medium text-ios-blue hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors"
+                  >
+                    Manage rules…
+                  </button>
+                  <div className="px-3 pt-2.5 pb-1">
+                    <p className="text-[11px] text-[#8E8E93] mb-1">Auto mode bypass</p>
+                  </div>
+                  <ToggleRow
+                    label="Skip enforcement in auto mode"
+                    description="When Claude Code is in auto mode, bypass every rule. Detected automatically from request headers (afk-mode / advisor-tool beta flags); the manual toggle below is a fallback."
+                    checked={settings.toolPermissionSkipInAutoMode}
+                    onChange={setToolPermissionSkipInAutoMode}
+                  />
+                  <ToggleRow
+                    label="Force auto-mode skip (manual override)"
+                    description="Treat every request as auto mode regardless of its headers. Use this only if automatic detection isn't picking up your session — normally you can leave it off."
+                    checked={settings.toolPermissionAutoModeActive}
+                    onChange={setToolPermissionAutoModeActive}
+                  />
+                </>
+              )}
+            </Section>
+            )}
           </>
         )}
-      </main>
-    </motion.div>
-  );
-}
-
-// ─── Building-block rows ─────────────────────────────────────────────────────
-
-function Section(props: { title: string; children: React.ReactNode }): React.ReactElement {
-  return (
-    <div className="mb-4">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-[#8E8E93] mb-1.5 px-1">
-        {props.title}
-      </p>
-      <div className="rounded-2xl bg-white dark:bg-[#1E1E1E] shadow-card overflow-hidden divide-y divide-black/5 dark:divide-white/5">
-        {props.children}
       </div>
-    </div>
-  );
-}
-
-function ToggleRow(props: {
-  label: string;
-  description?: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}): React.ReactElement {
-  return (
-    <label className="flex items-start gap-3 px-3 py-2.5 cursor-pointer">
-      <div className="flex-1 min-w-0">
-        <p className="text-[13px] font-medium text-black dark:text-white">{props.label}</p>
-        {props.description && (
-          <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">{props.description}</p>
-        )}
-      </div>
-      <input
-        type="checkbox"
-        checked={props.checked}
-        onChange={(e) => props.onChange(e.target.checked)}
-        className="mt-1 accent-ios-blue w-4 h-4"
-      />
-    </label>
-  );
-}
-
-function RadioRow(props: {
-  label: string;
-  description?: string;
-  checked: boolean;
-  onChange: () => void;
-}): React.ReactElement {
-  return (
-    <label className="flex items-start gap-3 px-3 py-2.5 cursor-pointer hover:bg-black/[0.02] dark:hover:bg-white/[0.03]">
-      <input
-        type="radio"
-        checked={props.checked}
-        onChange={props.onChange}
-        className="mt-1 accent-ios-blue w-4 h-4"
-      />
-      <div className="flex-1 min-w-0">
-        <p className="text-[13px] font-medium text-black dark:text-white">{props.label}</p>
-        {props.description && (
-          <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">{props.description}</p>
-        )}
-      </div>
-    </label>
+      {showRulesEditor && <PermissionsEditor onClose={() => setShowRulesEditor(false)} />}
+    </OverlayPanel>
   );
 }
 

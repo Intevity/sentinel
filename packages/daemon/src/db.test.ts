@@ -28,6 +28,9 @@ import {
   upsertRateLimit,
   loadRateLimits,
   deleteRateLimitsForAccount,
+  listPermissionRules,
+  upsertPermissionRule,
+  deletePermissionRule,
 } from './db.js';
 import type { AccountInfo, RateLimitWindow } from '@claude-sentinel/shared';
 
@@ -1128,5 +1131,101 @@ describe('budget-scope alerts', () => {
     expect(updated.id).toBe(saved.id);
     expect(updated.thresholdPct).toBe(95);
     expect(updated.enabled).toBe(false);
+  });
+});
+
+const PERMS_DB = join(tmpdir(), `sentinel-perms-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+
+describe('permission_rules CRUD', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = getDb(PERMS_DB);
+  });
+
+  afterEach(() => {
+    closeDb();
+    if (existsSync(PERMS_DB)) unlinkSync(PERMS_DB);
+  });
+
+  it('creates a new rule with auto-assigned id and priority', () => {
+    const saved = upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: 'rm -rf *',
+      raw: 'Bash(rm -rf *)',
+    });
+    expect(saved.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(saved.priority).toBeGreaterThan(0);
+    expect(saved.enabled).toBe(true);
+    expect(saved.decision).toBe('deny');
+    expect(saved.tool).toBe('Bash');
+    expect(saved.pattern).toBe('rm -rf *');
+    expect(saved.raw).toBe('Bash(rm -rf *)');
+  });
+
+  it('appends new rules with priority > existing', () => {
+    const a = upsertPermissionRule(db, { decision: 'deny', tool: 'Bash', pattern: null, raw: 'Bash' });
+    const b = upsertPermissionRule(db, { decision: 'allow', tool: 'Read', pattern: null, raw: 'Read' });
+    expect(b.priority).toBeGreaterThan(a.priority);
+  });
+
+  it('lists rules in priority order', () => {
+    upsertPermissionRule(db, { decision: 'deny', tool: 'Bash', pattern: null, raw: 'Bash', priority: 50 });
+    upsertPermissionRule(db, { decision: 'allow', tool: 'Read', pattern: null, raw: 'Read', priority: 10 });
+    const list = listPermissionRules(db);
+    expect(list.map((r) => r.tool)).toEqual(['Read', 'Bash']);
+  });
+
+  it('updates a rule in place by id', () => {
+    const saved = upsertPermissionRule(db, { decision: 'deny', tool: 'Bash', pattern: null, raw: 'Bash' });
+    const updated = upsertPermissionRule(db, {
+      id: saved.id,
+      decision: 'allow',
+      tool: 'Bash',
+      pattern: 'npm *',
+      raw: 'Bash(npm *)',
+      note: 'trusted',
+    });
+    expect(updated.id).toBe(saved.id);
+    expect(updated.decision).toBe('allow');
+    expect(updated.pattern).toBe('npm *');
+    expect(updated.note).toBe('trusted');
+    expect(listPermissionRules(db)).toHaveLength(1);
+  });
+
+  it('toggles enabled via upsert', () => {
+    const saved = upsertPermissionRule(db, { decision: 'deny', tool: 'Bash', pattern: null, raw: 'Bash' });
+    const disabled = upsertPermissionRule(db, {
+      id: saved.id,
+      decision: saved.decision,
+      tool: saved.tool,
+      pattern: saved.pattern,
+      raw: saved.raw,
+      enabled: false,
+    });
+    expect(disabled.enabled).toBe(false);
+  });
+
+  it('deletes a rule by id', () => {
+    const saved = upsertPermissionRule(db, { decision: 'deny', tool: 'Bash', pattern: null, raw: 'Bash' });
+    expect(deletePermissionRule(db, saved.id)).toBe(true);
+    expect(listPermissionRules(db)).toHaveLength(0);
+  });
+
+  it('returns false when deleting unknown id', () => {
+    expect(deletePermissionRule(db, 'nope')).toBe(false);
+  });
+
+  it('falls back to create when upsert id does not exist', () => {
+    const saved = upsertPermissionRule(db, {
+      id: '00000000-0000-0000-0000-000000000000',
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: null,
+      raw: 'Bash',
+    });
+    expect(saved.id).toBe('00000000-0000-0000-0000-000000000000');
+    expect(listPermissionRules(db)).toHaveLength(1);
   });
 });

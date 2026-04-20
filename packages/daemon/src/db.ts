@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
@@ -24,6 +25,8 @@ import type {
   SecurityKind,
   SecuritySeverity,
   SecurityAllowlistEntry,
+  PermissionRule,
+  PermissionRuleInput,
 } from '@claude-sentinel/shared';
 
 export const SENTINEL_DIR = join(homedir(), '.claude-sentinel');
@@ -242,6 +245,26 @@ CREATE TABLE IF NOT EXISTS security_allowlist (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sec_allow_lookup ON security_allowlist(match_hash, detector_id);
+
+-- User-configured tool permission rules evaluated by the proxy against
+-- every outbound /v1/messages request (whole-tool denies) and every
+-- inbound tool_use block (sub-command enforcement). Independent of
+-- Claude Code's own ~/.claude/settings.json — this is a second
+-- enforcement layer the user owns from Sentinel's UI. See
+-- packages/daemon/src/security/permissions/ for the evaluator + matchers.
+CREATE TABLE IF NOT EXISTS permission_rules (
+  id          TEXT    PRIMARY KEY,
+  decision    TEXT    NOT NULL CHECK(decision IN ('allow','deny')),
+  tool        TEXT    NOT NULL,
+  pattern     TEXT,
+  raw         TEXT    NOT NULL,
+  note        TEXT,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  priority    INTEGER NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_perm_rules_priority ON permission_rules(priority);
 `;
 
 let _db: Database.Database | null = null;
@@ -2052,4 +2075,114 @@ export function getRecentPlugins(
      LIMIT ?`,
   ).all(accountId, limit) as Array<{ ts: number; name: string; version: string | null; marketplace: string | null }>;
   return rows.map((r) => ({ name: r.name, version: r.version, marketplace: r.marketplace, installedAt: r.ts }));
+}
+
+// ─── Tool permission rules ────────────────────────────────────────────────────
+
+interface DbPermissionRuleRow {
+  id: string;
+  decision: 'allow' | 'deny';
+  tool: string;
+  pattern: string | null;
+  raw: string;
+  note: string | null;
+  enabled: number;
+  priority: number;
+  created_at: number;
+}
+
+function rowToPermissionRule(row: DbPermissionRuleRow): PermissionRule {
+  return {
+    id: row.id,
+    decision: row.decision,
+    tool: row.tool,
+    pattern: row.pattern,
+    raw: row.raw,
+    note: row.note,
+    enabled: row.enabled === 1,
+    priority: row.priority,
+    createdAt: row.created_at,
+  };
+}
+
+/** List every permission rule in evaluation order (priority ASC, created_at ASC).
+ *  Returns the full set — the rule editor typically needs all of them anyway
+ *  and the table stays small (dozens of rows at most). */
+export function listPermissionRules(db: Database.Database): PermissionRule[] {
+  const rows = db
+    .prepare('SELECT * FROM permission_rules ORDER BY priority ASC, created_at ASC')
+    .all() as DbPermissionRuleRow[];
+  return rows.map(rowToPermissionRule);
+}
+
+/** Insert a new rule or update the existing row with matching id. Auto-assigns
+ *  a UUID and a createdAt when creating. Priority defaults to
+ *  `max(existing priorities) + 10` so new rules append without re-ordering.
+ *  Returns the full persisted row. */
+export function upsertPermissionRule(
+  db: Database.Database,
+  input: PermissionRuleInput,
+): PermissionRule {
+  const now = Date.now();
+  if (input.id) {
+    const existing = db
+      .prepare('SELECT * FROM permission_rules WHERE id = ?')
+      .get(input.id) as DbPermissionRuleRow | undefined;
+    if (existing) {
+      const enabled = input.enabled ?? existing.enabled === 1 ? 1 : 0;
+      const priority = input.priority ?? existing.priority;
+      db.prepare(
+        `UPDATE permission_rules
+         SET decision = ?, tool = ?, pattern = ?, raw = ?, note = ?, enabled = ?, priority = ?
+         WHERE id = ?`,
+      ).run(
+        input.decision,
+        input.tool,
+        input.pattern,
+        input.raw,
+        input.note ?? null,
+        enabled,
+        priority,
+        input.id,
+      );
+      const row = db
+        .prepare('SELECT * FROM permission_rules WHERE id = ?')
+        .get(input.id) as DbPermissionRuleRow;
+      return rowToPermissionRule(row);
+    }
+  }
+  // Create path.
+  const id = input.id ?? randomPermissionRuleId();
+  const maxPriority = (db
+    .prepare('SELECT COALESCE(MAX(priority), 0) AS p FROM permission_rules')
+    .get() as { p: number }).p;
+  const priority = input.priority ?? maxPriority + 10;
+  const enabled = (input.enabled ?? true) ? 1 : 0;
+  db.prepare(
+    `INSERT INTO permission_rules (id, decision, tool, pattern, raw, note, enabled, priority, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    input.decision,
+    input.tool,
+    input.pattern,
+    input.raw,
+    input.note ?? null,
+    enabled,
+    priority,
+    now,
+  );
+  const row = db
+    .prepare('SELECT * FROM permission_rules WHERE id = ?')
+    .get(id) as DbPermissionRuleRow;
+  return rowToPermissionRule(row);
+}
+
+export function deletePermissionRule(db: Database.Database, id: string): boolean {
+  const result = db.prepare('DELETE FROM permission_rules WHERE id = ?').run(id);
+  return result.changes > 0;
+}
+
+function randomPermissionRuleId(): string {
+  return randomUUID();
 }

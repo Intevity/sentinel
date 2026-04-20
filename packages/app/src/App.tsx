@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Users, Activity, BarChart3, AlertTriangle, Bell, Shield, ScrollText, Loader2, Settings as SettingsIcon, Repeat } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Users, Activity, BarChart3, AlertTriangle, Bell, Shield, ScrollText, Loader2, Settings as SettingsIcon, Repeat, HelpCircle } from 'lucide-react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import AccountSwitcher from './components/AccountSwitcher.js';
 import AccountColorDot from './components/AccountColorDot.js';
@@ -15,6 +15,9 @@ import PersistenceBanner from './components/PersistenceBanner.js';
 import SettingsPanel from './components/SettingsPanel.js';
 import SecurityPanel from './components/SecurityPanel.js';
 import SecurityEnforcementModal from './components/SecurityEnforcementModal.js';
+import SecuritySetupWizard from './components/SecuritySetupWizard.js';
+import Tour from './components/Tour.js';
+import type { TourStep } from './lib/tourSteps.js';
 import LogsViewer from './components/LogsViewer.js';
 import PendingBlockBanner from './components/PendingBlockBanner.js';
 import Footer from './components/Footer.js';
@@ -22,8 +25,11 @@ import { useAutoResizeWindow } from './hooks/useAutoResizeWindow.js';
 import { useDaemon } from './hooks/useDaemon.js';
 import { useDaemonErrors } from './hooks/useDaemonErrors.js';
 import { useSettings } from './hooks/useSettings.js';
+import { useNativeAlertNotifications } from './hooks/useNotifications.js';
+import { usePendingSiblings } from './hooks/usePendingSiblings.js';
 import { planLabel, planColor } from './lib/plan.js';
 import { DUR, EASE_STD } from './lib/motion.js';
+import { sendToSentinel } from './lib/ipc.js';
 
 type Tab = 'accounts' | 'usage' | 'metrics' | 'overage' | 'notifications' | 'security' | 'logs';
 
@@ -50,6 +56,10 @@ export default function App(): React.ReactElement {
   const { connected, activeAccount, accounts, rateLimitsVersion, overageVersion, probingAccountId, initializing, refetch } = useDaemon();
   const { recentErrors, hasUnseenErrors, markErrorsSeen } = useDaemonErrors();
   const { settings } = useSettings();
+  // Mount the app-global native-notification listener. Must live here (not
+  // in a per-tab component) so banners fire on any tab and while the
+  // window is hidden in the tray.
+  useNativeAlertNotifications();
   const isRoundRobin = settings?.switchingMode === 'round-robin';
   // Picker status props — pulled once here so every tab's AccountViewPicker
   // renders identical status pills (Active / Excluded) driven by the same
@@ -80,6 +90,104 @@ export default function App(): React.ReactElement {
       setEnforcementModalOpen(true);
     }
   }, [settings?.securityScanEnabled, settings?.securityEnforcementMode]);
+
+  // First-run tour. Opens when the user has never completed a tour
+  // (settings.tourCompleted === false) and no other modal is up. The user
+  // can replay the tour any time via the help icon in the header; replay
+  // flips `tourForceOpen` on without needing to reset `tourCompleted`.
+  // Tour has precedence over the security-setup wizard — both could
+  // otherwise fire simultaneously on users who already have accounts
+  // enrolled, which is confusing.
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourForceOpen, setTourForceOpen] = useState(false);
+  // Remembers that the user closed the tour in this session, so the
+  // effect below doesn't re-open it while we wait for the
+  // `settings_changed` broadcast carrying `tourCompleted: true`. Without
+  // this, clicking Done on the last step bounces the tour back to step 1
+  // for a frame before the settings round-trip completes.
+  const tourClosedThisSession = useRef(false);
+  useEffect(() => {
+    if (!settings) return;
+    if (tourOpen) return;
+    if (settingsOpen || enforcementModalOpen) return;
+    if (tourForceOpen) {
+      tourClosedThisSession.current = false;
+      setTourOpen(true);
+      return;
+    }
+    if (tourClosedThisSession.current) return;
+    if (!connected) return;
+    if (settings.tourCompleted) return;
+    setTourOpen(true);
+  }, [
+    settings?.tourCompleted,
+    tourForceOpen,
+    tourOpen,
+    connected,
+    settingsOpen,
+    enforcementModalOpen,
+    settings,
+  ]);
+
+  // First-run security setup wizard. Opens once per install (tracked via
+  // settings.securitySetupCompleted) after the user has added at least one
+  // account and any sibling-enrollment walk has finished. The wizard
+  // supersedes the enforcement modal — when the user applies a preset we
+  // write a non-null `securityEnforcementMode`, which prevents the
+  // enforcement modal's trigger effect above from firing.
+  //
+  // Gated behind tour completion: a user seeing the app for the first
+  // time should finish the tour before being asked to pick a risk
+  // profile — otherwise both modals fight for the screen and the wizard
+  // wins the race, hiding the tour.
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardForceOpen, setWizardForceOpen] = useState(false);
+  const { pending: siblingsPending } = usePendingSiblings();
+  // Mirror of `tourClosedThisSession` for the wizard: once the user
+  // closes it (Apply / Skip / X), don't re-open while the
+  // `securitySetupCompleted: true` broadcast is still in flight.
+  const wizardClosedThisSession = useRef(false);
+  useEffect(() => {
+    if (!settings) return;
+    if (wizardOpen) return;
+    if (wizardForceOpen) {
+      wizardClosedThisSession.current = false;
+      setWizardOpen(true);
+      setWizardForceOpen(false);
+      return;
+    }
+    if (wizardClosedThisSession.current) return;
+    if (settings.securitySetupCompleted) return;
+    if (accounts.length === 0) return;
+    if (siblingsPending) return;
+    // Defer the wizard until the tour is finished. `tourCompleted`
+    // flips to true inside `finishTour` as soon as the user skips or
+    // completes the last step, so this effect re-runs naturally and
+    // the wizard opens on the very next tick.
+    if (!settings.tourCompleted && !tourClosedThisSession.current) return;
+    if (tourOpen) return;
+    setWizardOpen(true);
+  }, [
+    settings?.securitySetupCompleted,
+    settings?.tourCompleted,
+    accounts.length,
+    siblingsPending,
+    wizardOpen,
+    wizardForceOpen,
+    tourOpen,
+    settings,
+  ]);
+
+  const finishTour = (): void => {
+    tourClosedThisSession.current = true;
+    setTourOpen(false);
+    setTourForceOpen(false);
+    void sendToSentinel({ type: 'update_settings', settings: { tourCompleted: true } });
+  };
+
+  const handleTourStepEnter = (step: TourStep): void => {
+    if (step.tab) setActiveTab(step.tab);
+  };
 
   // Whenever the active account changes (manual switch, OAuth completion),
   // snap every per-tab picker back to the active account (or pool for Usage
@@ -126,6 +234,15 @@ export default function App(): React.ReactElement {
           <span className="text-[15px] font-semibold text-black dark:text-white tracking-tight">
             Sentinel
           </span>
+          <button
+            onClick={() => setTourForceOpen(true)}
+            className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5 flex-shrink-0"
+            title="Replay the tour"
+            aria-label="Replay the tour"
+            data-tour-id="tour-replay"
+          >
+            <HelpCircle size={13} strokeWidth={2.2} />
+          </button>
         </div>
 
         {/* Flex-1 + min-w-0 lets this cluster take the remaining width and
@@ -182,14 +299,44 @@ export default function App(): React.ReactElement {
       </header>
 
       <AnimatePresence>
-        {settingsOpen && <SettingsPanel onClose={() => { setSettingsOpen(false); setSettingsScrollTarget(null); }} measureRef={overlayRef} initialScrollTarget={settingsScrollTarget} />}
+        {settingsOpen && (
+          <SettingsPanel
+            onClose={() => {
+              setSettingsOpen(false);
+              setSettingsScrollTarget(null);
+            }}
+            measureRef={overlayRef}
+            initialScrollTarget={settingsScrollTarget}
+            onRunSetupWizard={() => {
+              setSettingsOpen(false);
+              setSettingsScrollTarget(null);
+              setWizardForceOpen(true);
+            }}
+          />
+        )}
       </AnimatePresence>
 
-      {enforcementModalOpen && settings && (
+      {enforcementModalOpen && settings && !wizardOpen && (
         <SecurityEnforcementModal
           initial={settings.securityEnforcementMode}
           onClose={() => setEnforcementModalOpen(false)}
         />
+      )}
+
+      {wizardOpen && (
+        <SecuritySetupWizard
+          onClose={() => {
+            wizardClosedThisSession.current = true;
+            setWizardOpen(false);
+            // Applying a preset also writes a real enforcement mode, so
+            // dismiss the older enforcement modal once the wizard closes.
+            setEnforcementModalOpen(false);
+          }}
+        />
+      )}
+
+      {tourOpen && (
+        <Tour onFinish={finishTour} onStepEnter={handleTourStepEnter} />
       )}
 
       {/* ── Startup splash: shown until the first successful IPC round-trip,
@@ -225,6 +372,7 @@ export default function App(): React.ReactElement {
                   <button
                     key={id}
                     onClick={() => setActiveTab(id)}
+                    data-tour-id={`tab-${id}`}
                     className={`relative flex-1 flex items-center justify-center gap-1 py-1.5 rounded-[9px] text-[11px] font-medium transition-colors duration-150 ${
                       active
                         ? 'text-black dark:text-white'

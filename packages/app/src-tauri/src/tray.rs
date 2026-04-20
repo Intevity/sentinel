@@ -95,7 +95,18 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .tooltip("Claude Sentinel")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "quit" => {
-                app.exit(0);
+                // Match the HeaderMenu "Quit Sentinel" path: ask the daemon to
+                // shut itself down via IPC before exiting the app. Without this
+                // the daemon is orphaned on tray-quit and the two quit paths
+                // leave the system in different states.
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = ipc::send_internal(
+                        serde_json::json!({ "type": "shutdown_daemon" }),
+                    )
+                    .await;
+                    handle.exit(0);
+                });
             }
             "open" => {
                 if let Some(window) = app.get_webview_window("main") {

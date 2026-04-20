@@ -33,7 +33,13 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     securityEventRetentionDays: 30,
     securityBlockHoldEnabled: false,
     securityApproveHoldSec: 60,
+    toolPermissionsEnabled: false,
+    toolPermissionDefaultAction: 'allow',
+    toolPermissionSkipInAutoMode: true,
+    toolPermissionAutoModeActive: false,
     logLevel: 'info',
+    securitySetupCompleted: false,
+    tourCompleted: false,
     ...overrides,
   };
 }

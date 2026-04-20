@@ -37,41 +37,22 @@ interface UseNotificationsResult {
 }
 
 /**
- * Fetch the notification history from the daemon, stay in sync with live
- * triggers (`alert_triggered`, overage events), and fire a native OS
- * notification for each alert the user receives while the app is running.
+ * App-global listener that fires native OS notifications (and plays the
+ * configured sound) for daemon alert events. Must be mounted at App top
+ * level — not inside a per-tab component — so banners still fire when
+ * the user is on any tab or has the window hidden in the tray.
  *
  * Bootstraps OS notification permission on mount. If the user denies,
- * native popups won't appear but in-app history still works.
+ * native popups won't appear but in-app history (via `useNotifications`
+ * below) still works.
  */
-export function useNotifications(): UseNotificationsResult {
-  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export function useNativeAlertNotifications(): void {
   const { settings } = useSettings();
   const soundName = settings?.alertSoundName ?? null;
   const securityThreshold: SecurityOsNotifyThreshold = settings?.securityOsNotifyThreshold ?? 'high';
   const overageOsNotify = settings?.overageOsNotify ?? true;
 
-  const refetch = useCallback(async () => {
-    try {
-      const res = await sendToSentinel<NotificationRecord[]>({ type: 'get_notifications' });
-      if (res.success) {
-        setNotifications(res.data ?? []);
-        setError(null);
-      } else {
-        setError(res.error ?? 'Failed to load notifications');
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    void refetch();
-
     // Request permission once per mount. This is a no-op if already granted.
     void (async () => {
       try {
@@ -93,7 +74,6 @@ export function useNotifications(): UseNotificationsResult {
           ? `Round-robin pool has used ${pct}% on average across its 5-hour window.`
           : `Active account has used ${pct}% of its 5-hour window.`;
         void fireNativeStandard(headline, body, soundName);
-        void refetch();
       } else if (msg.type === 'overage_entered') {
         if (overageOsNotify) {
           const short = msg.accountId.slice(0, 8);
@@ -103,7 +83,6 @@ export function useNotifications(): UseNotificationsResult {
             soundName,
           );
         }
-        void refetch();
       } else if (msg.type === 'overage_disabled') {
         if (overageOsNotify) {
           const short = msg.accountId.slice(0, 8);
@@ -114,9 +93,6 @@ export function useNotifications(): UseNotificationsResult {
             soundName,
           );
         }
-        void refetch();
-      } else if (msg.type === 'account_switched') {
-        void refetch();
       } else if (msg.type === 'security_event_detected') {
         if (shouldFireSecurityOsNotification(msg.severity, securityThreshold)) {
           const title = msg.blocked
@@ -125,7 +101,6 @@ export function useNotifications(): UseNotificationsResult {
           const body = `${msg.severity.toUpperCase()} severity · ${msg.kind}`;
           void fireNativeSecurity(title, body, soundName);
         }
-        void refetch();
       } else if (msg.type === 'security_block_pending') {
         // Security-category notifications route through osascript so
         // they fire even when Sentinel is frontmost (macOS suppresses
@@ -142,7 +117,54 @@ export function useNotifications(): UseNotificationsResult {
     }).then((fn) => { unlisten = fn; }).catch(() => undefined);
 
     return () => { unlisten?.(); };
-  }, [refetch, soundName, securityThreshold, overageOsNotify]);
+  }, [soundName, securityThreshold, overageOsNotify]);
+}
+
+/**
+ * Fetch the notification history from the daemon and stay in sync with
+ * live events that add rows. Safe to mount/unmount with a tab — the
+ * native OS banners are fired by `useNativeAlertNotifications` at the
+ * app root, not here.
+ */
+export function useNotifications(): UseNotificationsResult {
+  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refetch = useCallback(async () => {
+    try {
+      const res = await sendToSentinel<NotificationRecord[]>({ type: 'get_notifications' });
+      if (res.success) {
+        setNotifications(res.data ?? []);
+        setError(null);
+      } else {
+        setError(res.error ?? 'Failed to load notifications');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refetch();
+
+    let unlisten: (() => void) | null = null;
+    onDaemonMessage((msg) => {
+      if (
+        msg.type === 'alert_triggered' ||
+        msg.type === 'overage_entered' ||
+        msg.type === 'overage_disabled' ||
+        msg.type === 'account_switched' ||
+        msg.type === 'security_event_detected'
+      ) {
+        void refetch();
+      }
+    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
+
+    return () => { unlisten?.(); };
+  }, [refetch]);
 
   return { notifications, loading, error, refetch };
 }

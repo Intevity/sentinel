@@ -8,6 +8,7 @@ import type {
   SecurityEnforcementMode,
   SecurityOsNotifyThreshold,
   LogLevel,
+  PermissionDecision,
 } from '@claude-sentinel/shared';
 
 export const SETTINGS_PATH = join(homedir(), '.claude-sentinel', 'settings.json');
@@ -36,7 +37,13 @@ export const DEFAULT_SETTINGS: Settings = {
   securityEventRetentionDays: 30,
   securityBlockHoldEnabled: true,
   securityApproveHoldSec: 60,
+  toolPermissionsEnabled: false,
+  toolPermissionDefaultAction: 'allow',
+  toolPermissionSkipInAutoMode: true,
+  toolPermissionAutoModeActive: false,
   logLevel: 'info',
+  securitySetupCompleted: false,
+  tourCompleted: false,
 };
 
 const VALID_MODES: readonly SwitchingMode[] = ['off', 'round-robin'];
@@ -53,6 +60,7 @@ const VALID_NOTIFY_THRESHOLDS: readonly SecurityOsNotifyThreshold[] = [
   'low',
 ];
 const VALID_LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
+const VALID_PERMISSION_DECISIONS: readonly PermissionDecision[] = ['allow', 'deny'];
 
 /**
  * Coerce an arbitrary value into a valid Settings object, falling back to
@@ -172,11 +180,32 @@ function coerce(raw: unknown): Settings {
     const n = Math.floor(obj['securityApproveHoldSec']);
     if (n >= 10 && n <= 300) next.securityApproveHoldSec = n;
   }
+  if (typeof obj['toolPermissionsEnabled'] === 'boolean') {
+    next.toolPermissionsEnabled = obj['toolPermissionsEnabled'];
+  }
+  if (
+    typeof obj['toolPermissionDefaultAction'] === 'string' &&
+    VALID_PERMISSION_DECISIONS.includes(obj['toolPermissionDefaultAction'] as PermissionDecision)
+  ) {
+    next.toolPermissionDefaultAction = obj['toolPermissionDefaultAction'] as PermissionDecision;
+  }
+  if (typeof obj['toolPermissionSkipInAutoMode'] === 'boolean') {
+    next.toolPermissionSkipInAutoMode = obj['toolPermissionSkipInAutoMode'];
+  }
+  if (typeof obj['toolPermissionAutoModeActive'] === 'boolean') {
+    next.toolPermissionAutoModeActive = obj['toolPermissionAutoModeActive'];
+  }
   if (
     typeof obj['logLevel'] === 'string' &&
     VALID_LOG_LEVELS.includes(obj['logLevel'] as LogLevel)
   ) {
     next.logLevel = obj['logLevel'] as LogLevel;
+  }
+  if (typeof obj['securitySetupCompleted'] === 'boolean') {
+    next.securitySetupCompleted = obj['securitySetupCompleted'];
+  }
+  if (typeof obj['tourCompleted'] === 'boolean') {
+    next.tourCompleted = obj['tourCompleted'];
   }
   return next;
 }

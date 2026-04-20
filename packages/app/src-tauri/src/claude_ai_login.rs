@@ -11,19 +11,10 @@
 /// keeps the implementation portable across macOS / Windows / Linux.
 use serde::Deserialize;
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::Mutex;
-
-/// Counter for unique popup labels. `window.open` can fire more than once
-/// per login session (GSI SDK v3 creates one popup per `requestCode()`
-/// call), so we can't reuse a fixed label — Tauri rejects duplicate
-/// labels and the second window.open returns an error. Monotonic counter
-/// keeps every label unique for the app lifetime. Wraps the glob pattern
-/// in `capabilities/claude-ai-login.json` (`claude-ai-login-popup-*`).
-static POPUP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// In-progress login state. Stores the Sentinel account id so the completion
 /// callback can tie the captured cookie to the right account. Only one
@@ -33,7 +24,6 @@ static PENDING: LazyLock<Mutex<Option<PendingLogin>>> = LazyLock::new(|| Mutex::
 
 struct PendingLogin {
     account_id: String,
-    window_label: String,
 }
 
 /// Label used for the login webview. One-at-a-time, so a fixed label is
@@ -288,17 +278,12 @@ const INIT_SCRIPT: &str = r#"
 })();
 "#;
 
-/// Init script for the popup webview spawned by `on_new_window`. Does not
-/// modify Google's page behavior; it only forwards console output and
-/// logs the popup's `window.opener` state on each navigation so we can
-/// confirm WebKit wired up the native popup relationship correctly.
-/// If `window.opener` is null in this log, wry/WebKit didn't honor the
-/// `NewWindowResponse::Create` as a true popup and we need a different
-/// approach (e.g. recreating the webview using the passed configuration
-/// from the UIDelegate callback). If it's an object with origin
-/// https://claude.ai, the opener relationship is good and Google's SDK
-/// should postMessage through it normally.
-const POPUP_INIT_SCRIPT: &str = r#"
+// Popup init script was used during the Google-OAuth popup investigation
+// but is no longer wired up — removed along with its `on_new_window`
+// handler. Keeping the main LOGIN_INIT_SCRIPT (above) is sufficient since
+// claude.ai's current OAuth flow stays in-window.
+#[allow(dead_code)]
+const _UNUSED_POPUP_INIT_SCRIPT: &str = r#"
 (function() {
   // Same event-based log forwarding as the main webview. Lets us see
   // Google's console output + any errors that fire in the popup.
@@ -411,10 +396,7 @@ pub async fn start_claude_ai_login(app: AppHandle, account_id: String) -> Result
         wait_for_window_gone(&app, LOGIN_WINDOW_LABEL);
     }
 
-    *pending = Some(PendingLogin {
-        account_id,
-        window_label: LOGIN_WINDOW_LABEL.to_string(),
-    });
+    *pending = Some(PendingLogin { account_id });
 
     // Build the login webview. Reasonable size for an auth flow; the user
     // can resize. `data_directory` is left as default so cookies persist

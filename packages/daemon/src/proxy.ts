@@ -7,6 +7,8 @@ import { insertOverageEvent, insertNotification } from './db.js';
 import type { IpcServer } from './ipc.js';
 import type { RateLimitStore } from './rate-limit-store.js';
 import type { SecurityScanner } from './security/scanner.js';
+import type { PermissionsEnforcer } from './security/permissions/enforcer.js';
+import { extractSessionInfo } from './security/permissions/enforcer.js';
 
 export const DAEMON_PORT = 47284;
 export const ANTHROPIC_HOST = 'api.anthropic.com';
@@ -64,6 +66,11 @@ interface ProxyOptions {
    *  blocked) before upstream forwarding, and every response is tapped to
    *  surface risky tool_use proposals. No-op when settings disable it. */
   securityScanner?: SecurityScanner;
+  /** When set, every outbound /v1/messages POST has its tools[] stripped
+   *  of whole-tool deny rules, and every response is intercepted for
+   *  sub-command level deny enforcement. No-op when settings disable it
+   *  via `toolPermissionsEnabled`. */
+  permissionsEnforcer?: PermissionsEnforcer;
 }
 
 // Minimum milliseconds between rate_limits_updated broadcasts per account
@@ -175,7 +182,7 @@ export function createProxyServer(
   const activeAccountId = opts.activeAccountId;
   const rateLimitStore = opts.rateLimitStore;
   const tokenProvider = opts.tokenProvider;
-  const { ipcServer, securityScanner } = opts;
+  const { ipcServer, securityScanner, permissionsEnforcer } = opts;
   const getPausedAccountIds = opts.getPausedAccountIds ?? (() => new Set<string>());
   const getSessionResetAt = opts.getSessionResetAt ?? (() => null);
 
@@ -269,7 +276,7 @@ export function createProxyServer(
     }
 
     if (ANTHROPIC_PATHS.some((p) => url.startsWith(p))) {
-      proxyToAnthropic(req, res, machine, rateLimitStore, perRequestAccountId, ipcServer, lastBroadcast, securityScanner).catch((err) => {
+      proxyToAnthropic(req, res, machine, rateLimitStore, perRequestAccountId, ipcServer, lastBroadcast, securityScanner, permissionsEnforcer).catch((err) => {
         console.error('[Proxy] Proxy error:', err);
         res.writeHead(502);
         res.end();
@@ -302,8 +309,9 @@ async function proxyToAnthropic(
   ipcServer?: IpcServer,
   lastBroadcast?: Map<string, number>,
   securityScanner?: SecurityScanner,
+  permissionsEnforcer?: PermissionsEnforcer,
 ): Promise<void> {
-  const body = await readBody(req);
+  let body = await readBody(req);
 
   // Extract account UUID from request headers for overage tracking
   const accountId =
@@ -312,6 +320,52 @@ async function proxyToAnthropic(
     'default';
 
   const rlKey = attributionAccountId ?? accountId;
+
+  // Auto-mode observation — always runs so the UI's "Claude Code is in auto
+  // mode" indicator stays live even when Sentinel's own rule enforcement is
+  // turned off. Scoped to /v1/messages POST (actual conversation requests),
+  // not count_tokens or probes.
+  //
+  // We extract the session identifier from `metadata.user_id` in the body so
+  // the enforcer can track one entry per Claude Code session — critical when
+  // the user runs multiple sessions in parallel (e.g. 1 auto + 4 normal).
+  if (
+    permissionsEnforcer &&
+    req.method === 'POST' &&
+    req.url?.startsWith('/v1/messages') &&
+    !req.url.includes('count_tokens') &&
+    !String(req.headers['user-agent'] ?? '').includes('sentinel-probe')
+  ) {
+    const sessionInfo = extractSessionInfo(body);
+    permissionsEnforcer.observeRequest(req.headers, sessionInfo);
+  }
+
+  // Tool permission enforcement — request side. Whole-tool deny rules strip
+  // the matching `tools[]` entry from the body so the model never sees it.
+  // Sub-command rules are handled at response time by the SSE interceptor.
+  //
+  // Auto mode is detected two ways (either skips enforcement when the user
+  // has `toolPermissionSkipInAutoMode` on):
+  //   1. Manual toggle in Settings
+  //   2. `anthropic-beta: ...afk-mode-<date>...` header on this request
+  // The header check is per-request so Claude Code sessions with different
+  // modes (run in parallel) each get the right treatment.
+  if (
+    permissionsEnforcer?.isEnabled() &&
+    !permissionsEnforcer.isSkippedForAutoMode(req.headers) &&
+    req.method === 'POST' &&
+    req.url?.startsWith('/v1/messages')
+  ) {
+    const rewritten = permissionsEnforcer.stripDeniedTools(body, rlKey, req.headers);
+    if (rewritten !== body) {
+      body = rewritten;
+      // Keep Content-Length honest so Node doesn't truncate or stall.
+      req.headers['content-length'] = String(body.length);
+    }
+    // The SSE interceptor can't decompress gzip, so force identity encoding
+    // from upstream when enforcement is live.
+    delete req.headers['accept-encoding'];
+  }
 
   // Security scan — runs against the outbound JSON before we forward. In
   // block-mode, a finding at or above the severity floor triggers one of:
@@ -425,7 +479,31 @@ async function proxyToAnthropic(
           // Gzipped responses aren't scanned in v1 — keep parity honest.
           tap.destroy();
         }
-        if (tapActive && tap !== null) {
+        // Permission interceptor — rewrites denied tool_use blocks in place.
+        // Only installed for SSE /v1/messages responses; gzip is ruled out
+        // at the request layer (accept-encoding was stripped).
+        const isSse = !encoding && req.url?.startsWith('/v1/messages') && req.method === 'POST';
+        const interceptor = isSse
+          ? permissionsEnforcer?.createInterceptor(res, rlKey, req.headers) ?? null
+          : null;
+
+        if (interceptor !== null) {
+          proxyRes.on('data', (chunk: Buffer) => {
+            interceptor.push(chunk);
+            if (tapActive && tap !== null) tap.push(chunk);
+          });
+          proxyRes.on('end', () => {
+            interceptor.flush();
+            res.end();
+            if (tapActive && tap !== null) tap.flush();
+            resolve();
+          });
+          proxyRes.on('error', (err) => {
+            interceptor.destroy();
+            if (tap !== null) tap.destroy();
+            reject(err);
+          });
+        } else if (tapActive && tap !== null) {
           proxyRes.on('data', (chunk: Buffer) => {
             res.write(chunk);
             tap.push(chunk);

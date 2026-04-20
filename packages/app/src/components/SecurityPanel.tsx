@@ -1,8 +1,11 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { Shield, ShieldAlert, ShieldX, Check, CheckCheck, Trash2, ShieldOff, FolderOpen, Terminal, MessageSquare, Settings2, Info } from 'lucide-react';
-import type { SecurityEvent, SecuritySeverity, SecurityKind } from '@claude-sentinel/shared';
+import { Shield, ShieldAlert, ShieldX, Check, CheckCheck, Trash2, ShieldOff, FolderOpen, Terminal, MessageSquare, Settings2, Info, ChevronDown, ChevronRight, Zap } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import type { SecurityEvent, SecuritySeverity, SecurityKind, AutoModeStatus } from '@claude-sentinel/shared';
 import { useSecurityEvents } from '../hooks/useSecurityEvents.js';
 import { useSettings } from '../hooks/useSettings.js';
+import { useAutoModeStatus } from '../hooks/useAutoModeStatus.js';
+import { QuickToggle, QuickSegmented, QuickChipToggle } from './settings/primitives.js';
 
 /** Inline two-click confirm: first click transitions into `pending`
  *  state which reverts after `timeoutMs`. Second click while pending
@@ -58,6 +61,7 @@ const KIND_LABEL: Record<SecurityKind, string> = {
   scan_truncated: 'Scan Truncated',
   scan_skipped_encoding: 'Scan Skipped',
   scan_deferred_oversized: 'Scan Deferred',
+  tool_permission_blocked: 'Tool Blocked',
 };
 
 function formatDate(ts: number): string {
@@ -106,10 +110,13 @@ type SeverityFilter = 'all' | SecuritySeverity;
 type KindFilter = 'all' | SecurityKind;
 
 export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: SecurityPanelProps): React.ReactElement {
-  const { settings } = useSettings();
+  const { settings, update } = useSettings();
+  const autoMode = useAutoModeStatus();
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
   const [kindFilter, setKindFilter] = useState<KindFilter>('all');
   const [includeWeakSignals, setIncludeWeakSignals] = useState(false);
+  const [search, setSearch] = useState('');
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const { events, loading, error, acknowledge, acknowledgeAll, clearAll, addToAllowlist } = useSecurityEvents({
@@ -123,18 +130,36 @@ export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: 
   // React error #300 ("Rendered fewer hooks than expected") fires if a
   // render path skips a hook that a previous render called.
   const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
     return events.filter((e) => {
       if (severityFilter !== 'all' && e.severity !== severityFilter) return false;
       if (kindFilter !== 'all' && e.kind !== kindFilter) return false;
+      if (q) {
+        const hay = [e.title, e.reason, e.matchMask ?? '', e.sourceHint ?? '']
+          .join(' ')
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
       return true;
     });
-  }, [events, severityFilter, kindFilter]);
+  }, [events, severityFilter, kindFilter, search]);
 
   const kindsInView = useMemo(() => {
     const s = new Set<SecurityKind>();
     for (const e of events) s.add(e.kind);
     return Array.from(s);
   }, [events]);
+
+  // One-line chip shown next to "Filters" when collapsed so the user can see
+  // what's narrowing the list without needing to expand.
+  const activeFilterSummary = useMemo(() => {
+    const parts: string[] = [];
+    if (severityFilter !== 'all') parts.push(severityFilter.toUpperCase());
+    if (kindFilter !== 'all') parts.push(KIND_LABEL[kindFilter as SecurityKind]);
+    if (search.trim()) parts.push(`"${search.trim()}"`);
+    if (includeWeakSignals) parts.push('incl. weak');
+    return parts.join(' · ');
+  }, [severityFilter, kindFilter, search, includeWeakSignals]);
 
   // Disabled-state early return. If the user has turned scanning off (or
   // flipped the master toggle during a session), give them a clear cue
@@ -153,13 +178,21 @@ export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: 
             Outbound secrets, risky tool calls, and injection heuristics
             are not being checked. Enable scanning to start catching issues.
           </p>
-          <button
-            onClick={() => onRequestOpenSettings?.('security-enable-toggle')}
-            disabled={!onRequestOpenSettings}
-            className="mt-3 text-[12px] font-semibold px-3 py-1.5 rounded-full bg-ios-blue text-white hover:bg-ios-blue/90 active:scale-95 transition-all disabled:opacity-40"
-          >
-            Enable in Settings →
-          </button>
+          <div className="mt-3 flex items-center justify-center gap-2">
+            <button
+              onClick={() => void update({ securityScanEnabled: true }).catch(() => undefined)}
+              className="text-[12px] font-semibold px-3 py-1.5 rounded-full bg-ios-blue text-white hover:bg-ios-blue/90 active:scale-95 transition-all"
+            >
+              Turn on scanning
+            </button>
+            <button
+              onClick={() => onRequestOpenSettings?.('security-enable-toggle')}
+              disabled={!onRequestOpenSettings}
+              className="text-[12px] font-medium text-ios-blue hover:opacity-80 transition-opacity active:scale-95 disabled:opacity-40"
+            >
+              Configure…
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -169,6 +202,8 @@ export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: 
 
   return (
     <div className="space-y-2 pt-1">
+      <AutoModeBanner status={autoMode} skipInAutoMode={settings?.toolPermissionSkipInAutoMode ?? true} />
+
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <span className="section-label">Security</span>
@@ -177,6 +212,12 @@ export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: 
               {unreadCount}
             </span>
           )}
+          <span
+            className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors cursor-help"
+            title="Sentinel stores redacted fingerprints of findings, never the original secret text."
+          >
+            <Info size={11} strokeWidth={2.2} />
+          </span>
         </div>
         <div className="flex items-center gap-2">
           {unreadCount > 0 && (
@@ -204,63 +245,140 @@ export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: 
         </div>
       </div>
 
-      <p className="text-[10px] text-[#8E8E93] leading-snug mb-2">
-        Sentinel stores redacted fingerprints of findings, never the original secret text.
-      </p>
-
-      <div className="flex flex-wrap gap-1 mb-2">
-        {(['all', 'high', 'medium', 'low'] as const).map((s) => (
-          <button
-            key={s}
-            onClick={() => setSeverityFilter(s)}
-            className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
-              severityFilter === s
-                ? 'bg-ios-blue text-white'
-                : 'bg-[#8E8E93]/10 text-[#8E8E93] hover:bg-[#8E8E93]/20'
-            }`}
-          >
-            {s === 'all' ? 'All' : s.toUpperCase()}
-          </button>
-        ))}
-      </div>
-
-      {kindsInView.length > 1 && (
-        <div className="flex flex-wrap gap-1 mb-2">
-          <button
-            onClick={() => setKindFilter('all')}
-            className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
-              kindFilter === 'all'
-                ? 'bg-ios-blue text-white'
-                : 'bg-[#8E8E93]/10 text-[#8E8E93]'
-            }`}
-          >
-            All Kinds
-          </button>
-          {kindsInView.map((k) => (
-            <button
-              key={k}
-              onClick={() => setKindFilter(k)}
-              className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
-                kindFilter === k
-                  ? 'bg-ios-blue text-white'
-                  : 'bg-[#8E8E93]/10 text-[#8E8E93]'
-              }`}
-            >
-              {KIND_LABEL[k]}
-            </button>
-          ))}
+      {/* Quick-access strip — always visible so common settings don't require
+          opening Settings. The master "Scan" pill is always shown (so the
+          user always has a one-click path to re-enable); enforcement +
+          categories are gated behind `securityScanEnabled` to avoid
+          offering no-op toggles. Writes flow through useSettings().update,
+          exactly the same path as the full SettingsPanel controls. */}
+      {settings && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+          <QuickToggle
+            label="Scan"
+            checked={settings.securityScanEnabled}
+            onChange={(v) => void update({ securityScanEnabled: v }).catch(() => undefined)}
+            title={settings.securityScanEnabled ? 'Security scanning is on' : 'Security scanning is off'}
+          />
+          {settings.securityScanEnabled && (
+            <>
+              <QuickSegmented
+                ariaLabel="Enforcement mode"
+                value={(settings.securityEnforcementMode ?? 'observe') as 'observe' | 'block_high' | 'block_medium_high'}
+                onChange={(v) => void update({ securityEnforcementMode: v }).catch(() => undefined)}
+                options={[
+                  { value: 'observe',           label: 'Observe',  title: 'Record findings; never block' },
+                  { value: 'block_high',        label: 'HIGH',     title: 'Block only HIGH-severity findings' },
+                  { value: 'block_medium_high', label: 'MED+HIGH', title: 'Block MEDIUM and HIGH findings' },
+                ]}
+              />
+              <span className="text-[10px] text-[#8E8E93]">·</span>
+              <QuickChipToggle
+                label="Secrets"
+                active={settings.securityScanSecrets}
+                onChange={(v) => void update({ securityScanSecrets: v }).catch(() => undefined)}
+                title="Scan for API keys, tokens, private keys"
+              />
+              <QuickChipToggle
+                label="Injection"
+                active={settings.securityScanInjection}
+                onChange={(v) => void update({ securityScanInjection: v }).catch(() => undefined)}
+                title="Heuristic prompt-injection detection"
+              />
+              <QuickChipToggle
+                label="Tool-use"
+                active={settings.securityScanToolUse}
+                onChange={(v) => void update({ securityScanToolUse: v }).catch(() => undefined)}
+                title="Inspect proposed Bash / Write / WebFetch tool calls"
+              />
+            </>
+          )}
         </div>
       )}
 
-      <label className="flex items-center gap-2 text-[11px] text-[#8E8E93] mb-2">
-        <input
-          type="checkbox"
-          checked={includeWeakSignals}
-          onChange={(e) => setIncludeWeakSignals(e.target.checked)}
-          className="w-3 h-3"
-        />
-        Show weak signals (confidence &lt; 0.7)
-      </label>
+      {/* Collapsible filter section. Mirrors the Logs tab pattern: a chevron
+          toggle, an inline summary showing active filters, and the full
+          filter controls revealed on expand. */}
+      <div className="mb-2">
+        <button
+          onClick={() => setFiltersOpen((v) => !v)}
+          className="flex items-center gap-1 text-[11px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-95"
+          title={filtersOpen ? 'Hide filters' : 'Show filters'}
+          aria-expanded={filtersOpen}
+        >
+          {filtersOpen
+            ? <ChevronDown size={11} strokeWidth={2.5} />
+            : <ChevronRight size={11} strokeWidth={2.5} />}
+          <span>Filters</span>
+          {activeFilterSummary && (
+            <span className="text-[10px] text-ios-blue">· {activeFilterSummary}</span>
+          )}
+        </button>
+        {filtersOpen && (
+          <div className="mt-2 space-y-2">
+            <div className="flex flex-wrap gap-1">
+              {(['all', 'high', 'medium', 'low'] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSeverityFilter(s)}
+                  className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
+                    severityFilter === s
+                      ? 'bg-ios-blue text-white'
+                      : 'bg-[#8E8E93]/10 text-[#8E8E93] hover:bg-[#8E8E93]/20'
+                  }`}
+                >
+                  {s === 'all' ? 'All' : s.toUpperCase()}
+                </button>
+              ))}
+            </div>
+
+            {kindsInView.length > 1 && (
+              <div className="flex flex-wrap gap-1">
+                <button
+                  onClick={() => setKindFilter('all')}
+                  className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
+                    kindFilter === 'all'
+                      ? 'bg-ios-blue text-white'
+                      : 'bg-[#8E8E93]/10 text-[#8E8E93] hover:bg-[#8E8E93]/20'
+                  }`}
+                >
+                  All Kinds
+                </button>
+                {kindsInView.map((k) => (
+                  <button
+                    key={k}
+                    onClick={() => setKindFilter(k)}
+                    className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
+                      kindFilter === k
+                        ? 'bg-ios-blue text-white'
+                        : 'bg-[#8E8E93]/10 text-[#8E8E93] hover:bg-[#8E8E93]/20'
+                    }`}
+                  >
+                    {KIND_LABEL[k]}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <input
+              type="text"
+              placeholder="Search titles, reasons, sources…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full text-[11px] bg-[#8E8E93]/10 text-black dark:text-white rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ios-blue"
+            />
+
+            <label className="flex items-center gap-2 text-[11px] text-[#8E8E93]">
+              <input
+                type="checkbox"
+                checked={includeWeakSignals}
+                onChange={(e) => setIncludeWeakSignals(e.target.checked)}
+                className="w-3 h-3 accent-ios-blue"
+              />
+              Show weak signals (confidence &lt; 0.7)
+            </label>
+          </div>
+        )}
+      </div>
 
       {error && (
         <div className="glass-card px-3 py-2 text-[11px] text-ios-red">{error}</div>
@@ -288,6 +406,200 @@ export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: 
         </div>
       )}
     </div>
+  );
+}
+
+function formatAgo(ts: number, now: number = Date.now()): string {
+  const seconds = Math.max(0, Math.round((now - ts) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h ago`;
+}
+
+function buildBannerCopy(
+  status: AutoModeStatus,
+  skipInAutoMode: boolean,
+): { headline: string; meta: string } {
+  const { activeSessions, autoModeSessions, source } = status;
+  const sessionsLabel = (n: number): string => `${n} session${n === 1 ? '' : 's'}`;
+
+  // When enforcement is NOT being skipped, the banner is informational: we
+  // detected auto mode but Sentinel is still gating tool calls. Headline +
+  // meta both reflect that.
+  if (!skipInAutoMode) {
+    if (source === 'manual' && autoModeSessions === 0) {
+      return {
+        headline: 'Auto mode · manual override',
+        meta: activeSessions > 0 ? `${sessionsLabel(activeSessions)} tracked · still enforcing` : 'Still enforcing',
+      };
+    }
+    if (autoModeSessions > 0 && autoModeSessions < activeSessions) {
+      return {
+        headline: `Auto mode detected · ${autoModeSessions} of ${activeSessions} sessions`,
+        meta: 'Rules still enforced on every session',
+      };
+    }
+    if (autoModeSessions === 1 && activeSessions === 1) {
+      return { headline: 'Auto mode detected', meta: 'Rules still enforced · 1 session' };
+    }
+    if (autoModeSessions > 0 && autoModeSessions === activeSessions) {
+      return {
+        headline: `Auto mode · ${sessionsLabel(autoModeSessions)}`,
+        meta: 'Rules still enforced on every session',
+      };
+    }
+    return {
+      headline: 'Auto mode active',
+      meta: 'Rules still enforced — toggle "Skip enforcement in auto mode" in Settings to bypass',
+    };
+  }
+
+  // Skipping path — Sentinel is standing down on auto-mode sessions.
+  if (source === 'manual' && autoModeSessions === 0) {
+    return {
+      headline: 'Auto mode · manual override',
+      meta: activeSessions > 0 ? `${sessionsLabel(activeSessions)} tracked · forced bypass` : 'Forced bypass',
+    };
+  }
+  if (autoModeSessions === 1 && activeSessions === 1) {
+    return { headline: 'Auto mode · Sentinel standing down', meta: '1 session' };
+  }
+  if (autoModeSessions > 0 && autoModeSessions < activeSessions) {
+    return {
+      headline: `Auto mode · ${autoModeSessions} of ${activeSessions} sessions`,
+      meta: 'Enforcement skipped only on auto sessions',
+    };
+  }
+  if (autoModeSessions > 0 && autoModeSessions === activeSessions) {
+    return {
+      headline: `Auto mode · ${sessionsLabel(autoModeSessions)}`,
+      meta: 'Sentinel standing down on every session',
+    };
+  }
+  return {
+    headline: 'Auto mode active',
+    meta: source === 'manual' ? 'manual override' : 'detected from request headers',
+  };
+}
+
+/**
+ * Inline banner that appears when Claude Code is in auto mode — either
+ * because the user flipped the manual override in Settings or because the
+ * daemon observed auto-mode beta headers on a recent request. The pulsing
+ * icon and slide-in entrance make the bypass state easy to notice at a
+ * glance. Copy adapts to the session count so parallel sessions read
+ * correctly ("1 of 3 sessions"). Click to expand → per-session breakdown.
+ */
+function AutoModeBanner({
+  status,
+  skipInAutoMode,
+}: {
+  status: AutoModeStatus;
+  skipInAutoMode: boolean;
+}): React.ReactElement {
+  const [expanded, setExpanded] = useState(false);
+  const copy = buildBannerCopy(status, skipInAutoMode);
+  const hasSessions = status.sessions.length > 0;
+
+  // Two visual treatments:
+  //   - skipping (Sentinel standing down): calm blue/purple gradient — the
+  //     "all-good, trusting the classifier" look.
+  //   - enforcing (auto detected but rules still on): amber gradient — the
+  //     "heads up, unusual posture" look. Same information, visually
+  //     distinct so a glance tells the user which regime they're in.
+  const accent = skipInAutoMode
+    ? {
+        cardBg: 'bg-gradient-to-r from-ios-purple/15 via-ios-blue/10 to-ios-blue/5',
+        cardBorder: 'border-ios-blue/20',
+        cardDivider: 'border-ios-blue/15',
+        dot: 'bg-ios-blue',
+        icon: 'text-ios-blue',
+      }
+    : {
+        cardBg: 'bg-gradient-to-r from-ios-orange/15 via-ios-orange/8 to-ios-orange/5',
+        cardBorder: 'border-ios-orange/25',
+        cardDivider: 'border-ios-orange/20',
+        dot: 'bg-ios-orange',
+        icon: 'text-ios-orange',
+      };
+
+  return (
+    <AnimatePresence initial={false}>
+      {status.active && (
+        <motion.div
+          layout
+          initial={{ opacity: 0, y: -8, height: 0 }}
+          animate={{ opacity: 1, y: 0, height: 'auto' }}
+          exit={{ opacity: 0, y: -8, height: 0 }}
+          transition={{ duration: 0.22, ease: 'easeOut' }}
+          className="overflow-hidden"
+        >
+          <div className={`px-3 py-2 mb-2 rounded-xl border ${accent.cardBg} ${accent.cardBorder}`}>
+            <button
+              type="button"
+              onClick={() => hasSessions && setExpanded((v) => !v)}
+              disabled={!hasSessions}
+              className="flex items-start gap-2 w-full text-left disabled:cursor-default"
+              aria-expanded={hasSessions ? expanded : undefined}
+              title={hasSessions ? (expanded ? 'Hide session details' : 'Show session details') : undefined}
+            >
+              <span className="relative inline-flex items-center justify-center mt-0.5 flex-shrink-0">
+                <span
+                  aria-hidden
+                  className={`animate-ping absolute inline-block w-2.5 h-2.5 rounded-full opacity-50 ${accent.dot}`}
+                />
+                <span className={`relative inline-block w-2.5 h-2.5 rounded-full ${accent.dot}`} />
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="text-[11px] font-semibold text-black dark:text-white leading-tight flex items-center gap-1">
+                  <Zap size={11} strokeWidth={2.5} className={accent.icon} />
+                  {copy.headline}
+                  <span className="text-[10px] font-normal text-[#8E8E93]">· {copy.meta}</span>
+                </p>
+                <p className="text-[10.5px] text-[#8E8E93] leading-snug mt-0.5">
+                  {skipInAutoMode
+                    ? 'Sentinel is standing down on auto-mode sessions. Rule enforcement still applies to other sessions.'
+                    : 'Sentinel is still enforcing rules on every session. Turn on "Skip enforcement in auto mode" in Settings if you want Sentinel to defer to Claude Code\u2019s classifier.'}
+                </p>
+              </div>
+              {hasSessions && (
+                expanded
+                  ? <ChevronDown size={11} strokeWidth={2.5} className="text-[#8E8E93] mt-1" />
+                  : <ChevronRight size={11} strokeWidth={2.5} className="text-[#8E8E93] mt-1" />
+              )}
+            </button>
+
+            {hasSessions && expanded && (
+              <div className={`mt-2 pt-2 border-t ${accent.cardDivider} space-y-1.5`}>
+                {status.sessions.map((s) => (
+                  <div key={s.sessionId} className="flex items-center gap-2 text-[10.5px]">
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                        s.autoMode ? accent.dot : 'bg-[#8E8E93]/60'
+                      }`}
+                    />
+                    <span className={`font-semibold tabular-nums ${s.autoMode ? accent.icon : 'text-[#8E8E93]'}`}>
+                      {s.autoMode ? 'AUTO' : 'normal'}
+                    </span>
+                    <span className="text-[#8E8E93] font-mono truncate flex-1 min-w-0" title={s.sessionId}>
+                      {s.sessionId.slice(0, 8)}…
+                    </span>
+                    <span className="text-[#8E8E93] flex-shrink-0">{formatAgo(s.lastSeenAt)}</span>
+                  </div>
+                ))}
+                {status.processCount !== null && (
+                  <p className="text-[10px] text-[#8E8E93] pt-1 italic">
+                    {status.processCount} claude-code {status.processCount === 1 ? 'process' : 'processes'} running
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 

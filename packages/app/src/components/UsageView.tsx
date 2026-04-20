@@ -5,7 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel } from '../lib/ipc.js';
 import type { RateLimitWindow, OAuthAccount, AccountInfo, ClaudeAiUsageSnapshot } from '@claude-sentinel/shared';
 import { useSettings } from '../hooks/useSettings.js';
-import { useAllRateLimits, fiveHourUtilization } from '../hooks/useAllRateLimits.js';
+import { useAllRateLimits, fiveHourUtilization, fiveHourResetAt } from '../hooks/useAllRateLimits.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { usePausedAccounts, type PausedState } from '../hooks/usePausedAccounts.js';
 import { DUR, EASE_OUT } from '../lib/motion.js';
@@ -667,6 +667,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
   const rows = accounts.map((acct) => ({
     account: acct,
     util: fiveHourUtilization(byAccount[acct.id]),
+    resetAt: fiveHourResetAt(byAccount[acct.id]),
     inPool: !excludedIds.has(acct.id),
   }));
 
@@ -745,7 +746,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
         </div>
       ) : (
         <div className="glass-card px-4 py-4 space-y-4">
-          {rows.map(({ account, util, inPool }) => {
+          {rows.map(({ account, util, resetAt, inPool }) => {
             const pct = util == null
               ? null
               : util <= 0 ? 0
@@ -763,6 +764,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
               /* default */ 'text-ios-blue';
             const label = account.displayName || account.email;
             const sub = account.orgName || (account.displayName ? account.email : null);
+            const hasReset = resetAt != null && resetAt > 0;
             return (
               <div key={account.id} className={`space-y-1.5 ${inPool ? '' : 'opacity-50'}`}>
                 <div className="flex items-center justify-between gap-2">
@@ -781,9 +783,14 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
                       <p className="text-[10px] text-[#8E8E93] truncate leading-snug">{sub}</p>
                     )}
                   </div>
-                  <span className={`text-[11px] font-bold tabular-nums shrink-0 ${pctColor}`}>
-                    {pct == null ? '—' : `${pct}%`}
-                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {hasReset && (
+                      <ResetCountdown epochSec={resetAt} variant="pill" />
+                    )}
+                    <span className={`text-[11px] font-bold tabular-nums ${pctColor}`}>
+                      {pct == null ? '—' : `${pct}%`}
+                    </span>
+                  </div>
                 </div>
                 {pct != null && pct > 0 && (
                   <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">

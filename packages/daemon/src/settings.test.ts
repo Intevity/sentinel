@@ -205,6 +205,25 @@ describe('settings', () => {
       writeFileSync(path, JSON.stringify({ telemetryRetentionDays: 'month' }), 'utf-8');
       expect(loadSettings(path).telemetryRetentionDays).toBe(DEFAULT_SETTINGS.telemetryRetentionDays);
     });
+
+    it('defaults securitySetupCompleted and tourCompleted to false', () => {
+      writeFileSync(path, JSON.stringify({}), 'utf-8');
+      const loaded = loadSettings(path);
+      expect(loaded.securitySetupCompleted).toBe(false);
+      expect(loaded.tourCompleted).toBe(false);
+    });
+
+    it('round-trips securitySetupCompleted/tourCompleted and rejects non-boolean input', () => {
+      writeFileSync(path, JSON.stringify({ securitySetupCompleted: true, tourCompleted: true }), 'utf-8');
+      const loaded = loadSettings(path);
+      expect(loaded.securitySetupCompleted).toBe(true);
+      expect(loaded.tourCompleted).toBe(true);
+
+      writeFileSync(path, JSON.stringify({ securitySetupCompleted: 'yes', tourCompleted: 1 }), 'utf-8');
+      const bad = loadSettings(path);
+      expect(bad.securitySetupCompleted).toBe(DEFAULT_SETTINGS.securitySetupCompleted);
+      expect(bad.tourCompleted).toBe(DEFAULT_SETTINGS.tourCompleted);
+    });
   });
 
   describe('saveSettings', () => {

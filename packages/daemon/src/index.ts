@@ -1,4 +1,4 @@
-import { getDb, closeDb, listAccounts, listRemovedAccounts, upsertAccount, deleteAccount, deleteStaleAccountRows, markAccountRemoved, purgeAccount, reactivateAccount, hasActiveAccount, getAccount, setAccountColor, getUsageByDayModel, acknowledgeNotification, acknowledgeAllNotifications, upsertRateLimit, loadRateLimits, getOverageEvents, clearOverageEvents, getLastOverageEventPerAccount, listNotifications, listAlerts, upsertAlert, deleteAlert, deleteRateLimitsForAccount, getTokensByDayModel, getCacheHitRate, getApiErrorsByDay, getToolStats, getActivityCounters, getEditAcceptRate, getToolDecisionBreakdown, getUserPromptStats, getTopSkills, getRecentPlugins,listSecurityEvents, acknowledgeSecurityEvent, acknowledgeAllSecurityEvents, clearSecurityEvents, purgeSecurityEventsOlderThan, purgeTelemetryOlderThan, addSecurityAllowlist, removeSecurityAllowlist, listSecurityAllowlist } from './db.js';
+import { getDb, closeDb, listAccounts, listRemovedAccounts, upsertAccount, deleteAccount, deleteStaleAccountRows, markAccountRemoved, purgeAccount, reactivateAccount, hasActiveAccount, getAccount, setAccountColor, getUsageByDayModel, acknowledgeNotification, acknowledgeAllNotifications, upsertRateLimit, loadRateLimits, getOverageEvents, clearOverageEvents, getLastOverageEventPerAccount, listNotifications, listAlerts, upsertAlert, deleteAlert, deleteRateLimitsForAccount, getTokensByDayModel, getCacheHitRate, getApiErrorsByDay, getToolStats, getActivityCounters, getEditAcceptRate, getToolDecisionBreakdown, getUserPromptStats, getTopSkills, getRecentPlugins,listSecurityEvents, acknowledgeSecurityEvent, acknowledgeAllSecurityEvents, clearSecurityEvents, purgeSecurityEventsOlderThan, purgeTelemetryOlderThan, addSecurityAllowlist, removeSecurityAllowlist, listSecurityAllowlist, upsertPermissionRule, deletePermissionRule } from './db.js';
 import { loadSettings, updateSettings as writeSettings } from './settings.js';
 import { IpcServer } from './ipc.js';
 import { OtelReceiver } from './otel-receiver.js';
@@ -19,6 +19,8 @@ import {
 import { fetchBootstrap } from './claude-ai-bootstrap.js';
 import { startAlertEvaluator, startPoolAlertEvaluator, evaluatePoolOnce, primeNewAlertAgainstCurrentWindow } from './alerts.js';
 import { createSecurityScanner } from './security/scanner.js';
+import { createPermissionsEnforcer } from './security/permissions/enforcer.js';
+import { parseRule as parsePermissionRule } from './security/permissions/parser.js';
 import type { Settings } from '@claude-sentinel/shared';
 import { getActiveAccount, setActiveAccount } from './claude-state.js';
 import { readActiveCredentials, captureCurrentCredentials, writeSentinelCredentials, writeClaudeCodeCredentials, deleteSentinelCredentials, readSentinelCredentials } from './accounts.js';
@@ -29,8 +31,46 @@ import { startTokenRefresher, refreshIfNeeded, markAccountReauthenticated } from
 import { probeRateLimits } from './rate-limit-probe.js';
 import { startUsageProber, type UsageProberHandle } from './usage-probe.js';
 import type { OAuthAccount, PlanType, ClaudeCodeCredentials } from '@claude-sentinel/shared';
-import type { Server } from 'http';
+import { request as httpRequest, type Server } from 'http';
 import { log } from './logger.js';
+
+/**
+ * Probe 127.0.0.1:DAEMON_PORT/health to see whether another daemon is
+ * already listening. Returns true iff the probe gets a 200 within ~500ms.
+ *
+ * Rationale: the Tauri app spawns the daemon as a child but does not kill it
+ * on Quit (Sentinel is a tray app — the daemon is deliberately long-lived
+ * so Claude Code's proxy keeps working when the UI is closed). On the next
+ * app launch the new spawn would collide with the orphaned daemon: it would
+ * unlink the IPC socket (orphaning the live daemon's listener) and then
+ * fail to bind port 47284. Bailing out early keeps the running daemon's
+ * socket file intact so the app's IPC reconnects cleanly.
+ */
+/* v8 ignore start */
+function isDaemonAlreadyRunning(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: DAEMON_PORT,
+        path: '/health',
+        method: 'GET',
+        timeout: 500,
+      },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode === 200);
+      },
+    );
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.end();
+  });
+}
+/* v8 ignore stop */
 
 // ─── File logger ─────────────────────────────────────────────────────────────
 // The logger singleton owns: level filtering, ring buffer, file rotation
@@ -96,6 +136,14 @@ const DAEMON_STARTED_AT = Date.now();
 
 export async function startDaemon(): Promise<void> {
   console.log('[Sentinel] Starting daemon v0.1.0...');
+
+  /* v8 ignore next 6 */
+  if (await isDaemonAlreadyRunning()) {
+    console.log(
+      `[Sentinel] Another daemon is already listening on 127.0.0.1:${DAEMON_PORT} — exiting cleanly.`,
+    );
+    process.exit(0);
+  }
 
   const db = getDb();
 
@@ -1094,6 +1142,14 @@ export async function startDaemon(): Promise<void> {
           log.setLevel(next.logLevel);
           log.info(`[Logger] Level changed to ${next.logLevel}`);
         }
+        // Manual auto-mode override flipped? Let the enforcer re-broadcast
+        // its unified status so the UI banner doesn't have to compose it.
+        if (
+          prev.toolPermissionAutoModeActive !== next.toolPermissionAutoModeActive ||
+          prev.toolPermissionSkipInAutoMode !== next.toolPermissionSkipInAutoMode
+        ) {
+          permissionsEnforcer.onSettingsChanged();
+        }
         ipcServer.broadcast({ type: 'settings_changed', settings: next });
         respond({ requestType: 'update_settings', success: true, data: next });
         break;
@@ -1313,6 +1369,70 @@ export async function startDaemon(): Promise<void> {
       case 'delete_alert': {
         const removed = deleteAlert(db, msg.id);
         respond({ requestType: 'delete_alert', success: removed });
+        break;
+      }
+
+      case 'list_permission_rules': {
+        respond({
+          requestType: 'list_permission_rules',
+          success: true,
+          data: permissionsEnforcer.listRules(),
+        });
+        break;
+      }
+
+      case 'get_permissions_status': {
+        respond({
+          requestType: 'get_permissions_status',
+          success: true,
+          data: permissionsEnforcer.getAutoModeStatus(),
+        });
+        break;
+      }
+
+      case 'upsert_permission_rule': {
+        const input = msg.rule;
+        if (input.decision !== 'allow' && input.decision !== 'deny') {
+          respond({
+            requestType: 'upsert_permission_rule',
+            success: false,
+            error: 'decision must be "allow" or "deny"',
+          });
+          break;
+        }
+        // Validate that the supplied raw parses to the same tool/pattern
+        // pair we're about to store. Keeps bad inputs out of the DB even
+        // if a UI sends inconsistent form+raw fields.
+        const parsed = parsePermissionRule(input.raw);
+        if (!parsed.ok) {
+          respond({
+            requestType: 'upsert_permission_rule',
+            success: false,
+            error: `invalid rule syntax: ${parsed.error}`,
+          });
+          break;
+        }
+        const saved = upsertPermissionRule(db, {
+          ...input,
+          tool: parsed.parsed.tool,
+          pattern: parsed.parsed.pattern,
+          raw: parsed.parsed.raw,
+        });
+        permissionsEnforcer.invalidate();
+        const rules = permissionsEnforcer.listRules();
+        ipcServer.broadcast({ type: 'permission_rules_changed', rules });
+        respond({ requestType: 'upsert_permission_rule', success: true, data: saved });
+        break;
+      }
+
+      case 'delete_permission_rule': {
+        const removed = deletePermissionRule(db, msg.id);
+        if (removed) {
+          permissionsEnforcer.invalidate();
+          const rules = permissionsEnforcer.listRules();
+          ipcServer.broadcast({ type: 'permission_rules_changed', rules });
+        }
+        respond({ requestType: 'delete_permission_rule', success: removed });
         break;
       }
 
@@ -1667,6 +1787,14 @@ export async function startDaemon(): Promise<void> {
     getSettings: () => currentSettings,
   });
 
+  // Build the permission enforcer. Compiled rule cache is invalidated on
+  // every IPC rule mutation; all settings are pulled via the thunk.
+  const permissionsEnforcer = createPermissionsEnforcer({
+    db,
+    ipcServer,
+    getSettings: () => currentSettings,
+  });
+
   // Start IPC server
   ipcServer.start();
   console.log('[Sentinel] IPC server started');
@@ -1692,6 +1820,7 @@ export async function startDaemon(): Promise<void> {
         return w?.reset ?? null;
       },
       securityScanner,
+      permissionsEnforcer,
     },
     (req, res) => {
       const url = req.url ?? '/';
@@ -1701,6 +1830,24 @@ export async function startDaemon(): Promise<void> {
       return otelReceiver.handleLogs(req, res);
     },
   );
+
+  // Safety net in case the pre-startup health probe missed an existing
+  // daemon (race window between isDaemonAlreadyRunning() and listen()).
+  // Without this, EADDRINUSE surfaces as an unhandled 'error' event and
+  // crashes the daemon — which is still correct exit behavior, but this
+  // gives us a clear log line instead of an unhandled exception trace.
+  /* v8 ignore start */
+  httpServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log(
+        `[Sentinel] Port ${DAEMON_PORT} already in use — another daemon is running. Exiting.`,
+      );
+      process.exit(0);
+    }
+    console.error('[Sentinel] HTTP server error:', err);
+    process.exit(1);
+  });
+  /* v8 ignore stop */
 
   httpServer.listen(DAEMON_PORT, '127.0.0.1', () => {
     console.log(`[Sentinel] HTTP proxy listening on http://127.0.0.1:${DAEMON_PORT}`);
@@ -1731,6 +1878,7 @@ export async function startDaemon(): Promise<void> {
     stopTokenRefresher();
     usageProber?.stop();
     clearInterval(telemetryPurgeTimer);
+    permissionsEnforcer.shutdown();
     ipcServer.close();
     server.close();
     closeDb();

@@ -271,11 +271,43 @@ export interface Settings {
    *  synthesizes the 403. Clamped to [10, 300]. Default 60. */
   securityApproveHoldSec: number;
 
+  // ─── Tool permission enforcement ───────────────────────────────────
+  /** Master switch for the tool-permissions subsystem. When false, the
+   *  rule evaluator short-circuits to allow and no proxy interception runs.
+   *  Default `false` — the feature ships dark and users opt in. */
+  toolPermissionsEnabled: boolean;
+  /** Outcome for tool calls that no rule matches. `allow` = default-open
+   *  (only explicit denies block); `deny` = default-closed (user must
+   *  explicitly allow each tool they want to run). */
+  toolPermissionDefaultAction: PermissionDecision;
+  /** When true AND `toolPermissionAutoModeActive` is true, the evaluator
+   *  bypasses every rule and allows unconditionally — the user trusts
+   *  Claude Code's own auto-mode classifier and doesn't want Sentinel
+   *  double-gating. */
+  toolPermissionSkipInAutoMode: boolean;
+  /** Manual "Claude Code is currently in auto mode" flag. No automatic
+   *  detection is possible from the proxy layer (permission mode is a
+   *  local Claude Code decision that produces no HTTP signal), so the
+   *  user flips this on when they launch Claude Code with auto mode and
+   *  flips it off when they're done. */
+  toolPermissionAutoModeActive: boolean;
+
   /** Minimum severity written to daemon.log and streamed to the in-app Logs
    *  tab. `debug` is opt-in; noisy subsystems emit DEBUG only for deep
    *  troubleshooting. Default `info`. Applied live via `update_settings` —
    *  no daemon restart required. */
   logLevel: LogLevel;
+
+  // ─── Onboarding state ──────────────────────────────────────────────
+  /** True once the user has either applied a risk-profile preset in the
+   *  Security Setup Wizard or explicitly dismissed it. The wizard fires
+   *  at most once per install unless the user re-triggers it from
+   *  Settings → Security. */
+  securitySetupCompleted: boolean;
+  /** True once the user has finished or skipped the first-run feature
+   *  tour. The tour can always be replayed via the help icon next to
+   *  the Sentinel header. */
+  tourCompleted: boolean;
 }
 
 /** Structured log entry emitted by the daemon logger and streamed to the
@@ -418,7 +450,123 @@ export type SecurityKind =
   | 'risky_webfetch'
   | 'scan_truncated'
   | 'scan_skipped_encoding'
-  | 'scan_deferred_oversized';
+  | 'scan_deferred_oversized'
+  | 'tool_permission_blocked';
+
+// ─── Tool permission rules ────────────────────────────────────────────────────
+
+/** Decision that a matched rule declares.
+ *   allow — the tool call passes unchanged.
+ *   deny  — the tool call is blocked; the proxy either strips the tool
+ *           from the outbound request (whole-tool denies) or substitutes
+ *           a synthetic text block into the SSE stream (sub-command denies).
+ */
+export type PermissionDecision = 'allow' | 'deny';
+
+/**
+ * A user-configured permission rule evaluated by the daemon proxy against
+ * every outbound tool definition and incoming `tool_use` block. Independent
+ * of Claude Code's own `~/.claude/settings.json` permissions — this is a
+ * second enforcement layer with its own rule set.
+ *
+ * Serialized form mirrors Claude Code's native syntax — e.g.
+ *   Bash                   — whole-tool rule (pattern === null)
+ *   Bash(npm *)            — sub-command rule with a pattern specifier
+ *   Bash(rm -rf *)         — wildcard after space enforces a word boundary
+ *   Read(//Users/jeff/**)  — absolute path (double slash)
+ *   Read(/src/**)          — relative to project root (single leading slash)
+ *   Read(~/*.pdf)          — home directory glob
+ *   WebFetch(domain:example.com) — exact + subdomain match
+ *   mcp__github__*         — all tools under an MCP server
+ */
+export interface PermissionRule {
+  /** UUID. */
+  id: string;
+  decision: PermissionDecision;
+  /** Tool name (e.g. 'Bash', 'Read', 'WebFetch', 'mcp__github__create_issue'),
+   *  `mcp__<server>__*` for per-server wildcards, or `*` for any tool. */
+  tool: string;
+  /** The specifier inside parentheses. `null` means the rule matches every
+   *  invocation of `tool` regardless of arguments. */
+  pattern: string | null;
+  /** Canonical `Tool` or `Tool(pattern)` form — stored denormalized so the
+   *  UI can round-trip between form mode and raw mode without reconstruction. */
+  raw: string;
+  /** Optional free-text user note shown alongside the rule in the UI. */
+  note: string | null;
+  enabled: boolean;
+  /** Lower numbers evaluate earlier within each decision tier. Ties break
+   *  on `createdAt`. */
+  priority: number;
+  createdAt: number;
+}
+
+/** Input shape for upsert_permission_rule. Omit `id` to create a new rule. */
+export interface PermissionRuleInput {
+  id?: string;
+  decision: PermissionDecision;
+  tool: string;
+  pattern: string | null;
+  raw: string;
+  note?: string | null;
+  enabled?: boolean;
+  priority?: number;
+}
+
+/**
+ * Per-session snapshot included in {@link AutoModeStatus.sessions}. The
+ * daemon tracks one entry per Claude Code `session_id` seen on the proxy
+ * (extracted from `metadata.user_id` on each `/v1/messages` request).
+ */
+export interface ActiveClaudeSession {
+  sessionId: string;
+  accountUuid: string | null;
+  /** True if the most recent request from this session carried auto-mode
+   *  beta flags. Flips to false on a non-auto request without ending the
+   *  session. */
+  autoMode: boolean;
+  /** Unix ms of the last request observed from this session. */
+  lastSeenAt: number;
+}
+
+/**
+ * Live auto-mode status surfaced to the UI. The daemon computes `active` by
+ * combining:
+ *   - the manual settings toggle (`toolPermissionAutoModeActive`), AND
+ *   - header-based detection of Claude Code's `afk-mode` / `advisor-tool`
+ *     beta flags on `/v1/messages` requests (with a ~60 s freshness window), AND
+ *   - per-session tracking that persists a session's mode until either the
+ *     next non-auto request downgrades it or the Claude Code process exits
+ *     (detected via cross-platform process scan).
+ *
+ * Used by the Security tab to render a "Sentinel is standing down" banner
+ * when auto mode is active — with accurate counts when the user is running
+ * multiple Claude Code sessions in parallel.
+ */
+export interface AutoModeStatus {
+  active: boolean;
+  /** What triggered `active`. `null` when `active === false`. */
+  source: 'manual' | 'headers' | null;
+  /** Unix ms of the most recent header-based detection. Null when we've
+   *  never seen one during this daemon session. Useful for showing
+   *  "detected 3s ago" style timestamps. */
+  lastDetectedAt: number | null;
+  /** Total number of Claude Code sessions currently tracked (recently seen
+   *  on the proxy and not yet pruned by the process scan). */
+  activeSessions: number;
+  /** Subset of `activeSessions` whose latest request carried auto-mode
+   *  beta flags. `active === true` requires `autoModeSessions > 0` OR the
+   *  manual override OR the legacy freshness window. */
+  autoModeSessions: number;
+  /** Count of `claude-code` OS processes observed on the last process
+   *  scan. `null` when the scan has never run or always fails on this host
+   *  (locked-down Windows, sandboxed runtime, etc.) — the UI then degrades
+   *  gracefully to time-based freshness only. */
+  processCount: number | null;
+  /** Full session breakdown for the UI's expandable details view. Ordered
+   *  most-recent first. Empty when no sessions are tracked. */
+  sessions: ActiveClaudeSession[];
+}
 
 /** Sound choices exposed in Settings. Values map to macOS system sounds;
  *  `null` means no sound. Other platforms will ignore unknown names silently. */
