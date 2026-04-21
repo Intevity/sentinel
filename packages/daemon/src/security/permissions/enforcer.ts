@@ -44,10 +44,7 @@ import {
   sinkFromResponse,
   type PermissionsSseInterceptor,
 } from './sse-interceptor.js';
-import {
-  createPermissionsPendingRegistry,
-  type PermissionsPendingRegistry,
-} from './pending.js';
+import { createPermissionsPendingRegistry, type PermissionsPendingRegistry } from './pending.js';
 import type { PendingSecurityBlock } from '@claude-sentinel/shared';
 import type { PendingOutcome } from '../scanner.js';
 import type { ServerResponse } from 'http';
@@ -231,13 +228,13 @@ export async function countClaudeCodeProcesses(): Promise<number | null> {
   try {
     const isWin = process.platform === 'win32';
     const cmd = isWin
-      // PowerShell CIM doesn't require admin and works on every supported
-      // Windows build. The parenthesized `.Count` short-circuits the zero
-      // case to `0` without requiring us to post-process the output.
-      ? `powershell -NoProfile -Command "(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*@anthropic-ai/claude-code*' }).Count"`
-      // `pgrep -cf` = count of matches against the full command line.
-      // Works identically on macOS and Linux.
-      : `pgrep -cf "@anthropic-ai/claude-code"`;
+      ? // PowerShell CIM doesn't require admin and works on every supported
+        // Windows build. The parenthesized `.Count` short-circuits the zero
+        // case to `0` without requiring us to post-process the output.
+        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*@anthropic-ai/claude-code*' }).Count"`
+      : // `pgrep -cf` = count of matches against the full command line.
+        // Works identically on macOS and Linux.
+        `pgrep -cf "@anthropic-ai/claude-code"`;
     const { stdout } = await execAsync(cmd, { timeout: 5_000 });
     const n = parseInt(stdout.trim(), 10);
     if (!Number.isFinite(n) || n < 0) return null;
@@ -264,9 +261,7 @@ function toNotificationType(severity: SecuritySeverity): NotificationType {
   return 'security_low';
 }
 
-export function createPermissionsEnforcer(
-  deps: PermissionsEnforcerDeps,
-): PermissionsEnforcer {
+export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): PermissionsEnforcer {
   let cached: { rules: PermissionRule[]; compiled: CompiledRuleSet } | null = null;
 
   // ── Auto-mode state ────────────────────────────────────────────────
@@ -351,10 +346,7 @@ export function createPermissionsEnforcer(
     }
     // Legacy fallback: header-detected request whose session_id we
     // couldn't parse. Pure timestamp freshness.
-    if (
-      lastHeaderDetectedAt !== null &&
-      now - lastHeaderDetectedAt < AUTO_MODE_FRESHNESS_MS
-    ) {
+    if (lastHeaderDetectedAt !== null && now - lastHeaderDetectedAt < AUTO_MODE_FRESHNESS_MS) {
       return {
         active: true,
         source: 'headers',
@@ -441,7 +433,9 @@ export function createPermissionsEnforcer(
   const ensureProcessPoll = (): void => {
     if (processPollTimer) return;
     if (sessions.size === 0) return;
-    processPollTimer = setInterval(() => { void runProcessPoll(); }, PROCESS_POLL_INTERVAL_MS);
+    processPollTimer = setInterval(() => {
+      void runProcessPoll();
+    }, PROCESS_POLL_INTERVAL_MS);
     if (typeof processPollTimer.unref === 'function') processPollTimer.unref();
     // Kick off the first scan immediately so we don't wait 30 s for the
     // first prune / processCount update after a new session appears.
@@ -564,7 +558,7 @@ export function createPermissionsEnforcer(
       for (const [k, v] of Object.entries(fields)) details[k] = v;
     }
     // Keep the row id so the broadcast can deep-link the Details
-     // button into the right Security-tab row. When insertion fails
+    // button into the right Security-tab row. When insertion fails
     // we fall back to null and the frontend omits the Details action.
     let insertedEventId: number | null = null;
     try {
@@ -749,9 +743,7 @@ export function createPermissionsEnforcer(
           direction: 'outbound',
           outcome: 'block_immediate',
         });
-        console.log(
-          `[Permissions] stripped tool ${toolName} from outbound (rule: ${rule.raw})`,
-        );
+        console.log(`[Permissions] stripped tool ${toolName} from outbound (rule: ${rule.raw})`);
       }
       return Buffer.from(JSON.stringify(obj), 'utf-8');
     }
@@ -842,9 +834,7 @@ export function createPermissionsEnforcer(
           direction: 'tool_use',
           outcome: 'block_immediate',
         });
-        console.log(
-          `[Permissions] blocked tool_use ${toolName} (rule: ${matchedRule.raw})`,
-        );
+        console.log(`[Permissions] blocked tool_use ${toolName} (rule: ${matchedRule.raw})`);
       },
     };
 
@@ -998,7 +988,10 @@ export function summarizeToolInput(
  * input object. Kept conservative — we never persist nested objects or full
  * bodies, only scalar fields the user will recognise.
  */
-export function extractToolInputFields(toolName: string, toolInput: unknown): Record<string, string> {
+export function extractToolInputFields(
+  toolName: string,
+  toolInput: unknown,
+): Record<string, string> {
   const out: Record<string, string> = {};
   if (!toolInput || typeof toolInput !== 'object') return out;
   const obj = toolInput as Record<string, unknown>;

@@ -53,7 +53,11 @@ export async function refreshIfNeeded(
   force = false,
 ): Promise<RefreshResult> {
   if (!force && expiredRefreshTokens.has(accountId)) {
-    return { success: false, error: 'Sign-in expired — please re-authenticate.', needsReauth: true };
+    return {
+      success: false,
+      error: 'Sign-in expired — please re-authenticate.',
+      needsReauth: true,
+    };
   }
 
   const creds = readSentinelCredentials(accountId);
@@ -70,10 +74,10 @@ export async function refreshIfNeeded(
     const tokens = await refreshAccessToken(creds.refreshToken);
     const updated: ClaudeCodeCredentials = {
       ...creds,
-      accessToken:  tokens.access_token,
+      accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token ?? creds.refreshToken,
-      expiresAt:    Date.now() + (tokens.expires_in ?? 3600) * 1000,
-      scopes:       tokens.scope ? tokens.scope.split(' ').filter(Boolean) : creds.scopes,
+      expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+      scopes: tokens.scope ? tokens.scope.split(' ').filter(Boolean) : creds.scopes,
     };
     writeSentinelCredentials(accountId, updated);
 
@@ -108,8 +112,17 @@ export async function refreshIfNeeded(
     const msg = err instanceof Error ? err.message : String(err);
     if (msg === REFRESH_TOKEN_EXPIRED) {
       expiredRefreshTokens.add(accountId);
-      deps.ipcServer.broadcast({ type: 'token_refresh_failed', accountId, email, reason: 'expired' });
-      return { success: false, error: 'Sign-in expired — please re-authenticate.', needsReauth: true };
+      deps.ipcServer.broadcast({
+        type: 'token_refresh_failed',
+        accountId,
+        email,
+        reason: 'expired',
+      });
+      return {
+        success: false,
+        error: 'Sign-in expired — please re-authenticate.',
+        needsReauth: true,
+      };
     }
     console.warn(`[TokenRefresher] Failed to refresh ${email}:`, msg);
     // Everything that isn't a token-endpoint 400/401 — timeouts, DNS errors,

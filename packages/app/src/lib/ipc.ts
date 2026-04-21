@@ -3,11 +3,7 @@
  * Uses Tauri's invoke API to reach the Rust sidecar bridge.
  */
 import { invoke } from '@tauri-apps/api/core';
-import type {
-  AppToDaemonMessage,
-  DaemonToAppMessage,
-  IpcResponse,
-} from '@claude-sentinel/shared';
+import type { AppToDaemonMessage, DaemonToAppMessage, IpcResponse } from '@claude-sentinel/shared';
 
 export type { AppToDaemonMessage, DaemonToAppMessage, IpcResponse };
 

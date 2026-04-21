@@ -154,7 +154,9 @@ describe('IpcClient', () => {
 
   it('fires onConnect callback', async () => {
     let fired = false;
-    client.onConnect(() => { fired = true; });
+    client.onConnect(() => {
+      fired = true;
+    });
     client.connect(TEST_SOCK);
     await sleep(100);
     expect(fired).toBe(true);
@@ -271,7 +273,9 @@ describe('IpcServer - socket lifecycle', () => {
 
     expect(server.connectedClients).toBe(1);
     // Simulate a socket error by destroying the socket
-    (client as unknown as { socket: { destroy: (e: Error) => void } }).socket.destroy(new Error('test error'));
+    (client as unknown as { socket: { destroy: (e: Error) => void } }).socket.destroy(
+      new Error('test error'),
+    );
     await sleep(100);
 
     // Server should still be running

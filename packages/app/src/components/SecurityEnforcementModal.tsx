@@ -95,8 +95,8 @@ export default function SecurityEnforcementModal({
 
         <div className="px-4 py-3">
           <p className="text-[11px] text-[#8E8E93] mb-3 leading-snug">
-            Sentinel scans outbound requests and model responses for secrets, risky tool calls,
-            and prompt-injection signals. Pick how you want findings handled.
+            Sentinel scans outbound requests and model responses for secrets, risky tool calls, and
+            prompt-injection signals. Pick how you want findings handled.
           </p>
 
           <div className="space-y-2">

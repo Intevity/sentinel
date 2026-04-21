@@ -24,9 +24,10 @@ try {
   process.exit(1);
 }
 
-const sockPath = process.platform === 'win32'
-  ? '\\\\.\\pipe\\claude-sentinel'
-  : path.join(os.homedir(), '.claude-sentinel', 'daemon.sock');
+const sockPath =
+  process.platform === 'win32'
+    ? '\\\\.\\pipe\\claude-sentinel'
+    : path.join(os.homedir(), '.claude-sentinel', 'daemon.sock');
 
 const socket = net.connect(sockPath);
 let buf = '';

@@ -117,8 +117,18 @@ describe('Database', () => {
     });
 
     it('lists all accounts sorted by email', () => {
-      upsertAccount(db, { ...account, id: 'uuid-2', accountUuid: 'uuid-2', email: 'b@example.com' });
-      upsertAccount(db, { ...account, id: 'uuid-1', accountUuid: 'uuid-1', email: 'a@example.com' });
+      upsertAccount(db, {
+        ...account,
+        id: 'uuid-2',
+        accountUuid: 'uuid-2',
+        email: 'b@example.com',
+      });
+      upsertAccount(db, {
+        ...account,
+        id: 'uuid-1',
+        accountUuid: 'uuid-1',
+        email: 'a@example.com',
+      });
       const accounts = listAccounts(db);
       expect(accounts).toHaveLength(2);
       expect(accounts[0]?.email).toBe('a@example.com');
@@ -161,8 +171,9 @@ describe('Database', () => {
 
     it('falls back to id for accountUuid when migrating legacy rows', () => {
       // Simulate a pre-migration row by inserting without account_uuid
-      db.prepare('INSERT INTO accounts (id, email, display_name, org_uuid, org_name, plan_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run('legacy-id', 'legacy@example.com', 'Legacy', '', '', 'pro', Date.now());
+      db.prepare(
+        'INSERT INTO accounts (id, email, display_name, org_uuid, org_name, plan_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('legacy-id', 'legacy@example.com', 'Legacy', '', '', 'pro', Date.now());
       const found = getAccount(db, 'legacy-id');
       expect(found?.accountUuid).toBe('legacy-id');
     });
@@ -284,8 +295,30 @@ describe('Database', () => {
     });
 
     it('filters by account', () => {
-      insertUsageEvent(db, { ts: Date.now(), accountId: 'acc-1', sessionId: null, model: 'claude-sonnet-4-6', costUsd: 0.01, inputTokens: 100, outputTokens: 50, cacheRead: null, cacheCreate: null, durationMs: null });
-      insertUsageEvent(db, { ts: Date.now(), accountId: 'acc-2', sessionId: null, model: 'claude-haiku-4', costUsd: 0.001, inputTokens: 100, outputTokens: 50, cacheRead: null, cacheCreate: null, durationMs: null });
+      insertUsageEvent(db, {
+        ts: Date.now(),
+        accountId: 'acc-1',
+        sessionId: null,
+        model: 'claude-sonnet-4-6',
+        costUsd: 0.01,
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheRead: null,
+        cacheCreate: null,
+        durationMs: null,
+      });
+      insertUsageEvent(db, {
+        ts: Date.now(),
+        accountId: 'acc-2',
+        sessionId: null,
+        model: 'claude-haiku-4',
+        costUsd: 0.001,
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheRead: null,
+        cacheCreate: null,
+        durationMs: null,
+      });
 
       const acc1Events = getUsageEvents(db, { accountId: 'acc-1' });
       expect(acc1Events).toHaveLength(1);
@@ -295,8 +328,30 @@ describe('Database', () => {
     it('filters by sinceTs', () => {
       const past = Date.now() - 10000;
       const now = Date.now();
-      insertUsageEvent(db, { ts: past - 1000, accountId: 'acc-1', sessionId: null, model: 'm', costUsd: null, inputTokens: null, outputTokens: null, cacheRead: null, cacheCreate: null, durationMs: null });
-      insertUsageEvent(db, { ts: now, accountId: 'acc-1', sessionId: null, model: 'm', costUsd: null, inputTokens: null, outputTokens: null, cacheRead: null, cacheCreate: null, durationMs: null });
+      insertUsageEvent(db, {
+        ts: past - 1000,
+        accountId: 'acc-1',
+        sessionId: null,
+        model: 'm',
+        costUsd: null,
+        inputTokens: null,
+        outputTokens: null,
+        cacheRead: null,
+        cacheCreate: null,
+        durationMs: null,
+      });
+      insertUsageEvent(db, {
+        ts: now,
+        accountId: 'acc-1',
+        sessionId: null,
+        model: 'm',
+        costUsd: null,
+        inputTokens: null,
+        outputTokens: null,
+        cacheRead: null,
+        cacheCreate: null,
+        durationMs: null,
+      });
 
       const events = getUsageEvents(db, { sinceTs: past });
       expect(events).toHaveLength(1);
@@ -305,7 +360,18 @@ describe('Database', () => {
 
     it('respects limit', () => {
       for (let i = 0; i < 5; i++) {
-        insertUsageEvent(db, { ts: Date.now() + i, accountId: 'acc-1', sessionId: null, model: 'm', costUsd: null, inputTokens: null, outputTokens: null, cacheRead: null, cacheCreate: null, durationMs: null });
+        insertUsageEvent(db, {
+          ts: Date.now() + i,
+          accountId: 'acc-1',
+          sessionId: null,
+          model: 'm',
+          costUsd: null,
+          inputTokens: null,
+          outputTokens: null,
+          cacheRead: null,
+          cacheCreate: null,
+          durationMs: null,
+        });
       }
       const events = getUsageEvents(db, { limit: 3 });
       expect(events).toHaveLength(3);
@@ -322,8 +388,30 @@ describe('Database', () => {
 
     it('sums today usage correctly', () => {
       const now = Date.now();
-      insertUsageEvent(db, { ts: now, accountId: 'acc-1', sessionId: 'sess-1', model: 'm', costUsd: 0.05, inputTokens: 1000, outputTokens: 500, cacheRead: null, cacheCreate: null, durationMs: null });
-      insertUsageEvent(db, { ts: now, accountId: 'acc-1', sessionId: 'sess-1', model: 'm', costUsd: 0.03, inputTokens: 500, outputTokens: 200, cacheRead: null, cacheCreate: null, durationMs: null });
+      insertUsageEvent(db, {
+        ts: now,
+        accountId: 'acc-1',
+        sessionId: 'sess-1',
+        model: 'm',
+        costUsd: 0.05,
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheRead: null,
+        cacheCreate: null,
+        durationMs: null,
+      });
+      insertUsageEvent(db, {
+        ts: now,
+        accountId: 'acc-1',
+        sessionId: 'sess-1',
+        model: 'm',
+        costUsd: 0.03,
+        inputTokens: 500,
+        outputTokens: 200,
+        cacheRead: null,
+        cacheCreate: null,
+        durationMs: null,
+      });
 
       const summary = getTodayUsageSummary(db, 'acc-1');
       expect(summary.costUsd).toBeCloseTo(0.08);
@@ -333,23 +421,56 @@ describe('Database', () => {
 
     it('counts distinct sessions', () => {
       const now = Date.now();
-      insertUsageEvent(db, { ts: now, accountId: 'acc-1', sessionId: 'sess-1', model: 'm', costUsd: 0.01, inputTokens: 100, outputTokens: 50, cacheRead: null, cacheCreate: null, durationMs: null });
-      insertUsageEvent(db, { ts: now, accountId: 'acc-1', sessionId: 'sess-2', model: 'm', costUsd: 0.01, inputTokens: 100, outputTokens: 50, cacheRead: null, cacheCreate: null, durationMs: null });
+      insertUsageEvent(db, {
+        ts: now,
+        accountId: 'acc-1',
+        sessionId: 'sess-1',
+        model: 'm',
+        costUsd: 0.01,
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheRead: null,
+        cacheCreate: null,
+        durationMs: null,
+      });
+      insertUsageEvent(db, {
+        ts: now,
+        accountId: 'acc-1',
+        sessionId: 'sess-2',
+        model: 'm',
+        costUsd: 0.01,
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheRead: null,
+        cacheCreate: null,
+        durationMs: null,
+      });
 
       const summary = getTodayUsageSummary(db, 'acc-1');
       expect(summary.sessionCount).toBe(2);
     });
 
-  it('handles null cost_usd in usage events gracefully', () => {
-    const now = Date.now();
-    insertUsageEvent(db, { ts: now, accountId: 'acc-null', sessionId: null, model: 'm', costUsd: null, inputTokens: null, outputTokens: null, cacheRead: null, cacheCreate: null, durationMs: null });
+    it('handles null cost_usd in usage events gracefully', () => {
+      const now = Date.now();
+      insertUsageEvent(db, {
+        ts: now,
+        accountId: 'acc-null',
+        sessionId: null,
+        model: 'm',
+        costUsd: null,
+        inputTokens: null,
+        outputTokens: null,
+        cacheRead: null,
+        cacheCreate: null,
+        durationMs: null,
+      });
 
-    const summary = getTodayUsageSummary(db, 'acc-null');
-    expect(summary.costUsd).toBe(0);
-    expect(summary.tokens).toBe(0);
-    // COUNT(DISTINCT session_id) ignores NULLs in SQLite, so null sessionId → 0
-    expect(summary.sessionCount).toBe(0);
-  });
+      const summary = getTodayUsageSummary(db, 'acc-null');
+      expect(summary.costUsd).toBe(0);
+      expect(summary.tokens).toBe(0);
+      // COUNT(DISTINCT session_id) ignores NULLs in SQLite, so null sessionId → 0
+      expect(summary.sessionCount).toBe(0);
+    });
   });
 
   describe('overage events', () => {
@@ -372,8 +493,22 @@ describe('Database', () => {
     });
 
     it('filters by account', () => {
-      insertOverageEvent(db, { ts: Date.now(), accountId: 'acc-1', transition: 'entered', status: 'active', resetsAt: null, disabledReason: null });
-      insertOverageEvent(db, { ts: Date.now(), accountId: 'acc-2', transition: 'entered', status: 'active', resetsAt: null, disabledReason: null });
+      insertOverageEvent(db, {
+        ts: Date.now(),
+        accountId: 'acc-1',
+        transition: 'entered',
+        status: 'active',
+        resetsAt: null,
+        disabledReason: null,
+      });
+      insertOverageEvent(db, {
+        ts: Date.now(),
+        accountId: 'acc-2',
+        transition: 'entered',
+        status: 'active',
+        resetsAt: null,
+        disabledReason: null,
+      });
 
       const events = getOverageEvents(db, { accountId: 'acc-1' });
       expect(events).toHaveLength(1);
@@ -397,16 +532,44 @@ describe('Database', () => {
     });
 
     it('clearOverageEvents wipes every row when no account scope is given', () => {
-      insertOverageEvent(db, { ts: 1, accountId: 'acc-1', transition: 'entered', status: 'a', resetsAt: 1, disabledReason: null });
-      insertOverageEvent(db, { ts: 2, accountId: 'acc-2', transition: 'entered', status: 'a', resetsAt: 2, disabledReason: null });
+      insertOverageEvent(db, {
+        ts: 1,
+        accountId: 'acc-1',
+        transition: 'entered',
+        status: 'a',
+        resetsAt: 1,
+        disabledReason: null,
+      });
+      insertOverageEvent(db, {
+        ts: 2,
+        accountId: 'acc-2',
+        transition: 'entered',
+        status: 'a',
+        resetsAt: 2,
+        disabledReason: null,
+      });
       const count = clearOverageEvents(db);
       expect(count).toBe(2);
       expect(getOverageEvents(db, {})).toEqual([]);
     });
 
     it('clearOverageEvents scopes delete to a single account when provided', () => {
-      insertOverageEvent(db, { ts: 1, accountId: 'acc-1', transition: 'entered', status: 'a', resetsAt: 1, disabledReason: null });
-      insertOverageEvent(db, { ts: 2, accountId: 'acc-2', transition: 'entered', status: 'a', resetsAt: 2, disabledReason: null });
+      insertOverageEvent(db, {
+        ts: 1,
+        accountId: 'acc-1',
+        transition: 'entered',
+        status: 'a',
+        resetsAt: 1,
+        disabledReason: null,
+      });
+      insertOverageEvent(db, {
+        ts: 2,
+        accountId: 'acc-2',
+        transition: 'entered',
+        status: 'a',
+        resetsAt: 2,
+        disabledReason: null,
+      });
       const count = clearOverageEvents(db, 'acc-1');
       expect(count).toBe(1);
       const remaining = getOverageEvents(db, {});
@@ -415,9 +578,30 @@ describe('Database', () => {
     });
 
     it('getLastOverageEventPerAccount returns one newest row per account', () => {
-      insertOverageEvent(db, { ts: 100, accountId: 'acc-1', transition: 'entered', status: 'a', resetsAt: 1, disabledReason: null });
-      insertOverageEvent(db, { ts: 200, accountId: 'acc-1', transition: 'exited',  status: 'a', resetsAt: 1, disabledReason: null });
-      insertOverageEvent(db, { ts: 150, accountId: 'acc-2', transition: 'entered', status: 'a', resetsAt: 2, disabledReason: null });
+      insertOverageEvent(db, {
+        ts: 100,
+        accountId: 'acc-1',
+        transition: 'entered',
+        status: 'a',
+        resetsAt: 1,
+        disabledReason: null,
+      });
+      insertOverageEvent(db, {
+        ts: 200,
+        accountId: 'acc-1',
+        transition: 'exited',
+        status: 'a',
+        resetsAt: 1,
+        disabledReason: null,
+      });
+      insertOverageEvent(db, {
+        ts: 150,
+        accountId: 'acc-2',
+        transition: 'entered',
+        status: 'a',
+        resetsAt: 2,
+        disabledReason: null,
+      });
 
       const rows = getLastOverageEventPerAccount(db);
       const byAccount = Object.fromEntries(rows.map((r) => [r.accountId, r]));
@@ -488,8 +672,20 @@ describe('Database', () => {
     });
 
     it('filters unacknowledged only', () => {
-      const id1 = insertNotification(db, { ts: Date.now(), accountId: null, type: 'overage_entered', title: 'T1', body: 'B1' });
-      insertNotification(db, { ts: Date.now(), accountId: null, type: 'overage_entered', title: 'T2', body: 'B2' });
+      const id1 = insertNotification(db, {
+        ts: Date.now(),
+        accountId: null,
+        type: 'overage_entered',
+        title: 'T1',
+        body: 'B1',
+      });
+      insertNotification(db, {
+        ts: Date.now(),
+        accountId: null,
+        type: 'overage_entered',
+        title: 'T2',
+        body: 'B2',
+      });
       acknowledgeNotification(db, id1);
 
       const unacked = listNotifications(db, { unacknowledgedOnly: true });
@@ -499,7 +695,13 @@ describe('Database', () => {
 
     it('respects limit', () => {
       for (let i = 0; i < 5; i++) {
-        insertNotification(db, { ts: Date.now(), accountId: null, type: 'account_switched', title: `T${i}`, body: 'B' });
+        insertNotification(db, {
+          ts: Date.now(),
+          accountId: null,
+          type: 'account_switched',
+          title: `T${i}`,
+          body: 'B',
+        });
       }
       const limited = listNotifications(db, { limit: 3 });
       expect(limited).toHaveLength(3);
@@ -549,20 +751,44 @@ describe('Database', () => {
     });
 
     it('updates existing row on upsert', () => {
-      const win: RateLimitWindow = { name: 'unified-5h', status: 'allowed', utilization: 0.10, limit: null, remaining: null, reset: 100, lastUpdated: 1 };
+      const win: RateLimitWindow = {
+        name: 'unified-5h',
+        status: 'allowed',
+        utilization: 0.1,
+        limit: null,
+        remaining: null,
+        reset: 100,
+        lastUpdated: 1,
+      };
       upsertRateLimit(db, 'acc-1', win);
-      upsertRateLimit(db, 'acc-1', { ...win, utilization: 0.90, reset: 200 });
+      upsertRateLimit(db, 'acc-1', { ...win, utilization: 0.9, reset: 200 });
 
       const result = loadRateLimits(db);
       const windows = result.get('acc-1');
       expect(windows).toHaveLength(1);
-      expect(windows?.[0]?.utilization).toBeCloseTo(0.90);
+      expect(windows?.[0]?.utilization).toBeCloseTo(0.9);
       expect(windows?.[0]?.reset).toBe(200);
     });
 
     it('keeps accounts isolated', () => {
-      upsertRateLimit(db, 'acc-1', { name: 'unified-5h', status: null, utilization: 0.1, limit: null, remaining: null, reset: 1, lastUpdated: 1 });
-      upsertRateLimit(db, 'acc-2', { name: 'unified-5h', status: null, utilization: 0.9, limit: null, remaining: null, reset: 2, lastUpdated: 1 });
+      upsertRateLimit(db, 'acc-1', {
+        name: 'unified-5h',
+        status: null,
+        utilization: 0.1,
+        limit: null,
+        remaining: null,
+        reset: 1,
+        lastUpdated: 1,
+      });
+      upsertRateLimit(db, 'acc-2', {
+        name: 'unified-5h',
+        status: null,
+        utilization: 0.9,
+        limit: null,
+        remaining: null,
+        reset: 2,
+        lastUpdated: 1,
+      });
 
       const result = loadRateLimits(db);
       expect(result.get('acc-1')?.[0]?.utilization).toBeCloseTo(0.1);
@@ -570,9 +796,33 @@ describe('Database', () => {
     });
 
     it('deleteRateLimitsForAccount removes only the given account', () => {
-      upsertRateLimit(db, 'acc-1', { name: 'unified-5h', status: null, utilization: 0.1, limit: null, remaining: null, reset: 1, lastUpdated: 1 });
-      upsertRateLimit(db, 'acc-1', { name: 'unified-7d', status: null, utilization: 0.2, limit: null, remaining: null, reset: 2, lastUpdated: 1 });
-      upsertRateLimit(db, 'acc-2', { name: 'unified-5h', status: null, utilization: 0.9, limit: null, remaining: null, reset: 2, lastUpdated: 1 });
+      upsertRateLimit(db, 'acc-1', {
+        name: 'unified-5h',
+        status: null,
+        utilization: 0.1,
+        limit: null,
+        remaining: null,
+        reset: 1,
+        lastUpdated: 1,
+      });
+      upsertRateLimit(db, 'acc-1', {
+        name: 'unified-7d',
+        status: null,
+        utilization: 0.2,
+        limit: null,
+        remaining: null,
+        reset: 2,
+        lastUpdated: 1,
+      });
+      upsertRateLimit(db, 'acc-2', {
+        name: 'unified-5h',
+        status: null,
+        utilization: 0.9,
+        limit: null,
+        remaining: null,
+        reset: 2,
+        lastUpdated: 1,
+      });
 
       const removed = deleteRateLimitsForAccount(db, 'acc-1');
       expect(removed).toBe(2);
@@ -598,7 +848,9 @@ describe('Database', () => {
 describe('getToolDecisionBreakdown', () => {
   let db: Database.Database;
 
-  beforeEach(() => { db = makeTestDb(); });
+  beforeEach(() => {
+    db = makeTestDb();
+  });
   afterEach(() => {
     closeDb();
     if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
@@ -608,7 +860,16 @@ describe('getToolDecisionBreakdown', () => {
     const { insertActivityEvent, getToolDecisionBreakdown } = await import('./db.js');
     const now = Date.now();
     const seed = (toolName: string, decision: string, source: string): void => {
-      insertActivityEvent(db, { ts: now, accountId: 'a', sessionId: null, kind: 'tool_decision', value: 1, toolName, decision, source });
+      insertActivityEvent(db, {
+        ts: now,
+        accountId: 'a',
+        sessionId: null,
+        kind: 'tool_decision',
+        value: 1,
+        toolName,
+        decision,
+        source,
+      });
     };
     // Bash: 3 accept, 1 reject, all user_temporary
     seed('Bash', 'accept', 'user_temporary');
@@ -635,9 +896,26 @@ describe('getToolDecisionBreakdown', () => {
     const { insertActivityEvent, getToolDecisionBreakdown } = await import('./db.js');
     const now = Date.now();
     // Wrong account
-    insertActivityEvent(db, { ts: now, accountId: 'b', sessionId: null, kind: 'tool_decision', value: 1, toolName: 'Bash', decision: 'accept', source: 'hook' });
+    insertActivityEvent(db, {
+      ts: now,
+      accountId: 'b',
+      sessionId: null,
+      kind: 'tool_decision',
+      value: 1,
+      toolName: 'Bash',
+      decision: 'accept',
+      source: 'hook',
+    });
     // Right account, wrong kind
-    insertActivityEvent(db, { ts: now, accountId: 'a', sessionId: null, kind: 'edit_decision', value: 1, toolName: 'Edit', decision: 'accept' });
+    insertActivityEvent(db, {
+      ts: now,
+      accountId: 'a',
+      sessionId: null,
+      kind: 'edit_decision',
+      value: 1,
+      toolName: 'Edit',
+      decision: 'accept',
+    });
     const out = getToolDecisionBreakdown(db, 'a', 7);
     expect(out.overall.accepts).toBe(0);
     expect(out.overall.rejects).toBe(0);
@@ -658,7 +936,9 @@ describe('getToolDecisionBreakdown', () => {
 describe('getUserPromptStats', () => {
   let db: Database.Database;
 
-  beforeEach(() => { db = makeTestDb(); });
+  beforeEach(() => {
+    db = makeTestDb();
+  });
   afterEach(() => {
     closeDb();
     if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
@@ -668,8 +948,20 @@ describe('getUserPromptStats', () => {
     const { insertActivityEvent, getUserPromptStats } = await import('./db.js');
     const now = Date.now();
     // Same day, avg = (100+200)/2 = 150; two prompts.
-    insertActivityEvent(db, { ts: now, accountId: 'a', sessionId: null, kind: 'user_prompt', value: 100 });
-    insertActivityEvent(db, { ts: now, accountId: 'a', sessionId: null, kind: 'user_prompt', value: 200 });
+    insertActivityEvent(db, {
+      ts: now,
+      accountId: 'a',
+      sessionId: null,
+      kind: 'user_prompt',
+      value: 100,
+    });
+    insertActivityEvent(db, {
+      ts: now,
+      accountId: 'a',
+      sessionId: null,
+      kind: 'user_prompt',
+      value: 200,
+    });
 
     const out = getUserPromptStats(db, 'a', 7);
     expect(out.total).toBe(2);
@@ -682,7 +974,13 @@ describe('getUserPromptStats', () => {
 
   it('handles prompts with null length (no prompt_length attribute)', async () => {
     const { insertActivityEvent, getUserPromptStats } = await import('./db.js');
-    insertActivityEvent(db, { ts: Date.now(), accountId: 'a', sessionId: null, kind: 'user_prompt', value: null });
+    insertActivityEvent(db, {
+      ts: Date.now(),
+      accountId: 'a',
+      sessionId: null,
+      kind: 'user_prompt',
+      value: null,
+    });
     const out = getUserPromptStats(db, 'a', 7);
     // Total still increments, but avgLength stays 0 because no row carried a
     // length.
@@ -710,28 +1008,70 @@ describe('purgeTelemetryOlderThan', () => {
   });
 
   it('deletes rows older than cutoff across all four telemetry tables; keeps newer rows', async () => {
-    const { insertUsageEvent, insertToolEvent, insertApiError, insertActivityEvent, purgeTelemetryOlderThan } =
-      await import('./db.js');
+    const {
+      insertUsageEvent,
+      insertToolEvent,
+      insertApiError,
+      insertActivityEvent,
+      purgeTelemetryOlderThan,
+    } = await import('./db.js');
 
     const old = Date.now() - 60 * 24 * 60 * 60 * 1000; // 60d ago
     const fresh = Date.now() - 1 * 24 * 60 * 60 * 1000; // 1d ago
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000; // 30d
 
     const makeUsage = (ts: number): void => {
-      insertUsageEvent(db, { ts, accountId: 'a', sessionId: null, model: 'm', costUsd: null, inputTokens: null, outputTokens: null, cacheRead: null, cacheCreate: null, durationMs: null });
+      insertUsageEvent(db, {
+        ts,
+        accountId: 'a',
+        sessionId: null,
+        model: 'm',
+        costUsd: null,
+        inputTokens: null,
+        outputTokens: null,
+        cacheRead: null,
+        cacheCreate: null,
+        durationMs: null,
+      });
     };
     const makeTool = (ts: number): void => {
-      insertToolEvent(db, { ts, accountId: 'a', sessionId: null, toolName: 'Bash', success: true, durationMs: null, error: null, decisionSource: null, decisionType: null, mcpServerScope: null, toolResultSizeBytes: null });
+      insertToolEvent(db, {
+        ts,
+        accountId: 'a',
+        sessionId: null,
+        toolName: 'Bash',
+        success: true,
+        durationMs: null,
+        error: null,
+        decisionSource: null,
+        decisionType: null,
+        mcpServerScope: null,
+        toolResultSizeBytes: null,
+      });
     };
     const makeErr = (ts: number): void => {
-      insertApiError(db, { ts, accountId: 'a', sessionId: null, model: null, statusCode: '500', error: 'x', durationMs: null, attempt: 1, requestId: null, speed: null });
+      insertApiError(db, {
+        ts,
+        accountId: 'a',
+        sessionId: null,
+        model: null,
+        statusCode: '500',
+        error: 'x',
+        durationMs: null,
+        attempt: 1,
+        requestId: null,
+        speed: null,
+      });
     };
     const makeActivity = (ts: number): void => {
       insertActivityEvent(db, { ts, accountId: 'a', sessionId: null, kind: 'session', value: 1 });
     };
 
     // Two rows per table: one old, one fresh.
-    [makeUsage, makeTool, makeErr, makeActivity].forEach((fn) => { fn(old); fn(fresh); });
+    [makeUsage, makeTool, makeErr, makeActivity].forEach((fn) => {
+      fn(old);
+      fn(fresh);
+    });
 
     const purged = purgeTelemetryOlderThan(db, cutoff);
     expect(purged).toBe(4); // one per table
@@ -745,7 +1085,18 @@ describe('purgeTelemetryOlderThan', () => {
 
   it('returns 0 when nothing is past the cutoff', async () => {
     const { insertUsageEvent, purgeTelemetryOlderThan } = await import('./db.js');
-    insertUsageEvent(db, { ts: Date.now(), accountId: 'a', sessionId: null, model: 'm', costUsd: null, inputTokens: null, outputTokens: null, cacheRead: null, cacheCreate: null, durationMs: null });
+    insertUsageEvent(db, {
+      ts: Date.now(),
+      accountId: 'a',
+      sessionId: null,
+      model: 'm',
+      costUsd: null,
+      inputTokens: null,
+      outputTokens: null,
+      cacheRead: null,
+      cacheCreate: null,
+      durationMs: null,
+    });
     expect(purgeTelemetryOlderThan(db, Date.now() - 24 * 60 * 60 * 1000)).toBe(0);
   });
 });
@@ -806,8 +1157,16 @@ describe('Metrics tab DB helpers', () => {
   it('getCacheHitRate computes per-model rate as cacheRead / (input + cacheRead)', async () => {
     const { getCacheHitRate, insertUsageEvent } = await import('./db.js');
     insertUsageEvent(db, {
-      ts: Date.now(), accountId: acct, sessionId: 's1', model: 'm1',
-      costUsd: 0, inputTokens: 800, outputTokens: 0, cacheRead: 200, cacheCreate: 0, durationMs: 0,
+      ts: Date.now(),
+      accountId: acct,
+      sessionId: 's1',
+      model: 'm1',
+      costUsd: 0,
+      inputTokens: 800,
+      outputTokens: 0,
+      cacheRead: 200,
+      cacheCreate: 0,
+      durationMs: 0,
     });
     const rates = getCacheHitRate(db, acct, 7);
     expect(rates['m1']?.rate).toBeCloseTo(0.2); // 200 / (800+200)
@@ -816,8 +1175,16 @@ describe('Metrics tab DB helpers', () => {
   it('getCacheHitRate returns rate=0 when no tokens recorded', async () => {
     const { getCacheHitRate, insertUsageEvent } = await import('./db.js');
     insertUsageEvent(db, {
-      ts: Date.now(), accountId: acct, sessionId: 's', model: 'm0',
-      costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, durationMs: 0,
+      ts: Date.now(),
+      accountId: acct,
+      sessionId: 's',
+      model: 'm0',
+      costUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheRead: 0,
+      cacheCreate: 0,
+      durationMs: 0,
     });
     expect(getCacheHitRate(db, acct, 7)['m0']?.rate).toBe(0);
   });
@@ -825,9 +1192,42 @@ describe('Metrics tab DB helpers', () => {
   it('getApiErrorsByDay + retry-exhausted counter (attempt > 10)', async () => {
     const { getApiErrorsByDay, insertApiError } = await import('./db.js');
     const now = Date.now();
-    insertApiError(db, { ts: now, accountId: acct, sessionId: 's', model: 'm', statusCode: '429', error: 'rl', durationMs: 1, attempt: 3, requestId: 'r1', speed: 'normal' });
-    insertApiError(db, { ts: now, accountId: acct, sessionId: 's', model: 'm', statusCode: '500', error: '5xx', durationMs: 1, attempt: 11, requestId: 'r2', speed: 'normal' });
-    insertApiError(db, { ts: now, accountId: acct, sessionId: 's', model: 'm', statusCode: null,  error: '??',  durationMs: 1, attempt: 1, requestId: null, speed: null });
+    insertApiError(db, {
+      ts: now,
+      accountId: acct,
+      sessionId: 's',
+      model: 'm',
+      statusCode: '429',
+      error: 'rl',
+      durationMs: 1,
+      attempt: 3,
+      requestId: 'r1',
+      speed: 'normal',
+    });
+    insertApiError(db, {
+      ts: now,
+      accountId: acct,
+      sessionId: 's',
+      model: 'm',
+      statusCode: '500',
+      error: '5xx',
+      durationMs: 1,
+      attempt: 11,
+      requestId: 'r2',
+      speed: 'normal',
+    });
+    insertApiError(db, {
+      ts: now,
+      accountId: acct,
+      sessionId: 's',
+      model: 'm',
+      statusCode: null,
+      error: '??',
+      durationMs: 1,
+      attempt: 1,
+      requestId: null,
+      speed: null,
+    });
     const out = getApiErrorsByDay(db, acct, 7);
     const day = Object.keys(out.byDay)[0]!;
     expect(out.byDay[day]).toEqual({ '429': 1, '500': 1, unknown: 1 });
@@ -840,10 +1240,17 @@ describe('Metrics tab DB helpers', () => {
     // 5 Bash calls: 4 success, 1 failure with an error
     for (const ms of [100, 200, 300, 400, 500]) {
       insertToolEvent(db, {
-        ts: now, accountId: acct, sessionId: 's', toolName: 'Bash',
-        success: ms !== 500, durationMs: ms,
+        ts: now,
+        accountId: acct,
+        sessionId: 's',
+        toolName: 'Bash',
+        success: ms !== 500,
+        durationMs: ms,
         error: ms === 500 ? 'boom' : null,
-        decisionSource: null, decisionType: null, mcpServerScope: null, toolResultSizeBytes: null,
+        decisionSource: null,
+        decisionType: null,
+        mcpServerScope: null,
+        toolResultSizeBytes: null,
       });
     }
     const stats = getToolStats(db, acct, 7);
@@ -858,9 +1265,17 @@ describe('Metrics tab DB helpers', () => {
   it('getToolStats handles a tool with no failures (topError=null)', async () => {
     const { getToolStats, insertToolEvent } = await import('./db.js');
     insertToolEvent(db, {
-      ts: Date.now(), accountId: acct, sessionId: 's', toolName: 'Read',
-      success: true, durationMs: 10, error: null, decisionSource: null,
-      decisionType: null, mcpServerScope: null, toolResultSizeBytes: null,
+      ts: Date.now(),
+      accountId: acct,
+      sessionId: 's',
+      toolName: 'Read',
+      success: true,
+      durationMs: 10,
+      error: null,
+      decisionSource: null,
+      decisionType: null,
+      mcpServerScope: null,
+      toolResultSizeBytes: null,
     });
     const stats = getToolStats(db, acct, 7);
     expect(stats[0]?.topError).toBeNull();
@@ -877,7 +1292,13 @@ describe('Metrics tab DB helpers', () => {
     const now = Date.now();
     insertActivityEvent(db, { ts: now, accountId: acct, sessionId: 's', kind: 'commit', value: 1 });
     insertActivityEvent(db, { ts: now, accountId: acct, sessionId: 's', kind: 'commit', value: 1 });
-    insertActivityEvent(db, { ts: now, accountId: acct, sessionId: 's', kind: 'lines_added', value: 100 });
+    insertActivityEvent(db, {
+      ts: now,
+      accountId: acct,
+      sessionId: 's',
+      kind: 'lines_added',
+      value: 100,
+    });
     const out = getActivityCounters(db, acct, 7, ['commit', 'lines_added']);
     const day = Object.keys(out)[0]!;
     expect(out[day]!['commit']).toBe(2);
@@ -892,11 +1313,17 @@ describe('Metrics tab DB helpers', () => {
   it('getEditAcceptRate tallies per language and overall', async () => {
     const { getEditAcceptRate, insertActivityEvent } = await import('./db.js');
     const now = Date.now();
-    const base = { ts: now, accountId: acct, sessionId: 's', kind: 'edit_decision' as const, value: 1 };
+    const base = {
+      ts: now,
+      accountId: acct,
+      sessionId: 's',
+      kind: 'edit_decision' as const,
+      value: 1,
+    };
     insertActivityEvent(db, { ...base, language: 'TypeScript', decision: 'accept' });
     insertActivityEvent(db, { ...base, language: 'TypeScript', decision: 'accept' });
     insertActivityEvent(db, { ...base, language: 'TypeScript', decision: 'reject' });
-    insertActivityEvent(db, { ...base, language: 'Python',     decision: 'accept' });
+    insertActivityEvent(db, { ...base, language: 'Python', decision: 'accept' });
     const out = getEditAcceptRate(db, acct, 7);
     expect(out.overall.accepts).toBe(3);
     expect(out.overall.rejects).toBe(1);
@@ -915,7 +1342,15 @@ describe('Metrics tab DB helpers', () => {
   it('getTopSkills returns name + count ordered desc, capped by limit', async () => {
     const { getTopSkills, insertActivityEvent } = await import('./db.js');
     const now = Date.now();
-    const row = (name: string) => ({ ts: now, accountId: acct, sessionId: 's', kind: 'skill_activated' as const, value: 1, name, source: 'plugin' });
+    const row = (name: string) => ({
+      ts: now,
+      accountId: acct,
+      sessionId: 's',
+      kind: 'skill_activated' as const,
+      value: 1,
+      name,
+      source: 'plugin',
+    });
     insertActivityEvent(db, row('init'));
     insertActivityEvent(db, row('init'));
     insertActivityEvent(db, row('init'));
@@ -928,8 +1363,26 @@ describe('Metrics tab DB helpers', () => {
 
   it('getRecentPlugins returns installs ordered newest first', async () => {
     const { getRecentPlugins, insertActivityEvent } = await import('./db.js');
-    insertActivityEvent(db, { ts: 1000, accountId: acct, sessionId: 's', kind: 'plugin_installed', value: 1, name: 'older', version: '1.0', marketplace: 'm' });
-    insertActivityEvent(db, { ts: 2000, accountId: acct, sessionId: 's', kind: 'plugin_installed', value: 1, name: 'newer', version: '2.0', marketplace: 'm' });
+    insertActivityEvent(db, {
+      ts: 1000,
+      accountId: acct,
+      sessionId: 's',
+      kind: 'plugin_installed',
+      value: 1,
+      name: 'older',
+      version: '1.0',
+      marketplace: 'm',
+    });
+    insertActivityEvent(db, {
+      ts: 2000,
+      accountId: acct,
+      sessionId: 's',
+      kind: 'plugin_installed',
+      value: 1,
+      name: 'newer',
+      version: '2.0',
+      marketplace: 'm',
+    });
     const plugins = getRecentPlugins(db, acct, 10);
     expect(plugins.map((p) => p.name)).toEqual(['newer', 'older']);
     expect(plugins[0]?.version).toBe('2.0');
@@ -938,19 +1391,40 @@ describe('Metrics tab DB helpers', () => {
   it('legacy getUsageByDayModel aggregates cost + tokens', async () => {
     const { getUsageByDayModel, insertUsageEvent } = await import('./db.js');
     insertUsageEvent(db, {
-      ts: Date.now(), accountId: acct, sessionId: 's', model: 'm',
-      costUsd: 0.5, inputTokens: 100, outputTokens: 50, cacheRead: 10, cacheCreate: 5, durationMs: 100,
+      ts: Date.now(),
+      accountId: acct,
+      sessionId: 's',
+      model: 'm',
+      costUsd: 0.5,
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheRead: 10,
+      cacheCreate: 5,
+      durationMs: 100,
     });
     const out = getUsageByDayModel(db, acct, 7);
     const day = Object.keys(out)[0]!;
     expect(out[day]!['m']).toEqual({ costUsd: 0.5, tokens: 150 });
   });
 
-  it('acknowledgeAllNotifications with accountId ack\'s scoped + null-scoped rows', async () => {
-    const { acknowledgeAllNotifications, insertNotification, listNotifications } = await import('./db.js');
+  it("acknowledgeAllNotifications with accountId ack's scoped + null-scoped rows", async () => {
+    const { acknowledgeAllNotifications, insertNotification, listNotifications } =
+      await import('./db.js');
     insertNotification(db, { ts: 1, accountId: 'a', type: 'usage_alert', title: 'x', body: 'x' });
-    insertNotification(db, { ts: 2, accountId: null, type: 'account_switched', title: 'x', body: 'x' });
-    insertNotification(db, { ts: 3, accountId: 'other', type: 'usage_alert', title: 'x', body: 'x' });
+    insertNotification(db, {
+      ts: 2,
+      accountId: null,
+      type: 'account_switched',
+      title: 'x',
+      body: 'x',
+    });
+    insertNotification(db, {
+      ts: 3,
+      accountId: 'other',
+      type: 'usage_alert',
+      title: 'x',
+      body: 'x',
+    });
     const n = acknowledgeAllNotifications(db, 'a');
     expect(n).toBe(2); // the 'a' one and the null-scoped one
     const unacked = listNotifications(db, { unacknowledgedOnly: true });
@@ -958,8 +1432,9 @@ describe('Metrics tab DB helpers', () => {
     expect(unacked[0]?.accountId).toBe('other');
   });
 
-  it('acknowledgeAllNotifications without accountId ack\'s every unread', async () => {
-    const { acknowledgeAllNotifications, insertNotification, listNotifications } = await import('./db.js');
+  it("acknowledgeAllNotifications without accountId ack's every unread", async () => {
+    const { acknowledgeAllNotifications, insertNotification, listNotifications } =
+      await import('./db.js');
     insertNotification(db, { ts: 1, accountId: 'a', type: 'usage_alert', title: 'x', body: 'x' });
     insertNotification(db, { ts: 2, accountId: 'b', type: 'usage_alert', title: 'x', body: 'x' });
     const n = acknowledgeAllNotifications(db);
@@ -970,8 +1445,16 @@ describe('Metrics tab DB helpers', () => {
   it('listRemovedAccounts + reactivateAccount roundtrip', async () => {
     const { listRemovedAccounts, reactivateAccount } = await import('./db.js');
     const acc: AccountInfo = {
-      id: 'rem', accountUuid: 'rem', email: 'r@x', displayName: '', orgUuid: '', orgName: '',
-      planType: 'pro', isActive: false, createdAt: Date.now(), color: null,
+      id: 'rem',
+      accountUuid: 'rem',
+      email: 'r@x',
+      displayName: '',
+      orgUuid: '',
+      orgName: '',
+      planType: 'pro',
+      isActive: false,
+      createdAt: Date.now(),
+      color: null,
     };
     upsertAccount(db, acc);
     markAccountRemoved(db, 'rem');
@@ -1003,9 +1486,11 @@ describe('alerts schema migration', () => {
         created_at              INTEGER NOT NULL
       );
     `);
-    raw.prepare(
-      'INSERT INTO alerts (account_id, threshold_pct, enabled, created_at) VALUES (?, ?, ?, ?)',
-    ).run('acc-legacy', 75, 1, Date.now());
+    raw
+      .prepare(
+        'INSERT INTO alerts (account_id, threshold_pct, enabled, created_at) VALUES (?, ?, ?, ?)',
+      )
+      .run('acc-legacy', 75, 1, Date.now());
     raw.close();
 
     // Reopen through getDb so the migration runs.
@@ -1044,7 +1529,10 @@ describe('alerts schema migration', () => {
 });
 
 describe('budget-scope alerts', () => {
-  const BUDGET_DB = join(tmpdir(), `sentinel-alerts-budget-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const BUDGET_DB = join(
+    tmpdir(),
+    `sentinel-alerts-budget-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+  );
 
   afterEach(() => {
     closeDb();
@@ -1096,7 +1584,13 @@ describe('budget-scope alerts', () => {
     const db = getDb(BUDGET_DB);
     const { upsertAlert } = await import('./db.js');
     expect(() =>
-      upsertAlert(db, { scope: 'budget', budgetScope: 'global', accountId: 'acc-a', thresholdPct: 80, enabled: true }),
+      upsertAlert(db, {
+        scope: 'budget',
+        budgetScope: 'global',
+        accountId: 'acc-a',
+        thresholdPct: 80,
+        enabled: true,
+      }),
     ).toThrow();
   });
 
@@ -1104,16 +1598,40 @@ describe('budget-scope alerts', () => {
     const db = getDb(BUDGET_DB);
     const { upsertAlert } = await import('./db.js');
     expect(() =>
-      upsertAlert(db, { scope: 'budget', budgetScope: 'account', accountId: null, thresholdPct: 80, enabled: true }),
+      upsertAlert(db, {
+        scope: 'budget',
+        budgetScope: 'account',
+        accountId: null,
+        thresholdPct: 80,
+        enabled: true,
+      }),
     ).toThrow();
   });
 
   it('listAlerts by scope:budget + accountId returns only that account', async () => {
     const db = getDb(BUDGET_DB);
     const { upsertAlert, listAlerts } = await import('./db.js');
-    upsertAlert(db, { scope: 'budget', budgetScope: 'account', accountId: 'acc-a', thresholdPct: 80, enabled: true });
-    upsertAlert(db, { scope: 'budget', budgetScope: 'account', accountId: 'acc-b', thresholdPct: 80, enabled: true });
-    upsertAlert(db, { scope: 'budget', budgetScope: 'global',  accountId: null,     thresholdPct: 90, enabled: true });
+    upsertAlert(db, {
+      scope: 'budget',
+      budgetScope: 'account',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    upsertAlert(db, {
+      scope: 'budget',
+      budgetScope: 'account',
+      accountId: 'acc-b',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    upsertAlert(db, {
+      scope: 'budget',
+      budgetScope: 'global',
+      accountId: null,
+      thresholdPct: 90,
+      enabled: true,
+    });
 
     const aRows = listAlerts(db, { scope: 'budget', accountId: 'acc-a' });
     expect(aRows).toHaveLength(1);
@@ -1126,15 +1644,31 @@ describe('budget-scope alerts', () => {
   it('updates an existing budget alert in place', async () => {
     const db = getDb(BUDGET_DB);
     const { upsertAlert } = await import('./db.js');
-    const saved = upsertAlert(db, { scope: 'budget', budgetScope: 'account', accountId: 'acc-a', thresholdPct: 80, enabled: true });
-    const updated = upsertAlert(db, { id: saved.id, scope: 'budget', budgetScope: 'account', accountId: 'acc-a', thresholdPct: 95, enabled: false });
+    const saved = upsertAlert(db, {
+      scope: 'budget',
+      budgetScope: 'account',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    const updated = upsertAlert(db, {
+      id: saved.id,
+      scope: 'budget',
+      budgetScope: 'account',
+      accountId: 'acc-a',
+      thresholdPct: 95,
+      enabled: false,
+    });
     expect(updated.id).toBe(saved.id);
     expect(updated.thresholdPct).toBe(95);
     expect(updated.enabled).toBe(false);
   });
 });
 
-const PERMS_DB = join(tmpdir(), `sentinel-perms-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+const PERMS_DB = join(
+  tmpdir(),
+  `sentinel-perms-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+);
 
 describe('permission_rules CRUD', () => {
   let db: Database.Database;
@@ -1165,20 +1699,47 @@ describe('permission_rules CRUD', () => {
   });
 
   it('appends new rules with priority > existing', () => {
-    const a = upsertPermissionRule(db, { decision: 'deny', tool: 'Bash', pattern: null, raw: 'Bash' });
-    const b = upsertPermissionRule(db, { decision: 'allow', tool: 'Read', pattern: null, raw: 'Read' });
+    const a = upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: null,
+      raw: 'Bash',
+    });
+    const b = upsertPermissionRule(db, {
+      decision: 'allow',
+      tool: 'Read',
+      pattern: null,
+      raw: 'Read',
+    });
     expect(b.priority).toBeGreaterThan(a.priority);
   });
 
   it('lists rules in priority order', () => {
-    upsertPermissionRule(db, { decision: 'deny', tool: 'Bash', pattern: null, raw: 'Bash', priority: 50 });
-    upsertPermissionRule(db, { decision: 'allow', tool: 'Read', pattern: null, raw: 'Read', priority: 10 });
+    upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: null,
+      raw: 'Bash',
+      priority: 50,
+    });
+    upsertPermissionRule(db, {
+      decision: 'allow',
+      tool: 'Read',
+      pattern: null,
+      raw: 'Read',
+      priority: 10,
+    });
     const list = listPermissionRules(db);
     expect(list.map((r) => r.tool)).toEqual(['Read', 'Bash']);
   });
 
   it('updates a rule in place by id', () => {
-    const saved = upsertPermissionRule(db, { decision: 'deny', tool: 'Bash', pattern: null, raw: 'Bash' });
+    const saved = upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: null,
+      raw: 'Bash',
+    });
     const updated = upsertPermissionRule(db, {
       id: saved.id,
       decision: 'allow',
@@ -1195,7 +1756,12 @@ describe('permission_rules CRUD', () => {
   });
 
   it('toggles enabled via upsert', () => {
-    const saved = upsertPermissionRule(db, { decision: 'deny', tool: 'Bash', pattern: null, raw: 'Bash' });
+    const saved = upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: null,
+      raw: 'Bash',
+    });
     const disabled = upsertPermissionRule(db, {
       id: saved.id,
       decision: saved.decision,
@@ -1208,7 +1774,12 @@ describe('permission_rules CRUD', () => {
   });
 
   it('deletes a rule by id', () => {
-    const saved = upsertPermissionRule(db, { decision: 'deny', tool: 'Bash', pattern: null, raw: 'Bash' });
+    const saved = upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: null,
+      raw: 'Bash',
+    });
     expect(deletePermissionRule(db, saved.id)).toBe(true);
     expect(listPermissionRules(db)).toHaveLength(0);
   });
@@ -1227,5 +1798,174 @@ describe('permission_rules CRUD', () => {
     });
     expect(saved.id).toBe('00000000-0000-0000-0000-000000000000');
     expect(listPermissionRules(db)).toHaveLength(1);
+  });
+});
+
+describe('cache_ttl_events', () => {
+  let db: Database.Database;
+  const acct = 'acct-ttl';
+
+  beforeEach(() => {
+    db = makeTestDb();
+  });
+
+  afterEach(() => {
+    closeDb();
+    if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
+  });
+
+  async function seed(
+    overrides: Partial<Parameters<typeof import('./db.js').insertCacheTtlEvent>[1]> = {},
+  ): Promise<void> {
+    const { insertCacheTtlEvent } = await import('./db.js');
+    insertCacheTtlEvent(db, {
+      ts: Date.now(),
+      accountId: acct,
+      sessionId: 's1',
+      model: 'claude-sonnet-4-6',
+      requestId: 'req-1',
+      reqMarkers5m: 1,
+      reqMarkers1h: 1,
+      cacheCreate5m: 100,
+      cacheCreate1h: 200,
+      cacheRead: 50,
+      inputTokens: 10,
+      cost5mWrite: 0.000375,
+      cost1hWrite: 0.0012,
+      costRead: 0.000015,
+      ...overrides,
+    });
+  }
+
+  it('insertCacheTtlEvent persists every column', async () => {
+    const { insertCacheTtlEvent } = await import('./db.js');
+    const id = insertCacheTtlEvent(db, {
+      ts: 1_700_000_000_000,
+      accountId: acct,
+      sessionId: 'sess-x',
+      model: 'claude-opus-4-7',
+      requestId: 'r1',
+      reqMarkers5m: 2,
+      reqMarkers1h: 3,
+      cacheCreate5m: 400,
+      cacheCreate1h: 500,
+      cacheRead: 600,
+      inputTokens: 7,
+      cost5mWrite: 0.0075,
+      cost1hWrite: 0.015,
+      costRead: 0.0009,
+    });
+    expect(id).toBeGreaterThan(0);
+    const row = db.prepare('SELECT * FROM cache_ttl_events WHERE id = ?').get(id) as Record<
+      string,
+      unknown
+    >;
+    expect(row).toMatchObject({
+      ts: 1_700_000_000_000,
+      account_id: acct,
+      session_id: 'sess-x',
+      model: 'claude-opus-4-7',
+      request_id: 'r1',
+      req_markers_5m: 2,
+      req_markers_1h: 3,
+      cache_create_5m: 400,
+      cache_create_1h: 500,
+      cache_read: 600,
+      input_tokens: 7,
+      cost_5m_write: 0.0075,
+      cost_1h_write: 0.015,
+      cost_read: 0.0009,
+    });
+  });
+
+  it('getCacheTtlByDayModel groups by day and model', async () => {
+    const { getCacheTtlByDayModel } = await import('./db.js');
+    await seed({ model: 'claude-sonnet-4-6', cacheCreate5m: 100, cacheCreate1h: 0 });
+    await seed({ model: 'claude-sonnet-4-6', cacheCreate5m: 50, cacheCreate1h: 0 });
+    await seed({ model: 'claude-opus-4-7', cacheCreate5m: 0, cacheCreate1h: 300 });
+    const out = getCacheTtlByDayModel(db, acct, 7);
+    const days = Object.keys(out);
+    expect(days).toHaveLength(1);
+    const day = days[0]!;
+    expect(out[day]!['claude-sonnet-4-6']?.create5m).toBe(150);
+    expect(out[day]!['claude-sonnet-4-6']?.create1h).toBe(0);
+    expect(out[day]!['claude-opus-4-7']?.create1h).toBe(300);
+  });
+
+  it('getCacheTtlByDayModel filters by accountId and date window', async () => {
+    const { getCacheTtlByDayModel } = await import('./db.js');
+    const tooOld = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    await seed({ ts: tooOld });
+    await seed({ accountId: 'other-acct' });
+    await seed({ cacheCreate5m: 42 });
+    const out = getCacheTtlByDayModel(db, acct, 7);
+    const totals = Object.values(out).flatMap((m) => Object.values(m));
+    expect(totals).toHaveLength(1);
+    expect(totals[0]!.create5m).toBe(42);
+  });
+
+  it('getCacheTtlByDayModel returns empty object when no rows', async () => {
+    const { getCacheTtlByDayModel } = await import('./db.js');
+    expect(getCacheTtlByDayModel(db, acct, 7)).toEqual({});
+  });
+
+  it('getCacheTtlBySession groups rows and sums token + cost fields', async () => {
+    const { getCacheTtlBySession } = await import('./db.js');
+    const base = Date.now();
+    await seed({
+      ts: base - 2000,
+      sessionId: 's1',
+      cacheCreate5m: 10,
+      cacheCreate1h: 0,
+      cost5mWrite: 0.01,
+    });
+    await seed({
+      ts: base - 1000,
+      sessionId: 's1',
+      cacheCreate5m: 20,
+      cacheCreate1h: 5,
+      cost5mWrite: 0.02,
+      cost1hWrite: 0.01,
+    });
+    await seed({ ts: base, sessionId: 's2', cacheCreate5m: 3 });
+    const rows = getCacheTtlBySession(db, acct, 7);
+    expect(rows).toHaveLength(2);
+    // Ordered by lastTs DESC → s2 first
+    expect(rows[0]!.sessionId).toBe('s2');
+    expect(rows[1]!.sessionId).toBe('s1');
+    expect(rows[1]!.create5m).toBe(30);
+    expect(rows[1]!.create1h).toBe(5);
+    expect(rows[1]!.requestCount).toBe(2);
+    expect(rows[1]!.cost5mWrite).toBeCloseTo(0.03);
+    expect(rows[1]!.cost1hWrite).toBeCloseTo(0.01);
+    expect(rows[1]!.firstTs).toBe(base - 2000);
+    expect(rows[1]!.lastTs).toBe(base - 1000);
+  });
+
+  it('getCacheTtlBySession skips rows with null or empty session_id', async () => {
+    const { getCacheTtlBySession } = await import('./db.js');
+    await seed({ sessionId: null });
+    await seed({ sessionId: '' });
+    await seed({ sessionId: 'real' });
+    const rows = getCacheTtlBySession(db, acct, 7);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.sessionId).toBe('real');
+  });
+
+  it('getCacheTtlBySession respects the limit parameter', async () => {
+    const { getCacheTtlBySession } = await import('./db.js');
+    for (let i = 0; i < 5; i++) {
+      await seed({ ts: Date.now() - i * 1000, sessionId: `s${i}` });
+    }
+    expect(getCacheTtlBySession(db, acct, 7, 3)).toHaveLength(3);
+  });
+
+  it('getCacheTtlBySession picks the most recent model per session', async () => {
+    const { getCacheTtlBySession } = await import('./db.js');
+    const base = Date.now();
+    await seed({ ts: base - 5000, sessionId: 'sx', model: 'claude-sonnet-4-6' });
+    await seed({ ts: base, sessionId: 'sx', model: 'claude-opus-4-7' });
+    const rows = getCacheTtlBySession(db, acct, 7);
+    expect(rows[0]!.model).toBe('claude-opus-4-7');
   });
 });

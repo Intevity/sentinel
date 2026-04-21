@@ -24,7 +24,9 @@ export function usePermissionBypasses(): UsePermissionBypassesResult {
 
   const refetch = useCallback(async () => {
     try {
-      const res = await sendToSentinel<PermissionBypassEntry[]>({ type: 'get_permission_bypasses' });
+      const res = await sendToSentinel<PermissionBypassEntry[]>({
+        type: 'get_permission_bypasses',
+      });
       if (res.success) {
         setEntries(res.data ?? []);
         setError(null);
@@ -38,10 +40,13 @@ export function usePermissionBypasses(): UsePermissionBypassesResult {
     }
   }, []);
 
-  const remove = useCallback(async (id: number) => {
-    await sendToSentinel({ type: 'remove_permission_bypass', id });
-    await refetch();
-  }, [refetch]);
+  const remove = useCallback(
+    async (id: number) => {
+      await sendToSentinel({ type: 'remove_permission_bypass', id });
+      await refetch();
+    },
+    [refetch],
+  );
 
   useEffect(() => {
     void refetch();
@@ -50,8 +55,14 @@ export function usePermissionBypasses(): UsePermissionBypassesResult {
       if (msg.type === 'permission_bypasses_updated') {
         void refetch();
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, [refetch]);
 
   return { entries, loading, error, refetch, remove };

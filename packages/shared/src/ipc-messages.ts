@@ -529,10 +529,7 @@ export interface GetSiblingCandidatesMessage {
 /** Response payload for get_sibling_candidates. Keyed by email. Empty
  *  map means every enrolled email has zero unenrolled siblings (or no
  *  email has a sessionKey to enumerate). */
-export type SiblingCandidates = Record<
-  string,
-  Array<{ orgUuid: string; orgName: string }>
->;
+export type SiblingCandidates = Record<string, Array<{ orgUuid: string; orgName: string }>>;
 
 export interface CancelLoginMessage {
   type: 'cancel_login';
@@ -1075,7 +1072,26 @@ export type AppToDaemonMessage =
   | GetPermissionsStatusMessage;
 
 /** Response payload alias re-exports for convenience in consumers. */
-export type { Settings, Alert, NotificationRecord, MetricsSummary, OverageCreditGrant, SecurityEvent, SecurityAllowlistEntry, PermissionBypassEntry, ClaudeSyncStatus, PendingSecurityBlock, PendingBlockSource, LogEntry, LogLevel, PermissionRule, PermissionRuleInput, AutoModeStatus, RequestDetail, SecurityBenchmarkResult };
+export type {
+  Settings,
+  Alert,
+  NotificationRecord,
+  MetricsSummary,
+  OverageCreditGrant,
+  SecurityEvent,
+  SecurityAllowlistEntry,
+  PermissionBypassEntry,
+  ClaudeSyncStatus,
+  PendingSecurityBlock,
+  PendingBlockSource,
+  LogEntry,
+  LogLevel,
+  PermissionRule,
+  PermissionRuleInput,
+  AutoModeStatus,
+  RequestDetail,
+  SecurityBenchmarkResult,
+};
 
 // ─── All IPC messages ─────────────────────────────────────────────────────────
 

@@ -19,9 +19,7 @@ describe('logger', () => {
     if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function make(
-    opts: Partial<Parameters<typeof createLogger>[0]> = {},
-  ): Logger {
+  function make(opts: Partial<Parameters<typeof createLogger>[0]> = {}): Logger {
     logger = createLogger({
       dir,
       // Tests use tiny sizes and faster flushes to exercise the codepaths
@@ -148,6 +146,29 @@ describe('logger', () => {
       log.info(cyclic);
       // Either '[object Object]' or some String() fallback — just confirm it doesn't throw
       expect(log.getHistory()).toHaveLength(1);
+    });
+
+    it('request logs render the "no response" tag when status is null but the call did not error', () => {
+      const log = make();
+      log.request({
+        requestId: 'r-1',
+        method: 'GET',
+        path: '/v1/messages',
+        status: null,
+        durationMs: null,
+        errored: false,
+      });
+      const msg = log.getHistory()[0]!.message;
+      expect(msg).toContain('no response');
+    });
+
+    it('formatArg uses Error.message when the Error has no stack', () => {
+      const log = make();
+      const err = new Error('headless');
+      delete (err as unknown as Record<string, unknown>).stack;
+      log.error('oops:', err);
+      const msg = log.getHistory()[0]!.message;
+      expect(msg).toContain('headless');
     });
   });
 

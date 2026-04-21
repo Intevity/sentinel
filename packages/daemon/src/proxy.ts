@@ -4,7 +4,7 @@ import type { Server } from 'http';
 import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { OverageStateMachine } from './overage.js';
-import { insertOverageEvent, insertNotification } from './db.js';
+import { insertOverageEvent, insertNotification, insertCacheTtlEvent } from './db.js';
 import type { IpcServer } from './ipc.js';
 import type { RateLimitStore } from './rate-limit-store.js';
 import type { SecurityScanner } from './security/scanner.js';
@@ -13,6 +13,12 @@ import { extractSessionInfo } from './security/permissions/enforcer.js';
 import { loadSettings } from './settings.js';
 import { redactHeaders, type RequestLogStore } from './request-log-db.js';
 import { log } from './logger.js';
+import {
+  parseCacheControlMarkers,
+  extractUsageFromJson,
+  SseUsageExtractor,
+} from './cache-ttl/parser.js';
+import { computeCacheCosts } from './cache-ttl/pricing.js';
 
 export const DAEMON_PORT = 47284;
 export const ANTHROPIC_HOST = 'api.anthropic.com';
@@ -117,6 +123,11 @@ interface CaptureContext {
 // to avoid flooding the UI on rapid successive requests.
 const RL_BROADCAST_DEBOUNCE_MS = 2_000;
 
+// Cache TTL inserts happen once per /v1/messages response. Debounce the
+// metrics_updated broadcast to this cadence so a burst of requests doesn't
+// cause the UI to re-fetch on every single one.
+const CACHE_TTL_BROADCAST_DEBOUNCE_MS = 1_000;
+
 /** Compact one-line summary of the overage/5h headers worth logging per
  *  response. Returns null when there are no rate-limit headers to summarize.
  *  Intentionally selective — full header dumps flood the log.
@@ -133,8 +144,8 @@ export function summarizeOverageHeaders(
   const fields: Array<[string, string | null]> = [
     ['overage-status', pick('anthropic-ratelimit-unified-overage-status')],
     ['overage-in-use', pick('anthropic-ratelimit-unified-overage-in-use')],
-    ['5h-status',      pick('anthropic-ratelimit-unified-5h-status')],
-    ['5h-util',        pick('anthropic-ratelimit-unified-5h-utilization')],
+    ['5h-status', pick('anthropic-ratelimit-unified-5h-status')],
+    ['5h-util', pick('anthropic-ratelimit-unified-5h-utilization')],
   ];
   const nonNull = fields.filter(([, v]) => v !== null);
   if (nonNull.length === 0) return null;
@@ -180,13 +191,17 @@ export function createProxyServer(
     let body: string;
 
     if (transition === 'entered') {
-      const resetDate = state.resetsAt ? new Date(state.resetsAt * 1000).toLocaleDateString() : 'unknown';
+      const resetDate = state.resetsAt
+        ? new Date(state.resetsAt * 1000).toLocaleDateString()
+        : 'unknown';
       title = `⚠️ Overage started — ${accountId}`;
       body = `Claude Code is now using your overage budget. Resets ${resetDate}.`;
     } else if (transition === 'disabled') {
       /* v8 ignore next 2 */
       const reason = state.disabledReason ?? 'budget exhausted';
-      const resetDate = state.resetsAt ? new Date(state.resetsAt * 1000).toLocaleDateString() : 'unknown';
+      const resetDate = state.resetsAt
+        ? new Date(state.resetsAt * 1000).toLocaleDateString()
+        : 'unknown';
       title = `🚫 Overage limit reached — ${accountId}`;
       body = `Overage disabled (${reason}). Claude Code requests may be blocked until ${resetDate}.`;
     } else {
@@ -241,7 +256,12 @@ export function createProxyServer(
   const selectCredential = (req: IncomingMessage): TokenSelection | null => {
     const probeToken = req.headers['x-sentinel-probe-token'];
     const probeAccount = req.headers['x-sentinel-probe-account'];
-    if (typeof probeToken === 'string' && typeof probeAccount === 'string' && probeToken && probeAccount) {
+    if (
+      typeof probeToken === 'string' &&
+      typeof probeAccount === 'string' &&
+      probeToken &&
+      probeAccount
+    ) {
       delete req.headers['x-sentinel-probe-token'];
       delete req.headers['x-sentinel-probe-account'];
       return { token: probeToken, accountId: probeAccount };
@@ -296,27 +316,39 @@ export function createProxyServer(
       // reset is missing (unlikely in practice — rate-limit headers arrive
       // on the first response for a new account).
       const retryAfter =
-        resetSec != null
-          ? Math.max(1, resetSec - Math.floor(Date.now() / 1000))
-          : 300;
+        resetSec != null ? Math.max(1, resetSec - Math.floor(Date.now() / 1000)) : 300;
       res.writeHead(503, {
         'Content-Type': 'application/json',
         'Retry-After': String(retryAfter),
       });
-      res.end(JSON.stringify({
-        error: {
-          type: 'sentinel_budget_paused',
-          message:
-            'Sentinel has paused this account because its weekly budget was reached. ' +
-            'It will resume automatically when the 5-hour window resets. ' +
-            'Switch accounts or raise the Sentinel budget in Settings to unblock sooner.',
-        },
-      }));
+      res.end(
+        JSON.stringify({
+          error: {
+            type: 'sentinel_budget_paused',
+            message:
+              'Sentinel has paused this account because its weekly budget was reached. ' +
+              'It will resume automatically when the 5-hour window resets. ' +
+              'Switch accounts or raise the Sentinel budget in Settings to unblock sooner.',
+          },
+        }),
+      );
       return;
     }
 
     if (ANTHROPIC_PATHS.some((p) => url.startsWith(p))) {
-      proxyToAnthropic(req, res, machine, rateLimitStore, perRequestAccountId, ipcServer, lastBroadcast, securityScanner, permissionsEnforcer, requestLogStore).catch((err) => {
+      proxyToAnthropic(
+        req,
+        res,
+        machine,
+        rateLimitStore,
+        perRequestAccountId,
+        ipcServer,
+        lastBroadcast,
+        securityScanner,
+        permissionsEnforcer,
+        requestLogStore,
+        opts.db,
+      ).catch((err) => {
         console.error('[Proxy] Proxy error:', err);
         res.writeHead(502);
         res.end();
@@ -325,7 +357,19 @@ export function createProxyServer(
     }
 
     // Default: proxy all other paths to Anthropic (future-proof)
-    proxyToAnthropic(req, res, machine, rateLimitStore, perRequestAccountId, ipcServer, lastBroadcast, undefined, undefined, requestLogStore).catch((err) => {
+    proxyToAnthropic(
+      req,
+      res,
+      machine,
+      rateLimitStore,
+      perRequestAccountId,
+      ipcServer,
+      lastBroadcast,
+      undefined,
+      undefined,
+      requestLogStore,
+      opts.db,
+    ).catch((err) => {
       console.error('[Proxy] Default proxy error:', err);
       res.writeHead(502);
       res.end();
@@ -351,6 +395,7 @@ async function proxyToAnthropic(
   securityScanner?: SecurityScanner,
   permissionsEnforcer?: PermissionsEnforcer,
   requestLogStore?: RequestLogStore,
+  db?: Database,
 ): Promise<void> {
   let body = await readBody(req);
 
@@ -392,6 +437,39 @@ async function proxyToAnthropic(
     'default';
 
   const rlKey = attributionAccountId ?? accountId;
+
+  // Cache TTL tracking: one row per /v1/messages POST that yielded usage.
+  // Independent of request-log capture so the feature is on even when the
+  // broader logging toggle is off. count_tokens and probes are filtered out.
+  const isMessagesPost =
+    req.method === 'POST' &&
+    (req.url?.startsWith('/v1/messages') ?? false) &&
+    !(req.url?.includes('count_tokens') ?? false) &&
+    !isProbe;
+  const cacheTtlCtx: {
+    db: Database;
+    requestId: string;
+    sessionId: string | null;
+    markers5m: number;
+    markers1h: number;
+    sse: SseUsageExtractor;
+    nonSseChunks: Buffer[];
+    nonSseBytes: number;
+    isSse: boolean;
+  } | null =
+    db && isMessagesPost
+      ? {
+          db,
+          requestId: capture?.requestId ?? randomUUID(),
+          sessionId: null,
+          markers5m: 0,
+          markers1h: 0,
+          sse: new SseUsageExtractor(),
+          nonSseChunks: [],
+          nonSseBytes: 0,
+          isSse: false,
+        }
+      : null;
 
   // Auto-mode observation — always runs so the UI's "Claude Code is in auto
   // mode" indicator stays live even when Sentinel's own rule enforcement is
@@ -447,11 +525,7 @@ async function proxyToAnthropic(
   //    timeout, a 403 is synthesized.
   //  - `block_immediate`: 403 fires without any hold (user disabled the
   //    hold feature).
-  if (
-    securityScanner &&
-    req.method === 'POST' &&
-    req.url?.startsWith('/v1/messages')
-  ) {
+  if (securityScanner && req.method === 'POST' && req.url?.startsWith('/v1/messages')) {
     const decision = securityScanner.scanOutbound(body, rlKey);
 
     const synthesize403 = (reason: string, tag: string): void => {
@@ -485,10 +559,15 @@ async function proxyToAnthropic(
       req.off('close', onClientClose);
 
       if (outcome !== 'approve') {
-        synthesize403(decision.blockReason, outcome === 'timeout' ? 'BLOCKED (timeout)' : 'BLOCKED (denied)');
+        synthesize403(
+          decision.blockReason,
+          outcome === 'timeout' ? 'BLOCKED (timeout)' : 'BLOCKED (denied)',
+        );
         return;
       }
-      console.log(`[Proxy] APPROVED ${req.method} ${req.url} (account: ${rlKey}) — ${decision.blockReason}`);
+      console.log(
+        `[Proxy] APPROVED ${req.method} ${req.url} (account: ${rlKey}) — ${decision.blockReason}`,
+      );
       // Fall through to normal upstream forwarding using the already-
       // buffered body.
     }
@@ -507,7 +586,82 @@ async function proxyToAnthropic(
     }
   }
 
+  // Cache TTL: parse request-side cache_control markers once, and reuse the
+  // session extractor that enforcer already has (same metadata.user_id).
+  if (cacheTtlCtx) {
+    const markers = parseCacheControlMarkers(body);
+    cacheTtlCtx.markers5m = markers.markers5m;
+    cacheTtlCtx.markers1h = markers.markers1h;
+    const sessionInfo = extractSessionInfo(body);
+    cacheTtlCtx.sessionId = sessionInfo?.sessionId ?? null;
+  }
+
+  const feedCacheTtl = (chunk: Buffer): void => {
+    if (!cacheTtlCtx) return;
+    if (cacheTtlCtx.isSse) {
+      cacheTtlCtx.sse.onChunk(chunk);
+      return;
+    }
+    // Non-SSE responses: buffer up to 256 KB for a final JSON parse. That's
+    // plenty of headroom for a top-level usage object on a non-streaming
+    // /v1/messages response; anything larger almost certainly IS streaming
+    // misclassified by a gzip edge case, and we'll simply skip the insert.
+    if (cacheTtlCtx.nonSseBytes >= 256 * 1024) return;
+    cacheTtlCtx.nonSseChunks.push(chunk);
+    cacheTtlCtx.nonSseBytes += chunk.length;
+  };
+
+  const finalizeCacheTtl = (): void => {
+    if (!cacheTtlCtx) return;
+    let result = cacheTtlCtx.sse.getResult();
+    if (!result && cacheTtlCtx.nonSseChunks.length > 0) {
+      result = extractUsageFromJson(Buffer.concat(cacheTtlCtx.nonSseChunks));
+    }
+    if (!result) return;
+    const model = result.model ?? 'unknown';
+    const costs = computeCacheCosts(
+      model,
+      result.cacheCreate5m,
+      result.cacheCreate1h,
+      result.cacheRead,
+    );
+    try {
+      insertCacheTtlEvent(cacheTtlCtx.db, {
+        ts: Date.now(),
+        accountId: rlKey,
+        sessionId: cacheTtlCtx.sessionId,
+        model,
+        requestId: cacheTtlCtx.requestId,
+        reqMarkers5m: cacheTtlCtx.markers5m,
+        reqMarkers1h: cacheTtlCtx.markers1h,
+        cacheCreate5m: result.cacheCreate5m,
+        cacheCreate1h: result.cacheCreate1h,
+        cacheRead: result.cacheRead,
+        inputTokens: result.inputTokens,
+        cost5mWrite: costs.cost5mWrite,
+        cost1hWrite: costs.cost1hWrite,
+        costRead: costs.costRead,
+      });
+    } catch (err) {
+      console.error('[Proxy] cache_ttl insert failed:', err);
+      return;
+    }
+    // Debounced metrics_updated so rapid sequential requests don't flood IPC.
+    // Keyed per account so one noisy account can't mask a quiet one's first
+    // refresh.
+    if (ipcServer && lastBroadcast) {
+      const now = Date.now();
+      const key = `metrics:${rlKey}`;
+      const last = lastBroadcast.get(key) ?? 0;
+      if (now - last >= CACHE_TTL_BROADCAST_DEBOUNCE_MS) {
+        lastBroadcast.set(key, now);
+        ipcServer.broadcast({ type: 'metrics_updated' });
+      }
+    }
+  };
+
   const finalizeCapture = (): void => {
+    finalizeCacheTtl();
     if (!capture || !requestLogStore || capture.finalized) return;
     capture.finalized = true;
     const responseBody =
@@ -555,7 +709,9 @@ async function proxyToAnthropic(
         },
       },
       (proxyRes) => {
-        console.log(`[Proxy] ${req.method} ${req.url} → ${proxyRes.statusCode} (account: ${rlKey})`);
+        console.log(
+          `[Proxy] ${req.method} ${req.url} → ${proxyRes.statusCode} (account: ${rlKey})`,
+        );
 
         if (capture) {
           capture.responseStatus = proxyRes.statusCode ?? null;
@@ -565,6 +721,10 @@ async function proxyToAnthropic(
             !encodingHeader &&
             req.method === 'POST' &&
             (req.url?.startsWith('/v1/messages') ?? false);
+        }
+        if (cacheTtlCtx) {
+          const ct = String(proxyRes.headers['content-type'] ?? '');
+          cacheTtlCtx.isSse = ct.includes('text/event-stream');
         }
 
         // Inspect overage + rate-limit headers
@@ -614,7 +774,7 @@ async function proxyToAnthropic(
         // at the request layer (accept-encoding was stripped).
         const isSse = !encoding && req.url?.startsWith('/v1/messages') && req.method === 'POST';
         const interceptor = isSse
-          ? permissionsEnforcer?.createInterceptor(res, rlKey, req.headers) ?? null
+          ? (permissionsEnforcer?.createInterceptor(res, rlKey, req.headers) ?? null)
           : null;
 
         const captureChunk = (chunk: Buffer): void => {
@@ -641,6 +801,7 @@ async function proxyToAnthropic(
             interceptor.push(chunk);
             if (tapActive && tap !== null) tap.push(chunk);
             captureChunk(chunk);
+            feedCacheTtl(chunk);
           });
           proxyRes.on('end', () => {
             interceptor.flush();
@@ -661,6 +822,7 @@ async function proxyToAnthropic(
             res.write(chunk);
             tap.push(chunk);
             captureChunk(chunk);
+            feedCacheTtl(chunk);
           });
           proxyRes.on('end', () => {
             res.end();
@@ -675,7 +837,10 @@ async function proxyToAnthropic(
             reject(err);
           });
         } else {
-          proxyRes.on('data', captureChunk);
+          proxyRes.on('data', (chunk: Buffer) => {
+            captureChunk(chunk);
+            feedCacheTtl(chunk);
+          });
           proxyRes.pipe(res);
           proxyRes.on('end', () => {
             finalizeCapture();

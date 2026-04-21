@@ -197,16 +197,28 @@ function readCredentialBlob(service: string, account: string): string | null {
 }
 
 function writeCredentialBlob(service: string, account: string, blob: string): void {
-  if (process.platform === 'darwin') { writeDarwin(service, account, blob); return; }
+  if (process.platform === 'darwin') {
+    writeDarwin(service, account, blob);
+    return;
+  }
   /* v8 ignore next 3 */
-  if (process.platform === 'win32') { writeWindows(service, account, blob); return; }
+  if (process.platform === 'win32') {
+    writeWindows(service, account, blob);
+    return;
+  }
   writeLinux(service, account, blob);
 }
 
 /* v8 ignore next 6 */
 function deleteCredentialBlob(service: string, account: string): void {
-  if (process.platform === 'darwin') { deleteDarwin(service, account); return; }
-  if (process.platform === 'win32') { deleteWindows(service); return; }
+  if (process.platform === 'darwin') {
+    deleteDarwin(service, account);
+    return;
+  }
+  if (process.platform === 'win32') {
+    deleteWindows(service);
+    return;
+  }
   deleteLinux(service, account);
 }
 

@@ -41,17 +41,19 @@ export default function ActivationBanner(): React.ReactElement | null {
       <div className="rounded-2xl bg-ios-blue/[0.08] dark:bg-ios-blue/[0.12] ring-1 ring-ios-blue/20 p-3">
         <div className="flex items-start gap-3">
           <div className="flex-shrink-0 w-8 h-8 rounded-full bg-ios-blue/10 flex items-center justify-center">
-            {state === 'error'
-              ? <AlertCircle size={15} className="text-ios-red" strokeWidth={2} />
-              : <Zap         size={15} className="text-ios-blue" strokeWidth={2} />
-            }
+            {state === 'error' ? (
+              <AlertCircle size={15} className="text-ios-red" strokeWidth={2} />
+            ) : (
+              <Zap size={15} className="text-ios-blue" strokeWidth={2} />
+            )}
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-[13px] font-semibold text-black dark:text-white">
               Activate Sentinel
             </p>
             <p className="text-[11px] text-[#8E8E93] mt-0.5">
-              Routes Claude Code through the Sentinel proxy for multi-account switching, usage tracking, and overage alerts. Restart Claude Code after activating.
+              Routes Claude Code through the Sentinel proxy for multi-account switching, usage
+              tracking, and overage alerts. Restart Claude Code after activating.
             </p>
             {state === 'error' && (
               <p className="text-[11px] text-ios-red mt-1 font-mono break-all">{error}</p>

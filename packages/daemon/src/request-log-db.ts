@@ -144,9 +144,7 @@ export class RequestLogStore {
   /** Delete rows older than cutoff (Unix ms) and reclaim disk. Bodies are
    *  large — VACUUM matters here more than it does for telemetry. */
   purgeOlderThan(cutoffMs: number): number {
-    const result = this.db
-      .prepare('DELETE FROM request_logs WHERE timestamp < ?')
-      .run(cutoffMs);
+    const result = this.db.prepare('DELETE FROM request_logs WHERE timestamp < ?').run(cutoffMs);
     const deleted = Number(result.changes);
     if (deleted > 0) {
       this.db.pragma('wal_checkpoint(TRUNCATE)');

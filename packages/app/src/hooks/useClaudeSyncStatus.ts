@@ -51,8 +51,14 @@ export function useClaudeSyncStatus(): UseClaudeSyncStatusResult {
       if (msg.type === 'claude_sync_status') {
         setStatus(msg.status);
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   return { status, loading, pull, push };

@@ -45,7 +45,10 @@ export function useClaudeAiLogin(accountId: string | undefined): UseClaudeAiLogi
 
   // Seed state on mount / accountId change.
   useEffect(() => {
-    if (!accountId) { setState('loading'); return; }
+    if (!accountId) {
+      setState('loading');
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -59,7 +62,9 @@ export function useClaudeAiLogin(accountId: string | undefined): UseClaudeAiLogi
         if (!cancelled) setState('disconnected');
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   // Listen for per-account usage broadcasts and the post-login Tauri event.
@@ -74,11 +79,19 @@ export function useClaudeAiLogin(accountId: string | undefined): UseClaudeAiLogi
       if (msg.error === 'auth_expired') setState('expired');
       else if (msg.error === 'missing_key') setState('disconnected');
       else if (msg.snapshot) setState('connected');
-    }).then((fn) => { offDaemon = fn; }).catch(() => undefined);
+    })
+      .then((fn) => {
+        offDaemon = fn;
+      })
+      .catch(() => undefined);
 
     listen<{ accountId: string }>('claude-ai-login-complete', (event) => {
       if (event.payload.accountId === accountId) setState('connected');
-    }).then((fn) => { offTauri = fn; }).catch(() => undefined);
+    })
+      .then((fn) => {
+        offTauri = fn;
+      })
+      .catch(() => undefined);
 
     return () => {
       offDaemon?.();
@@ -104,7 +117,11 @@ export function useClaudeAiLogin(accountId: string | undefined): UseClaudeAiLogi
     // webview available, wry error) we still want the keychain clear
     // to win so the daemon stops probing with a dead token.
     await sendToSentinel({ type: 'clear_claude_ai_session_key', accountId });
-    try { await invoke('clear_claude_ai_cookies'); } catch { /* best-effort */ }
+    try {
+      await invoke('clear_claude_ai_cookies');
+    } catch {
+      /* best-effort */
+    }
     setState('disconnected');
   }, [accountId]);
 
@@ -120,21 +137,29 @@ export function useClaudeAiLogin(accountId: string | undefined): UseClaudeAiLogi
   // the same way the webview flow does and flips to 'connected' once the
   // daemon accepts it — no need to wait for the first usage-broadcast
   // round-trip.
-  const pasteSessionKey = useCallback(async (raw: string) => {
-    if (!accountId) return { ok: false as const, error: 'no account selected' };
-    let key = (raw || '').trim();
-    if (key.toLowerCase().startsWith('sessionkey=')) key = key.slice('sessionkey='.length).trim();
-    if (key.startsWith('"') && key.endsWith('"')) key = key.slice(1, -1);
-    if (!key) return { ok: false as const, error: 'session key is empty after trimming' };
-    try {
-      const res = await sendToSentinel({ type: 'set_claude_ai_session_key', accountId, sessionKey: key });
-      if (!res.success) return { ok: false as const, error: res.error || 'daemon rejected session key' };
-      setState('connected');
-      return { ok: true as const };
-    } catch (e) {
-      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
-    }
-  }, [accountId]);
+  const pasteSessionKey = useCallback(
+    async (raw: string) => {
+      if (!accountId) return { ok: false as const, error: 'no account selected' };
+      let key = (raw || '').trim();
+      if (key.toLowerCase().startsWith('sessionkey=')) key = key.slice('sessionkey='.length).trim();
+      if (key.startsWith('"') && key.endsWith('"')) key = key.slice(1, -1);
+      if (!key) return { ok: false as const, error: 'session key is empty after trimming' };
+      try {
+        const res = await sendToSentinel({
+          type: 'set_claude_ai_session_key',
+          accountId,
+          sessionKey: key,
+        });
+        if (!res.success)
+          return { ok: false as const, error: res.error || 'daemon rejected session key' };
+        setState('connected');
+        return { ok: true as const };
+      } catch (e) {
+        return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    [accountId],
+  );
 
   return { state, connect, disconnect, refresh, pasteSessionKey };
 }

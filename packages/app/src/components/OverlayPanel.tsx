@@ -52,9 +52,7 @@ export default function OverlayPanel({
     >
       <div ref={measureRef as React.Ref<HTMLDivElement>}>
         {stickyChrome && (
-          <div className="sticky top-0 z-10 bg-[#F2F2F7] dark:bg-[#111111]">
-            {stickyChrome}
-          </div>
+          <div className="sticky top-0 z-10 bg-[#F2F2F7] dark:bg-[#111111]">{stickyChrome}</div>
         )}
         {children}
       </div>

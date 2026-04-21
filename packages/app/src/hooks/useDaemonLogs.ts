@@ -92,7 +92,9 @@ export function useDaemonLogs(): UseDaemonLogsResult {
         setError(e instanceof Error ? e.message : String(e));
       }
       if (cancelled) return;
-      timer = setTimeout(() => { void attempt(); }, STARTUP_RETRY_MS);
+      timer = setTimeout(() => {
+        void attempt();
+      }, STARTUP_RETRY_MS);
     };
 
     void attempt();
@@ -105,7 +107,11 @@ export function useDaemonLogs(): UseDaemonLogsResult {
         seenSeqs.current.clear();
         setEntries([]);
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
 
     return () => {
       cancelled = true;

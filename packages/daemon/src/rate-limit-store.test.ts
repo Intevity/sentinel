@@ -40,9 +40,9 @@ describe('RateLimitStore', () => {
   it('parses utilization / status / reset for a subscription window', () => {
     const store = new RateLimitStore();
     store.update('acc-1', {
-      'anthropic-ratelimit-unified-5h-status':      'allowed',
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
       'anthropic-ratelimit-unified-5h-utilization': '0.33',
-      'anthropic-ratelimit-unified-5h-reset':       '1776362400',
+      'anthropic-ratelimit-unified-5h-reset': '1776362400',
     });
     const windows = store.getAll('acc-1');
     expect(windows).toHaveLength(1);
@@ -58,15 +58,15 @@ describe('RateLimitStore', () => {
   it('parses multiple subscription windows at once', () => {
     const store = new RateLimitStore();
     store.update('acc-1', {
-      'anthropic-ratelimit-unified-5h-status':       'allowed',
-      'anthropic-ratelimit-unified-5h-utilization':  '0.33',
-      'anthropic-ratelimit-unified-5h-reset':        '1776362400',
-      'anthropic-ratelimit-unified-7d-status':       'allowed',
-      'anthropic-ratelimit-unified-7d-utilization':  '0.03',
-      'anthropic-ratelimit-unified-7d-reset':        '1776949200',
-      'anthropic-ratelimit-unified-overage-status':  'allowed',
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
+      'anthropic-ratelimit-unified-5h-utilization': '0.33',
+      'anthropic-ratelimit-unified-5h-reset': '1776362400',
+      'anthropic-ratelimit-unified-7d-status': 'allowed',
+      'anthropic-ratelimit-unified-7d-utilization': '0.03',
+      'anthropic-ratelimit-unified-7d-reset': '1776949200',
+      'anthropic-ratelimit-unified-overage-status': 'allowed',
       'anthropic-ratelimit-unified-overage-utilization': '0.0',
-      'anthropic-ratelimit-unified-overage-reset':   '1777593600',
+      'anthropic-ratelimit-unified-overage-reset': '1777593600',
     });
     const windows = store.getAll('acc-1');
     expect(windows).toHaveLength(3);
@@ -77,9 +77,9 @@ describe('RateLimitStore', () => {
   it('parses windows with underscore in name (e.g. unified-7d_sonnet)', () => {
     const store = new RateLimitStore();
     store.update('acc-1', {
-      'anthropic-ratelimit-unified-7d_sonnet-status':      'allowed',
+      'anthropic-ratelimit-unified-7d_sonnet-status': 'allowed',
       'anthropic-ratelimit-unified-7d_sonnet-utilization': '0.68',
-      'anthropic-ratelimit-unified-7d_sonnet-reset':       '1776430800',
+      'anthropic-ratelimit-unified-7d_sonnet-reset': '1776430800',
     });
     const windows = store.getAll('acc-1');
     expect(windows).toHaveLength(1);
@@ -92,9 +92,9 @@ describe('RateLimitStore', () => {
   it('parses limit/remaining/reset for an API-key window', () => {
     const store = new RateLimitStore();
     store.update('acc-1', {
-      'anthropic-ratelimit-tokens-limit':     '40000',
+      'anthropic-ratelimit-tokens-limit': '40000',
       'anthropic-ratelimit-tokens-remaining': '39500',
-      'anthropic-ratelimit-tokens-reset':     '1776362400',
+      'anthropic-ratelimit-tokens-reset': '1776362400',
     });
     const windows = store.getAll('acc-1');
     expect(windows).toHaveLength(1);
@@ -111,10 +111,10 @@ describe('RateLimitStore', () => {
     const store = new RateLimitStore();
     store.update('acc-1', {
       'anthropic-ratelimit-unified-5h-utilization': ['0.50', '0.99'],
-      'anthropic-ratelimit-unified-5h-reset':       ['1776362400'],
+      'anthropic-ratelimit-unified-5h-reset': ['1776362400'],
     });
     const windows = store.getAll('acc-1');
-    expect(windows[0]?.utilization).toBeCloseTo(0.50);
+    expect(windows[0]?.utilization).toBeCloseTo(0.5);
     expect(windows[0]?.reset).toBe(1776362400);
   });
 
@@ -190,11 +190,11 @@ describe('RateLimitStore', () => {
   it('merges partial updates into existing windows', () => {
     const store = new RateLimitStore();
     store.update('acc-1', {
-      'anthropic-ratelimit-unified-5h-status':      'allowed',
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
       'anthropic-ratelimit-unified-5h-utilization': '0.20',
     });
     store.update('acc-1', {
-      'anthropic-ratelimit-unified-5h-reset':       '1776362400',
+      'anthropic-ratelimit-unified-5h-reset': '1776362400',
       'anthropic-ratelimit-unified-5h-utilization': '0.35',
     });
     const windows = store.getAll('acc-1');
@@ -206,11 +206,17 @@ describe('RateLimitStore', () => {
 
   it('keeps accounts isolated from each other', () => {
     const store = new RateLimitStore();
-    store.update('acc-1', { 'anthropic-ratelimit-unified-5h-utilization': '0.10', 'anthropic-ratelimit-unified-5h-reset': '1' });
-    store.update('acc-2', { 'anthropic-ratelimit-unified-5h-utilization': '0.90', 'anthropic-ratelimit-unified-5h-reset': '2' });
+    store.update('acc-1', {
+      'anthropic-ratelimit-unified-5h-utilization': '0.10',
+      'anthropic-ratelimit-unified-5h-reset': '1',
+    });
+    store.update('acc-2', {
+      'anthropic-ratelimit-unified-5h-utilization': '0.90',
+      'anthropic-ratelimit-unified-5h-reset': '2',
+    });
 
-    expect(store.getAll('acc-1')[0]?.utilization).toBeCloseTo(0.10);
-    expect(store.getAll('acc-2')[0]?.utilization).toBeCloseTo(0.90);
+    expect(store.getAll('acc-1')[0]?.utilization).toBeCloseTo(0.1);
+    expect(store.getAll('acc-2')[0]?.utilization).toBeCloseTo(0.9);
   });
 
   it('handles undefined header values gracefully', () => {
@@ -244,8 +250,26 @@ describe('RateLimitStore', () => {
     store.onUpdate(callbackFired);
 
     store.loadAccount('acc-1', [
-      { name: 'unified-5h', status: 'allowed', utilization: 0.55, limit: null, remaining: null, reset: 1776362400, inUse: null, lastUpdated: 1 },
-      { name: 'unified-7d', status: 'allowed', utilization: 0.10, limit: null, remaining: null, reset: 1777000000, inUse: null, lastUpdated: 1 },
+      {
+        name: 'unified-5h',
+        status: 'allowed',
+        utilization: 0.55,
+        limit: null,
+        remaining: null,
+        reset: 1776362400,
+        inUse: null,
+        lastUpdated: 1,
+      },
+      {
+        name: 'unified-7d',
+        status: 'allowed',
+        utilization: 0.1,
+        limit: null,
+        remaining: null,
+        reset: 1777000000,
+        inUse: null,
+        lastUpdated: 1,
+      },
     ]);
 
     const windows = store.getAll('acc-1');
@@ -255,7 +279,10 @@ describe('RateLimitStore', () => {
 
   it('onUpdate fires after update() with the updated windows', () => {
     const store = new RateLimitStore();
-    const updates: Array<{ accountId: string; windows: import('@claude-sentinel/shared').RateLimitWindow[] }> = [];
+    const updates: Array<{
+      accountId: string;
+      windows: import('@claude-sentinel/shared').RateLimitWindow[];
+    }> = [];
     store.onUpdate((accountId, windows) => updates.push({ accountId, windows }));
 
     store.update('acc-1', {

@@ -36,75 +36,89 @@ describe('computeTargetInner', () => {
 
   describe('overlay path (overlayScrollHeight !== null)', () => {
     it('uses overlay.scrollHeight when expandMax is off', () => {
-      expect(computeTargetInner({
-        ...base,
-        overlayScrollHeight: 450,
-      })).toBe(450);
+      expect(
+        computeTargetInner({
+          ...base,
+          overlayScrollHeight: 450,
+        }),
+      ).toBe(450);
     });
 
     it('pegs to TRAY_MAX_HEIGHT when expandMax is on, regardless of scrollHeight', () => {
-      expect(computeTargetInner({
-        ...base,
-        overlayScrollHeight: 120,
-        overlayExpandMax: true,
-      })).toBe(TRAY_MAX_HEIGHT);
+      expect(
+        computeTargetInner({
+          ...base,
+          overlayScrollHeight: 120,
+          overlayExpandMax: true,
+        }),
+      ).toBe(TRAY_MAX_HEIGHT);
     });
 
     it('expandMax overrides a short overlay (regression: wizard select step)', () => {
       // The wizard's "select" step is ~420px tall. Without the opt-in
       // the window would size to 420 and hide content on taller steps;
       // with the opt-in it sits at MAX.
-      expect(computeTargetInner({
-        ...base,
-        overlayScrollHeight: 420,
-        overlayExpandMax: true,
-      })).toBe(TRAY_MAX_HEIGHT);
+      expect(
+        computeTargetInner({
+          ...base,
+          overlayScrollHeight: 420,
+          overlayExpandMax: true,
+        }),
+      ).toBe(TRAY_MAX_HEIGHT);
     });
 
     it('expandMax still clamps within bounds if MAX were ever exceeded', () => {
       // Defensive: overlayExpandMax should never exceed TRAY_MAX_HEIGHT
       // even through the popover path.
-      expect(computeTargetInner({
-        ...base,
-        overlayScrollHeight: 9999,
-        overlayExpandMax: true,
-        popoverBottomRelativeToRoot: 800,
-      })).toBe(TRAY_MAX_HEIGHT);
+      expect(
+        computeTargetInner({
+          ...base,
+          overlayScrollHeight: 9999,
+          overlayExpandMax: true,
+          popoverBottomRelativeToRoot: 800,
+        }),
+      ).toBe(TRAY_MAX_HEIGHT);
     });
 
     it('ignores main-path inputs when overlay is present', () => {
-      expect(computeTargetInner({
-        ...base,
-        overlayScrollHeight: 400,
-        chromeAndFooter: 9999, // should be ignored
-        contentOffsetHeight: 9999, // should be ignored
-      })).toBe(400);
+      expect(
+        computeTargetInner({
+          ...base,
+          overlayScrollHeight: 400,
+          chromeAndFooter: 9999, // should be ignored
+          contentOffsetHeight: 9999, // should be ignored
+        }),
+      ).toBe(400);
     });
   });
 
   describe('popover extension', () => {
     it('extends needed to popover bottom when larger than content', () => {
-      expect(computeTargetInner({
-        ...base,
-        contentOffsetHeight: 200,
-        popoverBottomRelativeToRoot: 500,
-      })).toBe(500);
+      expect(
+        computeTargetInner({
+          ...base,
+          contentOffsetHeight: 200,
+          popoverBottomRelativeToRoot: 500,
+        }),
+      ).toBe(500);
     });
 
     it('does not shrink below content when popover is smaller', () => {
-      expect(computeTargetInner({
-        ...base,
-        chromeAndFooter: 100,
-        contentOffsetHeight: 400,
-        popoverBottomRelativeToRoot: 200,
-      })).toBe(100 + 400 + 8);
+      expect(
+        computeTargetInner({
+          ...base,
+          chromeAndFooter: 100,
+          contentOffsetHeight: 400,
+          popoverBottomRelativeToRoot: 200,
+        }),
+      ).toBe(100 + 400 + 8);
     });
   });
 });
 
 describe('reconcileOverlayRef', () => {
   // Helpers to simulate elements and DOM membership without jsdom.
-  const mkEl = (tag = 'div'): HTMLElement => ({ tagName: tag } as unknown as HTMLElement);
+  const mkEl = (tag = 'div'): HTMLElement => ({ tagName: tag }) as unknown as HTMLElement;
   const inDom = (_: HTMLElement) => true;
   const notInDom = (_: HTMLElement) => false;
 
@@ -136,8 +150,10 @@ describe('reconcileOverlayRef', () => {
     // the wizard's registration.
     const wizardCard = mkEl('div');
     const isWizardStillInDom = (el: HTMLElement) => el === wizardCard;
-    expect(reconcileOverlayRef(wizardCard, null, isWizardStillInDom))
-      .toEqual({ next: wizardCard, changed: false });
+    expect(reconcileOverlayRef(wizardCard, null, isWizardStillInDom)).toEqual({
+      next: wizardCard,
+      changed: false,
+    });
   });
 
   it('does nothing when current is null and incoming is null', () => {
@@ -149,7 +165,6 @@ describe('reconcileOverlayRef', () => {
     // exit in flight), fresh mounts. Fresh wins.
     const stale = mkEl();
     const fresh = mkEl();
-    expect(reconcileOverlayRef(stale, fresh, inDom))
-      .toEqual({ next: fresh, changed: true });
+    expect(reconcileOverlayRef(stale, fresh, inDom)).toEqual({ next: fresh, changed: true });
   });
 });

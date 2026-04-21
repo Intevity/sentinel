@@ -100,7 +100,10 @@ function coerce(raw: unknown): Settings {
   if (typeof obj['launchAtLogin'] === 'boolean') {
     next.launchAtLogin = obj['launchAtLogin'];
   }
-  if (typeof obj['switchingMode'] === 'string' && VALID_MODES.includes(obj['switchingMode'] as SwitchingMode)) {
+  if (
+    typeof obj['switchingMode'] === 'string' &&
+    VALID_MODES.includes(obj['switchingMode'] as SwitchingMode)
+  ) {
     next.switchingMode = obj['switchingMode'] as SwitchingMode;
   }
   if (obj['alertSoundName'] === null || typeof obj['alertSoundName'] === 'string') {
@@ -113,9 +116,7 @@ function coerce(raw: unknown): Settings {
     next.autoUpdate = obj['autoUpdate'];
   }
   if (Array.isArray(obj['poolExcludedIds'])) {
-    next.poolExcludedIds = obj['poolExcludedIds'].filter(
-      (v): v is string => typeof v === 'string',
-    );
+    next.poolExcludedIds = obj['poolExcludedIds'].filter((v): v is string => typeof v === 'string');
   }
   if (Array.isArray(obj['overageEnabledIds'])) {
     next.overageEnabledIds = obj['overageEnabledIds'].filter(
@@ -128,7 +129,9 @@ function coerce(raw: unknown): Settings {
     !Array.isArray(obj['budgetWeeklyUsdByAccount'])
   ) {
     const out: Record<string, number> = {};
-    for (const [k, v] of Object.entries(obj['budgetWeeklyUsdByAccount'] as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(
+      obj['budgetWeeklyUsdByAccount'] as Record<string, unknown>,
+    )) {
       if (typeof k !== 'string' || !k) continue;
       if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) continue;
       out[k] = Math.min(v, 100_000);
@@ -247,18 +250,21 @@ function coerce(raw: unknown): Settings {
     // ignoring a bad payload is safer than throwing.
     const bench = obj['lastScanBenchmark'] as Record<string, unknown>;
     const results = Array.isArray(bench['results']) ? bench['results'] : null;
-    const recommendedMb = typeof bench['recommendedMb'] === 'number' ? Math.floor(bench['recommendedMb']) : null;
+    const recommendedMb =
+      typeof bench['recommendedMb'] === 'number' ? Math.floor(bench['recommendedMb']) : null;
     const ranAt = typeof bench['ranAt'] === 'number' ? bench['ranAt'] : null;
     const platform = typeof bench['platform'] === 'string' ? bench['platform'] : null;
     if (
       results !== null &&
       recommendedMb !== null &&
-      recommendedMb >= 1 && recommendedMb <= 16 &&
+      recommendedMb >= 1 &&
+      recommendedMb <= 16 &&
       ranAt !== null &&
       platform !== null &&
       results.every(
         (r) =>
-          r && typeof r === 'object' &&
+          r &&
+          typeof r === 'object' &&
           typeof (r as Record<string, unknown>)['sizeMb'] === 'number' &&
           typeof (r as Record<string, unknown>)['meanMs'] === 'number' &&
           typeof (r as Record<string, unknown>)['p99Ms'] === 'number',

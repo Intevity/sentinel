@@ -25,19 +25,19 @@ import { createRequire } from 'module';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const DAEMON_ROOT  = join(__dirname, '..');
+const DAEMON_ROOT = join(__dirname, '..');
 const BINARIES_DIR = join(__dirname, '../../app/src-tauri/binaries');
-const DIST_DIR     = join(DAEMON_ROOT, 'dist');
-const BUNDLE_PATH  = join(DIST_DIR, 'bundle.cjs');
-const SHIM_PATH    = join(DIST_DIR, 'bindings-shim.cjs');
+const DIST_DIR = join(DAEMON_ROOT, 'dist');
+const BUNDLE_PATH = join(DIST_DIR, 'bundle.cjs');
+const SHIM_PATH = join(DIST_DIR, 'bindings-shim.cjs');
 
 // Rust target triple → @yao-pkg/pkg target string
 const TRIPLE_TO_PKG = {
-  'aarch64-apple-darwin':       'node22-macos-arm64',
-  'x86_64-apple-darwin':        'node22-macos-x64',
-  'x86_64-unknown-linux-gnu':   'node22-linux-x64',
-  'aarch64-unknown-linux-gnu':  'node22-linux-arm64',
-  'x86_64-pc-windows-msvc':     'node22-win-x64',
+  'aarch64-apple-darwin': 'node22-macos-arm64',
+  'x86_64-apple-darwin': 'node22-macos-x64',
+  'x86_64-unknown-linux-gnu': 'node22-linux-x64',
+  'aarch64-unknown-linux-gnu': 'node22-linux-arm64',
+  'x86_64-pc-windows-msvc': 'node22-win-x64',
 };
 
 function getRustTriple() {
@@ -57,9 +57,7 @@ function getRustTriple() {
 //      differs from the target arch (e.g. x86_64-apple-darwin release).
 //   3. rustc host triple     — default for local same-arch builds.
 const triple =
-  process.env.CARGO_BUILD_TARGET ??
-  process.env.TAURI_ENV_TARGET_TRIPLE ??
-  getRustTriple();
+  process.env.CARGO_BUILD_TARGET ?? process.env.TAURI_ENV_TARGET_TRIPLE ?? getRustTriple();
 if (!triple) {
   console.error('[build-sidecar] Could not determine Rust target triple.');
   process.exit(1);
@@ -75,7 +73,7 @@ if (!pkgTarget) {
 mkdirSync(BINARIES_DIR, { recursive: true });
 mkdirSync(DIST_DIR, { recursive: true });
 
-const ext    = triple.includes('windows') ? '.exe' : '';
+const ext = triple.includes('windows') ? '.exe' : '';
 const output = join(BINARIES_DIR, `claude-sentinel-daemon-${triple}${ext}`);
 
 console.log(`[build-sidecar] Rust triple : ${triple}`);
@@ -84,9 +82,7 @@ console.log(`[build-sidecar] Output      : ${output}`);
 
 // ── Resolve the native .node file (follows pnpm symlinks) ───────────────────
 const req = createRequire(pathToFileURL(join(DAEMON_ROOT, 'package.json')));
-const nativeAddonSrc = req.resolve(
-  'better-sqlite3/build/Release/better_sqlite3.node',
-);
+const nativeAddonSrc = req.resolve('better-sqlite3/build/Release/better_sqlite3.node');
 console.log(`[build-sidecar] Native addon: ${nativeAddonSrc}`);
 
 // Copy the .node file into dist/ so it sits beside the bundle.
@@ -102,12 +98,15 @@ copyFileSync(nativeAddonSrc, nativeAddonDst);
 // Static require so esbuild can trace the dependency at build time
 // (the dynamic './' + name form causes esbuild to scan all files in dist/).
 // We only use bindings for better_sqlite3.node, so hardcoding is safe.
-writeFileSync(SHIM_PATH, `\
+writeFileSync(
+  SHIM_PATH,
+  `\
 'use strict';
 module.exports = function bindings(_file) {
   return require('./better_sqlite3.node');
 };
-`);
+`,
+);
 
 // ── Step 1: bundle all source into a single CJS file ────────────────────────
 console.log('[build-sidecar] Bundling with esbuild…');
@@ -129,9 +128,9 @@ execSync(
 
 // ── Step 2: wrap the bundle + .node asset in a Node.js runtime via pkg ───────
 console.log('[build-sidecar] Packaging with pkg…');
-execSync(
-  `pkg "${BUNDLE_PATH}" --target ${pkgTarget} --output "${output}" --compress GZip`,
-  { cwd: DAEMON_ROOT, stdio: 'inherit' },
-);
+execSync(`pkg "${BUNDLE_PATH}" --target ${pkgTarget} --output "${output}" --compress GZip`, {
+  cwd: DAEMON_ROOT,
+  stdio: 'inherit',
+});
 
 console.log('[build-sidecar] Done.');

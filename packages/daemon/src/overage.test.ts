@@ -262,14 +262,16 @@ describe('OverageStateMachine', () => {
 
       // Simulated backend oscillation around the threshold, all within the
       // same overage window (identical resetsAt).
-      machine.handleHeaders('acc1', headers(true));   // entered
-      machine.handleHeaders('acc1', headers(false));  // exited
-      machine.handleHeaders('acc1', headers(true));   // swallowed (entered already fired)
-      machine.handleHeaders('acc1', headers(false));  // swallowed (exited already fired)
-      machine.handleHeaders('acc1', headers(true));   // swallowed
-      machine.handleHeaders('acc1', headers(false));  // swallowed
+      machine.handleHeaders('acc1', headers(true)); // entered
+      machine.handleHeaders('acc1', headers(false)); // exited
+      machine.handleHeaders('acc1', headers(true)); // swallowed (entered already fired)
+      machine.handleHeaders('acc1', headers(false)); // swallowed (exited already fired)
+      machine.handleHeaders('acc1', headers(true)); // swallowed
+      machine.handleHeaders('acc1', headers(false)); // swallowed
 
-      const transitions = handler.mock.calls.map((c) => (c[0] as { transition: string }).transition);
+      const transitions = handler.mock.calls.map(
+        (c) => (c[0] as { transition: string }).transition,
+      );
       expect(transitions).toEqual(['entered', 'exited']);
     });
 

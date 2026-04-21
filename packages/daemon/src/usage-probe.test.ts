@@ -81,17 +81,32 @@ describe('startUsageProber', () => {
 
     // First probe fires immediately (t=0) for the first listed account.
     expect(probeRateLimitsMock).toHaveBeenCalledTimes(1);
-    expect(probeRateLimitsMock).toHaveBeenNthCalledWith(1, 'active', deps.ipcServer, 'token-active');
+    expect(probeRateLimitsMock).toHaveBeenNthCalledWith(
+      1,
+      'active',
+      deps.ipcServer,
+      'token-active',
+    );
 
     // Stride = 300_000 / 3 = 100_000 ms. Advance to t=100s for other-1.
     vi.advanceTimersByTime(100_000);
     expect(probeRateLimitsMock).toHaveBeenCalledTimes(2);
-    expect(probeRateLimitsMock).toHaveBeenNthCalledWith(2, 'other-1', deps.ipcServer, 'token-other-1');
+    expect(probeRateLimitsMock).toHaveBeenNthCalledWith(
+      2,
+      'other-1',
+      deps.ipcServer,
+      'token-other-1',
+    );
 
     // And t=200s for other-2.
     vi.advanceTimersByTime(100_000);
     expect(probeRateLimitsMock).toHaveBeenCalledTimes(3);
-    expect(probeRateLimitsMock).toHaveBeenNthCalledWith(3, 'other-2', deps.ipcServer, 'token-other-2');
+    expect(probeRateLimitsMock).toHaveBeenNthCalledWith(
+      3,
+      'other-2',
+      deps.ipcServer,
+      'token-other-2',
+    );
 
     handle.stop();
   });

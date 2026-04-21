@@ -85,7 +85,9 @@ export class SpendTracker {
 
   constructor(private readonly deps: SpendTrackerDeps) {}
 
-  private clock(): number { return this.deps.now ? this.deps.now() : Date.now(); }
+  private clock(): number {
+    return this.deps.now ? this.deps.now() : Date.now();
+  }
 
   /** Accessor passed to `TokenRotator`. Reading returns the live set each
    *  time so changes take effect on the next pick. */
@@ -167,17 +169,13 @@ export class SpendTracker {
     // the global cap was crossed. Refuse to pause on assumption.
     const allKnown = Object.values(spend.perAccount).every((v) => typeof v === 'number');
     const globalTripped =
-      allKnown &&
-      typeof globalCap === 'number' && globalCap > 0 && spend.global >= globalCap;
+      allKnown && typeof globalCap === 'number' && globalCap > 0 && spend.global >= globalCap;
     // Evaluate against every KNOWN account id — the union of enrolled
     // accounts (via spend.perAccount seeding) plus any id currently sitting
     // in the paused set. Without the latter, a paused account that was
     // soft-deleted or never had a usage_events row would never reach the
     // cleanup branch below and the pause would stick forever.
-    const candidates = new Set<string>([
-      ...Object.keys(spend.perAccount),
-      ...this.paused,
-    ]);
+    const candidates = new Set<string>([...Object.keys(spend.perAccount), ...this.paused]);
     for (const accountId of candidates) {
       const accountCap = settings.budgetWeeklyUsdByAccount[accountId];
       const accountSpend = spend.perAccount[accountId];
@@ -189,7 +187,8 @@ export class SpendTracker {
       // hasn't landed yet, leave the account in its prior pause state.
       if (
         typeof accountSpend === 'number' &&
-        typeof accountCap === 'number' && accountCap > 0 &&
+        typeof accountCap === 'number' &&
+        accountCap > 0 &&
         accountSpend >= accountCap
       ) {
         shouldPause.add(accountId);
@@ -214,12 +213,13 @@ export class SpendTracker {
           accountId: id,
           type: 'usage_alert',
           title: 'Sentinel: account paused',
-          body:
-            globalTripped
-              ? `Global weekly budget of $${globalCap!.toFixed(2)} reached. All accounts paused until the 5-hour window resets.`
-              : `Weekly budget of $${settings.budgetWeeklyUsdByAccount[id]!.toFixed(2)} reached. Paused until the 5-hour window resets.`,
+          body: globalTripped
+            ? `Global weekly budget of $${globalCap!.toFixed(2)} reached. All accounts paused until the 5-hour window resets.`
+            : `Weekly budget of $${settings.budgetWeeklyUsdByAccount[id]!.toFixed(2)} reached. Paused until the 5-hour window resets.`,
         });
-        console.log(`[Spend] Paused ${id} (spend=$${(spend.perAccount[id] ?? 0).toFixed(2)}, cap=$${(settings.budgetWeeklyUsdByAccount[id] ?? globalCap ?? 0).toFixed?.(2)}, reason=${globalTripped ? 'global' : 'account'})`);
+        console.log(
+          `[Spend] Paused ${id} (spend=$${(spend.perAccount[id] ?? 0).toFixed(2)}, cap=$${(settings.budgetWeeklyUsdByAccount[id] ?? globalCap ?? 0).toFixed?.(2)}, reason=${globalTripped ? 'global' : 'account'})`,
+        );
       }
     }
     for (const id of [...this.paused]) {
@@ -239,7 +239,7 @@ export class SpendTracker {
     for (const alert of alerts) {
       const { observed, cap, accountId } = this.resolveAlertContext(alert, settings, spend);
       if (cap == null || cap <= 0) continue;
-      if (observed == null) continue;  // no data yet — can't fire honestly
+      if (observed == null) continue; // no data yet — can't fire honestly
       const pct = (observed / cap) * 100;
       if (pct < alert.thresholdPct) continue;
       if (alert.lastTriggeredResetTs === weekKey) continue;

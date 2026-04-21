@@ -1,35 +1,37 @@
-import React from 'react';
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
-} from 'recharts';
-import type { MetricsSummary, MetricsByDayModel } from '@claude-sentinel/shared';
+import React, { useState } from 'react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import type {
+  MetricsSummary,
+  MetricsByDayModel,
+  CacheTtlSessionRow,
+} from '@claude-sentinel/shared';
 import { useMetricsSummary } from '../hooks/useMetricsSummary.js';
 import InfoTooltip from './InfoTooltip.js';
 
 const MODEL_COLORS: Record<string, string> = {
-  'claude-opus-4':     '#BF5AF2',
+  'claude-opus-4': '#BF5AF2',
   'claude-sonnet-4-6': '#007AFF',
-  'claude-haiku-4-5':  '#30D158',
+  'claude-haiku-4-5': '#30D158',
 };
 
 function modelColor(model: string): string {
   // Handle model variants like "claude-opus-4-7[1m]" → opus
   const base = model.match(/claude-(opus|sonnet|haiku)/)?.[0];
-  if (base === 'claude-opus')   return '#BF5AF2';
+  if (base === 'claude-opus') return '#BF5AF2';
   if (base === 'claude-sonnet') return '#007AFF';
-  if (base === 'claude-haiku')  return '#30D158';
+  if (base === 'claude-haiku') return '#30D158';
   return MODEL_COLORS[model] ?? '#8E8E93';
 }
 
 const TOKEN_TYPE_COLORS: Record<string, string> = {
-  input:       '#007AFF',
-  output:      '#5E5CE6',
-  cacheRead:   '#30D158',
+  input: '#007AFF',
+  output: '#5E5CE6',
+  cacheRead: '#30D158',
   cacheCreate: '#FF9F0A',
 };
 
 const PERIODS = [
-  { days: 7,  label: '7d' },
+  { days: 7, label: '7d' },
   { days: 14, label: '14d' },
   { days: 30, label: '30d' },
 ];
@@ -37,7 +39,7 @@ const PERIODS = [
 const OTEL_PROVENANCE = [
   'Metrics are emitted by Claude Code via OpenTelemetry and sent to',
   "Sentinel's local receiver. Sentinel enables this automatically by",
-  "setting CLAUDE_CODE_ENABLE_TELEMETRY=1, OTEL_METRICS_EXPORTER=otlp,",
+  'setting CLAUDE_CODE_ENABLE_TELEMETRY=1, OTEL_METRICS_EXPORTER=otlp,',
   'and OTEL_LOGS_EXPORTER=otlp in ~/.claude/settings.json.',
 ].join(' ');
 
@@ -48,7 +50,12 @@ interface ChartTooltipProps {
   valueFormatter?: (v: number) => string;
 }
 
-function StackedTooltip({ active, payload, label, valueFormatter }: ChartTooltipProps): React.ReactElement | null {
+function StackedTooltip({
+  active,
+  payload,
+  label,
+  valueFormatter,
+}: ChartTooltipProps): React.ReactElement | null {
   if (!active || !payload?.length) return null;
   const fmt = valueFormatter ?? ((v: number): string => v.toLocaleString());
   const total = payload.reduce((s, p) => s + p.value, 0);
@@ -59,7 +66,9 @@ function StackedTooltip({ active, payload, label, valueFormatter }: ChartTooltip
         <div key={p.dataKey} className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full" style={{ background: p.fill }} />
           <span className="text-[#8E8E93]">{p.name}</span>
-          <span className="font-medium text-black dark:text-white ml-auto pl-4">{fmt(p.value)}</span>
+          <span className="font-medium text-black dark:text-white ml-auto pl-4">
+            {fmt(p.value)}
+          </span>
         </div>
       ))}
       {payload.length > 1 && (
@@ -79,7 +88,9 @@ interface MetricsDashboardProps {
   viewAccountId?: string | undefined;
 }
 
-export default function MetricsDashboard({ viewAccountId }: MetricsDashboardProps = {}): React.ReactElement {
+export default function MetricsDashboard({
+  viewAccountId,
+}: MetricsDashboardProps = {}): React.ReactElement {
   const { summary, loading, error, days, setDays } = useMetricsSummary(viewAccountId);
 
   return (
@@ -124,7 +135,13 @@ export default function MetricsDashboard({ viewAccountId }: MetricsDashboardProp
   );
 }
 
-function MetricsContent({ summary, days }: { summary: MetricsSummary; days: number }): React.ReactElement {
+function MetricsContent({
+  summary,
+  days,
+}: {
+  summary: MetricsSummary;
+  days: number;
+}): React.ReactElement {
   // Aggregate totals across the period for the summary tiles.
   let totalCost = 0;
   let totalInput = 0;
@@ -133,10 +150,10 @@ function MetricsContent({ summary, days }: { summary: MetricsSummary; days: numb
   let totalCacheCreate = 0;
   for (const models of Object.values(summary.byDayModel)) {
     for (const m of Object.values(models)) {
-      totalCost       += m.costUsd;
-      totalInput      += m.inputTokens;
-      totalOutput     += m.outputTokens;
-      totalCacheRead  += m.cacheReadTokens;
+      totalCost += m.costUsd;
+      totalInput += m.inputTokens;
+      totalOutput += m.outputTokens;
+      totalCacheRead += m.cacheReadTokens;
       totalCacheCreate += m.cacheCreationTokens;
     }
   }
@@ -183,7 +200,9 @@ function MetricsContent({ summary, days }: { summary: MetricsSummary; days: numb
               : `last ${days} days`
           }
         >
-          <span className={`text-[22px] font-bold tracking-tight ${errorCount > 0 ? 'text-ios-orange' : 'text-black dark:text-white'}`}>
+          <span
+            className={`text-[22px] font-bold tracking-tight ${errorCount > 0 ? 'text-ios-orange' : 'text-black dark:text-white'}`}
+          >
             {errorCount}
           </span>
         </Tile>
@@ -193,7 +212,10 @@ function MetricsContent({ summary, days }: { summary: MetricsSummary; days: numb
       {totalTokens > 0 ? (
         <TokensChart byDayModel={summary.byDayModel} allDays={allDays} />
       ) : (
-        <EmptyCard title="Tokens" hint="Token breakdown appears once Claude Code emits api_request log events." />
+        <EmptyCard
+          title="Tokens"
+          hint="Token breakdown appears once Claude Code emits api_request log events."
+        />
       )}
 
       {/* ── Cost chart ────────────────────────────────────────────────── */}
@@ -208,7 +230,9 @@ function MetricsContent({ summary, days }: { summary: MetricsSummary; days: numb
           <div className="space-y-2">
             {Object.entries(summary.cacheHitRate).map(([model, r]) => (
               <div key={model} className="flex items-center gap-2">
-                <span className="text-[11px] font-medium text-black dark:text-white flex-1 truncate">{model}</span>
+                <span className="text-[11px] font-medium text-black dark:text-white flex-1 truncate">
+                  {model}
+                </span>
                 {r.rate > 0 && (
                   <div className="h-[4px] w-24 rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
                     <div
@@ -226,8 +250,16 @@ function MetricsContent({ summary, days }: { summary: MetricsSummary; days: numb
         </div>
       )}
 
+      {/* ── Cache TTL (proxy-sourced, 5m vs 1h split) ─────────────────── */}
+      {hasCacheTtlData(summary.cacheTtl) && <CacheTtlSection ttl={summary.cacheTtl} />}
+
       {/* ── Errors timeline ──────────────────────────────────────────── */}
-      {errorCount > 0 && <ErrorsTimeline errors={summary.errors} allDays={Object.keys(summary.errors.byDay).sort()} />}
+      {errorCount > 0 && (
+        <ErrorsTimeline
+          errors={summary.errors}
+          allDays={Object.keys(summary.errors.byDay).sort()}
+        />
+      )}
 
       {/* ── Top tools ────────────────────────────────────────────────── */}
       {summary.tools.length > 0 && <TopTools tools={summary.tools} />}
@@ -310,7 +342,10 @@ function TokensChart({
 }): React.ReactElement {
   const data = allDays.map((date) => {
     const entry: Record<string, string | number> = { date: date.slice(5) };
-    let input = 0, output = 0, cacheRead = 0, cacheCreate = 0;
+    let input = 0,
+      output = 0,
+      cacheRead = 0,
+      cacheCreate = 0;
     for (const m of Object.values(byDayModel[date] ?? {})) {
       input += m.inputTokens;
       output += m.outputTokens;
@@ -331,11 +366,28 @@ function TokensChart({
       <p className="text-[11px] font-semibold text-[#8E8E93] mb-3">Tokens by day</p>
       <ResponsiveContainer width="100%" height={160}>
         <BarChart data={data} barSize={18} margin={{ top: 0, right: 0, bottom: 0, left: -12 }}>
-          <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} tickFormatter={(v: number) => compact(v)} />
+          <XAxis
+            dataKey="date"
+            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            axisLine={false}
+            tickLine={false}
+            tickFormatter={(v: number) => compact(v)}
+          />
           <Tooltip content={<StackedTooltip />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
           {keys.map((k, idx) => (
-            <Bar key={k} dataKey={k} name={tokenLabel(k)} stackId="tokens" fill={TOKEN_TYPE_COLORS[k]} radius={idx === keys.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]} />
+            <Bar
+              key={k}
+              dataKey={k}
+              name={tokenLabel(k)}
+              stackId="tokens"
+              fill={TOKEN_TYPE_COLORS[k]}
+              radius={idx === keys.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
+            />
           ))}
         </BarChart>
       </ResponsiveContainer>
@@ -374,12 +426,32 @@ function CostChart({
       <p className="text-[11px] font-semibold text-[#8E8E93] mb-3">Cost by day (USD)</p>
       <ResponsiveContainer width="100%" height={160}>
         <BarChart data={data} barSize={18} margin={{ top: 0, right: 0, bottom: 0, left: -12 }}>
-          <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} tickFormatter={(v: number) => `$${v.toFixed(2)}`} />
-          <Tooltip content={<StackedTooltip valueFormatter={(v) => `$${v.toFixed(4)}`} />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
+          <XAxis
+            dataKey="date"
+            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            axisLine={false}
+            tickLine={false}
+            tickFormatter={(v: number) => `$${v.toFixed(2)}`}
+          />
+          <Tooltip
+            content={<StackedTooltip valueFormatter={(v) => `$${v.toFixed(4)}`} />}
+            cursor={{ fill: 'rgba(0,0,0,0.04)' }}
+          />
           {allModels.map((model, idx) => (
-            <Bar key={model} dataKey={model} stackId="cost" radius={idx === allModels.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]}>
-              {data.map((_, i) => <Cell key={i} fill={modelColor(model)} />)}
+            <Bar
+              key={model}
+              dataKey={model}
+              stackId="cost"
+              radius={idx === allModels.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
+            >
+              {data.map((_, i) => (
+                <Cell key={i} fill={modelColor(model)} />
+              ))}
             </Bar>
           ))}
         </BarChart>
@@ -406,7 +478,9 @@ function ErrorsTimeline({
   // Bucket by status-code family so we don't explode into dozens of bars.
   const data = allDays.map((date) => {
     const byStatus = errors.byDay[date] ?? {};
-    let c4xx = 0, c5xx = 0, other = 0;
+    let c4xx = 0,
+      c5xx = 0,
+      other = 0;
     for (const [code, n] of Object.entries(byStatus)) {
       const cc = Number(code);
       if (cc >= 400 && cc < 500) c4xx += n;
@@ -427,11 +501,21 @@ function ErrorsTimeline({
       </div>
       <ResponsiveContainer width="100%" height={120}>
         <BarChart data={data} barSize={14} margin={{ top: 0, right: 0, bottom: 0, left: -16 }}>
-          <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} allowDecimals={false} />
+          <XAxis
+            dataKey="date"
+            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            axisLine={false}
+            tickLine={false}
+            allowDecimals={false}
+          />
           <Tooltip content={<StackedTooltip />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
-          <Bar dataKey="4xx"   stackId="e" fill="#FF9F0A" />
-          <Bar dataKey="5xx"   stackId="e" fill="#FF453A" radius={[4, 4, 0, 0]} />
+          <Bar dataKey="4xx" stackId="e" fill="#FF9F0A" />
+          <Bar dataKey="5xx" stackId="e" fill="#FF453A" radius={[4, 4, 0, 0]} />
           <Bar dataKey="other" stackId="e" fill="#8E8E93" />
         </BarChart>
       </ResponsiveContainer>
@@ -450,18 +534,29 @@ function TopTools({ tools }: { tools: MetricsSummary['tools'] }): React.ReactEle
       <p className="text-[11px] font-semibold text-[#8E8E93] mb-2">Top tools</p>
       <div className="space-y-1.5">
         <div className="grid grid-cols-[1fr_auto_auto_auto] gap-3 text-[10px] text-[#8E8E93] uppercase tracking-wider pb-1 border-b border-black/5 dark:border-white/5">
-          <span>Tool</span><span className="text-right">Calls</span><span className="text-right">p50 / p95</span><span className="text-right">OK</span>
+          <span>Tool</span>
+          <span className="text-right">Calls</span>
+          <span className="text-right">p50 / p95</span>
+          <span className="text-right">OK</span>
         </div>
         {tools.map((t) => (
-          <div key={t.toolName} className="grid grid-cols-[1fr_auto_auto_auto] gap-3 text-[11px] items-center">
-            <span className="font-medium text-black dark:text-white truncate" title={t.topError ?? undefined}>
+          <div
+            key={t.toolName}
+            className="grid grid-cols-[1fr_auto_auto_auto] gap-3 text-[11px] items-center"
+          >
+            <span
+              className="font-medium text-black dark:text-white truncate"
+              title={t.topError ?? undefined}
+            >
               {t.toolName}
             </span>
             <span className="text-right tabular-nums text-black dark:text-white">{t.calls}</span>
             <span className="text-right tabular-nums text-[#8E8E93]">
               {Math.round(t.p50Ms)}/{Math.round(t.p95Ms)}ms
             </span>
-            <span className={`text-right tabular-nums font-semibold ${t.successRate >= 0.95 ? 'text-ios-green' : t.successRate >= 0.8 ? 'text-ios-orange' : 'text-ios-red'}`}>
+            <span
+              className={`text-right tabular-nums font-semibold ${t.successRate >= 0.95 ? 'text-ios-green' : t.successRate >= 0.8 ? 'text-ios-orange' : 'text-ios-red'}`}
+            >
               {(t.successRate * 100).toFixed(0)}%
             </span>
           </div>
@@ -480,8 +575,12 @@ function hasProductivityData(summary: MetricsSummary): boolean {
   );
 }
 
-function ProductivityRow({ activity }: { activity: MetricsSummary['activity'] }): React.ReactElement {
-  const linesAdded  = sumRecord(activity.linesPerDay, (v) => v.added);
+function ProductivityRow({
+  activity,
+}: {
+  activity: MetricsSummary['activity'];
+}): React.ReactElement {
+  const linesAdded = sumRecord(activity.linesPerDay, (v) => v.added);
   const linesRemoved = sumRecord(activity.linesPerDay, (v) => v.removed);
   const commits = sumRecord(activity.commitsPerDay, (v) => v);
   const prs = sumRecord(activity.prsPerDay, (v) => v);
@@ -511,7 +610,7 @@ function ActiveTimeChart({
   const days = Object.keys(perDay).sort();
   const data = days.map((d) => ({
     date: d.slice(5),
-    user: Math.round(perDay[d]!.user / 60),  // seconds → minutes
+    user: Math.round(perDay[d]!.user / 60), // seconds → minutes
     cli: Math.round(perDay[d]!.cli / 60),
   }));
   return (
@@ -519,11 +618,19 @@ function ActiveTimeChart({
       <p className="text-[11px] font-semibold text-[#8E8E93] mb-3">Active time (minutes / day)</p>
       <ResponsiveContainer width="100%" height={120}>
         <BarChart data={data} barSize={16} margin={{ top: 0, right: 0, bottom: 0, left: -16 }}>
-          <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
+          <XAxis
+            dataKey="date"
+            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            axisLine={false}
+            tickLine={false}
+          />
           <YAxis tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
-          <Tooltip content={<StackedTooltip valueFormatter={(v) => `${v}m`} />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
+          <Tooltip
+            content={<StackedTooltip valueFormatter={(v) => `${v}m`} />}
+            cursor={{ fill: 'rgba(0,0,0,0.04)' }}
+          />
           <Bar dataKey="user" stackId="t" fill="#007AFF" name="user" />
-          <Bar dataKey="cli"  stackId="t" fill="#5E5CE6" radius={[4, 4, 0, 0]} name="cli" />
+          <Bar dataKey="cli" stackId="t" fill="#5E5CE6" radius={[4, 4, 0, 0]} name="cli" />
         </BarChart>
       </ResponsiveContainer>
       <div className="flex gap-3 mt-2">
@@ -534,13 +641,19 @@ function ActiveTimeChart({
   );
 }
 
-function EditAcceptRateCard({ rate }: { rate: MetricsSummary['editAcceptRate'] }): React.ReactElement {
+function EditAcceptRateCard({
+  rate,
+}: {
+  rate: MetricsSummary['editAcceptRate'];
+}): React.ReactElement {
   const { overall, byLanguage } = rate;
   const overallPct = (overall.rate * 100).toFixed(1);
   const overallColor =
-    overall.rate >= 0.8 ? 'text-ios-green' :
-    overall.rate >= 0.5 ? 'text-ios-orange' :
-                          'text-ios-red';
+    overall.rate >= 0.8
+      ? 'text-ios-green'
+      : overall.rate >= 0.5
+        ? 'text-ios-orange'
+        : 'text-ios-red';
   return (
     <div className="glass-card px-4 py-3">
       <div className="flex items-baseline justify-between mb-2">
@@ -564,13 +677,19 @@ function EditAcceptRateCard({ rate }: { rate: MetricsSummary['editAcceptRate'] }
   );
 }
 
-function ToolDecisionsCard({ decisions }: { decisions: MetricsSummary['toolDecisions'] }): React.ReactElement {
+function ToolDecisionsCard({
+  decisions,
+}: {
+  decisions: MetricsSummary['toolDecisions'];
+}): React.ReactElement {
   const { overall, byTool, bySource } = decisions;
   const overallPct = (overall.rate * 100).toFixed(1);
   const overallColor =
-    overall.rate >= 0.8 ? 'text-ios-green' :
-    overall.rate >= 0.5 ? 'text-ios-orange' :
-                          'text-ios-red';
+    overall.rate >= 0.8
+      ? 'text-ios-green'
+      : overall.rate >= 0.5
+        ? 'text-ios-orange'
+        : 'text-ios-red';
 
   // Rank tools by total decisions, highest first. Limit to 6 to keep the
   // card compact — the rest are already summarized in "overall".
@@ -592,14 +711,18 @@ function ToolDecisionsCard({ decisions }: { decisions: MetricsSummary['toolDecis
         <p className={`text-[18px] font-bold tabular-nums ${overallColor}`}>{overallPct}%</p>
       </div>
       <p className="text-[10px] text-[#8E8E93] mb-2">
-        {overall.accepts} accepted · {overall.rejects} rejected · all tools (Bash, Read, Write, MCP, …)
+        {overall.accepts} accepted · {overall.rejects} rejected · all tools (Bash, Read, Write, MCP,
+        …)
       </p>
       {topTools.length > 0 && (
         <div className="mb-2">
           <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-1">By tool</p>
           <div className="space-y-1">
             {topTools.map((t) => (
-              <div key={t.tool} className="grid grid-cols-[1fr_auto_auto] gap-3 text-[11px] items-center">
+              <div
+                key={t.tool}
+                className="grid grid-cols-[1fr_auto_auto] gap-3 text-[11px] items-center"
+              >
                 <span className="font-medium text-black dark:text-white truncate">{t.tool}</span>
                 <span className="text-[10px] text-[#8E8E93] tabular-nums">
                   {t.accepts}✓ / {t.rejects}✗
@@ -618,7 +741,10 @@ function ToolDecisionsCard({ decisions }: { decisions: MetricsSummary['toolDecis
           <div className="grid grid-cols-2 gap-x-3 gap-y-1">
             {sourceEntries.map((s) => (
               <div key={s.source} className="flex items-center justify-between text-[11px]">
-                <span className="text-black dark:text-white truncate" title={sourceDescription(s.source)}>
+                <span
+                  className="text-black dark:text-white truncate"
+                  title={sourceDescription(s.source)}
+                >
                   {s.source}
                 </span>
                 <span className="text-[#8E8E93] tabular-nums">
@@ -655,7 +781,12 @@ function PromptsCard({ prompts }: { prompts: MetricsSummary['prompts'] }): React
       {data.length > 0 && (
         <ResponsiveContainer width="100%" height={100}>
           <BarChart data={data} barSize={14} margin={{ top: 0, right: 0, bottom: 0, left: -20 }}>
-            <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
+            <XAxis
+              dataKey="date"
+              tick={{ fontSize: 10, fill: '#8E8E93' }}
+              axisLine={false}
+              tickLine={false}
+            />
             <YAxis tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
             <Tooltip content={<StackedTooltip />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
             <Bar dataKey="prompts" fill="#5E5CE6" radius={[4, 4, 0, 0]} name="prompts" />
@@ -668,13 +799,20 @@ function PromptsCard({ prompts }: { prompts: MetricsSummary['prompts'] }): React
 
 function sourceDescription(source: string): string {
   switch (source) {
-    case 'config': return 'Pre-approved by settings';
-    case 'hook': return 'Allowed by a hook';
-    case 'user_permanent': return '"Always allow": you approved permanently';
-    case 'user_temporary': return 'You approved for this session';
-    case 'user_abort': return 'You cancelled (abort)';
-    case 'user_reject': return 'You explicitly rejected';
-    default: return source;
+    case 'config':
+      return 'Pre-approved by settings';
+    case 'hook':
+      return 'Allowed by a hook';
+    case 'user_permanent':
+      return '"Always allow": you approved permanently';
+    case 'user_temporary':
+      return 'You approved for this session';
+    case 'user_abort':
+      return 'You cancelled (abort)';
+    case 'user_reject':
+      return 'You explicitly rejected';
+    default:
+      return source;
   }
 }
 
@@ -693,7 +831,10 @@ function SkillsAndPlugins({
           <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-1">Top skills</p>
           <div className="flex flex-wrap gap-1.5">
             {skills.slice(0, 8).map((s) => (
-              <span key={s.name} className="inline-flex items-center gap-1 text-[10px] font-medium bg-black/[0.04] dark:bg-white/[0.06] px-2 py-0.5 rounded-full">
+              <span
+                key={s.name}
+                className="inline-flex items-center gap-1 text-[10px] font-medium bg-black/[0.04] dark:bg-white/[0.06] px-2 py-0.5 rounded-full"
+              >
                 <span className="text-black dark:text-white">{s.name}</span>
                 <span className="text-[#8E8E93] tabular-nums">{s.count}</span>
               </span>
@@ -706,12 +847,17 @@ function SkillsAndPlugins({
           <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-1">Recent plugins</p>
           <div className="space-y-0.5">
             {plugins.map((p) => (
-              <div key={`${p.name}-${p.installedAt}`} className="flex items-center justify-between text-[11px]">
+              <div
+                key={`${p.name}-${p.installedAt}`}
+                className="flex items-center justify-between text-[11px]"
+              >
                 <span className="text-black dark:text-white truncate">
                   {p.name}
                   {p.version && <span className="text-[#8E8E93] ml-1">v{p.version}</span>}
                 </span>
-                <span className="text-[10px] text-[#8E8E93] tabular-nums">{formatRelative(p.installedAt)}</span>
+                <span className="text-[10px] text-[#8E8E93] tabular-nums">
+                  {formatRelative(p.installedAt)}
+                </span>
               </div>
             ))}
           </div>
@@ -730,17 +876,208 @@ function LegendDot({ color, label }: { color: string; label: string }): React.Re
   );
 }
 
+// ─── Cache TTL ────────────────────────────────────────────────────────────────
+
+const CACHE_TTL_COLORS = {
+  create5m: '#FF9F0A',
+  create1h: '#BF5AF2',
+  read: '#30D158',
+} as const;
+
+function hasCacheTtlData(ttl: MetricsSummary['cacheTtl']): boolean {
+  if (!ttl) return false;
+  if (ttl.bySession.length > 0) return true;
+  for (const models of Object.values(ttl.byDayModel)) {
+    for (const row of Object.values(models)) {
+      if (row.create5m > 0 || row.create1h > 0 || row.read > 0) return true;
+    }
+  }
+  return false;
+}
+
+type CacheTtlView = 'tokens' | 'cost';
+
+export function CacheTtlSection({ ttl }: { ttl: MetricsSummary['cacheTtl'] }): React.ReactElement {
+  const [view, setView] = useState<CacheTtlView>('tokens');
+
+  const allDays = Object.keys(ttl.byDayModel).sort();
+  const dailyData = allDays.map((date) => {
+    let create5m = 0,
+      create1h = 0,
+      read = 0;
+    let cost5m = 0,
+      cost1h = 0,
+      costRead = 0;
+    for (const row of Object.values(ttl.byDayModel[date] ?? {})) {
+      create5m += row.create5m;
+      create1h += row.create1h;
+      read += row.read;
+      cost5m += row.cost5mWrite;
+      cost1h += row.cost1hWrite;
+      costRead += row.costRead;
+    }
+    return {
+      date: date.slice(5),
+      create5m: view === 'tokens' ? create5m : cost5m,
+      create1h: view === 'tokens' ? create1h : cost1h,
+      read: view === 'tokens' ? read : costRead,
+    };
+  });
+
+  const fmt =
+    view === 'tokens'
+      ? (v: number): string => compact(v)
+      : (v: number): string => `$${formatCost(v)}`;
+
+  return (
+    <div className="glass-card px-4 pt-4 pb-2">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-[11px] font-semibold text-[#8E8E93]">Cache TTL breakdown</p>
+        <div className="flex bg-black/[0.06] dark:bg-white/[0.08] rounded-lg p-[2px] gap-[2px]">
+          {(['tokens', 'cost'] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setView(mode)}
+              className={`px-2.5 py-0.5 rounded-md text-[10px] font-semibold transition-all duration-150 ${
+                view === mode
+                  ? 'bg-white dark:bg-[#3A3A3C] text-black dark:text-white shadow-[0_1px_2px_rgba(0,0,0,0.12)]'
+                  : 'text-[#8E8E93]'
+              }`}
+            >
+              {mode === 'tokens' ? 'Tokens' : 'Cost'}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <ResponsiveContainer width="100%" height={160}>
+        <BarChart data={dailyData} barSize={18} margin={{ top: 0, right: 0, bottom: 0, left: -12 }}>
+          <XAxis
+            dataKey="date"
+            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            axisLine={false}
+            tickLine={false}
+            tickFormatter={(v: number) => fmt(v)}
+          />
+          <Tooltip
+            content={<StackedTooltip valueFormatter={fmt} />}
+            cursor={{ fill: 'rgba(0,0,0,0.04)' }}
+          />
+          <Bar
+            dataKey="create5m"
+            stackId="t"
+            fill={CACHE_TTL_COLORS.create5m}
+            name="5m cache writes"
+          />
+          <Bar
+            dataKey="create1h"
+            stackId="t"
+            fill={CACHE_TTL_COLORS.create1h}
+            name="1h cache writes"
+          />
+          <Bar
+            dataKey="read"
+            stackId="t"
+            fill={CACHE_TTL_COLORS.read}
+            name="cache reads"
+            radius={[4, 4, 0, 0]}
+          />
+        </BarChart>
+      </ResponsiveContainer>
+
+      <div className="flex flex-wrap gap-3 mt-2 mb-1">
+        <LegendDot color={CACHE_TTL_COLORS.create5m} label="5-minute writes" />
+        <LegendDot color={CACHE_TTL_COLORS.create1h} label="1-hour writes" />
+        <LegendDot color={CACHE_TTL_COLORS.read} label="cache reads" />
+      </div>
+
+      {ttl.bySession.length > 0 && (
+        <CacheTtlSessionTable sessions={ttl.bySession} view={view} fmt={fmt} />
+      )}
+    </div>
+  );
+}
+
+function CacheTtlSessionTable({
+  sessions,
+  view,
+  fmt,
+}: {
+  sessions: CacheTtlSessionRow[];
+  view: CacheTtlView;
+  fmt: (v: number) => string;
+}): React.ReactElement {
+  return (
+    <div className="mt-3 pt-3 border-t border-black/5 dark:border-white/5">
+      <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-2">Recent sessions</p>
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-3 text-[10px] text-[#8E8E93] uppercase tracking-wider pb-1 border-b border-black/5 dark:border-white/5">
+          <span>Session</span>
+          <span className="text-right">5m</span>
+          <span className="text-right">1h</span>
+          <span className="text-right">Reads</span>
+          <span className="text-right">{view === 'tokens' ? 'Requests' : 'Cost'}</span>
+        </div>
+        {sessions.map((s) => {
+          const write5m = view === 'tokens' ? s.create5m : s.cost5mWrite;
+          const write1h = view === 'tokens' ? s.create1h : s.cost1hWrite;
+          const reads = view === 'tokens' ? s.read : s.costRead;
+          const rightCol =
+            view === 'tokens'
+              ? String(s.requestCount)
+              : `$${formatCost(s.cost5mWrite + s.cost1hWrite + s.costRead)}`;
+          return (
+            <div
+              key={s.sessionId}
+              className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-3 text-[11px] items-center"
+              title={`${s.sessionId} · ${s.model || 'unknown model'}`}
+            >
+              <span className="font-medium text-black dark:text-white truncate">
+                {shortSessionId(s.sessionId)}
+                <span className="text-[#8E8E93] font-normal ml-2">{formatRelative(s.lastTs)}</span>
+              </span>
+              <span className="text-right tabular-nums text-black dark:text-white">
+                {fmt(write5m)}
+              </span>
+              <span className="text-right tabular-nums text-black dark:text-white">
+                {fmt(write1h)}
+              </span>
+              <span className="text-right tabular-nums text-black dark:text-white">
+                {fmt(reads)}
+              </span>
+              <span className="text-right tabular-nums text-[#8E8E93]">{rightCol}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function shortSessionId(id: string): string {
+  if (id.length <= 8) return id;
+  return id.slice(0, 8);
+}
+
+// Re-exported for testing.
+export { hasCacheTtlData };
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 function tokenLabel(k: string): string {
-  if (k === 'cacheRead')   return 'cache read';
+  if (k === 'cacheRead') return 'cache read';
   if (k === 'cacheCreate') return 'cache create';
   return k;
 }
 
 function compact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
 }
 

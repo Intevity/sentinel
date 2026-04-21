@@ -13,6 +13,10 @@ const {
   writeSentinelCredentials,
   writeClaudeCodeCredentials,
   deleteSentinelCredentials,
+  readClaudeAiSessionKey,
+  writeClaudeAiSessionKey,
+  deleteClaudeAiSessionKey,
+  hasClaudeAiSessionKey,
 } = await import('./accounts.js');
 
 const sampleCreds = {
@@ -47,7 +51,9 @@ describe('accounts', () => {
 
     it('returns null when execSync throws', () => {
       Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      mockExecSync.mockImplementation(() => { throw new Error('not found'); });
+      mockExecSync.mockImplementation(() => {
+        throw new Error('not found');
+      });
       expect(readSentinelCredentials('none@example.com')).toBeNull();
     });
 
@@ -89,7 +95,9 @@ describe('accounts', () => {
 
     it('swallows errors when the entry does not exist on darwin', () => {
       Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      mockExecSync.mockImplementation(() => { throw new Error('not found'); });
+      mockExecSync.mockImplementation(() => {
+        throw new Error('not found');
+      });
       // Should not throw
       expect(() => deleteSentinelCredentials('missing@example.com')).not.toThrow();
     });
@@ -104,7 +112,9 @@ describe('accounts', () => {
 
     it('swallows errors on linux when the entry does not exist', () => {
       Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-      mockExecSync.mockImplementation(() => { throw new Error('not found'); });
+      mockExecSync.mockImplementation(() => {
+        throw new Error('not found');
+      });
       expect(() => deleteSentinelCredentials('missing@example.com')).not.toThrow();
     });
   });
@@ -127,7 +137,9 @@ describe('accounts', () => {
       // First call (sentinel) throws, second call (CC) returns creds
       const ccBlob = JSON.stringify({ claudeAiOauth: sampleCreds });
       mockExecSync
-        .mockImplementationOnce(() => { throw new Error('not found'); }) // sentinel miss
+        .mockImplementationOnce(() => {
+          throw new Error('not found');
+        }) // sentinel miss
         .mockReturnValue(ccBlob); // CC slot
 
       // activeEmail matches the target email → fall back allowed
@@ -137,7 +149,9 @@ describe('accounts', () => {
 
     it('returns null when both stores miss', () => {
       Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      mockExecSync.mockImplementation(() => { throw new Error('not found'); });
+      mockExecSync.mockImplementation(() => {
+        throw new Error('not found');
+      });
       expect(readActiveCredentials('nobody@example.com', 'nobody@example.com')).toBeNull();
     });
 
@@ -145,7 +159,9 @@ describe('accounts', () => {
       Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
       // Sentinel miss, then CC would return something — but we should NOT read it
       mockExecSync
-        .mockImplementationOnce(() => { throw new Error('not found'); }) // sentinel miss
+        .mockImplementationOnce(() => {
+          throw new Error('not found');
+        }) // sentinel miss
         .mockReturnValue(JSON.stringify({ claudeAiOauth: sampleCreds })); // CC slot
 
       // Target email != active email → no fallback
@@ -177,7 +193,7 @@ describe('accounts', () => {
       // Call 1: CC read, Call 2: sentinel write
       mockExecSync
         .mockReturnValueOnce(ccBlob) // CC read
-        .mockReturnValueOnce('');    // sentinel write
+        .mockReturnValueOnce(''); // sentinel write
 
       const result = captureCurrentCredentials('test@example.com');
       expect(result?.accessToken).toBe('at-test');
@@ -191,12 +207,16 @@ describe('accounts', () => {
       Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
       const ccCredsNoSub = { accessToken: 'at-new', refreshToken: 'rt-new', expiresAt: 9999 };
       const ccBlob = JSON.stringify({ claudeAiOauth: ccCredsNoSub });
-      const sentinelBlob = JSON.stringify({ ...ccCredsNoSub, subscriptionType: 'max', rateLimitTier: 'premium' });
+      const sentinelBlob = JSON.stringify({
+        ...ccCredsNoSub,
+        subscriptionType: 'max',
+        rateLimitTier: 'premium',
+      });
       // Call 1: CC read, Call 2: sentinel read (for preservation), Call 3: sentinel write
       mockExecSync
-        .mockReturnValueOnce(ccBlob)      // CC slot read
+        .mockReturnValueOnce(ccBlob) // CC slot read
         .mockReturnValueOnce(sentinelBlob) // sentinel read (existing entry)
-        .mockReturnValueOnce('');          // sentinel write
+        .mockReturnValueOnce(''); // sentinel write
 
       const result = captureCurrentCredentials('account-uuid');
       expect(result?.subscriptionType).toBe('max');
@@ -214,7 +234,7 @@ describe('accounts', () => {
       // CC has both fields — no sentinel read should happen
       mockExecSync
         .mockReturnValueOnce(ccBlob) // CC read
-        .mockReturnValueOnce('');    // sentinel write
+        .mockReturnValueOnce(''); // sentinel write
 
       const result = captureCurrentCredentials('account-uuid');
       expect(result?.subscriptionType).toBe('team');
@@ -228,8 +248,10 @@ describe('accounts', () => {
       const ccBlob = JSON.stringify({ claudeAiOauth: ccCredsNoSub });
       mockExecSync
         .mockReturnValueOnce(ccBlob) // CC read
-        .mockImplementationOnce(() => { throw new Error('no entry'); }) // sentinel read fails
-        .mockReturnValueOnce('');    // sentinel write
+        .mockImplementationOnce(() => {
+          throw new Error('no entry');
+        }) // sentinel read fails
+        .mockReturnValueOnce(''); // sentinel write
 
       const result = captureCurrentCredentials('account-uuid');
       expect(result?.accessToken).toBe('at-new');
@@ -241,6 +263,174 @@ describe('accounts', () => {
       mockExecSync.mockReturnValue(''); // empty result
       const result = captureCurrentCredentials('test@example.com');
       expect(result).toBeNull();
+    });
+
+    it('returns null when the captured CC blob has no claudeAiOauth wrapper', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockExecSync.mockReturnValueOnce('{}'); // CC slot with no oauth wrapper
+      const result = captureCurrentCredentials('acct-x');
+      expect(result).toBeNull();
+    });
+
+    it('returns null when execSync itself throws', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockExecSync.mockImplementation(() => {
+        throw new Error('exec failed');
+      });
+      const result = captureCurrentCredentials('acct-x');
+      expect(result).toBeNull();
+    });
+
+    it('returns null when the CC slot contents fail to parse as JSON', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      // CC read returns non-JSON → JSON.parse in captureCurrentCredentials
+      // throws → outer catch returns null.
+      mockExecSync.mockReturnValueOnce('not-valid-json');
+      const result = captureCurrentCredentials('acct-x');
+      expect(result).toBeNull();
+    });
+
+    it('preserves rateLimitTier from existing sentinel entry when CC creds lack only rateLimitTier', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      // CC creds have subscriptionType but NOT rateLimitTier — the
+      // preservation conditional at line 86 fires only for the missing
+      // rateLimitTier branch, not subscriptionType.
+      const ccCredsPartial = {
+        accessToken: 'at-new',
+        refreshToken: 'rt-new',
+        expiresAt: 9999,
+        subscriptionType: 'max',
+      };
+      const ccBlob = JSON.stringify({ claudeAiOauth: ccCredsPartial });
+      const sentinelBlob = JSON.stringify({
+        accessToken: 'old',
+        refreshToken: 'old',
+        expiresAt: 0,
+        subscriptionType: 'pro',
+        rateLimitTier: 'premium',
+      });
+      mockExecSync
+        .mockReturnValueOnce(ccBlob) // CC slot read
+        .mockReturnValueOnce(sentinelBlob) // sentinel read — existing entry
+        .mockReturnValueOnce(''); // sentinel write
+
+      const result = captureCurrentCredentials('acct-partial');
+      // subscriptionType stays as what CC returned (not overwritten).
+      expect(result?.subscriptionType).toBe('max');
+      // rateLimitTier preserved from the existing sentinel entry.
+      expect(result?.rateLimitTier).toBe('premium');
+    });
+  });
+
+  describe('readActiveCredentials — fallback error handling', () => {
+    it('returns null when CC fallback itself throws during JSON parse', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      // Sentinel miss, CC returns non-JSON so the inner try's parse throws,
+      // hitting the `catch { /* ignore */ }` branch.
+      mockExecSync
+        .mockImplementationOnce(() => {
+          throw new Error('sentinel miss');
+        })
+        .mockReturnValueOnce('not-valid-json');
+      // Without activeId specified, fall-back is allowed and the catch kicks in.
+      expect(readActiveCredentials('test@example.com')).toBeNull();
+    });
+
+    it('returns null when the CC slot JSON lacks a claudeAiOauth wrapper', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      // Sentinel miss, CC returns parseable JSON but no oauth key — exercises
+      // the `?? null` branch after JSON.parse succeeds.
+      mockExecSync
+        .mockImplementationOnce(() => {
+          throw new Error('sentinel miss');
+        })
+        .mockReturnValueOnce(JSON.stringify({ something_else: 1 }));
+      expect(readActiveCredentials('test@example.com')).toBeNull();
+    });
+  });
+
+  describe('readClaudeAiSessionKey', () => {
+    it('returns the trimmed value from the keychain on darwin', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockExecSync.mockReturnValue('session-abc\n');
+      const v = readClaudeAiSessionKey('acct-1');
+      expect(v).toBe('session-abc');
+      const cmd = mockExecSync.mock.calls[0]?.[0] ?? '';
+      expect(cmd).toContain('Claude Sentinel-claude-ai-session');
+    });
+
+    it('returns null when the keychain entry is empty', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockExecSync.mockReturnValue('');
+      expect(readClaudeAiSessionKey('acct-1')).toBeNull();
+    });
+
+    it('returns null when the read helper throws', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockExecSync.mockImplementation(() => {
+        throw new Error('no entry');
+      });
+      expect(readClaudeAiSessionKey('acct-missing')).toBeNull();
+    });
+  });
+
+  describe('writeClaudeAiSessionKey', () => {
+    it('trims whitespace and writes the cookie to the session keychain', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockExecSync.mockReturnValue('');
+      writeClaudeAiSessionKey('acct-1', '  session-xyz  ');
+      const cmd = mockExecSync.mock.calls[0]?.[0] ?? '';
+      expect(cmd).toContain('security add-generic-password');
+      expect(cmd).toContain('Claude Sentinel-claude-ai-session');
+      expect(cmd).toContain('session-xyz');
+    });
+
+    it('refuses to write an empty sessionKey so a blank paste cannot clobber a live entry', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      expect(() => writeClaudeAiSessionKey('acct-1', '   ')).toThrow(/must not be empty/);
+      expect(mockExecSync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteClaudeAiSessionKey', () => {
+    it('issues the delete command against the session service on darwin', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockExecSync.mockReturnValue('');
+      deleteClaudeAiSessionKey('acct-1');
+      const cmd = mockExecSync.mock.calls[0]?.[0] ?? '';
+      expect(cmd).toContain('security delete-generic-password');
+      expect(cmd).toContain('Claude Sentinel-claude-ai-session');
+    });
+  });
+
+  describe('hasClaudeAiSessionKey', () => {
+    it('returns true when the keychain returns a non-empty value', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockExecSync.mockReturnValue('session-abc');
+      expect(hasClaudeAiSessionKey('acct-1')).toBe(true);
+    });
+
+    it('returns false when the keychain returns empty', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockExecSync.mockReturnValue('');
+      expect(hasClaudeAiSessionKey('acct-1')).toBe(false);
+    });
+
+    it('returns false when the keychain returns whitespace only', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      // Note: readDarwin trims its output, so a whitespace-only value becomes
+      // null before hasClaudeAiSessionKey sees it. Still good to pin down
+      // the behavior.
+      mockExecSync.mockReturnValue('   \n');
+      expect(hasClaudeAiSessionKey('acct-1')).toBe(false);
+    });
+
+    it('returns false when the read helper throws', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockExecSync.mockImplementation(() => {
+        throw new Error('no entry');
+      });
+      expect(hasClaudeAiSessionKey('acct-missing')).toBe(false);
     });
   });
 });

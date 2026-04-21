@@ -448,8 +448,8 @@ export interface RequestDetail {
  *  Tool_use (inbound) is always observed only; we cannot block a response
  *  stream without corrupting the SSE protocol. */
 export type SecurityEnforcementMode =
-  | 'observe'            // never block; only record + notify
-  | 'block_high'         // block outbound when a HIGH finding is present
+  | 'observe' // never block; only record + notify
+  | 'block_high' // block outbound when a HIGH finding is present
   | 'block_medium_high'; // block on MEDIUM or HIGH findings
 
 export type SecurityOsNotifyThreshold = 'off' | 'high' | 'medium' | 'low';
@@ -799,21 +799,21 @@ export interface AutoModeStatus {
 /** Sound choices exposed in Settings. Values map to macOS system sounds;
  *  `null` means no sound. Other platforms will ignore unknown names silently. */
 export const ALERT_SOUNDS: ReadonlyArray<{ label: string; value: string | null }> = [
-  { label: 'None',      value: null        },
-  { label: 'Basso',     value: 'Basso'     },
-  { label: 'Blow',      value: 'Blow'      },
-  { label: 'Bottle',    value: 'Bottle'    },
-  { label: 'Frog',      value: 'Frog'      },
-  { label: 'Funk',      value: 'Funk'      },
-  { label: 'Glass',     value: 'Glass'     },
-  { label: 'Hero',      value: 'Hero'      },
-  { label: 'Morse',     value: 'Morse'     },
-  { label: 'Ping',      value: 'Ping'      },
-  { label: 'Pop',       value: 'Pop'       },
-  { label: 'Purr',      value: 'Purr'      },
-  { label: 'Sosumi',    value: 'Sosumi'    },
+  { label: 'None', value: null },
+  { label: 'Basso', value: 'Basso' },
+  { label: 'Blow', value: 'Blow' },
+  { label: 'Bottle', value: 'Bottle' },
+  { label: 'Frog', value: 'Frog' },
+  { label: 'Funk', value: 'Funk' },
+  { label: 'Glass', value: 'Glass' },
+  { label: 'Hero', value: 'Hero' },
+  { label: 'Morse', value: 'Morse' },
+  { label: 'Ping', value: 'Ping' },
+  { label: 'Pop', value: 'Pop' },
+  { label: 'Purr', value: 'Purr' },
+  { label: 'Sosumi', value: 'Sosumi' },
   { label: 'Submarine', value: 'Submarine' },
-  { label: 'Tink',      value: 'Tink'      },
+  { label: 'Tink', value: 'Tink' },
 ];
 
 /**
@@ -928,6 +928,38 @@ export interface CacheHitRate {
   rate: number;
 }
 
+/**
+ * Per-day and per-session rollup of ephemeral prompt-cache usage, sourced
+ * from the proxy (not OTEL). Captures both the client's cache_control
+ * markers and upstream's actual per-TTL token writes so the Metrics tab
+ * can show what was asked for side by side with what landed. Costs are
+ * precomputed at write-time using fixed multipliers (5m write 1.25x,
+ * 1h write 2.0x, read 0.1x) against a base input $/MTok table.
+ */
+export interface CacheTtlDayRow {
+  /** Count of request blocks tagged `{type: 'ephemeral'}` (5m default). */
+  reqMarkers5m: number;
+  /** Count of request blocks tagged `{type: 'ephemeral', ttl: '1h'}`. */
+  reqMarkers1h: number;
+  create5m: number;
+  create1h: number;
+  /** Cache read tokens. Anthropic does not break reads down by TTL. */
+  read: number;
+  inputTokens: number;
+  cost5mWrite: number;
+  cost1hWrite: number;
+  costRead: number;
+}
+
+export interface CacheTtlSessionRow extends CacheTtlDayRow {
+  sessionId: string;
+  firstTs: number;
+  lastTs: number;
+  requestCount: number;
+  /** Representative (most recent) model seen for this session. */
+  model: string;
+}
+
 export interface ToolStat {
   toolName: string;
   calls: number;
@@ -1024,4 +1056,11 @@ export interface MetricsSummary {
   prompts: PromptStats;
   skills: SkillUsage[];
   plugins: PluginInstall[];
+  /** Proxy-sourced cache-TTL rollup: { byDayModel, bySession }.
+   *  byDayModel shape: { "YYYY-MM-DD": { "claude-sonnet-4-6": CacheTtlDayRow } }.
+   *  bySession is most-recently-seen first, capped server-side. */
+  cacheTtl: {
+    byDayModel: Record<string, Record<string, CacheTtlDayRow>>;
+    bySession: CacheTtlSessionRow[];
+  };
 }

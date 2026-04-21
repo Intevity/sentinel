@@ -48,10 +48,7 @@ const CLAUDE_AI_BASE = 'https://claude.ai';
  * flipped; continue anyway, the sessionKey still auths us for every
  * org."
  */
-export async function switchActiveOrg(
-  sessionKey: string,
-  orgUuid: string,
-): Promise<boolean> {
+export async function switchActiveOrg(sessionKey: string, orgUuid: string): Promise<boolean> {
   const trimmedKey = sessionKey.trim();
   if (!trimmedKey || !orgUuid) return false;
   const url = `${CLAUDE_AI_BASE}/api/organizations/${encodeURIComponent(orgUuid)}/sync/settings`;
@@ -59,12 +56,12 @@ export async function switchActiveOrg(
     const resp = await fetch(url, {
       method: 'GET',
       headers: {
-        'Cookie': `sessionKey=${trimmedKey}; sessionKeyLC=${trimmedKey}; lastActiveOrg=${orgUuid}`,
+        Cookie: `sessionKey=${trimmedKey}; sessionKeyLC=${trimmedKey}; lastActiveOrg=${orgUuid}`,
         'User-Agent':
           'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 ' +
           '(KHTML, like Gecko) Version/18.0 Safari/605.1.15',
-        'Referer': 'https://claude.ai/',
-        'Accept': '*/*',
+        Referer: 'https://claude.ai/',
+        Accept: '*/*',
         'anthropic-client-platform': 'web_claude_ai',
         'anthropic-client-version': '1.0.0',
       },
@@ -181,7 +178,9 @@ export async function fetchBootstrap(
   if (orgUuidHint) {
     const edge = await fetchEdgeApi(trimmed, orgUuidHint);
     if (edge) return edge;
-    console.log('[Bootstrap] edge-api returned null, falling back to api.anthropic.com/api/bootstrap');
+    console.log(
+      '[Bootstrap] edge-api returned null, falling back to api.anthropic.com/api/bootstrap',
+    );
   }
 
   // Fallback: api.anthropic.com. In practice returns memberships=0 for
@@ -203,10 +202,10 @@ async function fetchEdgeApi(
     resp = await fetch(url, {
       method: 'GET',
       headers: {
-        'Cookie': `sessionKeyLC=${sessionKey}; sessionKey=${sessionKey}`,
+        Cookie: `sessionKeyLC=${sessionKey}; sessionKey=${sessionKey}`,
         'User-Agent': BROWSER_UA,
-        'Referer': 'https://claude.ai/',
-        'Accept': 'application/json',
+        Referer: 'https://claude.ai/',
+        Accept: 'application/json',
         'Accept-Language': 'en-US,en;q=0.9',
         'anthropic-client-platform': 'web_claude_ai',
         'anthropic-client-version': '1.0.0',
@@ -256,10 +255,10 @@ async function fetchApiBootstrap(sessionKey: string): Promise<BootstrapResult | 
     resp = await fetch(`${API_BASE}/api/bootstrap`, {
       method: 'GET',
       headers: {
-        'Cookie': `sessionKeyLC=${sessionKey}; sessionKey=${sessionKey}`,
+        Cookie: `sessionKeyLC=${sessionKey}; sessionKey=${sessionKey}`,
         'anthropic-client-platform': 'web_claude_ai',
         'anthropic-client-version': '1.0.0',
-        'Accept': 'application/json',
+        Accept: 'application/json',
       },
     });
   } catch (e) {
@@ -294,9 +293,8 @@ function parseBootstrapResponse(raw: BootstrapResponse): BootstrapResult {
   //   edge-api/app_start → raw.account.memberships
   // Prefer whichever is non-empty.
   const rawMemberships =
-    (raw.memberships && raw.memberships.length > 0
-      ? raw.memberships
-      : raw.account?.memberships) ?? [];
+    (raw.memberships && raw.memberships.length > 0 ? raw.memberships : raw.account?.memberships) ??
+    [];
 
   // Filter to orgs that actually support claude.ai chat. Anthropic
   // auto-creates an API-evaluation workspace when a user first signs

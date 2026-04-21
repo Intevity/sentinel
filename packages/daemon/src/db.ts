@@ -193,6 +193,34 @@ CREATE INDEX IF NOT EXISTS idx_api_errors_account    ON api_errors(account_id);
 CREATE INDEX IF NOT EXISTS idx_activity_ts           ON activity_events(ts);
 CREATE INDEX IF NOT EXISTS idx_activity_account_kind ON activity_events(account_id, kind);
 
+-- One row per /v1/messages request that yielded a response usage payload.
+-- Captures BOTH surfaces of the cache-TTL picture so the Metrics tab can
+-- show what Claude Code asked for (request cache_control markers) side by
+-- side with what upstream actually wrote (response per-TTL token counts).
+-- Cost fields are computed at write-time from a base $/MTok table and
+-- fixed multipliers (5m write 1.25x, 1h write 2.0x, read 0.1x) so
+-- aggregation stays pure SUM and historical rows survive future pricing
+-- shifts.
+CREATE TABLE IF NOT EXISTS cache_ttl_events (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts              INTEGER NOT NULL,
+  account_id      TEXT    NOT NULL,
+  session_id      TEXT,
+  model           TEXT    NOT NULL,
+  request_id      TEXT,
+  req_markers_5m  INTEGER NOT NULL DEFAULT 0,
+  req_markers_1h  INTEGER NOT NULL DEFAULT 0,
+  cache_create_5m INTEGER NOT NULL DEFAULT 0,
+  cache_create_1h INTEGER NOT NULL DEFAULT 0,
+  cache_read      INTEGER NOT NULL DEFAULT 0,
+  input_tokens    INTEGER NOT NULL DEFAULT 0,
+  cost_5m_write   REAL    NOT NULL DEFAULT 0,
+  cost_1h_write   REAL    NOT NULL DEFAULT 0,
+  cost_read       REAL    NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_cache_ttl_account_ts ON cache_ttl_events(account_id, ts);
+CREATE INDEX IF NOT EXISTS idx_cache_ttl_session    ON cache_ttl_events(account_id, session_id, ts);
+
 -- Findings surfaced by the security scanner. Secrets are never stored
 -- verbatim — only the masked form (first 4 + last 4 + length) plus a
 -- hash for dedup. See packages/daemon/src/security/scanner.ts for the
@@ -343,7 +371,7 @@ export function getDb(dbPath: string = DB_PATH): Database.Database {
   if (!cols.some((c) => c.name === 'account_uuid')) {
     _db.exec('ALTER TABLE accounts ADD COLUMN account_uuid TEXT');
   }
-  _db.exec("UPDATE accounts SET account_uuid = id WHERE account_uuid IS NULL");
+  _db.exec('UPDATE accounts SET account_uuid = id WHERE account_uuid IS NULL');
   if (!cols.some((c) => c.name === 'removed')) {
     _db.exec('ALTER TABLE accounts ADD COLUMN removed INTEGER NOT NULL DEFAULT 0');
   }
@@ -377,7 +405,9 @@ export function getDb(dbPath: string = DB_PATH): Database.Database {
   // provenance isn't recoverable; new rows are tagged correctly.
   const seCols2 = _db.pragma('table_info(security_events)') as Array<{ name: string }>;
   if (seCols2.length > 0 && !seCols2.some((c) => c.name === 'provenance')) {
-    _db.exec("ALTER TABLE security_events ADD COLUMN provenance TEXT NOT NULL DEFAULT 'conversation'");
+    _db.exec(
+      "ALTER TABLE security_events ADD COLUMN provenance TEXT NOT NULL DEFAULT 'conversation'",
+    );
   }
 
   // Migrate alerts for the `scope` column (added for pooled round-robin
@@ -452,21 +482,26 @@ export function getDb(dbPath: string = DB_PATH): Database.Database {
   // metric path is now skipped; delete rows that came from it so existing
   // SQLite databases get the correct totals without a full wipe. Guarded by
   // a flag so this runs once per DB.
-  _db.exec('CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)');
+  _db.exec(
+    'CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)',
+  );
   const applied = _db
     .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
     .get('dedup_cost_metric_rows_v1') as { ok: number } | undefined;
   if (!applied) {
     const result = _db
-      .prepare(`
+      .prepare(
+        `
         DELETE FROM usage_events
         WHERE input_tokens IS NULL
           AND output_tokens IS NULL
           AND cost_usd IS NOT NULL
           AND cost_usd > 0
-      `)
+      `,
+      )
       .run();
-    _db.prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)')
+    _db
+      .prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)')
       .run('dedup_cost_metric_rows_v1', Date.now());
     if (result.changes > 0) {
       console.log(`[DB] Removed ${result.changes} duplicate cost-metric rows (one-time cleanup)`);
@@ -493,7 +528,8 @@ export function upsertAccount(db: Database.Database, account: AccountInfo): void
   // An account that was explicitly removed stays removed until reactivateAccount()
   // is called (e.g. on an explicit switch or OAuth re-login). This prevents
   // refresh_accounts / startup from resurrecting a removed account.
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO accounts (id, account_uuid, email, display_name, org_uuid, org_name, plan_type, created_at)
     VALUES (@id, @accountUuid, @email, @displayName, @orgUuid, @orgName, @planType, @createdAt)
     ON CONFLICT(id) DO UPDATE SET
@@ -503,7 +539,8 @@ export function upsertAccount(db: Database.Database, account: AccountInfo): void
       org_uuid     = excluded.org_uuid,
       org_name     = excluded.org_name,
       plan_type    = excluded.plan_type
-  `).run({
+  `,
+  ).run({
     id: account.id,
     accountUuid: account.accountUuid,
     email: account.email,
@@ -578,9 +615,11 @@ export function purgeAccount(db: Database.Database, id: string): boolean {
   const upd = db.prepare('UPDATE accounts SET removed = 2 WHERE id = ?').run(id);
   if (upd.changes > 0) return true;
   // Row didn't exist — insert a minimal tombstone.
-  const ins = db.prepare(
-    'INSERT OR IGNORE INTO accounts (id, account_uuid, email, removed, created_at) VALUES (?, ?, \'\', 2, ?)',
-  ).run(id, id, Date.now());
+  const ins = db
+    .prepare(
+      "INSERT OR IGNORE INTO accounts (id, account_uuid, email, removed, created_at) VALUES (?, ?, '', 2, ?)",
+    )
+    .run(id, id, Date.now());
   return ins.changes > 0;
 }
 
@@ -588,7 +627,9 @@ export function purgeAccount(db: Database.Database, id: string): boolean {
  * Return all accounts that have been soft-removed (removed = 1).
  */
 export function listRemovedAccounts(db: Database.Database): AccountInfo[] {
-  const rows = db.prepare('SELECT * FROM accounts WHERE removed = 1 ORDER BY email').all() as DbAccountRow[];
+  const rows = db
+    .prepare('SELECT * FROM accounts WHERE removed = 1 ORDER BY email')
+    .all() as DbAccountRow[];
   return rows.map(rowToAccount);
 }
 
@@ -606,9 +647,9 @@ export function reactivateAccount(db: Database.Database, id: string): void {
  * count. Used by the OAuth login flow to detect re-auth of an existing org.
  */
 export function hasNonPurgedAccount(db: Database.Database, id: string): boolean {
-  const row = db
-    .prepare('SELECT removed FROM accounts WHERE id = ?')
-    .get(id) as { removed: number } | undefined;
+  const row = db.prepare('SELECT removed FROM accounts WHERE id = ?').get(id) as
+    | { removed: number }
+    | undefined;
   return row !== undefined && row.removed !== 2;
 }
 
@@ -623,24 +664,23 @@ export function hasNonPurgedAccount(db: Database.Database, id: string): boolean 
  * the user just deliberately put the account back.
  */
 export function hasActiveAccount(db: Database.Database, id: string): boolean {
-  const row = db
-    .prepare('SELECT removed FROM accounts WHERE id = ?')
-    .get(id) as { removed: number } | undefined;
+  const row = db.prepare('SELECT removed FROM accounts WHERE id = ?').get(id) as
+    | { removed: number }
+    | undefined;
   return row !== undefined && row.removed === 0;
 }
 
-export function getAccount(
-  db: Database.Database,
-  accountId: string,
-): AccountInfo | null {
-  const row = db
-    .prepare('SELECT * FROM accounts WHERE id = ?')
-    .get(accountId) as DbAccountRow | undefined;
+export function getAccount(db: Database.Database, accountId: string): AccountInfo | null {
+  const row = db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId) as
+    | DbAccountRow
+    | undefined;
   return row ? rowToAccount(row) : null;
 }
 
 export function listAccounts(db: Database.Database): AccountInfo[] {
-  const rows = db.prepare('SELECT * FROM accounts WHERE removed = 0 ORDER BY email').all() as DbAccountRow[];
+  const rows = db
+    .prepare('SELECT * FROM accounts WHERE removed = 0 ORDER BY email')
+    .all() as DbAccountRow[];
   return rows.map(rowToAccount);
 }
 
@@ -649,11 +689,7 @@ export function listAccounts(db: Database.Database): AccountInfo[] {
  * the custom color so the UI reverts to the hash-derived default gradient.
  * Returns true when the row existed and was updated.
  */
-export function setAccountColor(
-  db: Database.Database,
-  id: string,
-  color: string | null,
-): boolean {
+export function setAccountColor(db: Database.Database, id: string, color: string | null): boolean {
   const result = db.prepare('UPDATE accounts SET color = ? WHERE id = ?').run(color, id);
   return result.changes > 0;
 }
@@ -664,12 +700,14 @@ export type InsertUsageEvent = Omit<UsageEvent, 'id'>;
 
 export function insertUsageEvent(db: Database.Database, event: InsertUsageEvent): number {
   const result = db
-    .prepare(`
+    .prepare(
+      `
       INSERT INTO usage_events
         (ts, account_id, session_id, model, cost_usd, input_tokens, output_tokens, cache_read, cache_create, duration_ms)
       VALUES
         (@ts, @accountId, @sessionId, @model, @costUsd, @inputTokens, @outputTokens, @cacheRead, @cacheCreate, @durationMs)
-    `)
+    `,
+    )
     .run({
       ts: event.ts,
       accountId: event.accountId,
@@ -719,14 +757,16 @@ export function getTodayUsageSummary(
   const sinceTs = startOfDay.getTime();
 
   const row = db
-    .prepare(`
+    .prepare(
+      `
       SELECT
         COALESCE(SUM(cost_usd), 0)      AS total_cost,
         COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0) AS total_tokens,
         COUNT(DISTINCT session_id)       AS session_count
       FROM usage_events
       WHERE account_id = ? AND ts >= ?
-    `)
+    `,
+    )
     .get(accountId, sinceTs) as
     | { total_cost: number; total_tokens: number; session_count: number }
     | undefined;
@@ -788,12 +828,17 @@ export type InsertOverageEvent = Omit<OverageEvent, 'id'>;
  * the insert was skipped — callers use the null to suppress a redundant
  * broadcast / notification.
  */
-export function insertOverageEvent(db: Database.Database, event: InsertOverageEvent): number | null {
+export function insertOverageEvent(
+  db: Database.Database,
+  event: InsertOverageEvent,
+): number | null {
   const result = db
-    .prepare(`
+    .prepare(
+      `
       INSERT OR IGNORE INTO overage_events (ts, account_id, transition, status, resets_at, disabled_reason)
       VALUES (@ts, @accountId, @transition, @status, @resetsAt, @disabledReason)
-    `)
+    `,
+    )
     .run({
       ts: event.ts,
       accountId: event.accountId,
@@ -847,14 +892,16 @@ export function clearOverageEvents(db: Database.Database, accountId?: string): n
  */
 export function getLastOverageEventPerAccount(db: Database.Database): OverageEvent[] {
   const rows = db
-    .prepare(`
+    .prepare(
+      `
       SELECT e.* FROM overage_events e
       INNER JOIN (
         SELECT account_id, MAX(ts) AS max_ts
         FROM overage_events
         GROUP BY account_id
       ) m ON e.account_id = m.account_id AND e.ts = m.max_ts
-    `)
+    `,
+    )
     .all() as DbOverageRow[];
   return rows.map(rowToOverageEvent);
 }
@@ -865,10 +912,12 @@ export type InsertNotification = Omit<NotificationRecord, 'id' | 'acknowledged'>
 
 export function insertNotification(db: Database.Database, notif: InsertNotification): number {
   const result = db
-    .prepare(`
+    .prepare(
+      `
       INSERT INTO notifications (ts, account_id, type, title, body)
       VALUES (@ts, @accountId, @type, @title, @body)
-    `)
+    `,
+    )
     .run({
       ts: notif.ts,
       accountId: notif.accountId ?? null,
@@ -880,9 +929,7 @@ export function insertNotification(db: Database.Database, notif: InsertNotificat
 }
 
 export function acknowledgeNotification(db: Database.Database, id: number): boolean {
-  const result = db
-    .prepare('UPDATE notifications SET acknowledged = 1 WHERE id = ?')
-    .run(id);
+  const result = db.prepare('UPDATE notifications SET acknowledged = 1 WHERE id = ?').run(id);
   return result.changes > 0;
 }
 
@@ -897,17 +944,15 @@ export function acknowledgeNotification(db: Database.Database, id: number): bool
  *
  * Returns the number of rows modified so the caller can show a toast / count.
  */
-export function acknowledgeAllNotifications(
-  db: Database.Database,
-  accountId?: string,
-): number {
-  const result = accountId !== undefined
-    ? db
-        .prepare('UPDATE notifications SET acknowledged = 1 WHERE acknowledged = 0 AND (account_id = ? OR account_id IS NULL)')
-        .run(accountId)
-    : db
-        .prepare('UPDATE notifications SET acknowledged = 1 WHERE acknowledged = 0')
-        .run();
+export function acknowledgeAllNotifications(db: Database.Database, accountId?: string): number {
+  const result =
+    accountId !== undefined
+      ? db
+          .prepare(
+            'UPDATE notifications SET acknowledged = 1 WHERE acknowledged = 0 AND (account_id = ? OR account_id IS NULL)',
+          )
+          .run(accountId)
+      : db.prepare('UPDATE notifications SET acknowledged = 1 WHERE acknowledged = 0').run();
   return result.changes;
 }
 
@@ -1071,30 +1116,27 @@ export function listSecurityEvents(
 }
 
 export function acknowledgeSecurityEvent(db: Database.Database, id: number): boolean {
-  const result = db
-    .prepare('UPDATE security_events SET acknowledged = 1 WHERE id = ?')
-    .run(id);
+  const result = db.prepare('UPDATE security_events SET acknowledged = 1 WHERE id = ?').run(id);
   return result.changes > 0;
 }
 
-export function acknowledgeAllSecurityEvents(
-  db: Database.Database,
-  accountId?: string,
-): number {
-  const result = accountId !== undefined
-    ? db
-        .prepare('UPDATE security_events SET acknowledged = 1 WHERE acknowledged = 0 AND account_id = ?')
-        .run(accountId)
-    : db
-        .prepare('UPDATE security_events SET acknowledged = 1 WHERE acknowledged = 0')
-        .run();
+export function acknowledgeAllSecurityEvents(db: Database.Database, accountId?: string): number {
+  const result =
+    accountId !== undefined
+      ? db
+          .prepare(
+            'UPDATE security_events SET acknowledged = 1 WHERE acknowledged = 0 AND account_id = ?',
+          )
+          .run(accountId)
+      : db.prepare('UPDATE security_events SET acknowledged = 1 WHERE acknowledged = 0').run();
   return result.changes;
 }
 
 export function clearSecurityEvents(db: Database.Database, accountId?: string): number {
-  const result = accountId !== undefined
-    ? db.prepare('DELETE FROM security_events WHERE account_id = ?').run(accountId)
-    : db.prepare('DELETE FROM security_events').run();
+  const result =
+    accountId !== undefined
+      ? db.prepare('DELETE FROM security_events WHERE account_id = ?').run(accountId)
+      : db.prepare('DELETE FROM security_events').run();
   return result.changes;
 }
 
@@ -1103,10 +1145,7 @@ export function clearSecurityEvents(db: Database.Database, accountId?: string): 
  *  the four tables that grow linearly with Claude Code activity.
  *  Intended to run at daemon startup AND every 24h. Returns the total
  *  number of rows removed across all tables. */
-export function purgeTelemetryOlderThan(
-  db: Database.Database,
-  cutoffMs: number,
-): number {
+export function purgeTelemetryOlderThan(db: Database.Database, cutoffMs: number): number {
   let total = 0;
   for (const table of ['usage_events', 'tool_events', 'api_errors', 'activity_events'] as const) {
     const result = db.prepare(`DELETE FROM ${table} WHERE ts < ?`).run(cutoffMs);
@@ -1117,10 +1156,7 @@ export function purgeTelemetryOlderThan(
 
 /** Delete rows older than the retention window. Intended to run at daemon
  *  startup. Returns the number of rows removed. */
-export function purgeSecurityEventsOlderThan(
-  db: Database.Database,
-  cutoffMs: number,
-): number {
+export function purgeSecurityEventsOlderThan(db: Database.Database, cutoffMs: number): number {
   const result = db.prepare('DELETE FROM security_events WHERE ts < ?').run(cutoffMs);
   return result.changes;
 }
@@ -1131,13 +1167,16 @@ export function countUnacknowledgedSecurityEvents(
   db: Database.Database,
   accountId?: string,
 ): number {
-  const row = accountId !== undefined
-    ? db
-        .prepare('SELECT COUNT(*) AS n FROM security_events WHERE acknowledged = 0 AND account_id = ?')
-        .get(accountId) as { n: number }
-    : db
-        .prepare('SELECT COUNT(*) AS n FROM security_events WHERE acknowledged = 0')
-        .get() as { n: number };
+  const row =
+    accountId !== undefined
+      ? (db
+          .prepare(
+            'SELECT COUNT(*) AS n FROM security_events WHERE acknowledged = 0 AND account_id = ?',
+          )
+          .get(accountId) as { n: number })
+      : (db.prepare('SELECT COUNT(*) AS n FROM security_events WHERE acknowledged = 0').get() as {
+          n: number;
+        });
   return row.n;
 }
 
@@ -1210,10 +1249,10 @@ export function addSecurityAllowlist(
        WHERE match_hash = ? AND detector_id = ?`,
     )
     .all(args.matchHash, args.detectorId) as Array<{
-      ts: number;
-      account_id: string;
-      title: string;
-    }>;
+    ts: number;
+    account_id: string;
+    title: string;
+  }>;
 
   let deletedNotifications = 0;
   const delNotif = db.prepare(
@@ -1247,14 +1286,14 @@ export function listSecurityAllowlist(db: Database.Database): SecurityAllowlistE
   const rows = db
     .prepare('SELECT * FROM security_allowlist ORDER BY created_at DESC')
     .all() as Array<{
-      id: number;
-      match_hash: string;
-      detector_id: string;
-      match_mask: string | null;
-      title: string | null;
-      note: string | null;
-      created_at: number;
-    }>;
+    id: number;
+    match_hash: string;
+    detector_id: string;
+    match_mask: string | null;
+    title: string | null;
+    note: string | null;
+    created_at: number;
+  }>;
   return rows.map((r) => ({
     id: r.id,
     matchHash: r.match_hash,
@@ -1282,9 +1321,7 @@ export function isPermissionBypassed(
   inputHash: string,
 ): boolean {
   const row = db
-    .prepare(
-      'SELECT 1 FROM permission_bypass WHERE rule_id = ? AND input_hash = ? LIMIT 1',
-    )
+    .prepare('SELECT 1 FROM permission_bypass WHERE rule_id = ? AND input_hash = ? LIMIT 1')
     .get(ruleId, inputHash);
   return row !== undefined;
 }
@@ -1320,9 +1357,7 @@ export function addPermissionBypass(
     createdAt: now,
   });
   const row = db
-    .prepare(
-      'SELECT id FROM permission_bypass WHERE rule_id = ? AND input_hash = ?',
-    )
+    .prepare('SELECT id FROM permission_bypass WHERE rule_id = ? AND input_hash = ?')
     .get(args.ruleId, args.inputHash) as { id: number };
   return { id: row.id };
 }
@@ -1346,14 +1381,14 @@ export function listPermissionBypasses(db: Database.Database): PermissionBypassR
   const rows = db
     .prepare('SELECT * FROM permission_bypass ORDER BY created_at DESC')
     .all() as Array<{
-      id: number;
-      rule_id: string;
-      tool_name: string;
-      input_hash: string;
-      mask: string;
-      note: string | null;
-      created_at: number;
-    }>;
+    id: number;
+    rule_id: string;
+    tool_name: string;
+    input_hash: string;
+    mask: string;
+    note: string | null;
+    created_at: number;
+  }>;
   return rows.map((r) => ({
     id: r.id,
     ruleId: r.rule_id,
@@ -1371,8 +1406,13 @@ export function listPermissionBypasses(db: Database.Database): PermissionBypassR
  * Upsert a single rate-limit window for an account.
  * Called after each API response that includes anthropic-ratelimit-* headers.
  */
-export function upsertRateLimit(db: Database.Database, accountId: string, window: RateLimitWindow): void {
-  db.prepare(`
+export function upsertRateLimit(
+  db: Database.Database,
+  accountId: string,
+  window: RateLimitWindow,
+): void {
+  db.prepare(
+    `
     INSERT INTO rate_limits (account_id, name, status, utilization, lim, remaining, reset_ts, in_use, last_updated)
     VALUES (@accountId, @name, @status, @utilization, @lim, @remaining, @resetTs, @inUse, @lastUpdated)
     ON CONFLICT(account_id, name) DO UPDATE SET
@@ -1383,7 +1423,8 @@ export function upsertRateLimit(db: Database.Database, accountId: string, window
       reset_ts     = excluded.reset_ts,
       in_use       = excluded.in_use,
       last_updated = excluded.last_updated
-  `).run({
+  `,
+  ).run({
     accountId,
     name: window.name,
     status: window.status ?? null,
@@ -1423,7 +1464,9 @@ export function deleteRateLimitsForAccount(db: Database.Database, accountId: str
  * Used at daemon startup to pre-populate the in-memory store.
  */
 export function loadRateLimits(db: Database.Database): Map<string, RateLimitWindow[]> {
-  const rows = db.prepare('SELECT * FROM rate_limits ORDER BY account_id, name').all() as DbRateLimitRow[];
+  const rows = db
+    .prepare('SELECT * FROM rate_limits ORDER BY account_id, name')
+    .all() as DbRateLimitRow[];
   const result = new Map<string, RateLimitWindow[]>();
   for (const row of rows) {
     if (!result.has(row.account_id)) result.set(row.account_id, []);
@@ -1458,8 +1501,7 @@ function rowToAlert(row: DbAlertRow): Alert {
   const scope: 'account' | 'pool' | 'budget' =
     row.scope === 'pool' ? 'pool' : row.scope === 'budget' ? 'budget' : 'account';
   // Budget-scope rows may be global (account_id = '') or per-account.
-  const hasAccountId =
-    scope === 'account' || (scope === 'budget' && row.budget_scope !== 'global');
+  const hasAccountId = scope === 'account' || (scope === 'budget' && row.budget_scope !== 'global');
   const alert: Alert = {
     id: row.id,
     scope,
@@ -1489,13 +1531,16 @@ export function listAlerts(
     sql = "SELECT * FROM alerts WHERE scope = 'pool' ORDER BY threshold_pct ASC";
     params = [];
   } else if (scope === 'budget' && accountId) {
-    sql = "SELECT * FROM alerts WHERE scope = 'budget' AND account_id = ? ORDER BY threshold_pct ASC";
+    sql =
+      "SELECT * FROM alerts WHERE scope = 'budget' AND account_id = ? ORDER BY threshold_pct ASC";
     params = [accountId];
   } else if (scope === 'budget') {
-    sql = "SELECT * FROM alerts WHERE scope = 'budget' ORDER BY budget_scope, account_id, threshold_pct ASC";
+    sql =
+      "SELECT * FROM alerts WHERE scope = 'budget' ORDER BY budget_scope, account_id, threshold_pct ASC";
     params = [];
   } else if (scope === 'account' && accountId) {
-    sql = "SELECT * FROM alerts WHERE scope = 'account' AND account_id = ? ORDER BY threshold_pct ASC";
+    sql =
+      "SELECT * FROM alerts WHERE scope = 'account' AND account_id = ? ORDER BY threshold_pct ASC";
     params = [accountId];
   } else if (scope === 'account') {
     sql = "SELECT * FROM alerts WHERE scope = 'account' ORDER BY account_id, threshold_pct ASC";
@@ -1524,18 +1569,18 @@ export function upsertAlert(
 ): Alert {
   const scope = input.scope ?? 'account';
   if (scope === 'pool' && input.accountId != null) {
-    throw new Error("pool-scoped alerts must have accountId = null");
+    throw new Error('pool-scoped alerts must have accountId = null');
   }
   if (scope === 'account' && !input.accountId) {
-    throw new Error("account-scoped alerts require a non-empty accountId");
+    throw new Error('account-scoped alerts require a non-empty accountId');
   }
   const budgetScope: 'account' | 'global' | null =
     scope === 'budget' ? (input.budgetScope ?? 'account') : null;
   if (scope === 'budget' && budgetScope === 'account' && !input.accountId) {
-    throw new Error("budget-scoped account alerts require a non-empty accountId");
+    throw new Error('budget-scoped account alerts require a non-empty accountId');
   }
   if (scope === 'budget' && budgetScope === 'global' && input.accountId != null) {
-    throw new Error("budget-scoped global alerts must have accountId = null");
+    throw new Error('budget-scoped global alerts must have accountId = null');
   }
   // Pool rows and budget-global rows store '' for the legacy NOT NULL column;
   // normalized back to null by rowToAlert when reading.
@@ -1545,19 +1590,29 @@ export function upsertAlert(
       : (input.accountId as string);
 
   if (input.id !== undefined) {
-    db.prepare(`
+    db.prepare(
+      `
       UPDATE alerts SET scope = ?, account_id = ?, threshold_pct = ?, enabled = ?, budget_scope = ? WHERE id = ?
-    `).run(scope, dbAccountId, input.thresholdPct, input.enabled ? 1 : 0, budgetScope, input.id);
-    const row = db.prepare('SELECT * FROM alerts WHERE id = ?').get(input.id) as DbAlertRow | undefined;
+    `,
+    ).run(scope, dbAccountId, input.thresholdPct, input.enabled ? 1 : 0, budgetScope, input.id);
+    const row = db.prepare('SELECT * FROM alerts WHERE id = ?').get(input.id) as
+      | DbAlertRow
+      | undefined;
     /* v8 ignore next 1 */
     if (!row) throw new Error(`alert ${input.id} not found after update`);
     return rowToAlert(row);
   }
-  const result = db.prepare(`
+  const result = db
+    .prepare(
+      `
     INSERT INTO alerts (scope, account_id, threshold_pct, enabled, budget_scope, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(scope, dbAccountId, input.thresholdPct, input.enabled ? 1 : 0, budgetScope, Date.now());
-  const row = db.prepare('SELECT * FROM alerts WHERE id = ?').get(Number(result.lastInsertRowid)) as DbAlertRow;
+  `,
+    )
+    .run(scope, dbAccountId, input.thresholdPct, input.enabled ? 1 : 0, budgetScope, Date.now());
+  const row = db
+    .prepare('SELECT * FROM alerts WHERE id = ?')
+    .get(Number(result.lastInsertRowid)) as DbAlertRow;
   return rowToAlert(row);
 }
 
@@ -1566,11 +1621,7 @@ export function deleteAlert(db: Database.Database, id: number): boolean {
   return result.changes > 0;
 }
 
-export function markAlertTriggered(
-  db: Database.Database,
-  id: number,
-  resetTs: number,
-): void {
+export function markAlertTriggered(db: Database.Database, id: number, resetTs: number): void {
   db.prepare('UPDATE alerts SET last_triggered_reset_ts = ? WHERE id = ?').run(resetTs, id);
 }
 
@@ -1761,22 +1812,26 @@ export interface InsertToolEvent {
 }
 
 export function insertToolEvent(db: Database.Database, e: InsertToolEvent): number {
-  const result = db.prepare(`
+  const result = db
+    .prepare(
+      `
     INSERT INTO tool_events (ts, account_id, session_id, tool_name, success, duration_ms, error, decision_source, decision_type, mcp_server_scope, tool_result_size_bytes)
     VALUES (@ts, @accountId, @sessionId, @toolName, @success, @durationMs, @error, @decisionSource, @decisionType, @mcpServerScope, @toolResultSizeBytes)
-  `).run({
-    ts: e.ts,
-    accountId: e.accountId,
-    sessionId: e.sessionId,
-    toolName: e.toolName,
-    success: e.success ? 1 : 0,
-    durationMs: e.durationMs,
-    error: e.error,
-    decisionSource: e.decisionSource,
-    decisionType: e.decisionType,
-    mcpServerScope: e.mcpServerScope,
-    toolResultSizeBytes: e.toolResultSizeBytes,
-  });
+  `,
+    )
+    .run({
+      ts: e.ts,
+      accountId: e.accountId,
+      sessionId: e.sessionId,
+      toolName: e.toolName,
+      success: e.success ? 1 : 0,
+      durationMs: e.durationMs,
+      error: e.error,
+      decisionSource: e.decisionSource,
+      decisionType: e.decisionType,
+      mcpServerScope: e.mcpServerScope,
+      toolResultSizeBytes: e.toolResultSizeBytes,
+    });
   return Number(result.lastInsertRowid);
 }
 
@@ -1794,10 +1849,14 @@ export interface InsertApiError {
 }
 
 export function insertApiError(db: Database.Database, e: InsertApiError): number {
-  const result = db.prepare(`
+  const result = db
+    .prepare(
+      `
     INSERT INTO api_errors (ts, account_id, session_id, model, status_code, error, duration_ms, attempt, request_id, speed)
     VALUES (@ts, @accountId, @sessionId, @model, @statusCode, @error, @durationMs, @attempt, @requestId, @speed)
-  `).run(e as unknown as Record<string, unknown>);
+  `,
+    )
+    .run(e as unknown as Record<string, unknown>);
   return Number(result.lastInsertRowid);
 }
 
@@ -1834,25 +1893,29 @@ export interface InsertActivityEvent {
 }
 
 export function insertActivityEvent(db: Database.Database, e: InsertActivityEvent): number {
-  const result = db.prepare(`
+  const result = db
+    .prepare(
+      `
     INSERT INTO activity_events (ts, account_id, session_id, kind, value, model, tool_name, language, decision, source, name, version, marketplace, extra_json)
     VALUES (@ts, @accountId, @sessionId, @kind, @value, @model, @toolName, @language, @decision, @source, @name, @version, @marketplace, @extraJson)
-  `).run({
-    ts: e.ts,
-    accountId: e.accountId,
-    sessionId: e.sessionId,
-    kind: e.kind,
-    value: e.value,
-    model: e.model ?? null,
-    toolName: e.toolName ?? null,
-    language: e.language ?? null,
-    decision: e.decision ?? null,
-    source: e.source ?? null,
-    name: e.name ?? null,
-    version: e.version ?? null,
-    marketplace: e.marketplace ?? null,
-    extraJson: e.extraJson ?? null,
-  });
+  `,
+    )
+    .run({
+      ts: e.ts,
+      accountId: e.accountId,
+      sessionId: e.sessionId,
+      kind: e.kind,
+      value: e.value,
+      model: e.model ?? null,
+      toolName: e.toolName ?? null,
+      language: e.language ?? null,
+      decision: e.decision ?? null,
+      source: e.source ?? null,
+      name: e.name ?? null,
+      version: e.version ?? null,
+      marketplace: e.marketplace ?? null,
+      extraJson: e.extraJson ?? null,
+    });
   return Number(result.lastInsertRowid);
 }
 
@@ -1869,8 +1932,9 @@ export function getTokensByDayModel(
   days: number,
 ): Record<string, Record<string, MetricsByDayModel>> {
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
-  const rows = db.prepare(
-    `SELECT
+  const rows = db
+    .prepare(
+      `SELECT
        date(ts / 1000, 'unixepoch')          AS day,
        model,
        COALESCE(SUM(cost_usd), 0)            AS cost_usd,
@@ -1882,7 +1946,8 @@ export function getTokensByDayModel(
      WHERE account_id = ? AND ts >= ?
      GROUP BY day, model
      ORDER BY day ASC`,
-  ).all(accountId, sinceTs) as Array<{
+    )
+    .all(accountId, sinceTs) as Array<{
     day: string;
     model: string;
     cost_usd: number;
@@ -1916,15 +1981,17 @@ export function getCacheHitRate(
   days: number,
 ): Record<string, CacheHitRate> {
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
-  const rows = db.prepare(
-    `SELECT
+  const rows = db
+    .prepare(
+      `SELECT
        model,
        COALESCE(SUM(input_tokens), 0) AS input_tokens,
        COALESCE(SUM(cache_read), 0)   AS cache_read
      FROM usage_events
      WHERE account_id = ? AND ts >= ?
      GROUP BY model`,
-  ).all(accountId, sinceTs) as Array<{ model: string; input_tokens: number; cache_read: number }>;
+    )
+    .all(accountId, sinceTs) as Array<{ model: string; input_tokens: number; cache_read: number }>;
 
   const result: Record<string, CacheHitRate> = {};
   for (const r of rows) {
@@ -1938,6 +2005,198 @@ export function getCacheHitRate(
   return result;
 }
 
+// ─── Cache TTL events ─────────────────────────────────────────────────────────
+
+export interface InsertCacheTtlEvent {
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  model: string;
+  requestId: string | null;
+  reqMarkers5m: number;
+  reqMarkers1h: number;
+  cacheCreate5m: number;
+  cacheCreate1h: number;
+  cacheRead: number;
+  inputTokens: number;
+  cost5mWrite: number;
+  cost1hWrite: number;
+  costRead: number;
+}
+
+export interface CacheTtlDayRow {
+  reqMarkers5m: number;
+  reqMarkers1h: number;
+  create5m: number;
+  create1h: number;
+  read: number;
+  inputTokens: number;
+  cost5mWrite: number;
+  cost1hWrite: number;
+  costRead: number;
+}
+
+export interface CacheTtlSessionRow extends CacheTtlDayRow {
+  sessionId: string;
+  firstTs: number;
+  lastTs: number;
+  requestCount: number;
+  model: string;
+}
+
+export function insertCacheTtlEvent(db: Database.Database, event: InsertCacheTtlEvent): number {
+  const result = db
+    .prepare(
+      `
+      INSERT INTO cache_ttl_events
+        (ts, account_id, session_id, model, request_id,
+         req_markers_5m, req_markers_1h,
+         cache_create_5m, cache_create_1h, cache_read, input_tokens,
+         cost_5m_write, cost_1h_write, cost_read)
+      VALUES
+        (@ts, @accountId, @sessionId, @model, @requestId,
+         @reqMarkers5m, @reqMarkers1h,
+         @cacheCreate5m, @cacheCreate1h, @cacheRead, @inputTokens,
+         @cost5mWrite, @cost1hWrite, @costRead)
+    `,
+    )
+    .run(event);
+  return Number(result.lastInsertRowid);
+}
+
+/**
+ * Per-day, per-model rollup of cache TTL events. Keyed by `YYYY-MM-DD` then
+ * by model so the frontend can stack or split however it likes without a
+ * second round-trip.
+ */
+export function getCacheTtlByDayModel(
+  db: Database.Database,
+  accountId: string,
+  days: number,
+): Record<string, Record<string, CacheTtlDayRow>> {
+  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db
+    .prepare(
+      `SELECT
+       date(ts / 1000, 'unixepoch')       AS day,
+       model                              AS model,
+       COALESCE(SUM(req_markers_5m), 0)   AS req_markers_5m,
+       COALESCE(SUM(req_markers_1h), 0)   AS req_markers_1h,
+       COALESCE(SUM(cache_create_5m), 0)  AS create_5m,
+       COALESCE(SUM(cache_create_1h), 0)  AS create_1h,
+       COALESCE(SUM(cache_read), 0)       AS cache_read,
+       COALESCE(SUM(input_tokens), 0)     AS input_tokens,
+       COALESCE(SUM(cost_5m_write), 0)    AS cost_5m_write,
+       COALESCE(SUM(cost_1h_write), 0)    AS cost_1h_write,
+       COALESCE(SUM(cost_read), 0)        AS cost_read
+     FROM cache_ttl_events
+     WHERE account_id = ? AND ts >= ?
+     GROUP BY day, model
+     ORDER BY day ASC`,
+    )
+    .all(accountId, sinceTs) as Array<{
+    day: string;
+    model: string;
+    req_markers_5m: number;
+    req_markers_1h: number;
+    create_5m: number;
+    create_1h: number;
+    cache_read: number;
+    input_tokens: number;
+    cost_5m_write: number;
+    cost_1h_write: number;
+    cost_read: number;
+  }>;
+  const result: Record<string, Record<string, CacheTtlDayRow>> = {};
+  for (const r of rows) {
+    (result[r.day] ??= {})[r.model] = {
+      reqMarkers5m: r.req_markers_5m,
+      reqMarkers1h: r.req_markers_1h,
+      create5m: r.create_5m,
+      create1h: r.create_1h,
+      read: r.cache_read,
+      inputTokens: r.input_tokens,
+      cost5mWrite: r.cost_5m_write,
+      cost1hWrite: r.cost_1h_write,
+      costRead: r.cost_read,
+    };
+  }
+  return result;
+}
+
+/**
+ * Per-session rollup of cache TTL events, ordered by most-recently-seen.
+ * Rows without a session_id are excluded. `limit` caps the result size
+ * (default 50) so the UI never renders a runaway list.
+ */
+export function getCacheTtlBySession(
+  db: Database.Database,
+  accountId: string,
+  days: number,
+  limit = 50,
+): CacheTtlSessionRow[] {
+  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db
+    .prepare(
+      `SELECT
+       session_id                         AS session_id,
+       MIN(ts)                            AS first_ts,
+       MAX(ts)                            AS last_ts,
+       COUNT(*)                           AS request_count,
+       -- Pick a representative model for the session: the most recent one.
+       (SELECT model FROM cache_ttl_events e2
+         WHERE e2.account_id = cache_ttl_events.account_id
+           AND e2.session_id = cache_ttl_events.session_id
+         ORDER BY ts DESC LIMIT 1)        AS model,
+       COALESCE(SUM(req_markers_5m), 0)   AS req_markers_5m,
+       COALESCE(SUM(req_markers_1h), 0)   AS req_markers_1h,
+       COALESCE(SUM(cache_create_5m), 0)  AS create_5m,
+       COALESCE(SUM(cache_create_1h), 0)  AS create_1h,
+       COALESCE(SUM(cache_read), 0)       AS cache_read,
+       COALESCE(SUM(input_tokens), 0)     AS input_tokens,
+       COALESCE(SUM(cost_5m_write), 0)    AS cost_5m_write,
+       COALESCE(SUM(cost_1h_write), 0)    AS cost_1h_write,
+       COALESCE(SUM(cost_read), 0)        AS cost_read
+     FROM cache_ttl_events
+     WHERE account_id = ? AND ts >= ? AND session_id IS NOT NULL AND session_id <> ''
+     GROUP BY session_id
+     ORDER BY last_ts DESC
+     LIMIT ?`,
+    )
+    .all(accountId, sinceTs, limit) as Array<{
+    session_id: string;
+    first_ts: number;
+    last_ts: number;
+    request_count: number;
+    model: string | null;
+    req_markers_5m: number;
+    req_markers_1h: number;
+    create_5m: number;
+    create_1h: number;
+    cache_read: number;
+    input_tokens: number;
+    cost_5m_write: number;
+    cost_1h_write: number;
+    cost_read: number;
+  }>;
+  return rows.map((r) => ({
+    sessionId: r.session_id,
+    firstTs: r.first_ts,
+    lastTs: r.last_ts,
+    requestCount: r.request_count,
+    model: r.model ?? '',
+    reqMarkers5m: r.req_markers_5m,
+    reqMarkers1h: r.req_markers_1h,
+    create5m: r.create_5m,
+    create1h: r.create_1h,
+    read: r.cache_read,
+    inputTokens: r.input_tokens,
+    cost5mWrite: r.cost_5m_write,
+    cost1hWrite: r.cost_1h_write,
+    costRead: r.cost_read,
+  }));
+}
+
 /** Per-day counts of api_errors grouped by status code + retry-exhausted tally. */
 export function getApiErrorsByDay(
   db: Database.Database,
@@ -1945,8 +2204,9 @@ export function getApiErrorsByDay(
   days: number,
 ): { byDay: Record<string, Record<string, number>>; retryExhaustedCount: number } {
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
-  const rows = db.prepare(
-    `SELECT
+  const rows = db
+    .prepare(
+      `SELECT
        date(ts / 1000, 'unixepoch') AS day,
        COALESCE(status_code, 'unknown') AS status_code,
        COUNT(*)                    AS n
@@ -1954,7 +2214,8 @@ export function getApiErrorsByDay(
      WHERE account_id = ? AND ts >= ?
      GROUP BY day, status_code
      ORDER BY day ASC`,
-  ).all(accountId, sinceTs) as Array<{ day: string; status_code: string; n: number }>;
+    )
+    .all(accountId, sinceTs) as Array<{ day: string; status_code: string; n: number }>;
 
   const byDay: Record<string, Record<string, number>> = {};
   for (const r of rows) {
@@ -1963,9 +2224,11 @@ export function getApiErrorsByDay(
 
   // Claude Code's CLAUDE_CODE_MAX_RETRIES default is 10; attempt > 10 means
   // retries were exhausted. Uses > so we match what the docs describe.
-  const exhaustedRow = db.prepare(
-    `SELECT COUNT(*) AS n FROM api_errors WHERE account_id = ? AND ts >= ? AND attempt > 10`,
-  ).get(accountId, sinceTs) as { n: number };
+  const exhaustedRow = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM api_errors WHERE account_id = ? AND ts >= ? AND attempt > 10`,
+    )
+    .get(accountId, sinceTs) as { n: number };
 
   return { byDay, retryExhaustedCount: exhaustedRow.n };
 }
@@ -1983,8 +2246,9 @@ export function getToolStats(
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
 
   // First pass: per-tool totals + success counts
-  const totals = db.prepare(
-    `SELECT
+  const totals = db
+    .prepare(
+      `SELECT
        tool_name,
        COUNT(*) AS calls,
        SUM(success) AS successes
@@ -1993,27 +2257,42 @@ export function getToolStats(
      GROUP BY tool_name
      ORDER BY calls DESC
      LIMIT ?`,
-  ).all(accountId, sinceTs, limit) as Array<{ tool_name: string; calls: number; successes: number }>;
+    )
+    .all(accountId, sinceTs, limit) as Array<{
+    tool_name: string;
+    calls: number;
+    successes: number;
+  }>;
 
   const result: ToolStat[] = [];
   for (const t of totals) {
     // Second pass: percentiles from the sorted duration list. SQLite lacks
     // a built-in percentile function, so we compute it in JS.
-    const durations = db.prepare(
-      `SELECT duration_ms FROM tool_events
+    const durations = db
+      .prepare(
+        `SELECT duration_ms FROM tool_events
        WHERE account_id = ? AND ts >= ? AND tool_name = ? AND duration_ms IS NOT NULL
        ORDER BY duration_ms ASC`,
-    ).all(accountId, sinceTs, t.tool_name) as Array<{ duration_ms: number }>;
+      )
+      .all(accountId, sinceTs, t.tool_name) as Array<{ duration_ms: number }>;
 
-    const p50 = percentile(durations.map((r) => r.duration_ms), 0.5);
-    const p95 = percentile(durations.map((r) => r.duration_ms), 0.95);
+    const p50 = percentile(
+      durations.map((r) => r.duration_ms),
+      0.5,
+    );
+    const p95 = percentile(
+      durations.map((r) => r.duration_ms),
+      0.95,
+    );
 
     // Top error — most common non-null error message for failures
-    const topErrorRow = db.prepare(
-      `SELECT error, COUNT(*) AS n FROM tool_events
+    const topErrorRow = db
+      .prepare(
+        `SELECT error, COUNT(*) AS n FROM tool_events
        WHERE account_id = ? AND ts >= ? AND tool_name = ? AND success = 0 AND error IS NOT NULL
        GROUP BY error ORDER BY n DESC LIMIT 1`,
-    ).get(accountId, sinceTs, t.tool_name) as { error: string; n: number } | undefined;
+      )
+      .get(accountId, sinceTs, t.tool_name) as { error: string; n: number } | undefined;
 
     result.push({
       toolName: t.tool_name,
@@ -2044,8 +2323,9 @@ export function getActivityCounters(
   if (kinds.length === 0) return {};
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
   const placeholders = kinds.map(() => '?').join(',');
-  const rows = db.prepare(
-    `SELECT
+  const rows = db
+    .prepare(
+      `SELECT
        date(ts / 1000, 'unixepoch') AS day,
        kind,
        COALESCE(SUM(value), COUNT(*)) AS total
@@ -2053,7 +2333,8 @@ export function getActivityCounters(
      WHERE account_id = ? AND ts >= ? AND kind IN (${placeholders})
      GROUP BY day, kind
      ORDER BY day ASC`,
-  ).all(accountId, sinceTs, ...kinds) as Array<{ day: string; kind: ActivityKind; total: number }>;
+    )
+    .all(accountId, sinceTs, ...kinds) as Array<{ day: string; kind: ActivityKind; total: number }>;
 
   const result: Record<string, Record<ActivityKind, number>> = {};
   for (const r of rows) {
@@ -2073,15 +2354,17 @@ export function getEditAcceptRate(
   days: number,
 ): { overall: EditAcceptRate; byLanguage: Record<string, EditAcceptRate> } {
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
-  const rows = db.prepare(
-    `SELECT
+  const rows = db
+    .prepare(
+      `SELECT
        COALESCE(language, 'unknown') AS language,
        decision,
        COUNT(*)                       AS n
      FROM activity_events
      WHERE account_id = ? AND ts >= ? AND kind = 'edit_decision'
      GROUP BY language, decision`,
-  ).all(accountId, sinceTs) as Array<{ language: string; decision: string | null; n: number }>;
+    )
+    .all(accountId, sinceTs) as Array<{ language: string; decision: string | null; n: number }>;
 
   let overallAccepts = 0;
   let overallRejects = 0;
@@ -2099,7 +2382,11 @@ export function getEditAcceptRate(
   const byLanguage: Record<string, EditAcceptRate> = {};
   for (const [lang, b] of Object.entries(byLangAccum)) {
     const total = b.accepts + b.rejects;
-    byLanguage[lang] = { accepts: b.accepts, rejects: b.rejects, rate: total > 0 ? b.accepts / total : 0 };
+    byLanguage[lang] = {
+      accepts: b.accepts,
+      rejects: b.rejects,
+      rate: total > 0 ? b.accepts / total : 0,
+    };
   }
   const overallTotal = overallAccepts + overallRejects;
   return {
@@ -2124,8 +2411,9 @@ export function getToolDecisionBreakdown(
   days: number,
 ): ToolDecisionBreakdown {
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
-  const rows = db.prepare(
-    `SELECT
+  const rows = db
+    .prepare(
+      `SELECT
        COALESCE(tool_name, 'unknown') AS tool_name,
        COALESCE(source, 'unknown')    AS source,
        decision,
@@ -2133,7 +2421,13 @@ export function getToolDecisionBreakdown(
      FROM activity_events
      WHERE account_id = ? AND ts >= ? AND kind = 'tool_decision'
      GROUP BY tool_name, source, decision`,
-  ).all(accountId, sinceTs) as Array<{ tool_name: string; source: string; decision: string | null; n: number }>;
+    )
+    .all(accountId, sinceTs) as Array<{
+    tool_name: string;
+    source: string;
+    decision: string | null;
+    n: number;
+  }>;
 
   let overallAccepts = 0;
   let overallRejects = 0;
@@ -2183,8 +2477,9 @@ export function getUserPromptStats(
   days: number,
 ): PromptStats {
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
-  const rows = db.prepare(
-    `SELECT
+  const rows = db
+    .prepare(
+      `SELECT
        strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime') AS day,
        COUNT(*)                                                  AS n,
        AVG(value)                                                AS avg_len
@@ -2192,7 +2487,8 @@ export function getUserPromptStats(
      WHERE account_id = ? AND ts >= ? AND kind = 'user_prompt'
      GROUP BY day
      ORDER BY day`,
-  ).all(accountId, sinceTs) as Array<{ day: string; n: number; avg_len: number | null }>;
+    )
+    .all(accountId, sinceTs) as Array<{ day: string; n: number; avg_len: number | null }>;
 
   let total = 0;
   let weightedLenSum = 0;
@@ -2222,8 +2518,9 @@ export function getTopSkills(
   limit = 10,
 ): SkillUsage[] {
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
-  const rows = db.prepare(
-    `SELECT
+  const rows = db
+    .prepare(
+      `SELECT
        name,
        COUNT(*)                 AS n,
        MAX(source)              AS plugin
@@ -2232,7 +2529,8 @@ export function getTopSkills(
      GROUP BY name
      ORDER BY n DESC
      LIMIT ?`,
-  ).all(accountId, sinceTs, limit) as Array<{ name: string; n: number; plugin: string | null }>;
+    )
+    .all(accountId, sinceTs, limit) as Array<{ name: string; n: number; plugin: string | null }>;
   return rows.map((r) => ({ name: r.name, count: r.n, plugin: r.plugin }));
 }
 
@@ -2245,14 +2543,26 @@ export function getRecentPlugins(
   accountId: string,
   limit = 10,
 ): PluginInstall[] {
-  const rows = db.prepare(
-    `SELECT ts, name, version, marketplace
+  const rows = db
+    .prepare(
+      `SELECT ts, name, version, marketplace
      FROM activity_events
      WHERE account_id = ? AND kind = 'plugin_installed' AND name IS NOT NULL
      ORDER BY ts DESC
      LIMIT ?`,
-  ).all(accountId, limit) as Array<{ ts: number; name: string; version: string | null; marketplace: string | null }>;
-  return rows.map((r) => ({ name: r.name, version: r.version, marketplace: r.marketplace, installedAt: r.ts }));
+    )
+    .all(accountId, limit) as Array<{
+    ts: number;
+    name: string;
+    version: string | null;
+    marketplace: string | null;
+  }>;
+  return rows.map((r) => ({
+    name: r.name,
+    version: r.version,
+    marketplace: r.marketplace,
+    installedAt: r.ts,
+  }));
 }
 
 // ─── Tool permission rules ────────────────────────────────────────────────────
@@ -2308,18 +2618,18 @@ export function upsertPermissionRule(
 ): PermissionRule {
   const now = Date.now();
   if (input.id) {
-    const existing = db
-      .prepare('SELECT * FROM permission_rules WHERE id = ?')
-      .get(input.id) as DbPermissionRuleRow | undefined;
+    const existing = db.prepare('SELECT * FROM permission_rules WHERE id = ?').get(input.id) as
+      | DbPermissionRuleRow
+      | undefined;
     if (existing) {
-      const enabled = input.enabled ?? existing.enabled === 1 ? 1 : 0;
+      const enabled = (input.enabled ?? existing.enabled === 1) ? 1 : 0;
       const priority = input.priority ?? existing.priority;
       // `source` is sticky once set — updates from the UI never change
       // it (a user editing the raw text of an imported rule should
       // still see it as claude-code so the sync engine keeps managing
       // it). The sync engine itself overrides via explicit `source`
       // on the input.
-      const source = input.source ?? (existing.source ?? 'local');
+      const source = input.source ?? existing.source ?? 'local';
       db.prepare(
         `UPDATE permission_rules
          SET decision = ?, tool = ?, pattern = ?, raw = ?, note = ?, enabled = ?, priority = ?, source = ?
@@ -2343,9 +2653,11 @@ export function upsertPermissionRule(
   }
   // Create path.
   const id = input.id ?? randomPermissionRuleId();
-  const maxPriority = (db
-    .prepare('SELECT COALESCE(MAX(priority), 0) AS p FROM permission_rules')
-    .get() as { p: number }).p;
+  const maxPriority = (
+    db.prepare('SELECT COALESCE(MAX(priority), 0) AS p FROM permission_rules').get() as {
+      p: number;
+    }
+  ).p;
   const priority = input.priority ?? maxPriority + 10;
   const enabled = (input.enabled ?? true) ? 1 : 0;
   const source = input.source ?? 'local';

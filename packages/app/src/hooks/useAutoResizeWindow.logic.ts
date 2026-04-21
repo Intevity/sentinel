@@ -44,9 +44,7 @@ export interface ComputeTargetInputs {
 export function computeTargetInner(inputs: ComputeTargetInputs): number {
   let needed: number;
   if (inputs.overlayScrollHeight !== null) {
-    needed = inputs.overlayExpandMax
-      ? TRAY_MAX_HEIGHT
-      : inputs.overlayScrollHeight;
+    needed = inputs.overlayExpandMax ? TRAY_MAX_HEIGHT : inputs.overlayScrollHeight;
   } else {
     needed = inputs.chromeAndFooter + inputs.contentOffsetHeight + inputs.mainPaddingBottomPx;
   }

@@ -64,12 +64,12 @@ export async function fetchOrgUsage(
   // Both entries point at the same secret — whichever the server
   // validates will match.
   const headers: Record<string, string> = {
-    'Cookie': `sessionKeyLC=${trimmed}; sessionKey=${trimmed}`,
+    Cookie: `sessionKeyLC=${trimmed}; sessionKey=${trimmed}`,
     // `web_claude_ai` client header mirrors what a real browser sends; some
     // edges on anthropic's backend gate on it.
     'anthropic-client-platform': 'web_claude_ai',
     'anthropic-client-version': '1.0.0',
-    'Accept': 'application/json',
+    Accept: 'application/json',
   };
 
   // Primary: api.anthropic.com (no CF in front of this particular API host
@@ -172,9 +172,10 @@ export function parseUsage(raw: RawUsageResponse): ClaudeAiUsageSnapshot {
       ? {
           isEnabled: extra.is_enabled,
           limitUsd: toUsd(extra.monthly_limit),
-          usedUsd: (typeof extra.utilization === 'number' && typeof extra.monthly_limit === 'number')
-            ? (extra.utilization / 100) * toUsd(extra.monthly_limit)
-            : 0,
+          usedUsd:
+            typeof extra.utilization === 'number' && typeof extra.monthly_limit === 'number'
+              ? (extra.utilization / 100) * toUsd(extra.monthly_limit)
+              : 0,
           utilizationPct: typeof extra.utilization === 'number' ? extra.utilization : 0,
           currency: typeof extra.currency === 'string' ? extra.currency : 'USD',
         }
@@ -250,7 +251,9 @@ export class ClaudeAiUsageStore {
 
   private fireSubscribers(accountId: string): void {
     for (const cb of this.subscribers) {
-      try { cb(accountId); } catch (err) {
+      try {
+        cb(accountId);
+      } catch (err) {
         console.error('[ClaudeAiUsage] subscriber threw:', err);
       }
     }
@@ -260,14 +263,18 @@ export class ClaudeAiUsageStore {
     this.fetchImpl = deps.fetch ?? fetchOrgUsage;
   }
 
-  private clock(): number { return this.deps.now ? this.deps.now() : Date.now(); }
+  private clock(): number {
+    return this.deps.now ? this.deps.now() : Date.now();
+  }
 
   start(): void {
     if (this.timer) return;
     // Fire once immediately, then on interval. Startup latency matters —
     // the UI expects real numbers the moment the user opens the Usage tab.
     void this.tick();
-    this.timer = setInterval(() => { void this.tick(); }, 30_000);
+    this.timer = setInterval(() => {
+      void this.tick();
+    }, 30_000);
   }
 
   stop(): void {
@@ -335,9 +342,7 @@ export class ClaudeAiUsageStore {
   private recordFailure(accountId: string, error: UsageFetchError, force: boolean): void {
     // Longer backoff for auth expiry — the cookie is dead until user
     // re-logs in. `force` (on-demand refresh) bypasses the cooldown.
-    const backoff = error === 'auth_expired' && !force
-      ? AUTH_EXPIRED_BACKOFF_MS
-      : POLL_INTERVAL_MS;
+    const backoff = error === 'auth_expired' && !force ? AUTH_EXPIRED_BACKOFF_MS : POLL_INTERVAL_MS;
     this.nextPollAt.set(accountId, this.clock() + backoff);
     this.lastError.set(accountId, error);
     // Don't zero out the snapshot on transient failures — the UI keeps

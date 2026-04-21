@@ -6,23 +6,29 @@ export default {
     extend: {
       colors: {
         ios: {
-          blue:    '#007AFF',
-          green:   '#32D74B',
-          orange:  '#FF9F0A',
-          red:     '#FF453A',
-          purple:  '#BF5AF2',
-          indigo:  '#5E5CE6',
-          gray:    '#8E8E93',
+          blue: '#007AFF',
+          green: '#32D74B',
+          orange: '#FF9F0A',
+          red: '#FF453A',
+          purple: '#BF5AF2',
+          indigo: '#5E5CE6',
+          gray: '#8E8E93',
         },
       },
       fontFamily: {
-        sans: ['-apple-system', 'BlinkMacSystemFont', "'SF Pro Text'", "'Helvetica Neue'", 'sans-serif'],
+        sans: [
+          '-apple-system',
+          'BlinkMacSystemFont',
+          "'SF Pro Text'",
+          "'Helvetica Neue'",
+          'sans-serif',
+        ],
       },
       fontSize: {
         '2xs': ['10px', { lineHeight: '14px' }],
       },
       boxShadow: {
-        'card':    '0 1px 4px rgba(0,0,0,0.07), 0 0 0 0.5px rgba(0,0,0,0.05)',
+        card: '0 1px 4px rgba(0,0,0,0.07), 0 0 0 0.5px rgba(0,0,0,0.05)',
         'card-md': '0 4px 20px rgba(0,0,0,0.10), 0 0 0 0.5px rgba(0,0,0,0.05)',
       },
       borderRadius: {

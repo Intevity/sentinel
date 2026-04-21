@@ -197,7 +197,10 @@ function PermissionRulesView(): React.ReactElement {
     });
     setSaveError(null);
   };
-  const cancel = (): void => { setDraft(null); setSaveError(null); };
+  const cancel = (): void => {
+    setDraft(null);
+    setSaveError(null);
+  };
 
   const save = async (): Promise<void> => {
     if (!draft) return;
@@ -258,8 +261,7 @@ function PermissionRulesView(): React.ReactElement {
     [filtered],
   );
   const allows = useMemo(() => filtered.filter((r) => r.decision === 'allow'), [filtered]);
-  const filtersActive =
-    search.trim() !== '' || decisionFilter !== 'all' || sourceFilter !== 'all';
+  const filtersActive = search.trim() !== '' || decisionFilter !== 'all' || sourceFilter !== 'all';
   const clearFilters = (): void => {
     setSearch('');
     setDecisionFilter('all');
@@ -270,8 +272,7 @@ function PermissionRulesView(): React.ReactElement {
   return (
     <>
       <p className="text-[11px] text-[#8E8E93] leading-snug px-1">
-        Rules are evaluated deny-first, then allow. The first matching rule wins.
-        Example patterns:{' '}
+        Rules are evaluated deny-first, then allow. The first matching rule wins. Example patterns:{' '}
         <code className="text-[10.5px]">Bash(rm -rf *)</code>,{' '}
         <code className="text-[10.5px]">WebFetch(domain:example.com)</code>,{' '}
         <code className="text-[10.5px]">Read(//etc/**)</code>,{' '}
@@ -347,9 +348,7 @@ function PermissionRulesView(): React.ReactElement {
                       label="Local"
                       count={rules.filter((r) => r.source === 'local').length}
                       active={sourceFilter === 'local'}
-                      onClick={() =>
-                        setSourceFilter(sourceFilter === 'local' ? 'all' : 'local')
-                      }
+                      onClick={() => setSourceFilter(sourceFilter === 'local' ? 'all' : 'local')}
                     />
                     <FilterChip
                       label="Claude Code"
@@ -380,14 +379,42 @@ function PermissionRulesView(): React.ReactElement {
           )}
           {filtered.length > 0 && (
             <>
-              <RuleList title="Deny rules" emptyCopy="No deny rules yet." rules={denies} onEdit={startEdit} onToggle={toggle} onRemove={remove} />
-              <RuleList title="Allow rules" emptyCopy="No allow rules yet." rules={allows} onEdit={startEdit} onToggle={toggle} onRemove={remove} />
+              <RuleList
+                title="Deny rules"
+                emptyCopy="No deny rules yet."
+                rules={denies}
+                onEdit={startEdit}
+                onToggle={toggle}
+                onRemove={remove}
+              />
+              <RuleList
+                title="Allow rules"
+                emptyCopy="No allow rules yet."
+                rules={allows}
+                onEdit={startEdit}
+                onToggle={toggle}
+                onRemove={remove}
+              />
             </>
           )}
           {rules.length === 0 && (
             <>
-              <RuleList title="Deny rules" emptyCopy="No deny rules yet." rules={[]} onEdit={startEdit} onToggle={toggle} onRemove={remove} />
-              <RuleList title="Allow rules" emptyCopy="No allow rules yet." rules={[]} onEdit={startEdit} onToggle={toggle} onRemove={remove} />
+              <RuleList
+                title="Deny rules"
+                emptyCopy="No deny rules yet."
+                rules={[]}
+                onEdit={startEdit}
+                onToggle={toggle}
+                onRemove={remove}
+              />
+              <RuleList
+                title="Allow rules"
+                emptyCopy="No allow rules yet."
+                rules={[]}
+                onEdit={startEdit}
+                onToggle={toggle}
+                onRemove={remove}
+              />
             </>
           )}
 
@@ -412,7 +439,18 @@ function PermissionRulesView(): React.ReactElement {
                   Form
                 </button>
                 <button
-                  onClick={() => setDraft((d) => d && { ...d, mode: 'raw', raw: d.pattern ? `${d.decision} ${d.tool}(${d.pattern})` : `${d.decision} ${d.tool}` })}
+                  onClick={() =>
+                    setDraft(
+                      (d) =>
+                        d && {
+                          ...d,
+                          mode: 'raw',
+                          raw: d.pattern
+                            ? `${d.decision} ${d.tool}(${d.pattern})`
+                            : `${d.decision} ${d.tool}`,
+                        },
+                    )
+                  }
                   className={`px-2 py-0.5 rounded-full ${draft.mode === 'raw' ? 'bg-ios-blue text-white' : ''}`}
                 >
                   Raw
@@ -436,7 +474,9 @@ function PermissionRulesView(): React.ReactElement {
                       className="w-full text-[12px] px-2 py-1.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white border-none focus:outline-none focus:ring-1 focus:ring-ios-blue"
                     >
                       {BUILTIN_TOOLS.map((t) => (
-                        <option key={t} value={t}>{t}</option>
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
                       ))}
                       <option value="__custom__">Custom…</option>
                     </select>
@@ -487,9 +527,7 @@ function PermissionRulesView(): React.ReactElement {
                 />
               </div>
 
-              {saveError && (
-                <p className="text-[11px] text-ios-red">{saveError}</p>
-              )}
+              {saveError && <p className="text-[11px] text-ios-red">{saveError}</p>}
 
               <div className="flex gap-2">
                 <button
@@ -597,7 +635,12 @@ function AllowlistView(): React.ReactElement {
 
   const counts = useMemo(() => {
     const m: Record<AllowlistCategory, number> = {
-      secrets: 0, injection: 0, bash: 0, write: 0, webfetch: 0, other: 0,
+      secrets: 0,
+      injection: 0,
+      bash: 0,
+      write: 0,
+      webfetch: 0,
+      other: 0,
     };
     for (const e of entries) m[categorize(e.detectorId)] += 1;
     return m;
@@ -608,12 +651,9 @@ function AllowlistView(): React.ReactElement {
     return entries.filter((e) => {
       if (filter !== 'all' && categorize(e.detectorId) !== filter) return false;
       if (q) {
-        const hay = [
-          e.title ?? '',
-          e.detectorId,
-          e.matchMask ?? '',
-          e.note ?? '',
-        ].join(' ').toLowerCase();
+        const hay = [e.title ?? '', e.detectorId, e.matchMask ?? '', e.note ?? '']
+          .join(' ')
+          .toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -622,7 +662,12 @@ function AllowlistView(): React.ReactElement {
 
   const grouped = useMemo(() => {
     const m: Record<AllowlistCategory, SecurityAllowlistEntry[]> = {
-      secrets: [], injection: [], bash: [], write: [], webfetch: [], other: [],
+      secrets: [],
+      injection: [],
+      bash: [],
+      write: [],
+      webfetch: [],
+      other: [],
     };
     for (const e of filtered) m[categorize(e.detectorId)].push(e);
     return m;
@@ -647,10 +692,9 @@ function AllowlistView(): React.ReactElement {
   return (
     <>
       <p className="text-[11px] text-[#8E8E93] leading-snug px-1">
-        Matches you&apos;ve chosen to always allow. Entries here are silently
-        suppressed across every future scan. Added by clicking{' '}
-        <span className="font-semibold">Always allow</span> on a finding in the
-        Security tab.
+        Matches you&apos;ve chosen to always allow. Entries here are silently suppressed across
+        every future scan. Added by clicking <span className="font-semibold">Always allow</span> on
+        a finding in the Security tab.
       </p>
 
       {entries.length > 0 && (
@@ -729,9 +773,7 @@ function AllowlistView(): React.ReactElement {
       )}
 
       {entries.length > 0 && filtered.length === 0 && (
-        <p className="text-[11px] text-[#8E8E93] px-1">
-          No entries match the current filter.
-        </p>
+        <p className="text-[11px] text-[#8E8E93] px-1">No entries match the current filter.</p>
       )}
 
       {filtered.length > 0 && (
@@ -744,11 +786,7 @@ function AllowlistView(): React.ReactElement {
                 <p className="section-label">{cat.label}</p>
                 <div className="glass-card divide-y divide-black/5 dark:divide-white/5 mt-2">
                   {items.map((entry) => (
-                    <AllowlistRow
-                      key={entry.id}
-                      entry={entry}
-                      onRemove={() => remove(entry.id)}
-                    />
+                    <AllowlistRow key={entry.id} entry={entry} onRemove={() => remove(entry.id)} />
                   ))}
                 </div>
               </div>
@@ -769,7 +807,8 @@ function AllowlistRow({
 }): React.ReactElement {
   const { pending, trigger } = useInlineConfirm(onRemove);
   const when = new Intl.DateTimeFormat('en-US', {
-    month: 'short', day: 'numeric',
+    month: 'short',
+    day: 'numeric',
   }).format(new Date(entry.createdAt));
   return (
     <div className="flex items-start gap-2 px-3 py-2">
@@ -785,16 +824,12 @@ function AllowlistRow({
           )}
           <span className="text-[10px] text-[#8E8E93]">added {when}</span>
         </div>
-        {entry.note && (
-          <p className="text-[10px] text-[#8E8E93] mt-1 leading-snug">{entry.note}</p>
-        )}
+        {entry.note && <p className="text-[10px] text-[#8E8E93] mt-1 leading-snug">{entry.note}</p>}
       </div>
       <button
         onClick={trigger}
         className={`flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 ${
-          pending
-            ? 'bg-ios-red text-white'
-            : 'bg-ios-red/10 text-ios-red hover:bg-ios-red/20'
+          pending ? 'bg-ios-red text-white' : 'bg-ios-red/10 text-ios-red hover:bg-ios-red/20'
         }`}
         title={pending ? 'Click again to remove' : 'Remove from allowlist'}
       >
@@ -820,14 +855,11 @@ function OnboardingHero({
     <div className="glass-card px-4 py-4 space-y-3">
       <div className="flex items-center gap-2">
         <ShieldCheck size={16} strokeWidth={2.2} className="text-ios-green flex-shrink-0" />
-        <p className="text-[13px] font-semibold text-black dark:text-white">
-          Security is off
-        </p>
+        <p className="text-[13px] font-semibold text-black dark:text-white">Security is off</p>
       </div>
       <p className="text-[11px] text-[#8E8E93] leading-snug">
-        Sentinel protects claude.ai traffic in two layers: content scanning and
-        tool permissions. Pick one, both, or run the setup wizard to get a
-        recommended preset.
+        Sentinel protects claude.ai traffic in two layers: content scanning and tool permissions.
+        Pick one, both, or run the setup wizard to get a recommended preset.
       </p>
       <div className="flex flex-wrap gap-2">
         {onRunSetupWizard && (
@@ -920,7 +952,12 @@ function FilterChip({
 }
 
 function RuleList({
-  title, emptyCopy, rules, onEdit, onToggle, onRemove,
+  title,
+  emptyCopy,
+  rules,
+  onEdit,
+  onToggle,
+  onRemove,
 }: {
   title: string;
   emptyCopy: string;
@@ -940,18 +977,22 @@ function RuleList({
         <div className="space-y-2 mt-2">
           {rules.map((rule) => (
             <div key={rule.id} className="glass-card px-3 py-2.5 flex items-center gap-3">
-              <span className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                rule.decision === 'deny'
-                  ? 'bg-ios-red/15 text-ios-red'
-                  : rule.decision === 'ask'
-                    ? 'bg-ios-orange/15 text-ios-orange'
-                    : 'bg-ios-green/15 text-ios-green'
-              }`}>
+              <span
+                className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                  rule.decision === 'deny'
+                    ? 'bg-ios-red/15 text-ios-red'
+                    : rule.decision === 'ask'
+                      ? 'bg-ios-orange/15 text-ios-orange'
+                      : 'bg-ios-green/15 text-ios-green'
+                }`}
+              >
                 {rule.decision}
               </span>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <code className="text-[12px] font-mono text-black dark:text-white truncate">{rule.raw}</code>
+                  <code className="text-[12px] font-mono text-black dark:text-white truncate">
+                    {rule.raw}
+                  </code>
                   {rule.source === 'claude-code' && (
                     <span
                       className="text-[9px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded bg-ios-blue/10 text-ios-blue flex-shrink-0"
@@ -997,7 +1038,13 @@ function RuleList({
   );
 }
 
-function DecisionRadio({ value, onChange }: { value: PermissionDecision; onChange: (v: PermissionDecision) => void }): React.ReactElement {
+function DecisionRadio({
+  value,
+  onChange,
+}: {
+  value: PermissionDecision;
+  onChange: (v: PermissionDecision) => void;
+}): React.ReactElement {
   return (
     <div>
       <p className="text-[11px] text-[#8E8E93] mb-1">Decision</p>
@@ -1008,7 +1055,9 @@ function DecisionRadio({ value, onChange }: { value: PermissionDecision; onChang
             onClick={() => onChange(d)}
             className={`flex-1 text-[12px] font-semibold px-3 py-1.5 rounded-full transition-all ${
               value === d
-                ? (d === 'deny' ? 'bg-ios-red text-white' : 'bg-ios-green text-white')
+                ? d === 'deny'
+                  ? 'bg-ios-red text-white'
+                  : 'bg-ios-green text-white'
                 : 'bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white'
             }`}
           >

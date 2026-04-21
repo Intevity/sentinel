@@ -1,12 +1,40 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { Shield, ShieldAlert, ShieldX, Check, CheckCheck, Trash2, ShieldOff, FolderOpen, Terminal, MessageSquare, Settings2, Info, ChevronDown, ChevronRight, Zap, X } from 'lucide-react';
+import {
+  Shield,
+  ShieldAlert,
+  ShieldX,
+  Check,
+  CheckCheck,
+  Trash2,
+  ShieldOff,
+  FolderOpen,
+  Terminal,
+  MessageSquare,
+  Settings2,
+  Info,
+  ChevronDown,
+  ChevronRight,
+  Zap,
+  X,
+} from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import type { SecurityEvent, SecuritySeverity, SecurityKind, AutoModeStatus } from '@claude-sentinel/shared';
+import type {
+  SecurityEvent,
+  SecuritySeverity,
+  SecurityKind,
+  AutoModeStatus,
+} from '@claude-sentinel/shared';
 import { useSecurityEvents } from '../hooks/useSecurityEvents.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { useAutoModeStatus } from '../hooks/useAutoModeStatus.js';
 import { usePermissionRules } from '../hooks/usePermissionRules.js';
-import { QuickSegmented, QuickChipToggle, Switch, SettingsCard, SettingsRow } from './settings/primitives.js';
+import {
+  QuickSegmented,
+  QuickChipToggle,
+  Switch,
+  SettingsCard,
+  SettingsRow,
+} from './settings/primitives.js';
 import InfoTooltip from './InfoTooltip.js';
 import { describeScanSummary } from '../lib/securityScanSummary.js';
 
@@ -14,7 +42,10 @@ import { describeScanSummary } from '../lib/securityScanSummary.js';
  *  state which reverts after `timeoutMs`. Second click while pending
  *  fires the action. Used instead of browser confirm() because Tauri
  *  webview suppresses native confirm dialogs in some configurations. */
-function useConfirmButton(action: () => void | Promise<void>, timeoutMs = 4000): {
+function useConfirmButton(
+  action: () => void | Promise<void>,
+  timeoutMs = 4000,
+): {
   pending: boolean;
   trigger: () => void;
   cancel: () => void;
@@ -22,7 +53,9 @@ function useConfirmButton(action: () => void | Promise<void>, timeoutMs = 4000):
   const [pending, setPending] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
   }, []);
   const trigger = (): void => {
     if (!pending) {
@@ -56,10 +89,13 @@ interface SecurityPanelProps {
   onAutoExpandHandled?: () => void;
 }
 
-const SEVERITY_META: Record<SecuritySeverity, { Icon: typeof Shield; color: string; bg: string; label: string }> = {
-  low:    { Icon: Shield,      color: 'text-ios-green',  bg: 'bg-ios-green/10',  label: 'LOW' },
+const SEVERITY_META: Record<
+  SecuritySeverity,
+  { Icon: typeof Shield; color: string; bg: string; label: string }
+> = {
+  low: { Icon: Shield, color: 'text-ios-green', bg: 'bg-ios-green/10', label: 'LOW' },
   medium: { Icon: ShieldAlert, color: 'text-ios-orange', bg: 'bg-ios-orange/10', label: 'MEDIUM' },
-  high:   { Icon: ShieldX,     color: 'text-ios-red',    bg: 'bg-ios-red/10',    label: 'HIGH' },
+  high: { Icon: ShieldX, color: 'text-ios-red', bg: 'bg-ios-red/10', label: 'HIGH' },
 };
 
 const KIND_LABEL: Record<SecurityKind, string> = {
@@ -77,8 +113,10 @@ const KIND_LABEL: Record<SecurityKind, string> = {
 
 function formatDate(ts: number): string {
   return new Intl.DateTimeFormat('en-US', {
-    month: 'short', day: 'numeric',
-    hour: '2-digit', minute: '2-digit',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
   }).format(new Date(ts));
 }
 
@@ -100,17 +138,43 @@ const PROVENANCE_META: Record<
   NonNullable<SecurityEvent['provenance']>,
   { label: string; Icon: typeof FolderOpen; color: string; bg: string }
 > = {
-  'file-read':     { label: 'File read',        Icon: FolderOpen,     color: 'text-ios-green',  bg: 'bg-ios-green/10' },
-  'tool-use':      { label: 'Tool use',         Icon: Terminal,       color: 'text-ios-blue',   bg: 'bg-ios-blue/10'  },
-  'conversation':  { label: 'Conversation',     Icon: MessageSquare,  color: 'text-[#8E8E93]',  bg: 'bg-[#8E8E93]/10' },
-  'system-prompt': { label: 'System prompt',    Icon: Settings2,      color: 'text-[#8E8E93]',  bg: 'bg-[#8E8E93]/10' },
-  'telemetry':     { label: 'Scanner telemetry', Icon: Info,          color: 'text-[#8E8E93]',  bg: 'bg-[#8E8E93]/10' },
+  'file-read': {
+    label: 'File read',
+    Icon: FolderOpen,
+    color: 'text-ios-green',
+    bg: 'bg-ios-green/10',
+  },
+  'tool-use': { label: 'Tool use', Icon: Terminal, color: 'text-ios-blue', bg: 'bg-ios-blue/10' },
+  conversation: {
+    label: 'Conversation',
+    Icon: MessageSquare,
+    color: 'text-[#8E8E93]',
+    bg: 'bg-[#8E8E93]/10',
+  },
+  'system-prompt': {
+    label: 'System prompt',
+    Icon: Settings2,
+    color: 'text-[#8E8E93]',
+    bg: 'bg-[#8E8E93]/10',
+  },
+  telemetry: {
+    label: 'Scanner telemetry',
+    Icon: Info,
+    color: 'text-[#8E8E93]',
+    bg: 'bg-[#8E8E93]/10',
+  },
 };
 
-function ProvenanceBadge({ provenance }: { provenance: SecurityEvent['provenance'] }): React.ReactElement {
+function ProvenanceBadge({
+  provenance,
+}: {
+  provenance: SecurityEvent['provenance'];
+}): React.ReactElement {
   const meta = PROVENANCE_META[provenance];
   return (
-    <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${meta.bg} ${meta.color}`}>
+    <span
+      className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${meta.bg} ${meta.color}`}
+    >
       <meta.Icon size={10} strokeWidth={2.2} />
       {meta.label}
     </span>
@@ -140,10 +204,11 @@ export default function SecurityPanel({
    *  self-timeout 2 s after the flash starts. */
   const [flashEventId, setFlashEventId] = useState<number | null>(null);
 
-  const { events, loading, error, acknowledge, acknowledgeAll, clearAll, addToAllowlist } = useSecurityEvents({
-    ...(viewAccountId !== undefined ? { accountId: viewAccountId } : {}),
-    includeWeakSignals,
-  });
+  const { events, loading, error, acknowledge, acknowledgeAll, clearAll, addToAllowlist } =
+    useSecurityEvents({
+      ...(viewAccountId !== undefined ? { accountId: viewAccountId } : {}),
+      includeWeakSignals,
+    });
 
   // Auto-expand + scroll + flash when the parent hands us a target id
   // from a notification click. Runs once per change of
@@ -196,9 +261,12 @@ export default function SecurityPanel({
   // with no signal that anything happened otherwise.
   const [allowlistHintShown, setAllowlistHintShown] = useState(false);
   const allowlistHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (allowlistHintTimerRef.current) clearTimeout(allowlistHintTimerRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (allowlistHintTimerRef.current) clearTimeout(allowlistHintTimerRef.current);
+    },
+    [],
+  );
   const handleAllowlist = (eventId: number): void => {
     void addToAllowlist(eventId);
     setAllowlistHintShown(true);
@@ -212,9 +280,12 @@ export default function SecurityPanel({
   // flicker between the two actions.
   const [muteHintShown, setMuteHintShown] = useState(false);
   const muteHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (muteHintTimerRef.current) clearTimeout(muteHintTimerRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (muteHintTimerRef.current) clearTimeout(muteHintTimerRef.current);
+    },
+    [],
+  );
   const handleMute = (event: SecurityEvent): void => {
     // Map the synthetic kind to its matching Settings flag. The three
     // `scan_*` kinds are exhaustive — any future synthetic would fall
@@ -316,13 +387,10 @@ export default function SecurityPanel({
       <div className="space-y-2 pt-1">
         <div className="glass-card px-4 py-8 text-center">
           <ShieldOff size={28} className="mx-auto text-[#8E8E93] mb-2" strokeWidth={2} />
-          <p className="text-[13px] font-semibold text-black dark:text-white">
-            Security is off
-          </p>
+          <p className="text-[13px] font-semibold text-black dark:text-white">Security is off</p>
           <p className="text-[11px] text-[#8E8E93] mt-1 leading-snug max-w-[340px] mx-auto">
-            Both security scanning and tool permissions are disabled. Enable
-            one (or both) to start catching secrets, injection, risky tool
-            calls, or blocking specific tools.
+            Both security scanning and tool permissions are disabled. Enable one (or both) to start
+            catching secrets, injection, risky tool calls, or blocking specific tools.
           </p>
           <div className="mt-3 flex items-center justify-center gap-2 flex-wrap">
             <button
@@ -354,7 +422,10 @@ export default function SecurityPanel({
 
   return (
     <div className="space-y-2 pt-1">
-      <AutoModeBanner status={autoMode} skipInAutoMode={settings?.toolPermissionSkipInAutoMode ?? true} />
+      <AutoModeBanner
+        status={autoMode}
+        skipInAutoMode={settings?.toolPermissionSkipInAutoMode ?? true}
+      />
 
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
@@ -381,7 +452,9 @@ export default function SecurityPanel({
             <button
               onClick={clearConfirm.trigger}
               className={`flex items-center gap-1 text-[11px] font-medium transition-opacity active:scale-95 ${
-                clearConfirm.pending ? 'text-white bg-ios-red px-2 py-0.5 rounded-full' : 'text-ios-red hover:opacity-80'
+                clearConfirm.pending
+                  ? 'text-white bg-ios-red px-2 py-0.5 rounded-full'
+                  : 'text-ios-red hover:opacity-80'
               }`}
               title={clearConfirm.pending ? 'Click again to delete' : 'Clear all'}
             >
@@ -397,11 +470,7 @@ export default function SecurityPanel({
           in the header so state is visible at a glance. Writes flow through
           useSettings().update, same path as the full SettingsPanel. */}
       {settings && (
-        <SettingsCard
-          title="Scanning"
-          summary={describeScanSummary(settings)}
-          defaultOpen={false}
-        >
+        <SettingsCard title="Scanning" summary={describeScanSummary(settings)} defaultOpen={false}>
           <SettingsRow
             label="Security scanning"
             description="Inspect prompts, files, and tool calls for risks."
@@ -434,12 +503,27 @@ export default function SecurityPanel({
               >
                 <QuickSegmented
                   ariaLabel="Enforcement mode"
-                  value={(settings.securityEnforcementMode ?? 'observe') as 'observe' | 'block_high' | 'block_medium_high'}
-                  onChange={(v) => void update({ securityEnforcementMode: v }).catch(() => undefined)}
+                  value={
+                    (settings.securityEnforcementMode ?? 'observe') as
+                      | 'observe'
+                      | 'block_high'
+                      | 'block_medium_high'
+                  }
+                  onChange={(v) =>
+                    void update({ securityEnforcementMode: v }).catch(() => undefined)
+                  }
                   options={[
-                    { value: 'observe',           label: 'Observe',  title: 'Record findings; never block' },
-                    { value: 'block_high',        label: 'HIGH',     title: 'Block only HIGH-severity findings' },
-                    { value: 'block_medium_high', label: 'MED+HIGH', title: 'Block MEDIUM and HIGH findings' },
+                    { value: 'observe', label: 'Observe', title: 'Record findings; never block' },
+                    {
+                      value: 'block_high',
+                      label: 'HIGH',
+                      title: 'Block only HIGH-severity findings',
+                    },
+                    {
+                      value: 'block_medium_high',
+                      label: 'MED+HIGH',
+                      title: 'Block MEDIUM and HIGH findings',
+                    },
                   ]}
                 />
               </SettingsRow>
@@ -457,7 +541,9 @@ export default function SecurityPanel({
                   <QuickChipToggle
                     label="Injection"
                     active={settings.securityScanInjection}
-                    onChange={(v) => void update({ securityScanInjection: v }).catch(() => undefined)}
+                    onChange={(v) =>
+                      void update({ securityScanInjection: v }).catch(() => undefined)
+                    }
                     title="Heuristic prompt-injection detection"
                   />
                   <QuickChipToggle
@@ -483,9 +569,11 @@ export default function SecurityPanel({
           title={filtersOpen ? 'Hide filters' : 'Show filters'}
           aria-expanded={filtersOpen}
         >
-          {filtersOpen
-            ? <ChevronDown size={11} strokeWidth={2.5} />
-            : <ChevronRight size={11} strokeWidth={2.5} />}
+          {filtersOpen ? (
+            <ChevronDown size={11} strokeWidth={2.5} />
+          ) : (
+            <ChevronRight size={11} strokeWidth={2.5} />
+          )}
           <span>Filters</span>
           {activeFilterSummary && (
             <span className="text-[10px] text-ios-blue">· {activeFilterSummary}</span>
@@ -558,9 +646,7 @@ export default function SecurityPanel({
         )}
       </div>
 
-      {error && (
-        <div className="glass-card px-3 py-2 text-[11px] text-ios-red">{error}</div>
-      )}
+      {error && <div className="glass-card px-3 py-2 text-[11px] text-ios-red">{error}</div>}
 
       {allowlistHintShown && (
         <div className="glass-card px-3 py-2 text-[11px] text-[#8E8E93] flex items-start gap-2">
@@ -569,7 +655,8 @@ export default function SecurityPanel({
             Added to allowlist. Manage entries in{' '}
             <span className="font-semibold text-black dark:text-white">
               Settings → Security → Allowlist
-            </span>.
+            </span>
+            .
           </span>
           <button
             onClick={() => setAllowlistHintShown(false)}
@@ -592,7 +679,8 @@ export default function SecurityPanel({
               className="font-semibold text-ios-blue hover:opacity-80 disabled:opacity-40"
             >
               Settings → Security → Oversized request scanning
-            </button>.
+            </button>
+            .
           </span>
           <button
             onClick={() => setMuteHintShown(false)}
@@ -616,7 +704,9 @@ export default function SecurityPanel({
               <>
                 Tool permissions are off — only showing scanner findings.{' '}
                 <button
-                  onClick={() => void update({ toolPermissionsEnabled: true }).catch(() => undefined)}
+                  onClick={() =>
+                    void update({ toolPermissionsEnabled: true }).catch(() => undefined)
+                  }
                   className="font-semibold text-ios-blue hover:opacity-80"
                 >
                   Turn on tool permissions
@@ -691,7 +781,10 @@ function buildBannerCopy(
     if (source === 'manual' && autoModeSessions === 0) {
       return {
         headline: 'Auto mode · manual override',
-        meta: activeSessions > 0 ? `${sessionsLabel(activeSessions)} tracked · still enforcing` : 'Still enforcing',
+        meta:
+          activeSessions > 0
+            ? `${sessionsLabel(activeSessions)} tracked · still enforcing`
+            : 'Still enforcing',
       };
     }
     if (autoModeSessions > 0 && autoModeSessions < activeSessions) {
@@ -719,7 +812,10 @@ function buildBannerCopy(
   if (source === 'manual' && autoModeSessions === 0) {
     return {
       headline: 'Auto mode · manual override',
-      meta: activeSessions > 0 ? `${sessionsLabel(activeSessions)} tracked · forced bypass` : 'Forced bypass',
+      meta:
+        activeSessions > 0
+          ? `${sessionsLabel(activeSessions)} tracked · forced bypass`
+          : 'Forced bypass',
     };
   }
   if (autoModeSessions === 1 && activeSessions === 1) {
@@ -802,7 +898,13 @@ function AutoModeBanner({
               disabled={!hasSessions}
               className="flex items-start gap-2 w-full text-left disabled:cursor-default"
               aria-expanded={hasSessions ? expanded : undefined}
-              title={hasSessions ? (expanded ? 'Hide session details' : 'Show session details') : undefined}
+              title={
+                hasSessions
+                  ? expanded
+                    ? 'Hide session details'
+                    : 'Show session details'
+                  : undefined
+              }
             >
               <span className="relative inline-flex items-center justify-center mt-0.5 flex-shrink-0">
                 <span
@@ -823,11 +925,12 @@ function AutoModeBanner({
                     : 'Sentinel is still enforcing rules on every session. Turn on "Skip enforcement in auto mode" in Settings if you want Sentinel to defer to Claude Code\u2019s classifier.'}
                 </p>
               </div>
-              {hasSessions && (
-                expanded
-                  ? <ChevronDown size={11} strokeWidth={2.5} className="text-[#8E8E93] mt-1" />
-                  : <ChevronRight size={11} strokeWidth={2.5} className="text-[#8E8E93] mt-1" />
-              )}
+              {hasSessions &&
+                (expanded ? (
+                  <ChevronDown size={11} strokeWidth={2.5} className="text-[#8E8E93] mt-1" />
+                ) : (
+                  <ChevronRight size={11} strokeWidth={2.5} className="text-[#8E8E93] mt-1" />
+                ))}
             </button>
 
             <AnimatePresence initial={false}>
@@ -851,18 +954,26 @@ function AutoModeBanner({
                             s.autoMode ? accent.dot : 'bg-[#8E8E93]/60'
                           }`}
                         />
-                        <span className={`font-semibold tabular-nums ${s.autoMode ? accent.icon : 'text-[#8E8E93]'}`}>
+                        <span
+                          className={`font-semibold tabular-nums ${s.autoMode ? accent.icon : 'text-[#8E8E93]'}`}
+                        >
                           {s.autoMode ? 'AUTO' : 'normal'}
                         </span>
-                        <span className="text-[#8E8E93] font-mono truncate flex-1 min-w-0" title={s.sessionId}>
+                        <span
+                          className="text-[#8E8E93] font-mono truncate flex-1 min-w-0"
+                          title={s.sessionId}
+                        >
                           {s.sessionId.slice(0, 8)}…
                         </span>
-                        <span className="text-[#8E8E93] flex-shrink-0">{formatAgo(s.lastSeenAt)}</span>
+                        <span className="text-[#8E8E93] flex-shrink-0">
+                          {formatAgo(s.lastSeenAt)}
+                        </span>
                       </div>
                     ))}
                     {status.processCount !== null && (
                       <p className="text-[10px] text-[#8E8E93] pt-1 italic">
-                        {status.processCount} claude-code {status.processCount === 1 ? 'process' : 'processes'} running
+                        {status.processCount} claude-code{' '}
+                        {status.processCount === 1 ? 'process' : 'processes'} running
                       </p>
                     )}
                   </div>
@@ -893,7 +1004,15 @@ interface SecurityRowProps {
   onMute: () => void;
 }
 
-function SecurityRow({ event, expanded, flashing, onToggle, onAcknowledge, onAllowlist, onMute }: SecurityRowProps): React.ReactElement {
+function SecurityRow({
+  event,
+  expanded,
+  flashing,
+  onToggle,
+  onAcknowledge,
+  onAllowlist,
+  onMute,
+}: SecurityRowProps): React.ReactElement {
   const allowConfirm = useConfirmButton(onAllowlist);
   // Synthetic `scan_*` events are telemetry, not detections. They
   // don't have a "match" to allowlist — the allowlist key is
@@ -916,7 +1035,9 @@ function SecurityRow({ event, expanded, flashing, onToggle, onAcknowledge, onAll
         onClick={onToggle}
         className="w-full text-left p-3 flex items-start gap-3"
       >
-        <div className={`flex-shrink-0 w-8 h-8 rounded-full ${bg} flex items-center justify-center`}>
+        <div
+          className={`flex-shrink-0 w-8 h-8 rounded-full ${bg} flex items-center justify-center`}
+        >
           <Icon size={15} className={color} strokeWidth={2} />
         </div>
         <div className="flex-1 min-w-0">
@@ -945,7 +1066,10 @@ function SecurityRow({ event, expanded, flashing, onToggle, onAcknowledge, onAll
         </div>
         {!event.acknowledged && (
           <button
-            onClick={(e) => { e.stopPropagation(); onAcknowledge(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAcknowledge();
+            }}
             className="flex-shrink-0 w-7 h-7 rounded-full bg-ios-blue/10 hover:bg-ios-blue/20 active:scale-90 transition-all flex items-center justify-center"
             title="Dismiss"
           >
@@ -982,14 +1106,14 @@ function SecurityRow({ event, expanded, flashing, onToggle, onAcknowledge, onAll
             <span className="text-[#8E8E93] flex-shrink-0">Origin:</span>
             <ProvenanceBadge provenance={event.provenance} />
           </div>
-          {!event.blocked
-            && (event.provenance === 'conversation' || event.provenance === 'system-prompt')
-            && event.kind !== 'risky_bash'
-            && event.kind !== 'risky_write'
-            && event.kind !== 'risky_webfetch' && (
+          {!event.blocked &&
+            (event.provenance === 'conversation' || event.provenance === 'system-prompt') &&
+            event.kind !== 'risky_bash' &&
+            event.kind !== 'risky_write' &&
+            event.kind !== 'risky_webfetch' && (
               <p className="text-[10px] text-[#8E8E93] leading-snug -mt-0.5">
-                Not blocked — Sentinel only blocks secret matches that come from a file Claude Code read or wrote.
-                Matches in conversation text aren't treated as data exfiltration.
+                Not blocked — Sentinel only blocks secret matches that come from a file Claude Code
+                read or wrote. Matches in conversation text aren't treated as data exfiltration.
               </p>
             )}
           {event.sourceHint && (
@@ -1021,11 +1145,14 @@ function SecurityRow({ event, expanded, flashing, onToggle, onAcknowledge, onAll
             {isSynthetic ? (
               <>
                 <p className="text-[10px] text-[#8E8E93] leading-snug flex-1 min-w-0">
-                  This is informational telemetry, not a detection.
-                  "Mute these" hides future alerts of this kind until you re-enable them in Settings.
+                  This is informational telemetry, not a detection. "Mute these" hides future alerts
+                  of this kind until you re-enable them in Settings.
                 </p>
                 <button
-                  onClick={(e) => { e.stopPropagation(); onMute(); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onMute();
+                  }}
                   className="flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 bg-[#8E8E93]/15 text-[#8E8E93] hover:bg-[#8E8E93]/25"
                   title="Stop showing alerts of this kind. Reversible from Settings → Security."
                 >
@@ -1036,17 +1163,24 @@ function SecurityRow({ event, expanded, flashing, onToggle, onAcknowledge, onAll
             ) : (
               <>
                 <p className="text-[10px] text-[#8E8E93] leading-snug flex-1 min-w-0">
-                  "Always allow" adds this exact match to your allowlist so future
-                  detections of the same value are silently suppressed.
+                  "Always allow" adds this exact match to your allowlist so future detections of the
+                  same value are silently suppressed.
                 </p>
                 <button
-                  onClick={(e) => { e.stopPropagation(); allowConfirm.trigger(); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    allowConfirm.trigger();
+                  }}
                   className={`flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 ${
                     allowConfirm.pending
                       ? 'bg-ios-orange text-white'
                       : 'bg-ios-orange/10 text-ios-orange hover:bg-ios-orange/20'
                   }`}
-                  title={allowConfirm.pending ? 'Click again to allow' : 'Suppress all future matches of this exact value'}
+                  title={
+                    allowConfirm.pending
+                      ? 'Click again to allow'
+                      : 'Suppress all future matches of this exact value'
+                  }
                 >
                   <ShieldOff size={10} strokeWidth={2.5} />
                   {allowConfirm.pending ? 'Confirm?' : 'Always allow'}
@@ -1064,12 +1198,7 @@ function SecurityRow({ event, expanded, flashing, onToggle, onAcknowledge, onAll
  *  below the "Context" row so users can see what was blocked without having to
  *  parse the snippet string. Internal/reference ids (matchedRuleId, etc.) are
  *  filtered out — they're already surfaced elsewhere in the expand panel. */
-const DETAILS_INTERNAL_KEYS = new Set([
-  'matchedRuleId',
-  'matchedRuleRaw',
-  'direction',
-  'toolName',
-]);
+const DETAILS_INTERNAL_KEYS = new Set(['matchedRuleId', 'matchedRuleRaw', 'direction', 'toolName']);
 const DETAILS_LABEL: Record<string, string> = {
   url: 'URL',
   command: 'Command',
@@ -1081,7 +1210,11 @@ const DETAILS_LABEL: Record<string, string> = {
   description: 'Description',
 };
 
-function DetailsList({ details }: { details: Record<string, unknown> | null }): React.ReactElement | null {
+function DetailsList({
+  details,
+}: {
+  details: Record<string, unknown> | null;
+}): React.ReactElement | null {
   if (!details) return null;
   const entries = Object.entries(details).filter(
     ([k, v]) => !DETAILS_INTERNAL_KEYS.has(k) && typeof v === 'string' && v.length > 0,

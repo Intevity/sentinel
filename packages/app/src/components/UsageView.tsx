@@ -3,9 +3,18 @@ import { RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
 import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel } from '../lib/ipc.js';
-import type { RateLimitWindow, OAuthAccount, AccountInfo, ClaudeAiUsageSnapshot } from '@claude-sentinel/shared';
+import type {
+  RateLimitWindow,
+  OAuthAccount,
+  AccountInfo,
+  ClaudeAiUsageSnapshot,
+} from '@claude-sentinel/shared';
 import { useSettings } from '../hooks/useSettings.js';
-import { useAllRateLimits, fiveHourUtilization, fiveHourResetAt } from '../hooks/useAllRateLimits.js';
+import {
+  useAllRateLimits,
+  fiveHourUtilization,
+  fiveHourResetAt,
+} from '../hooks/useAllRateLimits.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { usePausedAccounts, type PausedState } from '../hooks/usePausedAccounts.js';
 import { DUR, EASE_OUT } from '../lib/motion.js';
@@ -19,18 +28,23 @@ const USAGE_VARIANCE_NOTE =
 
 // Human-readable labels for known rate-limit window names
 const WINDOW_META: Record<string, { label: string; order: number }> = {
-  'unified-5h':        { label: '5-Hour Window',        order: 0 },
-  'unified-7d':        { label: 'Weekly: All Models',   order: 1 },
-  'unified-7d_sonnet': { label: 'Weekly: Sonnet',       order: 2 },
-  'unified-overage':   { label: 'Overage Budget',       order: 3 },
+  'unified-5h': { label: '5-Hour Window', order: 0 },
+  'unified-7d': { label: 'Weekly: All Models', order: 1 },
+  'unified-7d_sonnet': { label: 'Weekly: Sonnet', order: 2 },
+  'unified-overage': { label: 'Overage Budget', order: 3 },
 };
 
 // Windows that carry no useful display data (metadata / redundant)
 const HIDDEN_WINDOWS = new Set(['unified', 'unified-status']);
 
 function windowLabel(name: string): string {
-  return WINDOW_META[name]?.label ??
-    name.split(/[-_]/).map((w) => w[0]!.toUpperCase() + w.slice(1)).join(' ');
+  return (
+    WINDOW_META[name]?.label ??
+    name
+      .split(/[-_]/)
+      .map((w) => w[0]!.toUpperCase() + w.slice(1))
+      .join(' ')
+  );
 }
 
 function windowOrder(name: string): number {
@@ -66,19 +80,25 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
   const blocked = w.status === 'blocked';
   const overageActive = w.inUse === true;
 
-  const barColor =
-    blocked         ? 'bg-ios-red'    :
-    pct == null     ? 'bg-[#8E8E93]'  :
-    pct >= 90       ? 'bg-ios-red'    :
-    pct >= 70       ? 'bg-ios-orange' :
-    /* default */     'bg-ios-blue';
+  const barColor = blocked
+    ? 'bg-ios-red'
+    : pct == null
+      ? 'bg-[#8E8E93]'
+      : pct >= 90
+        ? 'bg-ios-red'
+        : pct >= 70
+          ? 'bg-ios-orange'
+          : /* default */ 'bg-ios-blue';
 
-  const pctColor =
-    blocked         ? 'text-ios-red'   :
-    pct == null     ? 'text-[#8E8E93]' :
-    pct >= 90       ? 'text-ios-red'   :
-    pct >= 70       ? 'text-ios-orange':
-    /* default */     'text-ios-blue';
+  const pctColor = blocked
+    ? 'text-ios-red'
+    : pct == null
+      ? 'text-[#8E8E93]'
+      : pct >= 90
+        ? 'text-ios-red'
+        : pct >= 70
+          ? 'text-ios-orange'
+          : /* default */ 'text-ios-blue';
 
   return (
     <div className="space-y-1.5">
@@ -101,9 +121,7 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
           {pct != null && (
             <span className={`text-[11px] font-bold tabular-nums ${pctColor}`}>{pct}%</span>
           )}
-          {w.reset != null && w.reset > 0 && (
-            <ResetCountdown epochSec={w.reset} variant="inline" />
-          )}
+          {w.reset != null && w.reset > 0 && <ResetCountdown epochSec={w.reset} variant="inline" />}
         </div>
       </div>
 
@@ -125,9 +143,8 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
       {/* Detail line: API-key plans show counts; subscription plans show utilization fraction */}
       {w.limit != null && w.remaining != null ? (
         <p className="text-[10px] text-[#8E8E93] tabular-nums">
-          {(w.limit - w.remaining).toLocaleString()} used ·{' '}
-          {w.remaining.toLocaleString()} remaining ·{' '}
-          {w.limit.toLocaleString()} limit
+          {(w.limit - w.remaining).toLocaleString()} used · {w.remaining.toLocaleString()} remaining
+          · {w.limit.toLocaleString()} limit
         </p>
       ) : w.utilization != null ? (
         <p className="text-[10px] text-[#8E8E93]">
@@ -214,25 +231,20 @@ function OverageMeterRow({
   //   'disabled'        — no overage configured at all; degrade to
   //                       rate-limit-only ProgressRow.
   const isTeam = planType === 'team';
-  const teamPerUserValid = isTeam
-    && perUser != null
-    && perUser.limitUsd != null
-    && perUser.limitUsd > 0
-    && perUser.usedUsd != null;
-  const individualAnthropicValid = !isTeam
-    && !!extra && extra.isEnabled && extra.limitUsd > 0;
+  const teamPerUserValid =
+    isTeam &&
+    perUser != null &&
+    perUser.limitUsd != null &&
+    perUser.limitUsd > 0 &&
+    perUser.usedUsd != null;
+  const individualAnthropicValid = !isTeam && !!extra && extra.isEnabled && extra.limitUsd > 0;
   const teamNeedsAdmin = isTeam && !teamPerUserValid && !!extra && extra.isEnabled;
 
-  const anthUsedPrimary = teamPerUserValid
-    ? (perUser!.usedUsd ?? 0)
-    : (extra?.usedUsd ?? 0);
-  const anthTotalPrimary = teamPerUserValid
-    ? (perUser!.limitUsd ?? 0)
-    : (extra?.limitUsd ?? 0);
+  const anthUsedPrimary = teamPerUserValid ? (perUser!.usedUsd ?? 0) : (extra?.usedUsd ?? 0);
+  const anthTotalPrimary = teamPerUserValid ? (perUser!.limitUsd ?? 0) : (extra?.limitUsd ?? 0);
 
   const showAnthropic = teamPerUserValid || individualAnthropicValid;
-  const showSentinel =
-    sentinelCapUsd != null && sentinelCapUsd > 0 && !!extra && !isTeam;
+  const showSentinel = sentinelCapUsd != null && sentinelCapUsd > 0 && !!extra && !isTeam;
 
   // No sessionKey and no cap → two render paths:
   //
@@ -261,7 +273,9 @@ function OverageMeterRow({
             </p>
           </div>
           <button
-            onClick={() => void invoke('start_claude_ai_login', { accountId }).catch(() => undefined)}
+            onClick={() =>
+              void invoke('start_claude_ai_login', { accountId }).catch(() => undefined)
+            }
             className="shrink-0 text-[11px] font-semibold text-white bg-ios-blue hover:brightness-110 px-3 py-1.5 rounded-full transition"
           >
             Connect
@@ -278,11 +292,10 @@ function OverageMeterRow({
               Team spend tracking unavailable
             </p>
             <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
-              claude.ai reports only a team-wide credit counter for this
-              account and doesn't expose personal spend to non-admins.
-              Ask your org admin to enable per-user budgets in claude.ai
-              → Settings → Usage to unlock dollar tracking and Sentinel
-              caps for your seat.
+              claude.ai reports only a team-wide credit counter for this account and doesn't expose
+              personal spend to non-admins. Ask your org admin to enable per-user budgets in
+              claude.ai → Settings → Usage to unlock dollar tracking and Sentinel caps for your
+              seat.
             </p>
           </div>
         </div>
@@ -299,19 +312,20 @@ function OverageMeterRow({
   const anthTotal = anthTotalPrimary;
   const anthPct = anthTotal > 0 ? Math.min(100, Math.round((anthUsed / anthTotal) * 100)) : 0;
   const anthBarColor =
-    anthPct >= 90 ? 'bg-ios-red' :
-    anthPct >= 70 ? 'bg-ios-orange' :
-    'bg-ios-blue';
+    anthPct >= 90 ? 'bg-ios-red' : anthPct >= 70 ? 'bg-ios-orange' : 'bg-ios-blue';
 
   const sentPct =
     showSentinel && sentinelCapUsd! > 0
       ? Math.min(100, Math.round((anthUsed / sentinelCapUsd!) * 100))
       : 0;
   const sentBarColor =
-    sentPct >= 100 ? 'bg-ios-red' :
-    sentPct >= 90  ? 'bg-ios-red' :
-    sentPct >= 70  ? 'bg-ios-orange' :
-    'bg-ios-blue';
+    sentPct >= 100
+      ? 'bg-ios-red'
+      : sentPct >= 90
+        ? 'bg-ios-red'
+        : sentPct >= 70
+          ? 'bg-ios-orange'
+          : 'bg-ios-blue';
 
   const overageActive = w.inUse === true;
 
@@ -319,9 +333,7 @@ function OverageMeterRow({
     <div className="space-y-2">
       {/* Header row */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[12px] font-semibold text-black dark:text-white">
-          Overage Budget
-        </span>
+        <span className="text-[12px] font-semibold text-black dark:text-white">Overage Budget</span>
         <div className="flex items-center gap-2 shrink-0">
           {overageActive && (
             <span className="text-[10px] font-semibold text-ios-red bg-ios-red/10 px-1.5 py-0.5 rounded-full">
@@ -364,7 +376,8 @@ function OverageMeterRow({
               {teamPerUserValid ? 'Your personal budget' : 'Anthropic grant'}
             </span>
             <span className="tabular-nums text-black dark:text-white font-medium">
-              {fmtUsd(anthUsed)} <span className="text-[#8E8E93] font-normal">/ {fmtUsd(anthTotal)}</span>
+              {fmtUsd(anthUsed)}{' '}
+              <span className="text-[#8E8E93] font-normal">/ {fmtUsd(anthTotal)}</span>
             </span>
           </div>
           <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
@@ -384,7 +397,8 @@ function OverageMeterRow({
           <div className="flex items-baseline justify-between text-[11px]">
             <span className="text-[#8E8E93]">Sentinel cap</span>
             <span className="tabular-nums text-black dark:text-white font-medium">
-              {fmtUsd(anthUsed)} <span className="text-[#8E8E93] font-normal">/ {fmtUsd(sentinelCapUsd!)}</span>
+              {fmtUsd(anthUsed)}{' '}
+              <span className="text-[#8E8E93] font-normal">/ {fmtUsd(sentinelCapUsd!)}</span>
             </span>
           </div>
           <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
@@ -412,17 +426,17 @@ function accountInfoToOAuthLike(acct: AccountInfo | undefined): OAuthAccount | n
   const isMax = acct.planType === 'max' || acct.planType === 'enterprise';
   const isTeamOrEnt = acct.planType === 'team' || acct.planType === 'enterprise';
   return {
-    accountUuid:           acct.accountUuid,
-    emailAddress:          acct.email,
-    organizationUuid:      acct.orgUuid,
-    hasExtraUsageEnabled:  isMax,
-    billingType:           acct.planType,
-    accountCreatedAt:      new Date(acct.createdAt).toISOString(),
+    accountUuid: acct.accountUuid,
+    emailAddress: acct.email,
+    organizationUuid: acct.orgUuid,
+    hasExtraUsageEnabled: isMax,
+    billingType: acct.planType,
+    accountCreatedAt: new Date(acct.createdAt).toISOString(),
     subscriptionCreatedAt: new Date(acct.createdAt).toISOString(),
-    displayName:           acct.displayName,
-    organizationRole:      'user',
-    workspaceRole:         isTeamOrEnt ? 'member' : null,
-    organizationName:      acct.orgName,
+    displayName: acct.displayName,
+    organizationRole: 'user',
+    workspaceRole: isTeamOrEnt ? 'member' : null,
+    organizationName: acct.orgName,
   };
 }
 
@@ -472,7 +486,13 @@ export default function UsageView(props: UsageViewProps): React.ReactElement {
   return <SingleAccountUsageView {...props} />;
 }
 
-function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, viewAccountId, accounts }: UsageViewProps): React.ReactElement {
+function SingleAccountUsageView({
+  rateLimitsVersion,
+  isProbing,
+  activeAccount,
+  viewAccountId,
+  accounts,
+}: UsageViewProps): React.ReactElement {
   const [windows, setWindows] = useState<RateLimitWindow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -487,22 +507,23 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
   // synthesis (below) can read billingType / hasExtraUsageEnabled. Fall back
   // to the actual active account when no pick is made.
   const viewAccount: OAuthAccount | null = viewAccountId
-    ? accountInfoToOAuthLike(accounts.find((a) => a.id === viewAccountId)) ?? activeAccount
+    ? (accountInfoToOAuthLike(accounts.find((a) => a.id === viewAccountId)) ?? activeAccount)
     : activeAccount;
 
   // Resolve Sentinel id for the viewed account so we can scope settings
   // lookups + pause-state + live usage subscription.
-  const viewAccountKey = viewAccountId
-    ?? (activeAccount
-        ? accounts.find((a) => a.accountUuid === activeAccount.accountUuid)?.id
-        : undefined);
+  const viewAccountKey =
+    viewAccountId ??
+    (activeAccount
+      ? accounts.find((a) => a.accountUuid === activeAccount.accountUuid)?.id
+      : undefined);
   const { snapshot: claudeAiUsage, error: claudeAiUsageError } = useClaudeAiUsage(viewAccountKey);
   const sentinelCap: number | null = viewAccountKey
-    ? (settings?.budgetWeeklyUsdByAccount[viewAccountKey]
-       ?? settings?.budgetWeeklyUsdGlobal
-       ?? null)
+    ? (settings?.budgetWeeklyUsdByAccount[viewAccountKey] ??
+      settings?.budgetWeeklyUsdGlobal ??
+      null)
     : null;
-  const viewPauseState = viewAccountKey ? paused[viewAccountKey] ?? null : null;
+  const viewPauseState = viewAccountKey ? (paused[viewAccountKey] ?? null) : null;
 
   // Returns { ok, error? } so the refresh-button handler can surface
   // success/failure without racing the error-state render.
@@ -527,15 +548,17 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
     }
   }, [viewAccountId]);
 
-  const [refreshStatus, setRefreshStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [refreshStatus, setRefreshStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(
+    null,
+  );
   const refreshStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleRefreshClick = useCallback(async (): Promise<void> => {
     const result = await fetchRateLimits();
     if (refreshStatusTimerRef.current) clearTimeout(refreshStatusTimerRef.current);
-    setRefreshStatus(result.ok
-      ? { kind: 'ok', text: 'Updated' }
-      : { kind: 'err', text: result.error ?? 'Failed' });
+    setRefreshStatus(
+      result.ok ? { kind: 'ok', text: 'Updated' } : { kind: 'err', text: result.error ?? 'Failed' },
+    );
     refreshStatusTimerRef.current = setTimeout(() => setRefreshStatus(null), 3000);
   }, [fetchRateLimits]);
 
@@ -583,7 +606,6 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
 
   return (
     <div className="space-y-3 pt-1">
-
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-1.5">
@@ -591,11 +613,11 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
           <InfoTooltip text={USAGE_VARIANCE_NOTE} placement="bottom" />
         </div>
         <div className="flex items-center gap-2">
-          {isProbing && (
-            <span className="text-[10px] text-ios-blue font-medium">Refreshing…</span>
-          )}
+          {isProbing && <span className="text-[10px] text-ios-blue font-medium">Refreshing…</span>}
           {!isProbing && refreshStatus && (
-            <span className={`text-[10px] font-medium ${refreshStatus.kind === 'ok' ? 'text-ios-green' : 'text-ios-red'}`}>
+            <span
+              className={`text-[10px] font-medium ${refreshStatus.kind === 'ok' ? 'text-ios-green' : 'text-ios-red'}`}
+            >
               {refreshStatus.text}
             </span>
           )}
@@ -627,14 +649,18 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
 
       {busy && displayWindows.length === 0 && !error && (
         <div className="glass-card px-4 py-10 text-center">
-          <RefreshCw size={16} strokeWidth={2.5} className="animate-spin text-ios-blue mx-auto mb-2" />
+          <RefreshCw
+            size={16}
+            strokeWidth={2.5}
+            className="animate-spin text-ios-blue mx-auto mb-2"
+          />
           <p className="text-[12px] text-[#8E8E93]">Fetching rate limits…</p>
         </div>
       )}
 
       {displayWindows.length > 0 && (
         <div className="glass-card px-4 py-4 space-y-5">
-          {displayWindows.map((w) => (
+          {displayWindows.map((w) =>
             w.name === 'unified-overage' ? (
               <OverageMeterRow
                 key={w.name}
@@ -648,8 +674,8 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
               />
             ) : (
               <ProgressRow key={w.name} window={w} />
-            )
-          ))}
+            ),
+          )}
         </div>
       )}
 
@@ -658,7 +684,6 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
           Updated {new Date(lastUpdated).toLocaleTimeString()}
         </p>
       )}
-
     </div>
   );
 }
@@ -680,15 +705,18 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
 function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.ReactElement {
   const { byAccount, refetch } = useAllRateLimits();
   const { settings } = useSettings();
-  const [poolRefreshStatus, setPoolRefreshStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [poolRefreshStatus, setPoolRefreshStatus] = useState<{
+    kind: 'ok' | 'err';
+    text: string;
+  } | null>(null);
   const poolRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handlePoolRefreshClick = useCallback(async (): Promise<void> => {
     const result = await refetch();
     if (poolRefreshTimerRef.current) clearTimeout(poolRefreshTimerRef.current);
-    setPoolRefreshStatus(result.ok
-      ? { kind: 'ok', text: 'Updated' }
-      : { kind: 'err', text: result.error ?? 'Failed' });
+    setPoolRefreshStatus(
+      result.ok ? { kind: 'ok', text: 'Updated' } : { kind: 'err', text: result.error ?? 'Failed' },
+    );
     poolRefreshTimerRef.current = setTimeout(() => setPoolRefreshStatus(null), 3000);
   }, [refetch]);
   // Excluded accounts are sitting out of rotation, so they shouldn't
@@ -706,20 +734,30 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
 
   const poolRows = rows.filter((r) => r.inPool);
   const knownUtils = poolRows.map((r) => r.util).filter((u): u is number => u != null);
-  const poolPct = knownUtils.length === 0
-    ? null
-    : Math.min(100, Math.round((knownUtils.reduce((a, b) => a + b, 0) / knownUtils.length) * 100));
+  const poolPct =
+    knownUtils.length === 0
+      ? null
+      : Math.min(
+          100,
+          Math.round((knownUtils.reduce((a, b) => a + b, 0) / knownUtils.length) * 100),
+        );
 
   const poolColor =
-    poolPct == null   ? 'bg-[#8E8E93]'  :
-    poolPct >= 90     ? 'bg-ios-red'    :
-    poolPct >= 70     ? 'bg-ios-orange' :
-    /* default */       'bg-ios-blue';
+    poolPct == null
+      ? 'bg-[#8E8E93]'
+      : poolPct >= 90
+        ? 'bg-ios-red'
+        : poolPct >= 70
+          ? 'bg-ios-orange'
+          : /* default */ 'bg-ios-blue';
   const poolPctColor =
-    poolPct == null   ? 'text-[#8E8E93]' :
-    poolPct >= 90     ? 'text-ios-red'   :
-    poolPct >= 70     ? 'text-ios-orange':
-    /* default */       'text-ios-blue';
+    poolPct == null
+      ? 'text-[#8E8E93]'
+      : poolPct >= 90
+        ? 'text-ios-red'
+        : poolPct >= 70
+          ? 'text-ios-orange'
+          : /* default */ 'text-ios-blue';
 
   return (
     <div className="space-y-3 pt-1">
@@ -734,7 +772,9 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
         </div>
         <div className="flex items-center gap-2">
           {poolRefreshStatus && (
-            <span className={`text-[10px] font-medium ${poolRefreshStatus.kind === 'ok' ? 'text-ios-green' : 'text-ios-red'}`}>
+            <span
+              className={`text-[10px] font-medium ${poolRefreshStatus.kind === 'ok' ? 'text-ios-green' : 'text-ios-red'}`}
+            >
               {poolRefreshStatus.text}
             </span>
           )}
@@ -751,12 +791,12 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
       {/* Pool meter */}
       <div className="glass-card px-4 py-4 space-y-1.5">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[12px] font-semibold text-black dark:text-white">
-            Pool 5h
-          </span>
+          <span className="text-[12px] font-semibold text-black dark:text-white">Pool 5h</span>
           <div className="flex items-center gap-2 shrink-0">
             {poolPct != null && (
-              <span className={`text-[11px] font-bold tabular-nums ${poolPctColor}`}>{poolPct}% avg</span>
+              <span className={`text-[11px] font-bold tabular-nums ${poolPctColor}`}>
+                {poolPct}% avg
+              </span>
             )}
             <span className="text-[10px] text-[#8E8E93]">
               {knownUtils.length} of {poolRows.length}
@@ -774,8 +814,8 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
           </div>
         )}
         <p className="text-[10px] text-[#8E8E93] leading-snug">
-          Average 5-hour utilization across every account in the round-robin pool.
-          Accounts with no data yet are excluded from the average.
+          Average 5-hour utilization across every account in the round-robin pool. Accounts with no
+          data yet are excluded from the average.
         </p>
       </div>
 
@@ -787,21 +827,30 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
       ) : (
         <div className="glass-card px-4 py-4 space-y-4">
           {rows.map(({ account, util, resetAt, inPool }) => {
-            const pct = util == null
-              ? null
-              : util <= 0 ? 0
-              : util >= 1 ? 100
-              : Math.min(100, Math.round(util * 100));
+            const pct =
+              util == null
+                ? null
+                : util <= 0
+                  ? 0
+                  : util >= 1
+                    ? 100
+                    : Math.min(100, Math.round(util * 100));
             const barColor =
-              pct == null ? 'bg-[#8E8E93]'  :
-              pct >= 90   ? 'bg-ios-red'    :
-              pct >= 70   ? 'bg-ios-orange' :
-              /* default */ 'bg-ios-blue';
+              pct == null
+                ? 'bg-[#8E8E93]'
+                : pct >= 90
+                  ? 'bg-ios-red'
+                  : pct >= 70
+                    ? 'bg-ios-orange'
+                    : /* default */ 'bg-ios-blue';
             const pctColor =
-              pct == null ? 'text-[#8E8E93]' :
-              pct >= 90   ? 'text-ios-red'   :
-              pct >= 70   ? 'text-ios-orange':
-              /* default */ 'text-ios-blue';
+              pct == null
+                ? 'text-[#8E8E93]'
+                : pct >= 90
+                  ? 'text-ios-red'
+                  : pct >= 70
+                    ? 'text-ios-orange'
+                    : /* default */ 'text-ios-blue';
             const label = account.displayName || account.email;
             const sub = account.orgName || (account.displayName ? account.email : null);
             const hasReset = resetAt != null && resetAt > 0;
@@ -824,9 +873,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
                     )}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    {hasReset && (
-                      <ResetCountdown epochSec={resetAt} variant="pill" />
-                    )}
+                    {hasReset && <ResetCountdown epochSec={resetAt} variant="pill" />}
                     <span className={`text-[11px] font-bold tabular-nums ${pctColor}`}>
                       {pct == null ? '–' : `${pct}%`}
                     </span>

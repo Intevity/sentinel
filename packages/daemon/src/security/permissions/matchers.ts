@@ -70,15 +70,11 @@ function escapeRegex(s: string): string {
 /** Process wrappers whose leading argv is stripped before matching so
  *  `timeout 30 npm test` matches `Bash(npm test)` etc. Extend with care —
  *  each addition lowers rule precision. */
-const WRAPPER_COMMANDS = new Set([
-  'time', 'nohup',
-]);
+const WRAPPER_COMMANDS = new Set(['time', 'nohup']);
 
 /** Wrappers that take a single numeric / named argument before the real
  *  command. Greedy — we strip `cmd ARG` as a pair. */
-const WRAPPER_WITH_ARG = new Set([
-  'timeout', 'nice', 'stdbuf',
-]);
+const WRAPPER_WITH_ARG = new Set(['timeout', 'nice', 'stdbuf']);
 
 /** Shells whose `-c "..."` payload is itself a command to match. */
 const SHELLS_WITH_DASH_C = new Set(['sh', 'bash', 'zsh', 'dash']);
@@ -107,7 +103,10 @@ export function tokenize(cmd: string): string[] {
       continue;
     }
     if (ch === ' ' || ch === '\t') {
-      if (cur) { out.push(cur); cur = ''; }
+      if (cur) {
+        out.push(cur);
+        cur = '';
+      }
       continue;
     }
     cur += ch;
@@ -189,8 +188,14 @@ export function stripWrappers(cmd: string): string {
       let j = 1;
       while (j < tokens.length) {
         const tok = tokens[j]!;
-        if (tok.startsWith('-')) { j++; continue; }
-        if (/^[0-9]+(?:[smhd]|\.[0-9]+)?$/.test(tok)) { j++; continue; }
+        if (tok.startsWith('-')) {
+          j++;
+          continue;
+        }
+        if (/^[0-9]+(?:[smhd]|\.[0-9]+)?$/.test(tok)) {
+          j++;
+          continue;
+        }
         break;
       }
       if (j >= tokens.length) break; // nothing left — give up

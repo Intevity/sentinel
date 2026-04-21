@@ -63,7 +63,9 @@ export function useSettings(): UseSettingsResult {
       // retry below keeps trying in the background, so a transient IPC
       // failure still recovers without user action.
       setLoading(false);
-      timer = setTimeout(() => { void attempt(); }, STARTUP_RETRY_MS);
+      timer = setTimeout(() => {
+        void attempt();
+      }, STARTUP_RETRY_MS);
     };
 
     void attempt();
@@ -73,7 +75,11 @@ export function useSettings(): UseSettingsResult {
       if (msg.type === 'settings_changed') {
         setSettings(msg.settings);
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
 
     return () => {
       cancelled = true;

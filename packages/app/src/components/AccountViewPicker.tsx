@@ -59,11 +59,12 @@ export default function AccountViewPicker({
   //   2. POOL_VIEW when the pool option is enabled
   //   3. active account id
   //   4. first account (last resort — should rarely happen)
-  const resolved: PickerValue | null = value
-    ?? (showPoolOption ? POOL_VIEW : undefined)
-    ?? findActiveId(accounts, activeAccount)
-    ?? accounts[0]?.id
-    ?? null;
+  const resolved: PickerValue | null =
+    value ??
+    (showPoolOption ? POOL_VIEW : undefined) ??
+    findActiveId(accounts, activeAccount) ??
+    accounts[0]?.id ??
+    null;
 
   // Close on outside click so the popover behaves like a native menu.
   useEffect(() => {
@@ -88,14 +89,18 @@ export default function AccountViewPicker({
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span className="text-[9px] text-[#8E8E93] uppercase tracking-wider font-semibold">Showing</span>
+        <span className="text-[9px] text-[#8E8E93] uppercase tracking-wider font-semibold">
+          Showing
+        </span>
         <span className="text-[11px] font-semibold text-black dark:text-white max-w-[180px] truncate">
           {currentLabel.primary}
         </span>
         {currentLabel.secondary && (
           <>
             <span className="text-[11px] text-[#8E8E93]">·</span>
-            <span className="text-[11px] text-[#8E8E93] max-w-[120px] truncate">{currentLabel.secondary}</span>
+            <span className="text-[11px] text-[#8E8E93] max-w-[120px] truncate">
+              {currentLabel.secondary}
+            </span>
           </>
         )}
         <ChevronDown size={11} strokeWidth={2.2} className="text-[#8E8E93]" />
@@ -111,7 +116,10 @@ export default function AccountViewPicker({
               selected={resolved === POOL_VIEW}
               primary="All accounts (pool)"
               secondary="Round-robin aggregate"
-              onClick={() => { onChange(POOL_VIEW); setOpen(false); }}
+              onClick={() => {
+                onChange(POOL_VIEW);
+                setOpen(false);
+              }}
             />
           )}
           {accounts.map((acct) => (
@@ -126,7 +134,10 @@ export default function AccountViewPicker({
                 switchingMode,
                 inPool: !excludedSet.has(acct.id),
               })}
-              onClick={() => { onChange(acct.id); setOpen(false); }}
+              onClick={() => {
+                onChange(acct.id);
+                setOpen(false);
+              }}
             />
           ))}
         </div>
@@ -148,7 +159,14 @@ interface PickerRowProps {
   onClick: () => void;
 }
 
-function PickerRow({ selected, primary, secondary, color, status, onClick }: PickerRowProps): React.ReactElement {
+function PickerRow({
+  selected,
+  primary,
+  secondary,
+  color,
+  status,
+  onClick,
+}: PickerRowProps): React.ReactElement {
   return (
     <button
       role="option"
@@ -189,7 +207,9 @@ function PickerRow({ selected, primary, secondary, color, status, onClick }: Pic
  */
 function findActiveId(accounts: AccountInfo[], active: OAuthAccount | null): string | null {
   if (!active) return null;
-  const byOrg = accounts.find((a) => active.organizationUuid && a.orgUuid === active.organizationUuid);
+  const byOrg = accounts.find(
+    (a) => active.organizationUuid && a.orgUuid === active.organizationUuid,
+  );
   if (byOrg) return byOrg.id;
   const byUuid = accounts.find((a) => a.accountUuid === active.accountUuid);
   return byUuid?.id ?? null;

@@ -14,17 +14,17 @@ function accountInfoToOAuth(acct: AccountInfo): OAuthAccount {
   const isMax = acct.planType === 'max' || acct.planType === 'enterprise';
   const isTeamOrEnt = acct.planType === 'team' || acct.planType === 'enterprise';
   return {
-    accountUuid:           acct.accountUuid,
-    emailAddress:          acct.email,
-    organizationUuid:      acct.orgUuid,
-    hasExtraUsageEnabled:  isMax,
-    billingType:           acct.planType,
-    accountCreatedAt:      new Date(acct.createdAt).toISOString(),
+    accountUuid: acct.accountUuid,
+    emailAddress: acct.email,
+    organizationUuid: acct.orgUuid,
+    hasExtraUsageEnabled: isMax,
+    billingType: acct.planType,
+    accountCreatedAt: new Date(acct.createdAt).toISOString(),
     subscriptionCreatedAt: new Date(acct.createdAt).toISOString(),
-    displayName:           acct.displayName,
-    organizationRole:      'user',
-    workspaceRole:         isTeamOrEnt ? 'member' : null,
-    organizationName:      acct.orgName,
+    displayName: acct.displayName,
+    organizationRole: 'user',
+    workspaceRole: isTeamOrEnt ? 'member' : null,
+    organizationName: acct.orgName,
   };
 }
 
@@ -81,9 +81,9 @@ export function useDaemon(): DaemonState & { refetch: () => void } {
         // same account, prefer it (keeps `hasExtraUsageEnabled` etc. accurate);
         // otherwise synthesize from the DB row so the UI is never blank.
         activeAccount: active
-          ? (prev.activeAccount && prev.activeAccount.accountUuid === active.accountUuid
-              ? prev.activeAccount
-              : accountInfoToOAuth(active))
+          ? prev.activeAccount && prev.activeAccount.accountUuid === active.accountUuid
+            ? prev.activeAccount
+            : accountInfoToOAuth(active)
           : null,
         accounts: list,
       }));
@@ -101,16 +101,27 @@ export function useDaemon(): DaemonState & { refetch: () => void } {
     // arrives (daemon crash, network stall). Cleared & restarted per probe.
     let probeTimeout: ReturnType<typeof setTimeout> | null = null;
     const clearProbeTimeout = (): void => {
-      if (probeTimeout) { clearTimeout(probeTimeout); probeTimeout = null; }
+      if (probeTimeout) {
+        clearTimeout(probeTimeout);
+        probeTimeout = null;
+      }
     };
 
     void refetch();
 
     onDaemonMessage((msg) => {
       if (msg.type === 'overage_entered') {
-        setState((prev) => ({ ...prev, overageActive: true, overageVersion: prev.overageVersion + 1 }));
+        setState((prev) => ({
+          ...prev,
+          overageActive: true,
+          overageVersion: prev.overageVersion + 1,
+        }));
       } else if (msg.type === 'overage_exited' || msg.type === 'overage_disabled') {
-        setState((prev) => ({ ...prev, overageActive: false, overageVersion: prev.overageVersion + 1 }));
+        setState((prev) => ({
+          ...prev,
+          overageActive: false,
+          overageVersion: prev.overageVersion + 1,
+        }));
       } else if (msg.type === 'login_complete' && msg.email) {
         void refetch();
       } else if (msg.type === 'account_updated') {
@@ -120,7 +131,11 @@ export function useDaemon(): DaemonState & { refetch: () => void } {
       } else if (msg.type === 'account_switched') {
         // Bump rateLimitsVersion immediately so UsageView re-fetches for the
         // new account without waiting for the async probe to broadcast rate_limits_updated.
-        setState((prev) => ({ ...prev, activeAccount: msg.to, rateLimitsVersion: prev.rateLimitsVersion + 1 }));
+        setState((prev) => ({
+          ...prev,
+          activeAccount: msg.to,
+          rateLimitsVersion: prev.rateLimitsVersion + 1,
+        }));
         void refetch();
       } else if (msg.type === 'rate_limits_updated') {
         setState((prev) => ({
@@ -134,13 +149,21 @@ export function useDaemon(): DaemonState & { refetch: () => void } {
         setState((prev) => ({ ...prev, probingAccountId: msg.accountId }));
         clearProbeTimeout();
         probeTimeout = setTimeout(() => {
-          setState((prev) => (prev.probingAccountId === msg.accountId ? { ...prev, probingAccountId: null } : prev));
+          setState((prev) =>
+            prev.probingAccountId === msg.accountId ? { ...prev, probingAccountId: null } : prev,
+          );
         }, 15_000);
       } else if (msg.type === 'rate_limits_probe_ended') {
-        setState((prev) => (prev.probingAccountId === msg.accountId ? { ...prev, probingAccountId: null } : prev));
+        setState((prev) =>
+          prev.probingAccountId === msg.accountId ? { ...prev, probingAccountId: null } : prev,
+        );
         clearProbeTimeout();
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
 
     return () => {
       unlisten?.();

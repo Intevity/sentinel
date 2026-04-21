@@ -18,7 +18,10 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
 }
 
 function rgbToHex(r: number, g: number, b: number): string {
-  const c = (v: number): string => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  const c = (v: number): string =>
+    Math.max(0, Math.min(255, Math.round(v)))
+      .toString(16)
+      .padStart(2, '0');
   return `#${c(r)}${c(g)}${c(b)}`.toUpperCase();
 }
 
@@ -78,7 +81,9 @@ export default function AccountColorPicker({ account, onClose }: Props): React.R
 
           <div className="grid grid-cols-4 gap-2">
             <div className="col-span-4">
-              <label className="block text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider mb-1">Hex</label>
+              <label className="block text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider mb-1">
+                Hex
+              </label>
               <HexColorInput
                 color={color}
                 onChange={(c) => setColor(c.toUpperCase())}
@@ -92,7 +97,9 @@ export default function AccountColorPicker({ account, onClose }: Props): React.R
           </div>
 
           <div>
-            <p className="text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider mb-1.5">Presets</p>
+            <p className="text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider mb-1.5">
+              Presets
+            </p>
             <div className="flex items-center gap-2 flex-wrap">
               {PRESET_SWATCHES.map((hex) => (
                 <button
@@ -100,7 +107,9 @@ export default function AccountColorPicker({ account, onClose }: Props): React.R
                   type="button"
                   onClick={() => setColor(hex)}
                   className={`w-7 h-7 rounded-full transition-transform active:scale-90 ring-1 ring-black/5 dark:ring-white/10 ${
-                    color.toUpperCase() === hex ? 'ring-2 ring-ios-blue ring-offset-1 ring-offset-white dark:ring-offset-[#1E1E1E]' : ''
+                    color.toUpperCase() === hex
+                      ? 'ring-2 ring-ios-blue ring-offset-1 ring-offset-white dark:ring-offset-[#1E1E1E]'
+                      : ''
                   }`}
                   style={{ backgroundColor: hex }}
                   aria-label={`Pick ${hex}`}
@@ -143,10 +152,20 @@ export default function AccountColorPicker({ account, onClose }: Props): React.R
   );
 }
 
-function RgbField({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }): React.ReactElement {
+function RgbField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+}): React.ReactElement {
   return (
     <label className="block">
-      <span className="block text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider mb-1">{label}</span>
+      <span className="block text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider mb-1">
+        {label}
+      </span>
       <input
         type="number"
         min={0}

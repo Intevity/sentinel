@@ -39,10 +39,11 @@ export function classifyProvenance(
   sourceHint: string | undefined,
 ): FindingProvenance {
   if (
-    kind === 'scan_truncated'
-    || kind === 'scan_skipped_encoding'
-    || kind === 'scan_deferred_oversized'
-  ) return 'telemetry';
+    kind === 'scan_truncated' ||
+    kind === 'scan_skipped_encoding' ||
+    kind === 'scan_deferred_oversized'
+  )
+    return 'telemetry';
   if (!sourceHint) return 'conversation';
   // POSIX absolute path, tilde-prefixed home path, or Windows drive.
   if (/^\//.test(sourceHint) || /^~\//.test(sourceHint) || /^[A-Za-z]:\\/.test(sourceHint)) {
@@ -126,7 +127,11 @@ const CONTEXT_MARKERS: Array<{ pattern: RegExp; drop: number; label: string }> =
   // Test framework markers. Vitest/Jest syntax is diagnostic enough on its
   // own; if any of these appear near the match, it's almost certainly a
   // test fixture.
-  { pattern: /\b(describe|it|test|expect|beforeEach|afterEach|beforeAll|afterAll)\s*\(/i, drop: 0.35, label: 'test framework marker' },
+  {
+    pattern: /\b(describe|it|test|expect|beforeEach|afterEach|beforeAll|afterAll)\s*\(/i,
+    drop: 0.35,
+    label: 'test framework marker',
+  },
   { pattern: /\bvi\.(fn|mock|spyOn|stubGlobal)\s*\(/i, drop: 0.35, label: 'vitest mock marker' },
   // Our own redaction marker bleeding back in — if Claude Code is reading
   // our source it'll encounter `[REDACTED:secret]` as literal text inside
@@ -140,7 +145,11 @@ const CONTEXT_MARKERS: Array<{ pattern: RegExp; drop: number; label: string }> =
   // Documentation section headers near the match (e.g. "## Secret detectors").
   { pattern: /^#{1,6}\s/m, drop: 0.2, label: 'markdown heading' },
   // Comments introducing an example.
-  { pattern: /(?:\/\/|#|\*)\s*(example|sample|e\.?g\.?:|todo|fixme)/i, drop: 0.25, label: 'example comment' },
+  {
+    pattern: /(?:\/\/|#|\*)\s*(example|sample|e\.?g\.?:|todo|fixme)/i,
+    drop: 0.25,
+    label: 'example comment',
+  },
 ];
 
 /** Placeholder-looking secrets: sequential runs, repeated chars, obvious
@@ -149,11 +158,19 @@ const PLACEHOLDER_PATTERNS: Array<{ pattern: RegExp; drop: number; label: string
   // Sequential digit runs like "1234567890" or "12345".
   { pattern: /(?:0123|1234|2345|3456|4567|5678|6789|7890)/, drop: 0.3, label: 'sequential digits' },
   // Sequential letter runs.
-  { pattern: /(?:abcd|bcde|cdef|defg|efgh|fghi|ghij|hijk)/i, drop: 0.3, label: 'sequential letters' },
+  {
+    pattern: /(?:abcd|bcde|cdef|defg|efgh|fghi|ghij|hijk)/i,
+    drop: 0.3,
+    label: 'sequential letters',
+  },
   // Repeated single char ≥4 times (aaaa, 0000, zzzz).
   { pattern: /([a-z0-9])\1{3,}/i, drop: 0.25, label: 'repeated character' },
   // Contains explicit placeholder words anywhere in the body.
-  { pattern: /(example|sample|dummy|fake|placeholder|test[_-]?key)/i, drop: 0.3, label: 'placeholder keyword in body' },
+  {
+    pattern: /(example|sample|dummy|fake|placeholder|test[_-]?key)/i,
+    drop: 0.3,
+    label: 'placeholder keyword in body',
+  },
 ];
 
 const MAX_CONTEXT_WINDOW = 200;
@@ -202,21 +219,111 @@ interface SecretRule {
 }
 
 const SECRET_RULES: SecretRule[] = [
-  { id: 'aws-access-key',      title: 'AWS access key',          reason: 'AKIA/ASIA prefix with 16 base32 characters', confidence: 0.95, regex: /\b(AKIA|ASIA)[0-9A-Z]{16}\b/g },
-  { id: 'github-ghp',          title: 'GitHub personal token',   reason: 'ghp_ prefix with 36 alphanumerics',          confidence: 0.95, regex: /\bghp_[A-Za-z0-9]{36}\b/g },
-  { id: 'github-pat',          title: 'GitHub fine-grained PAT', reason: 'github_pat_ prefix with expected body',     confidence: 0.95, regex: /\bgithub_pat_[A-Za-z0-9_]{82}\b/g },
-  { id: 'github-oauth',        title: 'GitHub OAuth token',      reason: 'gho_/ghu_/ghs_/ghr_ prefix',                 confidence: 0.9,  regex: /\bgh[ousr]_[A-Za-z0-9]{36}\b/g },
-  { id: 'anthropic-key',       title: 'Anthropic API key',       reason: 'sk-ant-api03 prefix',                        confidence: 0.95, regex: /\bsk-ant-api03-[A-Za-z0-9_-]{80,}\b/g },
-  { id: 'openai-project',      title: 'OpenAI project API key',  reason: 'sk-proj- prefix',                            confidence: 0.9,  regex: /\bsk-proj-[A-Za-z0-9_-]{40,}\b/g },
-  { id: 'openai-legacy',       title: 'OpenAI API key (legacy)', reason: 'sk- prefix with long alphanumeric body',     confidence: 0.75, regex: /\bsk-[A-Za-z0-9]{40,}\b/g },
-  { id: 'slack-token',         title: 'Slack token',             reason: 'xox[bparps] prefix',                         confidence: 0.9,  regex: /\bxox[baprs]-[0-9]{10,}-[A-Za-z0-9-]{20,}\b/g },
-  { id: 'stripe-live-secret',  title: 'Stripe live secret key',  reason: 'sk_live_ prefix',                            confidence: 0.95, regex: /\bsk_live_[A-Za-z0-9]{24,}\b/g },
-  { id: 'stripe-live-restricted', title: 'Stripe live restricted key', reason: 'rk_live_ prefix',                      confidence: 0.95, regex: /\brk_live_[A-Za-z0-9]{24,}\b/g },
-  { id: 'google-api-key',      title: 'Google API key',          reason: 'AIza prefix with 35-char body',              confidence: 0.9,  regex: /\bAIza[A-Za-z0-9_-]{35}\b/g },
-  { id: 'hf-token',            title: 'HuggingFace token',       reason: 'hf_ prefix with 34+ alphanumerics',          confidence: 0.85, regex: /\bhf_[A-Za-z0-9]{34,}\b/g },
-  { id: 'npm-token',           title: 'npm access token',        reason: 'npm_ prefix with 36 alphanumerics',          confidence: 0.9,  regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
-  { id: 'npmrc-auth',          title: 'npmrc _authToken',        reason: '_authToken= in registry config line',        confidence: 0.85, regex: /\/\/registry\.npmjs\.org\/:_authToken=[A-Za-z0-9_-]{20,}/g },
-  { id: 'google-oauth-refresh', title: 'Google OAuth refresh token', reason: '1// prefix with 43+ URL-safe chars',     confidence: 0.75, regex: /\b1\/\/0[A-Za-z0-9_-]{40,}\b/g },
+  {
+    id: 'aws-access-key',
+    title: 'AWS access key',
+    reason: 'AKIA/ASIA prefix with 16 base32 characters',
+    confidence: 0.95,
+    regex: /\b(AKIA|ASIA)[0-9A-Z]{16}\b/g,
+  },
+  {
+    id: 'github-ghp',
+    title: 'GitHub personal token',
+    reason: 'ghp_ prefix with 36 alphanumerics',
+    confidence: 0.95,
+    regex: /\bghp_[A-Za-z0-9]{36}\b/g,
+  },
+  {
+    id: 'github-pat',
+    title: 'GitHub fine-grained PAT',
+    reason: 'github_pat_ prefix with expected body',
+    confidence: 0.95,
+    regex: /\bgithub_pat_[A-Za-z0-9_]{82}\b/g,
+  },
+  {
+    id: 'github-oauth',
+    title: 'GitHub OAuth token',
+    reason: 'gho_/ghu_/ghs_/ghr_ prefix',
+    confidence: 0.9,
+    regex: /\bgh[ousr]_[A-Za-z0-9]{36}\b/g,
+  },
+  {
+    id: 'anthropic-key',
+    title: 'Anthropic API key',
+    reason: 'sk-ant-api03 prefix',
+    confidence: 0.95,
+    regex: /\bsk-ant-api03-[A-Za-z0-9_-]{80,}\b/g,
+  },
+  {
+    id: 'openai-project',
+    title: 'OpenAI project API key',
+    reason: 'sk-proj- prefix',
+    confidence: 0.9,
+    regex: /\bsk-proj-[A-Za-z0-9_-]{40,}\b/g,
+  },
+  {
+    id: 'openai-legacy',
+    title: 'OpenAI API key (legacy)',
+    reason: 'sk- prefix with long alphanumeric body',
+    confidence: 0.75,
+    regex: /\bsk-[A-Za-z0-9]{40,}\b/g,
+  },
+  {
+    id: 'slack-token',
+    title: 'Slack token',
+    reason: 'xox[bparps] prefix',
+    confidence: 0.9,
+    regex: /\bxox[baprs]-[0-9]{10,}-[A-Za-z0-9-]{20,}\b/g,
+  },
+  {
+    id: 'stripe-live-secret',
+    title: 'Stripe live secret key',
+    reason: 'sk_live_ prefix',
+    confidence: 0.95,
+    regex: /\bsk_live_[A-Za-z0-9]{24,}\b/g,
+  },
+  {
+    id: 'stripe-live-restricted',
+    title: 'Stripe live restricted key',
+    reason: 'rk_live_ prefix',
+    confidence: 0.95,
+    regex: /\brk_live_[A-Za-z0-9]{24,}\b/g,
+  },
+  {
+    id: 'google-api-key',
+    title: 'Google API key',
+    reason: 'AIza prefix with 35-char body',
+    confidence: 0.9,
+    regex: /\bAIza[A-Za-z0-9_-]{35}\b/g,
+  },
+  {
+    id: 'hf-token',
+    title: 'HuggingFace token',
+    reason: 'hf_ prefix with 34+ alphanumerics',
+    confidence: 0.85,
+    regex: /\bhf_[A-Za-z0-9]{34,}\b/g,
+  },
+  {
+    id: 'npm-token',
+    title: 'npm access token',
+    reason: 'npm_ prefix with 36 alphanumerics',
+    confidence: 0.9,
+    regex: /\bnpm_[A-Za-z0-9]{36}\b/g,
+  },
+  {
+    id: 'npmrc-auth',
+    title: 'npmrc _authToken',
+    reason: '_authToken= in registry config line',
+    confidence: 0.85,
+    regex: /\/\/registry\.npmjs\.org\/:_authToken=[A-Za-z0-9_-]{20,}/g,
+  },
+  {
+    id: 'google-oauth-refresh',
+    title: 'Google OAuth refresh token',
+    reason: '1// prefix with 43+ URL-safe chars',
+    confidence: 0.75,
+    regex: /\b1\/\/0[A-Za-z0-9_-]{40,}\b/g,
+  },
 ];
 
 /** Private-key PEM blocks get a dedicated scan that distinguishes a real
@@ -242,11 +349,13 @@ function countBase64BodyChars(text: string): number {
   for (let i = 0; i < text.length; i++) {
     const ch = text.charCodeAt(i);
     if (
-      (ch >= 48 && ch <= 57)  || // 0-9
-      (ch >= 65 && ch <= 90)  || // A-Z
+      (ch >= 48 && ch <= 57) || // 0-9
+      (ch >= 65 && ch <= 90) || // A-Z
       (ch >= 97 && ch <= 122) || // a-z
-      ch === 43 || ch === 47      // + /
-    ) n++;
+      ch === 43 ||
+      ch === 47 // + /
+    )
+      n++;
   }
   return n;
 }
@@ -262,7 +371,10 @@ function scanPrivateKeyBlocks(fullText: string, sourceHint: string | undefined):
     const end = start + match.length;
     if (hasAllowlistedContext(fullText, start, end)) continue;
 
-    const bodyWindow = fullText.slice(end, Math.min(fullText.length, end + PRIVATE_KEY_BODY_WINDOW));
+    const bodyWindow = fullText.slice(
+      end,
+      Math.min(fullText.length, end + PRIVATE_KEY_BODY_WINDOW),
+    );
     const bodyChars = countBase64BodyChars(bodyWindow);
     const hasBody = bodyChars >= PRIVATE_KEY_BODY_MIN_CHARS;
 
@@ -272,14 +384,10 @@ function scanPrivateKeyBlocks(fullText: string, sourceHint: string | undefined):
     const reasonBase = hasBody
       ? 'BEGIN PRIVATE KEY header followed by key body'
       : 'BEGIN PRIVATE KEY header without key body (likely documentation)';
-    const adjustedReason = reasons.length > 0
-      ? `${reasonBase} (confidence reduced: ${reasons.join(', ')})`
-      : reasonBase;
-    const severity: SecuritySeverity = hasBody && adjustedConfidence >= 0.85
-      ? 'high'
-      : adjustedConfidence >= 0.6
-        ? 'medium'
-        : 'low';
+    const adjustedReason =
+      reasons.length > 0 ? `${reasonBase} (confidence reduced: ${reasons.join(', ')})` : reasonBase;
+    const severity: SecuritySeverity =
+      hasBody && adjustedConfidence >= 0.85 ? 'high' : adjustedConfidence >= 0.6 ? 'medium' : 'low';
 
     findings.push({
       detectorId: hasBody ? 'private-key-block' : 'private-key-header-doc',
@@ -315,17 +423,15 @@ function scanSecretsIn(fullText: string, sourceHint: string | undefined): Findin
 
       const { drop, reasons } = computeConfidenceDrop(fullText, start, end, match);
       const adjustedConfidence = Math.max(0.1, rule.confidence - drop);
-      const adjustedReason = reasons.length > 0
-        ? `${rule.reason} (confidence reduced: ${reasons.join(', ')})`
-        : rule.reason;
+      const adjustedReason =
+        reasons.length > 0
+          ? `${rule.reason} (confidence reduced: ${reasons.join(', ')})`
+          : rule.reason;
       // Severity reflects the adjusted confidence so block-mode + OS
       // notifications treat a dropped finding the same as a legitimately
       // medium one.
-      const severity: SecuritySeverity = adjustedConfidence >= 0.85
-        ? 'high'
-        : adjustedConfidence >= 0.6
-          ? 'medium'
-          : 'low';
+      const severity: SecuritySeverity =
+        adjustedConfidence >= 0.85 ? 'high' : adjustedConfidence >= 0.6 ? 'medium' : 'low';
 
       findings.push({
         detectorId: rule.id,
@@ -366,10 +472,37 @@ interface InjectionRule {
 }
 
 const INJECTION_RULES: InjectionRule[] = [
-  { id: 'unicode-tag-chars', title: 'Hidden unicode tag characters', reason: 'U+E0000..U+E007F are used for hidden prompt injection', confidence: 0.95, regex: UNICODE_TAG_REGEX, alwaysOn: true },
-  { id: 'ignore-instructions', title: 'Instruction override', reason: '"Ignore previous/all/above instructions" is a canonical injection phrase', confidence: 0.55, regex: /\bignore\s+(?:(?:all|the|any|every|my|your)\s+)?(?:previous|prior|above|earlier|preceding|former)?\s*(?:instructions?|prompts?|directives?|rules?)\b/gi },
-  { id: 'jailbreak-persona',   title: 'Jailbreak persona request', reason: 'Classic DAN / developer-mode / unrestricted impersonation', confidence: 0.7,  regex: /\byou\s+are\s+(now\s+)?(dan|in\s+developer\s+mode|jailbroken|unrestricted|gpt[- ]?4\s+with\s+no|without\s+any\s+restrictions?)\b/gi },
-  { id: 'role-impersonation',  title: 'Role impersonation marker', reason: 'A system/role marker appears inside non-system content', confidence: 0.65, regex: /(^|\n)\s*(SYSTEM:|<\|im_start\|>\s*system|<system>|\[INST\])/gm },
+  {
+    id: 'unicode-tag-chars',
+    title: 'Hidden unicode tag characters',
+    reason: 'U+E0000..U+E007F are used for hidden prompt injection',
+    confidence: 0.95,
+    regex: UNICODE_TAG_REGEX,
+    alwaysOn: true,
+  },
+  {
+    id: 'ignore-instructions',
+    title: 'Instruction override',
+    reason: '"Ignore previous/all/above instructions" is a canonical injection phrase',
+    confidence: 0.55,
+    regex:
+      /\bignore\s+(?:(?:all|the|any|every|my|your)\s+)?(?:previous|prior|above|earlier|preceding|former)?\s*(?:instructions?|prompts?|directives?|rules?)\b/gi,
+  },
+  {
+    id: 'jailbreak-persona',
+    title: 'Jailbreak persona request',
+    reason: 'Classic DAN / developer-mode / unrestricted impersonation',
+    confidence: 0.7,
+    regex:
+      /\byou\s+are\s+(now\s+)?(dan|in\s+developer\s+mode|jailbroken|unrestricted|gpt[- ]?4\s+with\s+no|without\s+any\s+restrictions?)\b/gi,
+  },
+  {
+    id: 'role-impersonation',
+    title: 'Role impersonation marker',
+    reason: 'A system/role marker appears inside non-system content',
+    confidence: 0.65,
+    regex: /(^|\n)\s*(SYSTEM:|<\|im_start\|>\s*system|<system>|\[INST\])/gm,
+  },
 ];
 
 function scanInjectionIn(
@@ -391,14 +524,12 @@ function scanInjectionIn(
 
       const { drop, reasons } = computeConfidenceDrop(fullText, start, end, match);
       const adjustedConfidence = Math.max(0.1, rule.confidence - drop);
-      const adjustedReason = reasons.length > 0
-        ? `${rule.reason} (confidence reduced: ${reasons.join(', ')})`
-        : rule.reason;
-      const severity: SecuritySeverity = adjustedConfidence >= 0.9
-        ? 'high'
-        : adjustedConfidence >= 0.6
-          ? 'medium'
-          : 'low';
+      const adjustedReason =
+        reasons.length > 0
+          ? `${rule.reason} (confidence reduced: ${reasons.join(', ')})`
+          : rule.reason;
+      const severity: SecuritySeverity =
+        adjustedConfidence >= 0.9 ? 'high' : adjustedConfidence >= 0.6 ? 'medium' : 'low';
 
       findings.push({
         detectorId: rule.id,
@@ -410,7 +541,12 @@ function scanInjectionIn(
         matchMask: maskSecret(match),
         matchHash: hashText(match.toLowerCase()),
         contextHash: contextHashOf(fullText, start, end),
-        snippet: buildSnippet({ fullText, matchStart: start, matchEnd: end, kind: 'prompt_injection' }),
+        snippet: buildSnippet({
+          fullText,
+          matchStart: start,
+          matchEnd: end,
+          kind: 'prompt_injection',
+        }),
         sourceHint,
         provenance: classifyProvenance('prompt_injection', sourceHint),
       });
@@ -431,21 +567,126 @@ interface BashRule {
 }
 
 const BASH_RULES: BashRule[] = [
-  { id: 'curl-pipe-shell',     title: 'Remote execution via piped curl|bash', reason: 'Piping a downloaded script straight into a shell is a canonical RCE pattern', confidence: 0.95, severity: 'high',   regex: /\b(curl|wget|fetch)\s+[^\n|]*\|\s*(bash|sh|zsh|python3?|node|perl|ruby)\b/g },
-  { id: 'eval-curl',           title: 'eval of remote fetch',                reason: 'eval "$(curl ...)" executes downloaded output without inspection',                confidence: 0.9,  severity: 'high',   regex: /\beval\s+["']?\$\(\s*curl\b/g },
-  { id: 'reverse-shell-devtcp', title: 'Reverse shell via /dev/tcp',          reason: '/dev/tcp is used to open a raw TCP connection from bash',                          confidence: 0.9,  severity: 'high',   regex: /\/dev\/tcp\/[0-9a-zA-Z.\-]+\/[0-9]+/g },
-  { id: 'reverse-shell-bashi', title: 'Interactive shell redirected off-host', reason: 'bash -i >& ... /dev/tcp is a classic reverse shell',                              confidence: 0.9,  severity: 'high',   regex: /\bbash\s+-i\s+>&\s+/g },
-  { id: 'netcat-listen',       title: 'Netcat with listen/exec flag',        reason: 'nc -e or nc -l exposes a shell over the network',                                 confidence: 0.85, severity: 'high',   regex: /\bnc(at)?\s+(-[a-zA-Z]*[el][a-zA-Z]*\s+|\S+\s+\S+\s+-[a-zA-Z]*e\b)/g },
-  { id: 'rm-rf-root',          title: 'Recursive delete of system path',     reason: 'rm -rf applied to root, $HOME, or a disk mountpoint',                              confidence: 0.9,  severity: 'high',   regex: /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(\/\s*$|\/\s|~\s*$|~\s|\$HOME\b)/g },
-  { id: 'ssh-authorized-keys', title: 'Write to ~/.ssh/authorized_keys',     reason: 'Writing an SSH key here installs a backdoor login',                               confidence: 0.95, severity: 'high',   regex: />>?\s*~?\/?\.ssh\/authorized_keys/g },
-  { id: 'aws-credentials-write', title: 'Write to ~/.aws/credentials',       reason: 'Overwriting AWS credentials can exfiltrate via subsequent API calls',             confidence: 0.9,  severity: 'high',   regex: />>?\s*~?\/?\.aws\/credentials/g },
-  { id: 'cron-install',        title: 'Write to system cron',                reason: '/etc/cron* is a persistence mechanism',                                            confidence: 0.85, severity: 'high',   regex: />>?\s*\/etc\/cron(\.(d|hourly|daily|weekly|monthly)\/[^\s]+|tab)/g },
-  { id: 'launch-daemon',       title: 'Write to macOS LaunchAgents',         reason: 'LaunchAgents / LaunchDaemons are used for persistence on macOS',                   confidence: 0.85, severity: 'high',   regex: />>?\s*~?\/?(Library)?\/?Launch(Agents|Daemons)\//g },
-  { id: 'base64-decode-exec',  title: 'Base64 decode piped to shell',        reason: 'base64 -d | sh conceals the command being run',                                   confidence: 0.9,  severity: 'high',   regex: /\bbase64\s+(-d|--decode)\s*\|\s*(bash|sh|zsh)\b/g },
-  { id: 'curl-exfil-post',     title: 'Exfiltration-style curl POST',        reason: 'curl -X POST with --data-binary @ sends local file content to a remote host',     confidence: 0.75, severity: 'medium', regex: /\bcurl\b[^\n]*\s-X\s*POST[^\n]*\s(--data(-binary)?|-d)\s+@\S+/g },
-  { id: 'curl-token-header',   title: 'curl carrying a token env var',       reason: 'Token/key/secret env vars embedded in curl args often indicate credential exfil',  confidence: 0.7,  severity: 'medium', regex: /\bcurl\b[^\n]*\$\{?\w*(TOKEN|KEY|SECRET|PASSWORD)\w*\}?/g },
-  { id: 'history-wipe',        title: 'Shell history wipe',                  reason: 'history -c + unset HISTFILE removes forensic trail',                               confidence: 0.85, severity: 'medium', regex: /\bhistory\s+-c\b|\bunset\s+HISTFILE\b/g },
-  { id: 'chmod-world-writable', title: 'World-writable root',                reason: 'chmod 777 / grants universal access to the filesystem',                            confidence: 0.9,  severity: 'high',   regex: /\bchmod\s+(-R\s+)?0?777\s+\//g },
+  {
+    id: 'curl-pipe-shell',
+    title: 'Remote execution via piped curl|bash',
+    reason: 'Piping a downloaded script straight into a shell is a canonical RCE pattern',
+    confidence: 0.95,
+    severity: 'high',
+    regex: /\b(curl|wget|fetch)\s+[^\n|]*\|\s*(bash|sh|zsh|python3?|node|perl|ruby)\b/g,
+  },
+  {
+    id: 'eval-curl',
+    title: 'eval of remote fetch',
+    reason: 'eval "$(curl ...)" executes downloaded output without inspection',
+    confidence: 0.9,
+    severity: 'high',
+    regex: /\beval\s+["']?\$\(\s*curl\b/g,
+  },
+  {
+    id: 'reverse-shell-devtcp',
+    title: 'Reverse shell via /dev/tcp',
+    reason: '/dev/tcp is used to open a raw TCP connection from bash',
+    confidence: 0.9,
+    severity: 'high',
+    regex: /\/dev\/tcp\/[0-9a-zA-Z.-]+\/[0-9]+/g,
+  },
+  {
+    id: 'reverse-shell-bashi',
+    title: 'Interactive shell redirected off-host',
+    reason: 'bash -i >& ... /dev/tcp is a classic reverse shell',
+    confidence: 0.9,
+    severity: 'high',
+    regex: /\bbash\s+-i\s+>&\s+/g,
+  },
+  {
+    id: 'netcat-listen',
+    title: 'Netcat with listen/exec flag',
+    reason: 'nc -e or nc -l exposes a shell over the network',
+    confidence: 0.85,
+    severity: 'high',
+    regex: /\bnc(at)?\s+(-[a-zA-Z]*[el][a-zA-Z]*\s+|\S+\s+\S+\s+-[a-zA-Z]*e\b)/g,
+  },
+  {
+    id: 'rm-rf-root',
+    title: 'Recursive delete of system path',
+    reason: 'rm -rf applied to root, $HOME, or a disk mountpoint',
+    confidence: 0.9,
+    severity: 'high',
+    regex: /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(\/\s*$|\/\s|~\s*$|~\s|\$HOME\b)/g,
+  },
+  {
+    id: 'ssh-authorized-keys',
+    title: 'Write to ~/.ssh/authorized_keys',
+    reason: 'Writing an SSH key here installs a backdoor login',
+    confidence: 0.95,
+    severity: 'high',
+    regex: />>?\s*~?\/?\.ssh\/authorized_keys/g,
+  },
+  {
+    id: 'aws-credentials-write',
+    title: 'Write to ~/.aws/credentials',
+    reason: 'Overwriting AWS credentials can exfiltrate via subsequent API calls',
+    confidence: 0.9,
+    severity: 'high',
+    regex: />>?\s*~?\/?\.aws\/credentials/g,
+  },
+  {
+    id: 'cron-install',
+    title: 'Write to system cron',
+    reason: '/etc/cron* is a persistence mechanism',
+    confidence: 0.85,
+    severity: 'high',
+    regex: />>?\s*\/etc\/cron(\.(d|hourly|daily|weekly|monthly)\/[^\s]+|tab)/g,
+  },
+  {
+    id: 'launch-daemon',
+    title: 'Write to macOS LaunchAgents',
+    reason: 'LaunchAgents / LaunchDaemons are used for persistence on macOS',
+    confidence: 0.85,
+    severity: 'high',
+    regex: />>?\s*~?\/?(Library)?\/?Launch(Agents|Daemons)\//g,
+  },
+  {
+    id: 'base64-decode-exec',
+    title: 'Base64 decode piped to shell',
+    reason: 'base64 -d | sh conceals the command being run',
+    confidence: 0.9,
+    severity: 'high',
+    regex: /\bbase64\s+(-d|--decode)\s*\|\s*(bash|sh|zsh)\b/g,
+  },
+  {
+    id: 'curl-exfil-post',
+    title: 'Exfiltration-style curl POST',
+    reason: 'curl -X POST with --data-binary @ sends local file content to a remote host',
+    confidence: 0.75,
+    severity: 'medium',
+    regex: /\bcurl\b[^\n]*\s-X\s*POST[^\n]*\s(--data(-binary)?|-d)\s+@\S+/g,
+  },
+  {
+    id: 'curl-token-header',
+    title: 'curl carrying a token env var',
+    reason: 'Token/key/secret env vars embedded in curl args often indicate credential exfil',
+    confidence: 0.7,
+    severity: 'medium',
+    regex: /\bcurl\b[^\n]*\$\{?\w*(TOKEN|KEY|SECRET|PASSWORD)\w*\}?/g,
+  },
+  {
+    id: 'history-wipe',
+    title: 'Shell history wipe',
+    reason: 'history -c + unset HISTFILE removes forensic trail',
+    confidence: 0.85,
+    severity: 'medium',
+    regex: /\bhistory\s+-c\b|\bunset\s+HISTFILE\b/g,
+  },
+  {
+    id: 'chmod-world-writable',
+    title: 'World-writable root',
+    reason: 'chmod 777 / grants universal access to the filesystem',
+    confidence: 0.9,
+    severity: 'high',
+    regex: /\bchmod\s+(-R\s+)?0?777\s+\//g,
+  },
 ];
 
 function scanBash(command: string, sourceHint: string | undefined): Finding[] {
@@ -460,14 +701,18 @@ function scanBash(command: string, sourceHint: string | undefined): Finding[] {
 
       const { drop, reasons } = computeConfidenceDrop(command, start, end, match);
       const adjustedConfidence = Math.max(0.1, rule.confidence - drop);
-      const adjustedReason = reasons.length > 0
-        ? `${rule.reason} (confidence reduced: ${reasons.join(', ')})`
-        : rule.reason;
-      const severity: SecuritySeverity = adjustedConfidence >= 0.85
-        ? rule.severity
-        : adjustedConfidence >= 0.6
-          ? (rule.severity === 'high' ? 'medium' : 'low')
-          : 'low';
+      const adjustedReason =
+        reasons.length > 0
+          ? `${rule.reason} (confidence reduced: ${reasons.join(', ')})`
+          : rule.reason;
+      const severity: SecuritySeverity =
+        adjustedConfidence >= 0.85
+          ? rule.severity
+          : adjustedConfidence >= 0.6
+            ? rule.severity === 'high'
+              ? 'medium'
+              : 'low'
+            : 'low';
 
       findings.push({
         detectorId: rule.id,
@@ -479,7 +724,12 @@ function scanBash(command: string, sourceHint: string | undefined): Finding[] {
         matchMask: maskSecret(match),
         matchHash: hashText(match),
         contextHash: contextHashOf(command, start, end),
-        snippet: buildSnippet({ fullText: command, matchStart: start, matchEnd: end, kind: 'risky_bash' }),
+        snippet: buildSnippet({
+          fullText: command,
+          matchStart: start,
+          matchEnd: end,
+          kind: 'risky_bash',
+        }),
         sourceHint,
         provenance: classifyProvenance('risky_bash', sourceHint),
       });
@@ -504,12 +754,7 @@ const RISKY_WRITE_HIGH: RegExp[] = [
   /(^|\/)\.bash_profile$/,
 ];
 
-const RISKY_WRITE_MEDIUM: RegExp[] = [
-  /(^|\/)\.npmrc$/,
-  /(^|\/)\.netrc$/,
-  /\.pem$/,
-  /\.key$/,
-];
+const RISKY_WRITE_MEDIUM: RegExp[] = [/(^|\/)\.npmrc$/, /(^|\/)\.netrc$/, /\.pem$/, /\.key$/];
 
 function scanWriteTarget(filePath: string, sourceHint: string | undefined): Finding[] {
   const findings: Finding[] = [];
@@ -538,14 +783,26 @@ function scanWriteTarget(filePath: string, sourceHint: string | undefined): Find
 }
 
 const RISKY_WEBFETCH_HOSTS: Array<{ pattern: RegExp; reason: string }> = [
-  { pattern: /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/,         reason: 'Bare IP address host — unusual for a legitimate fetch' },
-  { pattern: /^[a-f0-9:]+$/i,                             reason: 'IPv6 literal host' },
-  { pattern: /^(www\.)?pastebin\.com$/i,                  reason: 'pastebin.com often hosts ephemeral dropped content' },
-  { pattern: /^transfer\.sh$/i,                           reason: 'transfer.sh is an ad-hoc file drop' },
-  { pattern: /^(www\.)?requestbin\.\w+$/i,                reason: 'requestbin.* collects HTTP bodies — common exfil target' },
-  { pattern: /^webhook\.site$/i,                          reason: 'webhook.site captures request bodies' },
-  { pattern: /\.ngrok-free\.app$/i,                       reason: 'ngrok free tunnels are often attacker-controlled' },
-  { pattern: /^discord\.com$/i,                           reason: 'discord.com webhooks are a common exfil endpoint when combined with /api/webhooks/' },
+  {
+    pattern: /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/,
+    reason: 'Bare IP address host — unusual for a legitimate fetch',
+  },
+  { pattern: /^[a-f0-9:]+$/i, reason: 'IPv6 literal host' },
+  {
+    pattern: /^(www\.)?pastebin\.com$/i,
+    reason: 'pastebin.com often hosts ephemeral dropped content',
+  },
+  { pattern: /^transfer\.sh$/i, reason: 'transfer.sh is an ad-hoc file drop' },
+  {
+    pattern: /^(www\.)?requestbin\.\w+$/i,
+    reason: 'requestbin.* collects HTTP bodies — common exfil target',
+  },
+  { pattern: /^webhook\.site$/i, reason: 'webhook.site captures request bodies' },
+  { pattern: /\.ngrok-free\.app$/i, reason: 'ngrok free tunnels are often attacker-controlled' },
+  {
+    pattern: /^discord\.com$/i,
+    reason: 'discord.com webhooks are a common exfil endpoint when combined with /api/webhooks/',
+  },
 ];
 
 function scanWebFetchUrl(url: string, sourceHint: string | undefined): Finding[] {
@@ -623,10 +880,7 @@ function findReadFilePath(
   return undefined;
 }
 
-export function scanRequestBody(
-  body: unknown,
-  options: DetectorOptions,
-): Finding[] {
+export function scanRequestBody(body: unknown, options: DetectorOptions): Finding[] {
   if (!body || typeof body !== 'object') return [];
   const findings: Finding[] = [];
   const obj = body as Record<string, unknown>;
@@ -646,7 +900,12 @@ export function scanRequestBody(
     scanText(sys, 'system');
   } else if (Array.isArray(sys)) {
     sys.forEach((b, i) => {
-      if (b && typeof b === 'object' && 'text' in b && typeof (b as { text: unknown }).text === 'string') {
+      if (
+        b &&
+        typeof b === 'object' &&
+        'text' in b &&
+        typeof (b as { text: unknown }).text === 'string'
+      ) {
         scanText((b as { text: string }).text, `system[${i}]`);
       }
     });
@@ -690,7 +949,11 @@ export function scanRequestBody(
             scanText(tc, baseHint);
           } else if (Array.isArray(tc)) {
             tc.forEach((sub, si) => {
-              if (sub && typeof sub === 'object' && (sub as Record<string, unknown>)['type'] === 'text') {
+              if (
+                sub &&
+                typeof sub === 'object' &&
+                (sub as Record<string, unknown>)['type'] === 'text'
+              ) {
                 const t = (sub as Record<string, unknown>)['text'];
                 // For array-form tool_result, keep the file path as the
                 // primary hint (the sub-index is usually noise) but fall

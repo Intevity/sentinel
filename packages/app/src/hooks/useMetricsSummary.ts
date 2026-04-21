@@ -56,7 +56,9 @@ export function useMetricsSummary(viewAccountId?: string): UseMetricsSummaryResu
     }
   }, [days, viewAccountId]);
 
-  useEffect(() => { void fetchSummary(); }, [fetchSummary]);
+  useEffect(() => {
+    void fetchSummary();
+  }, [fetchSummary]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -68,8 +70,14 @@ export function useMetricsSummary(viewAccountId?: string): UseMetricsSummaryResu
       // regardless of pin state — even a pinned view wants fresh data when
       // the currently active account's telemetry just landed.
       if (msg.type === 'metrics_updated') void fetchSummary();
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, [fetchSummary, viewAccountId]);
 
   return { summary, loading, error, days, setDays, refetch: fetchSummary };

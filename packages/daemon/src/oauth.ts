@@ -28,10 +28,11 @@ export const REFRESH_TOKEN_EXPIRED = 'REFRESH_TOKEN_EXPIRED';
  */
 let serverClosePromise: Promise<void> | null = null;
 
-const CLIENT_ID    = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const AUTH_URL     = 'https://claude.ai/oauth/authorize';
-const TOKEN_URL    = 'https://platform.claude.com/v1/oauth/token';
-const SCOPES       = 'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload org:create_api_key';
+const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const AUTH_URL = 'https://claude.ai/oauth/authorize';
+const TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
+const SCOPES =
+  'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload org:create_api_key';
 
 // ─── PKCE helpers ─────────────────────────────────────────────────────────────
 
@@ -56,10 +57,7 @@ const CALLBACK_PORT = 47285; // must match the port registered with the OAuth pr
  * Waits for any previous server to fully close first so there is never an
  * EADDRINUSE error when a new login starts immediately after a cancel.
  */
-async function startCallbackServer(
-  expectedState: string,
-  signal?: AbortSignal,
-): Promise<string> {
+async function startCallbackServer(expectedState: string, signal?: AbortSignal): Promise<string> {
   // Wait for the previous server to release the port (if any).
   if (serverClosePromise) {
     console.log('[OAuth] Waiting for previous callback server to close...');
@@ -68,7 +66,9 @@ async function startCallbackServer(
 
   return new Promise((resolve, reject) => {
     let closeResolve!: () => void;
-    serverClosePromise = new Promise<void>((r) => { closeResolve = r; });
+    serverClosePromise = new Promise<void>((r) => {
+      closeResolve = r;
+    });
 
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', `http://localhost:${CALLBACK_PORT}`);
@@ -80,11 +80,13 @@ async function startCallbackServer(
         return;
       }
 
-      const code  = url.searchParams.get('code');
+      const code = url.searchParams.get('code');
       const state = url.searchParams.get('state');
       const error = url.searchParams.get('error');
 
-      console.log(`[OAuth] Callback received — has_code: ${!!code}, state_match: ${state === expectedState}, error: ${error ?? 'none'}`);
+      console.log(
+        `[OAuth] Callback received — has_code: ${!!code}, state_match: ${state === expectedState}, error: ${error ?? 'none'}`,
+      );
 
       // Hard failure: the provider returned an explicit error.
       if (error) {
@@ -97,7 +99,10 @@ async function startCallbackServer(
 
       // No code yet — could be a browser pre-check or prefetch; keep waiting.
       if (!code) {
-        console.warn('[OAuth] Callback request had no code — ignoring (browser pre-check?). URL:', req.url);
+        console.warn(
+          '[OAuth] Callback request had no code — ignoring (browser pre-check?). URL:',
+          req.url,
+        );
         res.writeHead(204);
         res.end();
         return;
@@ -107,7 +112,9 @@ async function startCallbackServer(
       // the real redirect arrives.  Log it and keep the server open so the correct
       // callback can still be processed.
       if (state !== expectedState) {
-        console.warn(`[OAuth] State mismatch — ignoring (stale request?). Expected: ${expectedState}, Got: ${state}`);
+        console.warn(
+          `[OAuth] State mismatch — ignoring (stale request?). Expected: ${expectedState}, Got: ${state}`,
+        );
         res.writeHead(204);
         res.end();
         return;
@@ -145,13 +152,18 @@ async function startCallbackServer(
     signal?.addEventListener('abort', onAbort, { once: true });
 
     // Timeout after 5 minutes
-    const timer = setTimeout(() => {
-      server.close();
-      reject(new Error('OAuth login timed out (5 minutes)'));
-    }, 5 * 60 * 1000);
+    const timer = setTimeout(
+      () => {
+        server.close();
+        reject(new Error('OAuth login timed out (5 minutes)'));
+      },
+      5 * 60 * 1000,
+    );
 
     server.listen(CALLBACK_PORT, () => {
-      console.log(`[OAuth] Callback server listening on http://localhost:${CALLBACK_PORT}/callback`);
+      console.log(
+        `[OAuth] Callback server listening on http://localhost:${CALLBACK_PORT}/callback`,
+      );
     });
 
     server.on('error', (err) => {
@@ -164,11 +176,11 @@ async function startCallbackServer(
 // ─── Token exchange ────────────────────────────────────────────────────────────
 
 interface TokenResponse {
-  access_token:  string;
+  access_token: string;
   refresh_token: string;
-  expires_in:    number;
-  scope?:        string;
-  token_type:    string;
+  expires_in: number;
+  scope?: string;
+  token_type: string;
 }
 
 async function exchangeCode(
@@ -178,10 +190,10 @@ async function exchangeCode(
   state: string,
 ): Promise<TokenResponse> {
   const body = {
-    grant_type:    'authorization_code',
+    grant_type: 'authorization_code',
     code,
-    redirect_uri:  redirectUri,
-    client_id:     CLIENT_ID,
+    redirect_uri: redirectUri,
+    client_id: CLIENT_ID,
     code_verifier: verifier,
     state,
   };
@@ -211,9 +223,9 @@ async function exchangeCode(
  */
 export async function refreshAccessToken(refreshToken: string): Promise<TokenResponse> {
   const body = {
-    grant_type:    'refresh_token',
+    grant_type: 'refresh_token',
     refresh_token: refreshToken,
-    client_id:     CLIENT_ID,
+    client_id: CLIENT_ID,
   };
 
   console.log(`[OAuth] Token refresh → POST ${TOKEN_URL}`);
@@ -240,41 +252,47 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRes
 interface OAuthProfile {
   // Field names confirmed from Claude Code CLI source (account.uuid, account.email, etc.)
   account?: {
-    uuid?:            string;   // was incorrectly 'account_uuid'
-    email?:           string;   // was incorrectly 'email_address'
-    display_name?:    string;
-    has_claude_max?:  boolean;  // account-level Max flag (individual seat, not org-level)
+    uuid?: string; // was incorrectly 'account_uuid'
+    email?: string; // was incorrectly 'email_address'
+    display_name?: string;
+    has_claude_max?: boolean; // account-level Max flag (individual seat, not org-level)
   };
   organization?: {
-    uuid?:                    string;   // was incorrectly 'organization_uuid'
-    organization_type?:       string;
-    rate_limit_tier?:         string;
+    uuid?: string; // was incorrectly 'organization_uuid'
+    organization_type?: string;
+    rate_limit_tier?: string;
     has_extra_usage_enabled?: boolean;
-    billing_type?:            string;
-    name?:                    string;
-    organization_role?:       string;
-    workspace_role?:          string | null;
+    billing_type?: string;
+    name?: string;
+    organization_role?: string;
+    workspace_role?: string | null;
   };
 }
 
 interface ProfileResult {
-  email:                string;
-  displayName:          string;
-  accountUuid:          string;
-  subscriptionType:     string;
-  rateLimitTier:        string;
-  orgUuid:              string;
-  orgName:              string;
-  organizationRole:     string;
-  workspaceRole:        string | null;
+  email: string;
+  displayName: string;
+  accountUuid: string;
+  subscriptionType: string;
+  rateLimitTier: string;
+  orgUuid: string;
+  orgName: string;
+  organizationRole: string;
+  workspaceRole: string | null;
   hasExtraUsageEnabled: boolean;
 }
 
 async function fetchProfile(accessToken: string): Promise<ProfileResult> {
   const empty: ProfileResult = {
-    email: '', displayName: '', accountUuid: '',
-    subscriptionType: '', rateLimitTier: '',
-    orgUuid: '', orgName: '', organizationRole: 'user', workspaceRole: null,
+    email: '',
+    displayName: '',
+    accountUuid: '',
+    subscriptionType: '',
+    rateLimitTier: '',
+    orgUuid: '',
+    orgName: '',
+    organizationRole: 'user',
+    workspaceRole: null,
     hasExtraUsageEnabled: false,
   };
 
@@ -290,21 +308,26 @@ async function fetchProfile(accessToken: string): Promise<ProfileResult> {
 
     const orgType = data.organization?.organization_type ?? '';
     const subscriptionType =
-      orgType === 'claude_max'        ? 'max' :
-      orgType === 'claude_pro'        ? 'pro' :
-      orgType === 'claude_enterprise' ? 'enterprise' :
-      orgType === 'claude_team'       ? 'team' : '';
+      orgType === 'claude_max'
+        ? 'max'
+        : orgType === 'claude_pro'
+          ? 'pro'
+          : orgType === 'claude_enterprise'
+            ? 'enterprise'
+            : orgType === 'claude_team'
+              ? 'team'
+              : '';
 
     return {
-      email:                data.account?.email          ?? '',
-      displayName:          data.account?.display_name   ?? '',
-      accountUuid:          data.account?.uuid           ?? '',
+      email: data.account?.email ?? '',
+      displayName: data.account?.display_name ?? '',
+      accountUuid: data.account?.uuid ?? '',
       subscriptionType,
-      rateLimitTier:        data.organization?.rate_limit_tier        ?? '',
-      orgUuid:              data.organization?.uuid                   ?? '',
-      orgName:              data.organization?.name                   ?? '',
-      organizationRole:     data.organization?.organization_role      ?? 'user',
-      workspaceRole:        data.organization?.workspace_role         ?? null,
+      rateLimitTier: data.organization?.rate_limit_tier ?? '',
+      orgUuid: data.organization?.uuid ?? '',
+      orgName: data.organization?.name ?? '',
+      organizationRole: data.organization?.organization_role ?? 'user',
+      workspaceRole: data.organization?.workspace_role ?? null,
       // Use account.has_claude_max (user-level) rather than organization.has_extra_usage_enabled
       // (org-level). The org flag is true for any team org that has Max members, so it cannot
       // reliably identify whether THIS specific user has a Max seat.
@@ -319,9 +342,11 @@ async function fetchProfile(accessToken: string): Promise<ProfileResult> {
 
 function openBrowser(url: string): void {
   const cmd =
-    process.platform === 'darwin' ? `open "${url}"` :
-    process.platform === 'win32'  ? `start "" "${url}"` :
-    `xdg-open "${url}"`;
+    process.platform === 'darwin'
+      ? `open "${url}"`
+      : process.platform === 'win32'
+        ? `start "" "${url}"`
+        : `xdg-open "${url}"`;
   exec(cmd, (err) => {
     if (err) console.error('[OAuth] Failed to open browser:', err.message);
   });
@@ -331,14 +356,14 @@ function openBrowser(url: string): void {
 
 export interface OAuthResult {
   credentials: ClaudeCodeCredentials;
-  email:        string;
-  displayName:  string;
-  accountUuid:  string;
-  orgUuid:      string;
-  orgName:      string;
-  subscriptionType:     string;
-  organizationRole:     string;
-  workspaceRole:        string | null;
+  email: string;
+  displayName: string;
+  accountUuid: string;
+  orgUuid: string;
+  orgName: string;
+  subscriptionType: string;
+  organizationRole: string;
+  workspaceRole: string | null;
   hasExtraUsageEnabled: boolean;
   /** URL that was opened in the browser — useful for manual fallback display */
   authUrl: string;
@@ -377,24 +402,23 @@ export async function startOAuthLogin(
   // Backward-compatible overload: older callers pass the AbortSignal
   // directly. The modern callsite passes an options object with both
   // signal and the authorize-URL handler.
-  const opts: OAuthLoginOptions = signalOrOpts instanceof AbortSignal
-    ? { signal: signalOrOpts }
-    : (signalOrOpts ?? {});
+  const opts: OAuthLoginOptions =
+    signalOrOpts instanceof AbortSignal ? { signal: signalOrOpts } : (signalOrOpts ?? {});
 
-  const verifier  = generateVerifier();
+  const verifier = generateVerifier();
   const challenge = deriveChallenge(verifier);
-  const state     = generateState();
+  const state = generateState();
 
   const redirectUri = `http://localhost:${CALLBACK_PORT}/callback`;
   const codePromise = startCallbackServer(state, opts.signal);
 
   // Build the authorization URL
   const params = new URLSearchParams({
-    code:           'true',
-    client_id:      CLIENT_ID,
-    response_type:  'code',
-    redirect_uri:   redirectUri,
-    scope:          SCOPES,
+    code: 'true',
+    client_id: CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: redirectUri,
+    scope: SCOPES,
     code_challenge: challenge,
     code_challenge_method: 'S256',
     state,
@@ -422,24 +446,24 @@ export async function startOAuthLogin(
   const profile = await fetchProfile(tokens.access_token);
 
   const credentials: ClaudeCodeCredentials = {
-    accessToken:  tokens.access_token,
+    accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
-    expiresAt:    Date.now() + (tokens.expires_in ?? 3600) * 1000,
-    scopes:       (tokens.scope ?? SCOPES).split(' ').filter(Boolean),
+    expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+    scopes: (tokens.scope ?? SCOPES).split(' ').filter(Boolean),
   };
   if (profile.subscriptionType) credentials.subscriptionType = profile.subscriptionType;
-  if (profile.rateLimitTier)    credentials.rateLimitTier    = profile.rateLimitTier;
+  if (profile.rateLimitTier) credentials.rateLimitTier = profile.rateLimitTier;
 
   return {
     credentials,
-    email:                profile.email,
-    displayName:          profile.displayName,
-    accountUuid:          profile.accountUuid,
-    orgUuid:              profile.orgUuid,
-    orgName:              profile.orgName,
-    subscriptionType:     profile.subscriptionType,
-    organizationRole:     profile.organizationRole,
-    workspaceRole:        profile.workspaceRole,
+    email: profile.email,
+    displayName: profile.displayName,
+    accountUuid: profile.accountUuid,
+    orgUuid: profile.orgUuid,
+    orgName: profile.orgName,
+    subscriptionType: profile.subscriptionType,
+    organizationRole: profile.organizationRole,
+    workspaceRole: profile.workspaceRole,
     hasExtraUsageEnabled: profile.hasExtraUsageEnabled,
     authUrl,
   };

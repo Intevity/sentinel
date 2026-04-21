@@ -36,9 +36,7 @@ export interface PoolAlertEvaluatorDeps extends AlertEvaluatorDeps {
  */
 export function startAlertEvaluator(deps: AlertEvaluatorDeps): void {
   const handler = (accountId: string, _windows: RateLimitWindow[]): void => {
-    const session = deps.rateLimitStore
-      .getAll(accountId)
-      .find((w) => w.name === SESSION_WINDOW);
+    const session = deps.rateLimitStore.getAll(accountId).find((w) => w.name === SESSION_WINDOW);
     if (!session || session.utilization == null) return;
 
     const alerts = listAlerts(deps.db, { scope: 'account', accountId }).filter((a) => a.enabled);
@@ -73,7 +71,9 @@ export function startAlertEvaluator(deps: AlertEvaluatorDeps): void {
       });
 
       markAlertTriggered(deps.db, alert.id, resetTs);
-      console.log(`[Alerts] Fired alert ${alert.id} (${alert.thresholdPct}%) on ${accountId} at ${utilPct.toFixed(1)}%`);
+      console.log(
+        `[Alerts] Fired alert ${alert.id} (${alert.thresholdPct}%) on ${accountId} at ${utilPct.toFixed(1)}%`,
+      );
     }
   };
 
@@ -153,7 +153,9 @@ export function evaluatePoolOnce(deps: PoolAlertEvaluatorDeps): void {
     });
 
     markAlertTriggered(deps.db, alert.id, snapshot.resetTs);
-    console.log(`[Alerts] Fired pool alert ${alert.id} (${alert.thresholdPct}%) at ${snapshot.utilPct.toFixed(1)}%`);
+    console.log(
+      `[Alerts] Fired pool alert ${alert.id} (${alert.thresholdPct}%) at ${snapshot.utilPct.toFixed(1)}%`,
+    );
   }
 }
 
@@ -192,7 +194,12 @@ export function startPoolAlertEvaluator(deps: PoolAlertEvaluatorDeps): void {
 export function primeNewAlertAgainstCurrentWindow(
   db: Database,
   rateLimitStore: RateLimitStore,
-  alert: { id: number; scope: 'account' | 'pool' | 'budget'; accountId: string | null; thresholdPct: number },
+  alert: {
+    id: number;
+    scope: 'account' | 'pool' | 'budget';
+    accountId: string | null;
+    thresholdPct: number;
+  },
   getSettings?: () => Settings,
 ): void {
   // Budget-scope alerts have their own priming path on spend-tracker init;
@@ -210,9 +217,7 @@ export function primeNewAlertAgainstCurrentWindow(
     return;
   }
   if (!alert.accountId) return;
-  const session = rateLimitStore
-    .getAll(alert.accountId)
-    .find((w) => w.name === SESSION_WINDOW);
+  const session = rateLimitStore.getAll(alert.accountId).find((w) => w.name === SESSION_WINDOW);
   if (!session || session.utilization == null) return;
   const utilPct = session.utilization * 100;
   if (utilPct < alert.thresholdPct) return;

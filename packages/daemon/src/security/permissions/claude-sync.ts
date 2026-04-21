@@ -24,18 +24,10 @@ import { promises as fs, type FSWatcher, watch } from 'fs';
 import { homedir } from 'os';
 import { join, dirname, basename } from 'path';
 import { createHash, randomBytes } from 'crypto';
-import type {
-  ClaudeSyncStatus,
-  PermissionDecision,
-  PermissionRule,
-} from '@claude-sentinel/shared';
+import type { ClaudeSyncStatus, PermissionDecision, PermissionRule } from '@claude-sentinel/shared';
 import type Database from 'better-sqlite3';
 import type { IpcServer } from '../../ipc.js';
-import {
-  listPermissionRules,
-  upsertPermissionRule,
-  deletePermissionRule,
-} from '../../db.js';
+import { listPermissionRules, upsertPermissionRule, deletePermissionRule } from '../../db.js';
 import { parseRule } from './parser.js';
 
 const SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
@@ -190,7 +182,12 @@ export function createClaudeSyncEngine(deps: CreateClaudeSyncDeps): ClaudeSyncEn
       const perms = extractPermissions(raw);
       lastSeenHash = canonHash(perms);
 
-      const incoming: Array<{ raw: string; decision: PermissionDecision; tool: string; pattern: string | null }> = [];
+      const incoming: Array<{
+        raw: string;
+        decision: PermissionDecision;
+        tool: string;
+        pattern: string | null;
+      }> = [];
       for (const e of perms.allow) {
         const r = ruleFromEntry(e, 'allow');
         if (r) incoming.push(r);
@@ -266,8 +263,8 @@ export function createClaudeSyncEngine(deps: CreateClaudeSyncDeps): ClaudeSyncEn
       const rules = listPermissionRules(deps.db).filter((r) => r.enabled);
       const perms: PermissionsBlock = {
         allow: rules.filter((r) => r.decision === 'allow').map((r) => r.raw),
-        deny:  rules.filter((r) => r.decision === 'deny').map((r) => r.raw),
-        ask:   rules.filter((r) => r.decision === 'ask').map((r) => r.raw),
+        deny: rules.filter((r) => r.decision === 'deny').map((r) => r.raw),
+        ask: rules.filter((r) => r.decision === 'ask').map((r) => r.raw),
       };
       const nextHash = canonHash(perms);
       if (nextHash === lastSeenHash) {
@@ -347,7 +344,11 @@ export function createClaudeSyncEngine(deps: CreateClaudeSyncDeps): ClaudeSyncEn
       clearTimeout(debounceTimer);
       debounceTimer = null;
     }
-    try { watcher?.close(); } catch { /* already closed */ }
+    try {
+      watcher?.close();
+    } catch {
+      /* already closed */
+    }
     watcher = null;
     active = false;
     broadcastStatus();

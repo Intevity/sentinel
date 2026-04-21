@@ -37,7 +37,9 @@ export function useAutoModeStatus(): AutoModeStatus {
     onDaemonMessage((msg) => {
       if (msg.type === 'permissions_status') setStatus(msg.status);
     })
-      .then((fn) => { unlisten = fn; })
+      .then((fn) => {
+        unlisten = fn;
+      })
       .catch(() => undefined);
 
     return () => {

@@ -7,12 +7,21 @@ import { RateLimitStore } from './rate-limit-store.js';
 import { TokenRotator } from './token-rotator.js';
 import * as accounts from './accounts.js';
 
-const TEST_DB = () => join(tmpdir(), `sentinel-rotator-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+const TEST_DB = () =>
+  join(tmpdir(), `sentinel-rotator-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 
 function seed(db: ReturnType<typeof getDb>, id: string, email: string): void {
   upsertAccount(db, {
-    id, accountUuid: id, email, displayName: email, orgUuid: '', orgName: '',
-    planType: 'max', isActive: false, createdAt: Date.now(), color: null,
+    id,
+    accountUuid: id,
+    email,
+    displayName: email,
+    orgUuid: '',
+    orgName: '',
+    planType: 'max',
+    isActive: false,
+    createdAt: Date.now(),
+    color: null,
   });
 }
 
@@ -108,7 +117,9 @@ describe('TokenRotator', () => {
     const store = new RateLimitStore();
     const rotator = new TokenRotator(db, store, { value: 'a' });
     // Advance cursor to end.
-    rotator.pick(); rotator.pick(); rotator.pick();
+    rotator.pick();
+    rotator.pick();
+    rotator.pick();
     // Remove two accounts.
     db.prepare('DELETE FROM accounts WHERE id = ?').run('b');
     db.prepare('DELETE FROM accounts WHERE id = ?').run('c');
@@ -123,7 +134,10 @@ describe('TokenRotator', () => {
     // Sentinel store doesn't have creds for this key.
     vi.spyOn(accounts, 'readSentinelCredentials').mockReturnValue(null);
     vi.spyOn(accounts, 'readActiveCredentials').mockReturnValue({
-      accessToken: 'active-tok', refreshToken: '', expiresAt: 0, scopes: [],
+      accessToken: 'active-tok',
+      refreshToken: '',
+      expiresAt: 0,
+      scopes: [],
     });
     const store = new RateLimitStore();
     const rotator = new TokenRotator(db, store, { value: 'active' });
@@ -259,7 +273,10 @@ describe('TokenRotator (earliest-reset strategy)', () => {
   beforeEach(() => {
     dbPath = TEST_DB();
     vi.spyOn(accounts, 'readSentinelCredentials').mockImplementation((key: string) => ({
-      accessToken: `tok-${key}`, refreshToken: '', expiresAt: 0, scopes: [],
+      accessToken: `tok-${key}`,
+      refreshToken: '',
+      expiresAt: 0,
+      scopes: [],
     }));
     vi.spyOn(accounts, 'readActiveCredentials').mockReturnValue(null);
   });
@@ -290,8 +307,14 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     const store = new RateLimitStore();
     // `a` resets later but has low utilization; `b` resets soonest.
     setResetAndUtil(store, 'a', 1_000_000, 0.1);
-    setResetAndUtil(store, 'b',   500_000, 0.9);
-    const rotator = new TokenRotator(db, store, { value: 'a' }, () => new Set(), () => 'earliest-reset');
+    setResetAndUtil(store, 'b', 500_000, 0.9);
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'a' },
+      () => new Set(),
+      () => 'earliest-reset',
+    );
     expect(rotator.pick()?.accountId).toBe('b');
   });
 
@@ -304,7 +327,13 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     setResetAndUtil(store, 'a', 3_000);
     setResetAndUtil(store, 'b', 1_000); // soonest
     setResetAndUtil(store, 'c', 2_000);
-    const rotator = new TokenRotator(db, store, { value: 'a' }, () => new Set(), () => 'earliest-reset');
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'a' },
+      () => new Set(),
+      () => 'earliest-reset',
+    );
     expect(rotator.pick()?.accountId).toBe('b');
     expect(rotator.pick()?.accountId).toBe('b');
     expect(rotator.pick()?.accountId).toBe('b');
@@ -317,7 +346,13 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     const store = new RateLimitStore();
     // `known` has a reset; `unknown` has no rate-limit data at all.
     setResetAndUtil(store, 'known', 10_000, 0.9);
-    const rotator = new TokenRotator(db, store, { value: 'known' }, () => new Set(), () => 'earliest-reset');
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'known' },
+      () => new Set(),
+      () => 'earliest-reset',
+    );
     expect(rotator.pick()?.accountId).toBe('known');
   });
 
@@ -333,32 +368,50 @@ describe('TokenRotator (earliest-reset strategy)', () => {
       'anthropic-ratelimit-unified-5h-reset': '100',
     });
     setResetAndUtil(store, 'ok', 9_999);
-    const rotator = new TokenRotator(db, store, { value: 'ok' }, () => new Set(), () => 'earliest-reset');
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'ok' },
+      () => new Set(),
+      () => 'earliest-reset',
+    );
     expect(rotator.pick()?.accountId).toBe('ok');
   });
 
   it('breaks reset ties by lower utilization', () => {
     const db = getDb(dbPath);
-    seed(db, 'hot',  'h@x');
+    seed(db, 'hot', 'h@x');
     seed(db, 'cold', 'c@x');
     const store = new RateLimitStore();
-    setResetAndUtil(store, 'hot',  500, 0.99);
-    setResetAndUtil(store, 'cold', 500, 0.10);
-    const rotator = new TokenRotator(db, store, { value: 'hot' }, () => new Set(), () => 'earliest-reset');
+    setResetAndUtil(store, 'hot', 500, 0.99);
+    setResetAndUtil(store, 'cold', 500, 0.1);
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'hot' },
+      () => new Set(),
+      () => 'earliest-reset',
+    );
     expect(rotator.pick()?.accountId).toBe('cold');
   });
 
   it('honours live strategy changes between picks', () => {
     const db = getDb(dbPath);
     seed(db, 'fresh', 'f@x');
-    seed(db, 'soon',  's@x');
+    seed(db, 'soon', 's@x');
     const store = new RateLimitStore();
     // `fresh` has lower utilization (balance wants it); `soon` resets earliest (earliest-reset wants it).
     setResetAndUtil(store, 'fresh', 9_000, 0.1);
-    setResetAndUtil(store, 'soon',  1_000, 0.8);
+    setResetAndUtil(store, 'soon', 1_000, 0.8);
 
     let strategy: 'balance' | 'earliest-reset' = 'balance';
-    const rotator = new TokenRotator(db, store, { value: 'fresh' }, () => new Set(), () => strategy);
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'fresh' },
+      () => new Set(),
+      () => strategy,
+    );
     expect(rotator.pick()?.accountId).toBe('fresh');
     strategy = 'earliest-reset';
     expect(rotator.pick()?.accountId).toBe('soon');
@@ -379,7 +432,13 @@ describe('TokenRotator (earliest-reset strategy)', () => {
       'anthropic-ratelimit-unified-5h-status': 'blocked',
       'anthropic-ratelimit-unified-5h-reset': '200',
     });
-    const rotator = new TokenRotator(db, store, { value: 'a' }, () => new Set(), () => 'earliest-reset');
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'a' },
+      () => new Set(),
+      () => 'earliest-reset',
+    );
     expect(rotator.pick()).toBeNull();
   });
 });
@@ -390,7 +449,10 @@ describe('TokenRotator overage gate', () => {
   beforeEach(() => {
     dbPath = TEST_DB();
     vi.spyOn(accounts, 'readSentinelCredentials').mockImplementation((key: string) => ({
-      accessToken: `tok-${key}`, refreshToken: '', expiresAt: 0, scopes: [],
+      accessToken: `tok-${key}`,
+      refreshToken: '',
+      expiresAt: 0,
+      scopes: [],
     }));
     vi.spyOn(accounts, 'readActiveCredentials').mockReturnValue(null);
   });
@@ -425,7 +487,7 @@ describe('TokenRotator overage gate', () => {
   it('prefers non-overage accounts even in earliest-reset when another pool member is saturated', () => {
     const db = getDb(dbPath);
     seed(db, 'fresh', 'f@x');
-    seed(db, 'hot',   'h@x');
+    seed(db, 'hot', 'h@x');
     const store = new RateLimitStore();
     // `hot` is saturated with overage allowed (would use overage), `fresh` has headroom.
     setSession(store, 'hot', 1.0, 500);
@@ -433,9 +495,12 @@ describe('TokenRotator overage gate', () => {
     setSession(store, 'fresh', 0.2, 9_000);
 
     const rotator = new TokenRotator(
-      db, store, { value: 'fresh' },
-      () => new Set(), () => 'earliest-reset',
-      () => new Set(['hot']),   // opted in — but shouldn't matter when fresh exists
+      db,
+      store,
+      { value: 'fresh' },
+      () => new Set(),
+      () => 'earliest-reset',
+      () => new Set(['hot']), // opted in — but shouldn't matter when fresh exists
     );
     // `hot` resets earlier (500 vs 9000) but would draw overage — must skip.
     expect(rotator.pick()?.accountId).toBe('fresh');
@@ -445,16 +510,19 @@ describe('TokenRotator overage gate', () => {
   it('skips a saturated account that is NOT in the overage allow-list', () => {
     const db = getDb(dbPath);
     seed(db, 'saturated', 's@x');
-    seed(db, 'spare',     'p@x');
+    seed(db, 'spare', 'p@x');
     const store = new RateLimitStore();
     setSession(store, 'saturated', 1.0);
     setOverage(store, 'saturated', { status: 'allowed' });
     setSession(store, 'spare', 0.5);
 
     const rotator = new TokenRotator(
-      db, store, { value: 'spare' },
-      () => new Set(), () => 'balance',
-      () => new Set(),  // no overage-allowed accounts
+      db,
+      store,
+      { value: 'spare' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(), // no overage-allowed accounts
     );
     expect(rotator.pick()?.accountId).toBe('spare');
     expect(rotator.pick()?.accountId).toBe('spare');
@@ -469,8 +537,11 @@ describe('TokenRotator overage gate', () => {
     setOverage(store, 'only', { status: 'allowed' });
 
     const rotator = new TokenRotator(
-      db, store, { value: 'only' },
-      () => new Set(), () => 'balance',
+      db,
+      store,
+      { value: 'only' },
+      () => new Set(),
+      () => 'balance',
       () => new Set(['only']),
     );
     expect(rotator.pick()?.accountId).toBe('only');
@@ -484,8 +555,11 @@ describe('TokenRotator overage gate', () => {
     setOverage(store, 'only', { status: 'allowed' });
 
     const rotator = new TokenRotator(
-      db, store, { value: 'only' },
-      () => new Set(), () => 'balance',
+      db,
+      store,
+      { value: 'only' },
+      () => new Set(),
+      () => 'balance',
       () => new Set(),
     );
     expect(rotator.pick()).toBeNull();
@@ -503,8 +577,11 @@ describe('TokenRotator overage gate', () => {
     setSession(store, 'spare', 0.5);
 
     const rotator = new TokenRotator(
-      db, store, { value: 'spare' },
-      () => new Set(), () => 'balance',
+      db,
+      store,
+      { value: 'spare' },
+      () => new Set(),
+      () => 'balance',
       () => new Set(),
     );
     expect(rotator.pick()?.accountId).toBe('spare');
@@ -522,9 +599,12 @@ describe('TokenRotator overage gate', () => {
     setOverage(store, 'exhausted', { status: 'disabled' });
 
     const rotator = new TokenRotator(
-      db, store, { value: 'exhausted' },
-      () => new Set(), () => 'balance',
-      () => new Set(),  // not opted in
+      db,
+      store,
+      { value: 'exhausted' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(), // not opted in
     );
     // `exhausted` has overage disabled so isn't "will use overage" — the
     // rotator keeps it in the fresh tier and picks it (the proxy will then
@@ -537,13 +617,17 @@ describe('TokenRotator overage gate', () => {
     seed(db, 'paused', 'p@x');
     seed(db, 'active', 'a@x');
     const store = new RateLimitStore();
-    setSession(store, 'paused', 0.0);   // low util — would be preferred
+    setSession(store, 'paused', 0.0); // low util — would be preferred
     setSession(store, 'active', 0.5);
 
     const rotator = new TokenRotator(
-      db, store, { value: 'active' },
-      () => new Set(), () => 'balance',
-      () => new Set(), () => new Set(['paused']),
+      db,
+      store,
+      { value: 'active' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(),
+      () => new Set(['paused']),
     );
     expect(rotator.pick()?.accountId).toBe('active');
     expect(rotator.pick()?.accountId).toBe('active');
@@ -558,9 +642,13 @@ describe('TokenRotator overage gate', () => {
     setSession(store, 'b', 0.2);
 
     const rotator = new TokenRotator(
-      db, store, { value: 'a' },
-      () => new Set(), () => 'balance',
-      () => new Set(), () => new Set(['a', 'b']),
+      db,
+      store,
+      { value: 'a' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(),
+      () => new Set(['a', 'b']),
     );
     expect(rotator.pick()).toBeNull();
   });
@@ -569,17 +657,20 @@ describe('TokenRotator overage gate', () => {
     const db = getDb(dbPath);
     seed(db, 'fresh1', 'f1@x');
     seed(db, 'fresh2', 'f2@x');
-    seed(db, 'hot',    'h@x');
+    seed(db, 'hot', 'h@x');
     const store = new RateLimitStore();
     setSession(store, 'fresh1', 0.3);
     setSession(store, 'fresh2', 0.3);
-    setSession(store, 'hot',    1.0);
+    setSession(store, 'hot', 1.0);
     setOverage(store, 'hot', { status: 'allowed' });
 
     const rotator = new TokenRotator(
-      db, store, { value: 'fresh1' },
-      () => new Set(), () => 'balance',
-      () => new Set(['hot']),  // opted in, but fresh candidates exist
+      db,
+      store,
+      { value: 'fresh1' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(['hot']), // opted in, but fresh candidates exist
     );
     const picked = [rotator.pick(), rotator.pick(), rotator.pick(), rotator.pick()];
     for (const p of picked) {
@@ -595,19 +686,22 @@ describe('TokenRotator overage gate', () => {
   it('buffer=10 excludes accounts at 91% util (default safety margin)', () => {
     const db = getDb(dbPath);
     seed(db, 'nearFull', 'n@x');
-    seed(db, 'spare',    's@x');
+    seed(db, 'spare', 's@x');
     const store = new RateLimitStore();
     // 91% util + overage allowed → inside the 10% buffer, should skip.
     setSession(store, 'nearFull', 0.91);
     setOverage(store, 'nearFull', { status: 'allowed' });
-    setSession(store, 'spare', 0.20);
+    setSession(store, 'spare', 0.2);
 
     const rotator = new TokenRotator(
-      db, store, { value: 'spare' },
-      () => new Set(), () => 'balance',
-      () => new Set(),                  // not opted in → must skip
+      db,
+      store,
+      { value: 'spare' },
       () => new Set(),
-      () => 10,                          // default buffer
+      () => 'balance',
+      () => new Set(), // not opted in → must skip
+      () => new Set(),
+      () => 10, // default buffer
     );
     expect(rotator.pick()?.accountId).toBe('spare');
     expect(rotator.pick()?.accountId).toBe('spare');
@@ -621,8 +715,11 @@ describe('TokenRotator overage gate', () => {
     setOverage(store, 'below', { status: 'allowed' });
 
     const rotator = new TokenRotator(
-      db, store, { value: 'below' },
-      () => new Set(), () => 'balance',
+      db,
+      store,
+      { value: 'below' },
+      () => new Set(),
+      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 10,
@@ -640,8 +737,11 @@ describe('TokenRotator overage gate', () => {
     setOverage(store, 'high', { status: 'allowed' });
 
     const rotator = new TokenRotator(
-      db, store, { value: 'high' },
-      () => new Set(), () => 'balance',
+      db,
+      store,
+      { value: 'high' },
+      () => new Set(),
+      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 0,
@@ -652,15 +752,18 @@ describe('TokenRotator overage gate', () => {
   it('buffer=50 excludes accounts at 50% util and above', () => {
     const db = getDb(dbPath);
     seed(db, 'fifty', 'f@x');
-    seed(db, 'low',   'l@x');
+    seed(db, 'low', 'l@x');
     const store = new RateLimitStore();
-    setSession(store, 'fifty', 0.50);
+    setSession(store, 'fifty', 0.5);
     setOverage(store, 'fifty', { status: 'allowed' });
-    setSession(store, 'low', 0.20);
+    setSession(store, 'low', 0.2);
 
     const rotator = new TokenRotator(
-      db, store, { value: 'low' },
-      () => new Set(), () => 'balance',
+      db,
+      store,
+      { value: 'low' },
+      () => new Set(),
+      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 50,
@@ -673,14 +776,17 @@ describe('TokenRotator overage gate', () => {
     const db = getDb(dbPath);
     seed(db, 'high', 'h@x');
     const store = new RateLimitStore();
-    setSession(store, 'high', 0.60);
+    setSession(store, 'high', 0.6);
     setOverage(store, 'high', { status: 'allowed' });
 
     // Buffer = 99 (way out of range). Clamped to 50, so threshold = 0.5.
     // 60% util is above 0.5 → account should be skipped for the gate.
     const rotator = new TokenRotator(
-      db, store, { value: 'high' },
-      () => new Set(), () => 'balance',
+      db,
+      store,
+      { value: 'high' },
+      () => new Set(),
+      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 99,
@@ -700,8 +806,11 @@ describe('TokenRotator overage gate', () => {
     setOverage(store, 'capped', { status: 'disabled' });
 
     const rotator = new TokenRotator(
-      db, store, { value: 'capped' },
-      () => new Set(), () => 'balance',
+      db,
+      store,
+      { value: 'capped' },
+      () => new Set(),
+      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 10,

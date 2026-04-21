@@ -11,11 +11,11 @@ import { menuPop } from '../lib/motion.js';
  */
 function formatUptime(ms: number): string {
   const s = Math.floor(ms / 1000);
-  if (s < 60)   return `${s}s`;
+  if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
-  if (m < 60)   return `${m}m ${s % 60}s`;
+  if (m < 60) return `${m}m ${s % 60}s`;
   const h = Math.floor(m / 60);
-  if (h < 24)   return `${h}h ${m % 60}m`;
+  if (h < 24) return `${h}h ${m % 60}m`;
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
@@ -120,95 +120,108 @@ export default function HeaderMenu({ measureRef }: HeaderMenuProps): React.React
       </button>
 
       <AnimatePresence>
-      {open && (
-        <motion.div
-          {...menuPop}
-          ref={measureRef}
-          style={{ transformOrigin: 'top right' }}
-          className="absolute right-0 top-full mt-1 z-30 min-w-[220px] rounded-xl bg-white dark:bg-[#2A2A2C] shadow-lg ring-1 ring-black/10 dark:ring-white/10 overflow-hidden"
-        >
-
-          {/* Daemon status row (display-only) */}
-          <div className="px-3 py-2 border-b border-black/5 dark:border-white/5">
-            <div className="flex items-center gap-1.5 mb-0.5">
-              <Activity size={11} strokeWidth={2.5} className="text-ios-green" />
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-[#8E8E93]">Daemon</span>
-            </div>
-            {status ? (
-              <p className="text-[11px] text-black dark:text-white tabular-nums">
-                pid <span className="font-semibold">{status.pid}</span>
-                <span className="text-[#8E8E93]"> · uptime </span>
-                <span className="font-semibold">{formatUptime(status.uptimeMs)}</span>
-              </p>
-            ) : (
-              <p className="text-[11px] text-[#8E8E93]">Not connected</p>
-            )}
-          </div>
-
-          {/* Quit Sentinel */}
-          <button
-            onClick={() => void handleQuit()}
-            disabled={quitting || uninstallStep !== 'idle'}
-            className="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-black dark:text-white whitespace-nowrap hover:bg-black/[0.05] dark:hover:bg-white/[0.06] disabled:opacity-50 transition-colors"
+        {open && (
+          <motion.div
+            {...menuPop}
+            ref={measureRef}
+            style={{ transformOrigin: 'top right' }}
+            className="absolute right-0 top-full mt-1 z-30 min-w-[220px] rounded-xl bg-white dark:bg-[#2A2A2C] shadow-lg ring-1 ring-black/10 dark:ring-white/10 overflow-hidden"
           >
-            <Power size={12} strokeWidth={2.5} />
-            <span>{quitting ? 'Quitting…' : 'Quit Sentinel'}</span>
-            <span className="ml-auto pl-3 text-[10px] text-[#8E8E93]">Stops the background service</span>
-          </button>
-
-          {/* Uninstall */}
-          {uninstallStep === 'idle' && (
-            <button
-              onClick={() => setUninstallStep('confirm')}
-              disabled={quitting}
-              className="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-ios-red border-t border-black/5 dark:border-white/5 hover:bg-ios-red/10 dark:hover:bg-ios-red/15 disabled:opacity-50 transition-colors"
-            >
-              <Trash2 size={12} strokeWidth={2.5} />
-              Uninstall Sentinel…
-            </button>
-          )}
-
-          {uninstallStep !== 'idle' && (
-            <div className="border-t border-black/5 dark:border-white/5 px-3 py-3 bg-ios-red/[0.04] dark:bg-ios-red/[0.08]">
-              <p className="text-[12px] font-semibold text-black dark:text-white mb-1">
-                Uninstall Sentinel?
-              </p>
-              <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
-                Removes the Sentinel env vars from <code className="font-mono">~/.claude/settings.json</code> so Claude Code goes back to calling Anthropic directly.
-              </p>
-              <label className="flex items-start gap-2 text-[11px] text-black dark:text-white mb-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={deleteData}
-                  onChange={(e) => setDeleteData(e.target.checked)}
-                  disabled={uninstallStep === 'running'}
-                  className="mt-0.5 accent-ios-red"
-                />
-                <span>Also delete all local data (usage history, rate-limit cache, stored credentials)</span>
-              </label>
-              {uninstallError && (
-                <p className="text-[11px] text-ios-red mb-2 font-mono break-all">{uninstallError}</p>
-              )}
-              <div className="flex gap-2">
-                <button
-                  onClick={() => void handleUninstall()}
-                  disabled={uninstallStep === 'running'}
-                  className="flex-1 text-[12px] font-semibold text-white bg-ios-red hover:opacity-90 active:scale-95 px-3 py-1.5 rounded-full transition-all disabled:opacity-50"
-                >
-                  {uninstallStep === 'running' ? 'Uninstalling…' : 'Uninstall'}
-                </button>
-                <button
-                  onClick={() => { setUninstallStep('idle'); setDeleteData(false); setUninstallError(null); }}
-                  disabled={uninstallStep === 'running'}
-                  className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
-                >
-                  Cancel
-                </button>
+            {/* Daemon status row (display-only) */}
+            <div className="px-3 py-2 border-b border-black/5 dark:border-white/5">
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <Activity size={11} strokeWidth={2.5} className="text-ios-green" />
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-[#8E8E93]">
+                  Daemon
+                </span>
               </div>
+              {status ? (
+                <p className="text-[11px] text-black dark:text-white tabular-nums">
+                  pid <span className="font-semibold">{status.pid}</span>
+                  <span className="text-[#8E8E93]"> · uptime </span>
+                  <span className="font-semibold">{formatUptime(status.uptimeMs)}</span>
+                </p>
+              ) : (
+                <p className="text-[11px] text-[#8E8E93]">Not connected</p>
+              )}
             </div>
-          )}
-        </motion.div>
-      )}
+
+            {/* Quit Sentinel */}
+            <button
+              onClick={() => void handleQuit()}
+              disabled={quitting || uninstallStep !== 'idle'}
+              className="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-black dark:text-white whitespace-nowrap hover:bg-black/[0.05] dark:hover:bg-white/[0.06] disabled:opacity-50 transition-colors"
+            >
+              <Power size={12} strokeWidth={2.5} />
+              <span>{quitting ? 'Quitting…' : 'Quit Sentinel'}</span>
+              <span className="ml-auto pl-3 text-[10px] text-[#8E8E93]">
+                Stops the background service
+              </span>
+            </button>
+
+            {/* Uninstall */}
+            {uninstallStep === 'idle' && (
+              <button
+                onClick={() => setUninstallStep('confirm')}
+                disabled={quitting}
+                className="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-ios-red border-t border-black/5 dark:border-white/5 hover:bg-ios-red/10 dark:hover:bg-ios-red/15 disabled:opacity-50 transition-colors"
+              >
+                <Trash2 size={12} strokeWidth={2.5} />
+                Uninstall Sentinel…
+              </button>
+            )}
+
+            {uninstallStep !== 'idle' && (
+              <div className="border-t border-black/5 dark:border-white/5 px-3 py-3 bg-ios-red/[0.04] dark:bg-ios-red/[0.08]">
+                <p className="text-[12px] font-semibold text-black dark:text-white mb-1">
+                  Uninstall Sentinel?
+                </p>
+                <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
+                  Removes the Sentinel env vars from{' '}
+                  <code className="font-mono">~/.claude/settings.json</code> so Claude Code goes
+                  back to calling Anthropic directly.
+                </p>
+                <label className="flex items-start gap-2 text-[11px] text-black dark:text-white mb-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={deleteData}
+                    onChange={(e) => setDeleteData(e.target.checked)}
+                    disabled={uninstallStep === 'running'}
+                    className="mt-0.5 accent-ios-red"
+                  />
+                  <span>
+                    Also delete all local data (usage history, rate-limit cache, stored credentials)
+                  </span>
+                </label>
+                {uninstallError && (
+                  <p className="text-[11px] text-ios-red mb-2 font-mono break-all">
+                    {uninstallError}
+                  </p>
+                )}
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => void handleUninstall()}
+                    disabled={uninstallStep === 'running'}
+                    className="flex-1 text-[12px] font-semibold text-white bg-ios-red hover:opacity-90 active:scale-95 px-3 py-1.5 rounded-full transition-all disabled:opacity-50"
+                  >
+                    {uninstallStep === 'running' ? 'Uninstalling…' : 'Uninstall'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setUninstallStep('idle');
+                      setDeleteData(false);
+                      setUninstallError(null);
+                    }}
+                    disabled={uninstallStep === 'running'}
+                    className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </motion.div>
+        )}
       </AnimatePresence>
     </div>
   );

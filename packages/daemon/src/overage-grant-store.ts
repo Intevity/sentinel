@@ -57,9 +57,10 @@ export class OverageGrantStore {
         // expected them flat. Support both shapes so older fixtures keep
         // working and the real-world shape parses correctly.
         const record = v as unknown as Record<string, unknown>;
-        const info = (record['info'] && typeof record['info'] === 'object')
-          ? record['info'] as Record<string, unknown>
-          : record;
+        const info =
+          record['info'] && typeof record['info'] === 'object'
+            ? (record['info'] as Record<string, unknown>)
+            : record;
         const available = info['available'];
         const eligible = info['eligible'];
         const granted = info['granted'];

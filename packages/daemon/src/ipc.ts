@@ -2,11 +2,7 @@ import { createServer, connect, type Server, type Socket } from 'net';
 import { existsSync, unlinkSync, mkdirSync, chmodSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
-import type {
-  DaemonToAppMessage,
-  AppToDaemonMessage,
-  IpcResponse,
-} from '@claude-sentinel/shared';
+import type { DaemonToAppMessage, AppToDaemonMessage, IpcResponse } from '@claude-sentinel/shared';
 
 /* v8 ignore next 3 */
 export const IPC_PATH =

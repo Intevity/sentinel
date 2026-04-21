@@ -18,11 +18,13 @@
   body {
     margin: 0;
     overflow: hidden;
-    background: #F2F2F7;
+    background: #f2f2f7;
   }
 
   @media (prefers-color-scheme: dark) {
-    body { background: #111111; }
+    body {
+      background: #111111;
+    }
   }
 
   #root {
@@ -38,17 +40,25 @@
      ResizeObserver and kicks setSize into a visible jitter loop
      whenever a banner (PendingBlockBanner, ActivationBanner, etc.)
      mounts/unmounts above the tab bar. */
-  main { scrollbar-gutter: stable; }
+  main {
+    scrollbar-gutter: stable;
+  }
 
   /* Thin, elegant scrollbar */
-  ::-webkit-scrollbar       { width: 5px; }
-  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar {
+    width: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
   ::-webkit-scrollbar-thumb {
-    background: rgba(0,0,0,0.12);
+    background: rgba(0, 0, 0, 0.12);
     border-radius: 99px;
   }
   @media (prefers-color-scheme: dark) {
-    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.12);
+    }
   }
 }
 
@@ -96,27 +106,63 @@
 }
 
 @keyframes sentinel-flash {
-  0%   { background-color: rgba(10, 132, 255, 0); }
-  15%  { background-color: rgba(10, 132, 255, 0.18); }
-  50%  { background-color: rgba(10, 132, 255, 0.05); }
-  70%  { background-color: rgba(10, 132, 255, 0.18); }
-  100% { background-color: rgba(10, 132, 255, 0); }
+  0% {
+    background-color: rgba(10, 132, 255, 0);
+  }
+  15% {
+    background-color: rgba(10, 132, 255, 0.18);
+  }
+  50% {
+    background-color: rgba(10, 132, 255, 0.05);
+  }
+  70% {
+    background-color: rgba(10, 132, 255, 0.18);
+  }
+  100% {
+    background-color: rgba(10, 132, 255, 0);
+  }
 }
 
 @keyframes security-row-flash {
-  0%   { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0); }
-  10%  { box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.55), 0 0 18px 4px rgba(10, 132, 255, 0.35); }
-  45%  { box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.2),  0 0 10px 3px rgba(10, 132, 255, 0.12); }
-  65%  { box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.45), 0 0 14px 4px rgba(10, 132, 255, 0.28); }
-  100% { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0); }
+  0% {
+    box-shadow: 0 0 0 0 rgba(10, 132, 255, 0);
+  }
+  10% {
+    box-shadow:
+      0 0 0 3px rgba(10, 132, 255, 0.55),
+      0 0 18px 4px rgba(10, 132, 255, 0.35);
+  }
+  45% {
+    box-shadow:
+      0 0 0 2px rgba(10, 132, 255, 0.2),
+      0 0 10px 3px rgba(10, 132, 255, 0.12);
+  }
+  65% {
+    box-shadow:
+      0 0 0 3px rgba(10, 132, 255, 0.45),
+      0 0 14px 4px rgba(10, 132, 255, 0.28);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(10, 132, 255, 0);
+  }
 }
 
 @keyframes sentinel-shield-pulse {
-  0%, 100% { opacity: 0.5; }
-  50%      { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
 }
-.sentinel-shield-pulse { animation: sentinel-shield-pulse 2.2s ease-in-out infinite; }
+.sentinel-shield-pulse {
+  animation: sentinel-shield-pulse 2.2s ease-in-out infinite;
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .sentinel-shield-pulse { animation: none; opacity: 1; }
+  .sentinel-shield-pulse {
+    animation: none;
+    opacity: 1;
+  }
 }

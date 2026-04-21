@@ -20,7 +20,8 @@ import type { RateLimitWindow } from '@claude-sentinel/shared';
  */
 export class RateLimitStore {
   private readonly data = new Map<string, Map<string, RateLimitWindow>>();
-  private readonly updateCallbacks: Array<(accountId: string, windows: RateLimitWindow[]) => void> = [];
+  private readonly updateCallbacks: Array<(accountId: string, windows: RateLimitWindow[]) => void> =
+    [];
 
   /**
    * Register a callback invoked whenever new rate-limit data arrives from API headers.
@@ -50,19 +51,22 @@ export class RateLimitStore {
     const windowUpdates = new Map<string, Partial<RateLimitWindow> & { name: string }>();
 
     for (const [key, val] of Object.entries(headers)) {
-      const m = key.match(/^anthropic-ratelimit-(.+)-(limit|remaining|reset|utilization|status|in-use)$/i);
+      const m = key.match(
+        /^anthropic-ratelimit-(.+)-(limit|remaining|reset|utilization|status|in-use)$/i,
+      );
       if (!m) continue;
       const name = m[1]!;
       const field = m[2]!.toLowerCase();
       if (!windowUpdates.has(name)) windowUpdates.set(name, { name, lastUpdated: now });
       const w = windowUpdates.get(name)!;
       const str = Array.isArray(val) ? val[0] : val;
-      if (field === 'limit')       w.limit       = str != null ? parseInt(str, 10) : null;
-      if (field === 'remaining')   w.remaining   = str != null ? parseInt(str, 10) : null;
-      if (field === 'reset')       w.reset       = str != null ? parseInt(str, 10) : null;
+      if (field === 'limit') w.limit = str != null ? parseInt(str, 10) : null;
+      if (field === 'remaining') w.remaining = str != null ? parseInt(str, 10) : null;
+      if (field === 'reset') w.reset = str != null ? parseInt(str, 10) : null;
       if (field === 'utilization') w.utilization = str != null ? parseFloat(str) : null;
-      if (field === 'status')      w.status      = str ?? null;
-      if (field === 'in-use')      w.inUse       = str != null ? (str.toLowerCase() === 'true' || str === '1') : null;
+      if (field === 'status') w.status = str ?? null;
+      if (field === 'in-use')
+        w.inUse = str != null ? str.toLowerCase() === 'true' || str === '1' : null;
     }
 
     // Anthropic only emits `unified-overage-in-use` while the response is

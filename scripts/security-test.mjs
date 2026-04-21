@@ -53,7 +53,12 @@ function randomSecretBody(n) {
     let s = '';
     for (let i = 0; i < n; i++) s += alphabet[Math.floor(Math.random() * alphabet.length)];
     if (/(.)\1{3,}/.test(s)) continue;
-    if (/ABC|BCD|CDE|DEF|EFG|FGH|GHI|HIJ|IJK|JKL|KLM|LMN|MNO|NOP|OPQ|PQR|QRS|RST|STU|TUV|UVW|VWX|WXY|XYZ|234|345|456|567|678|789/.test(s)) continue;
+    if (
+      /ABC|BCD|CDE|DEF|EFG|FGH|GHI|HIJ|IJK|JKL|KLM|LMN|MNO|NOP|OPQ|PQR|QRS|RST|STU|TUV|UVW|VWX|WXY|XYZ|234|345|456|567|678|789/.test(
+        s,
+      )
+    )
+      continue;
     return s;
   }
   return 'HPGKMRQTVWZXYJNC'; // deterministic fallback; still passes the heuristics
@@ -72,7 +77,7 @@ function randomMixedBody(n) {
   return 'HpGkMrQtVwZxYjNcBdFsR7k2mQ9xNp4R8tVj6L'; // fallback
 }
 
-const FAKE_AWS_KEY   = 'AKI'  + 'A' + randomSecretBody(16);
+const FAKE_AWS_KEY = 'AKI' + 'A' + randomSecretBody(16);
 const FAKE_GHP_TOKEN = 'ghp_' + randomMixedBody(36);
 
 /** Pick a role-impersonation marker at random. The regex in the
@@ -98,7 +103,7 @@ function randomRoleMarker() {
 function randomTagChars(n) {
   let s = '';
   for (let i = 0; i < n; i++) {
-    const cp = 0xE0000 + Math.floor(Math.random() * 0x80);
+    const cp = 0xe0000 + Math.floor(Math.random() * 0x80);
     s += String.fromCodePoint(cp);
   }
   return s;
@@ -112,7 +117,8 @@ const PROXY_URL = 'http://localhost:47284';
 const SCENARIOS = {
   'secret-observe': {
     delivery: 'proxy',
-    description: 'POST an AWS key in a prompt; in observe mode the finding persists, UI + Alerts tab update.',
+    description:
+      'POST an AWS key in a prompt; in observe mode the finding persists, UI + Alerts tab update.',
     requires: 'securityEnforcementMode: observe (default)',
     body: () => ({
       model: 'claude-haiku-4-5-20251001',
@@ -122,7 +128,8 @@ const SCENARIOS = {
   },
   'secret-block': {
     delivery: 'proxy',
-    description: 'POST an AWS key with block_high + hold OFF; expect an immediate 403 and a blocked=1 row.',
+    description:
+      'POST an AWS key with block_high + hold OFF; expect an immediate 403 and a blocked=1 row.',
     requires: 'securityEnforcementMode: block_high, securityBlockHoldEnabled: false',
     body: () => ({
       model: 'claude-haiku-4-5-20251001',
@@ -132,7 +139,8 @@ const SCENARIOS = {
   },
   'secret-pending': {
     delivery: 'proxy',
-    description: 'POST an AWS key with block_high + hold ON; expect the pending-block banner + OS notification.',
+    description:
+      'POST an AWS key with block_high + hold ON; expect the pending-block banner + OS notification.',
     requires: 'securityEnforcementMode: block_*, securityBlockHoldEnabled: true',
     body: () => ({
       model: 'claude-haiku-4-5-20251001',
@@ -140,9 +148,10 @@ const SCENARIOS = {
       messages: [{ role: 'user', content: `synthetic key for testing: ${FAKE_AWS_KEY}` }],
     }),
   },
-  'injection': {
+  injection: {
     delivery: 'proxy',
-    description: 'POST a prompt with a role-impersonation marker to trigger the injection detector.',
+    description:
+      'POST a prompt with a role-impersonation marker to trigger the injection detector.',
     requires: 'securityScanInjection: true (off by default)',
     body: () => ({
       model: 'claude-haiku-4-5-20251001',
@@ -174,7 +183,8 @@ const SCENARIOS = {
   },
   'risky-write': {
     delivery: 'ipc',
-    description: 'Synthesize a HIGH-severity risky_write finding (~/.ssh/authorized_keys) via dev IPC.',
+    description:
+      'Synthesize a HIGH-severity risky_write finding (~/.ssh/authorized_keys) via dev IPC.',
     requires: 'none',
   },
   'risky-webfetch': {
@@ -184,17 +194,20 @@ const SCENARIOS = {
   },
   'tool-use-low-severity': {
     delivery: 'ipc',
-    description: 'Synthesize a LOW-severity tool-use finding; exercises severity-threshold routing.',
+    description:
+      'Synthesize a LOW-severity tool-use finding; exercises severity-threshold routing.',
     requires: 'none',
   },
   'pending-block': {
     delivery: 'ipc',
-    description: 'Register a synthetic pending block with countdown. No real proxy traffic. OS notification fires.',
+    description:
+      'Register a synthetic pending block with countdown. No real proxy traffic. OS notification fires.',
     requires: 'none (works regardless of live enforcement mode)',
   },
   'secret-ghp': {
     delivery: 'proxy',
-    description: 'Same as secret-observe but with a ghp_ token instead of AKIA (smoke test for the github-ghp detector).',
+    description:
+      'Same as secret-observe but with a ghp_ token instead of AKIA (smoke test for the github-ghp detector).',
     requires: 'none',
     body: () => ({
       model: 'claude-haiku-4-5-20251001',
@@ -248,7 +261,8 @@ const SCENARIOS = {
   },
   'scan-deferred-oversized': {
     delivery: 'ipc',
-    description: 'Synthesize a scan_deferred_oversized telemetry event (oversized body deferred to background).',
+    description:
+      'Synthesize a scan_deferred_oversized telemetry event (oversized body deferred to background).',
     requires: 'none',
   },
   // ─── Permission-rule blocks ───────────────────────────────────────────
@@ -267,7 +281,8 @@ const SCENARIOS = {
   },
   'permissions-tool-use-pending': {
     delivery: 'ipc',
-    description: 'Register a synthetic permissions pending block (banner + approve/deny countdown).',
+    description:
+      'Register a synthetic permissions pending block (banner + approve/deny countdown).',
     requires: 'toolPermissionsEnabled: true, securityBlockHoldEnabled: true',
   },
 };
@@ -275,7 +290,8 @@ const SCENARIOS = {
 // ─── CLI ─────────────────────────────────────────────────────────────
 
 function printHelp() {
-  console.log(`
+  console.log(
+    `
 pnpm security:test <scenario>
 
 Fires a synthetic security-feature scenario against the running daemon so
@@ -289,7 +305,8 @@ Flags:
 Tip: the prerequisites column in --list tells you what enforcement-mode /
 toggle state each scenario needs to produce its expected outcome. Settings
 are in Sentinel → Settings → Security.
-`.trim());
+`.trim(),
+  );
 }
 
 function printList() {
@@ -324,35 +341,45 @@ if (!scenario) {
 
 function runProxy() {
   const payload = JSON.stringify(scenario.body());
-  const req = http.request(`${PROXY_URL}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer sentinel-test-fake-token',
-      'anthropic-version': '2023-06-01',
-      'Content-Length': Buffer.byteLength(payload),
+  const req = http.request(
+    `${PROXY_URL}/v1/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer sentinel-test-fake-token',
+        'anthropic-version': '2023-06-01',
+        'Content-Length': Buffer.byteLength(payload),
+      },
     },
-  }, (res) => {
-    let body = '';
-    res.setEncoding('utf-8');
-    res.on('data', (c) => { body += c; });
-    res.on('end', () => {
-      console.log(`[${arg}] HTTP ${res.statusCode}`);
-      if (res.statusCode === 403) {
-        console.log('  → Blocked by Sentinel. Check the Security tab for the blocked event.');
-      } else if (res.statusCode === 401) {
-        console.log('  → Upstream 401 (expected: fake bearer). The scanner still fired; check the Security + Alerts tabs.');
-      } else {
-        console.log(`  → Upstream responded. Check the Security + Alerts tabs.`);
-      }
-      // Truncate long response bodies in stdout.
-      if (body.length > 400) body = body.slice(0, 400) + '…';
-      if (body) console.log(`  body: ${body}`);
-      process.exit(0);
-    });
-  });
+    (res) => {
+      let body = '';
+      res.setEncoding('utf-8');
+      res.on('data', (c) => {
+        body += c;
+      });
+      res.on('end', () => {
+        console.log(`[${arg}] HTTP ${res.statusCode}`);
+        if (res.statusCode === 403) {
+          console.log('  → Blocked by Sentinel. Check the Security tab for the blocked event.');
+        } else if (res.statusCode === 401) {
+          console.log(
+            '  → Upstream 401 (expected: fake bearer). The scanner still fired; check the Security + Alerts tabs.',
+          );
+        } else {
+          console.log(`  → Upstream responded. Check the Security + Alerts tabs.`);
+        }
+        // Truncate long response bodies in stdout.
+        if (body.length > 400) body = body.slice(0, 400) + '…';
+        if (body) console.log(`  body: ${body}`);
+        process.exit(0);
+      });
+    },
+  );
   req.setTimeout(120_000, () => {
-    console.error('[proxy] request timed out — did the daemon hang holding a pending block? Approve/deny from the UI.');
+    console.error(
+      '[proxy] request timed out — did the daemon hang holding a pending block? Approve/deny from the UI.',
+    );
     req.destroy();
     process.exit(1);
   });
@@ -368,9 +395,10 @@ function runProxy() {
 // ─── Delivery: IPC ────────────────────────────────────────────────────
 
 function runIpc() {
-  const sockPath = process.platform === 'win32'
-    ? '\\\\.\\pipe\\claude-sentinel'
-    : path.join(os.homedir(), '.claude-sentinel', 'daemon.sock');
+  const sockPath =
+    process.platform === 'win32'
+      ? '\\\\.\\pipe\\claude-sentinel'
+      : path.join(os.homedir(), '.claude-sentinel', 'daemon.sock');
   const socket = net.connect(sockPath);
   const msg = { type: 'dev_trigger_security_event', scenario: arg };
   let buf = '';
@@ -390,7 +418,9 @@ function runIpc() {
           if (parsed.success) {
             console.log(`[${arg}] ✓ Synthetic event fired. Check the Security + Alerts tabs.`);
             if (arg === 'pending-block') {
-              console.log('  → A pending-block banner should appear with an approve/deny countdown.');
+              console.log(
+                '  → A pending-block banner should appear with an approve/deny countdown.',
+              );
             }
           } else {
             console.error(`[${arg}] daemon returned error: ${parsed.error ?? 'unknown'}`);

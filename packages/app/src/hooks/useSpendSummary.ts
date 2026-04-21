@@ -35,7 +35,9 @@ export function useSpendSummary(): UseSpendSummaryResult {
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -44,8 +46,14 @@ export function useSpendSummary(): UseSpendSummaryResult {
       if (msg.type === 'spend_update') {
         setSummary({ perAccount: msg.perAccount, global: msg.global });
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   return { summary, loading };

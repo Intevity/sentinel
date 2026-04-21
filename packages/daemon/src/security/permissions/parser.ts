@@ -100,10 +100,9 @@ function parseWholeTool(trimmed: string): ParseResult {
  * The decision word and the rule are separated by one or more spaces. Any
  * surplus whitespace is tolerated.
  */
-export function parseRawWithDecision(input: string):
-  | { ok: true; decision: PermissionDecision; parsed: ParsedRule }
-  | { ok: false; error: string }
-{
+export function parseRawWithDecision(
+  input: string,
+): { ok: true; decision: PermissionDecision; parsed: ParsedRule } | { ok: false; error: string } {
   if (typeof input !== 'string') return { ok: false, error: 'input must be a string' };
   const trimmed = input.trim();
   const match = /^(allow|deny)\s+(.+)$/i.exec(trimmed);

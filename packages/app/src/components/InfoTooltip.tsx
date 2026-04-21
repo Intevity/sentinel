@@ -30,7 +30,12 @@ export default function InfoTooltip({
 }: InfoTooltipProps): React.ReactElement {
   const { triggerProps, bubbleStyle } = useTooltipPosition(placement);
   return (
-    <TooltipShell className={className} triggerProps={triggerProps} bubbleStyle={bubbleStyle} size={size}>
+    <TooltipShell
+      className={className}
+      triggerProps={triggerProps}
+      bubbleStyle={bubbleStyle}
+      size={size}
+    >
       {text}
     </TooltipShell>
   );
@@ -145,12 +150,10 @@ function TooltipShell({
         className="text-[#8E8E93] hover:text-ios-blue transition-colors"
       />
       {bubbleStyle && (
-        <div
-          role="tooltip"
-          className="pointer-events-none fixed z-50"
-          style={bubbleStyle}
-        >
-          <div className={`bg-black/90 dark:bg-white/95 text-white dark:text-black text-[10px] font-medium px-2.5 py-1.5 rounded-md shadow-lg leading-snug ${extraInnerClass ?? ''}`}>
+        <div role="tooltip" className="pointer-events-none fixed z-50" style={bubbleStyle}>
+          <div
+            className={`bg-black/90 dark:bg-white/95 text-white dark:text-black text-[10px] font-medium px-2.5 py-1.5 rounded-md shadow-lg leading-snug ${extraInnerClass ?? ''}`}
+          >
             {children}
           </div>
         </div>

@@ -144,7 +144,9 @@ export function buildBody(ctx: BugReportContext): string {
   // triggered the report.
   const logsIdx = sections.findIndex((s) => s.kind === 'logs');
   if (logsIdx >= 0) {
-    const others = sections.filter((_, i) => i !== logsIdx).reduce((n, s) => n + s.content.length + 2, 0);
+    const others = sections
+      .filter((_, i) => i !== logsIdx)
+      .reduce((n, s) => n + s.content.length + 2, 0);
     const budget = Math.max(200, MAX_BODY_CHARS - others);
     sections[logsIdx] = {
       kind: 'logs',
@@ -157,7 +159,9 @@ export function buildBody(ctx: BugReportContext): string {
   // Still over budget — shrink the stack trace.
   const stackIdx = sections.findIndex((s) => s.kind === 'stack');
   if (stackIdx >= 0) {
-    const others = sections.filter((_, i) => i !== stackIdx).reduce((n, s) => n + s.content.length + 2, 0);
+    const others = sections
+      .filter((_, i) => i !== stackIdx)
+      .reduce((n, s) => n + s.content.length + 2, 0);
     const budget = Math.max(200, MAX_BODY_CHARS - others);
     sections[stackIdx] = {
       kind: 'stack',

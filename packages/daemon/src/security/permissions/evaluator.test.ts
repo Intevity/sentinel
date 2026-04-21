@@ -4,6 +4,7 @@ import {
   compileRules,
   evaluateToolCall,
   findWholeToolDeny,
+  hashCanonicalToolInput,
   ruleMatches,
   type EvaluatorSettingsView,
 } from './evaluator.js';
@@ -70,37 +71,33 @@ describe('ruleMatches — whole tool', () => {
     expect(ruleMatches(rule({ tool: '*' }), 'WebFetch', { url: 'https://a.com' })).toBe(true);
   });
   it('mcp wildcard matches per-server tools', () => {
-    expect(ruleMatches(rule({ tool: 'mcp__github__*' }), 'mcp__github__create_issue', {})).toBe(true);
-    expect(ruleMatches(rule({ tool: 'mcp__github__*' }), 'mcp__gitlab__create_issue', {})).toBe(false);
+    expect(ruleMatches(rule({ tool: 'mcp__github__*' }), 'mcp__github__create_issue', {})).toBe(
+      true,
+    );
+    expect(ruleMatches(rule({ tool: 'mcp__github__*' }), 'mcp__gitlab__create_issue', {})).toBe(
+      false,
+    );
   });
 });
 
 describe('ruleMatches — Bash patterns', () => {
   it('matches Bash(npm *)', () => {
     expect(
-      ruleMatches(
-        rule({ tool: 'Bash', pattern: 'npm *', raw: 'Bash(npm *)' }),
-        'Bash',
-        { command: 'npm install' },
-      ),
+      ruleMatches(rule({ tool: 'Bash', pattern: 'npm *', raw: 'Bash(npm *)' }), 'Bash', {
+        command: 'npm install',
+      }),
     ).toBe(true);
   });
   it('does not match different tool via Bash pattern', () => {
-    expect(
-      ruleMatches(
-        rule({ tool: 'Bash', pattern: 'npm *' }),
-        'Read',
-        { file_path: '/a' },
-      ),
-    ).toBe(false);
+    expect(ruleMatches(rule({ tool: 'Bash', pattern: 'npm *' }), 'Read', { file_path: '/a' })).toBe(
+      false,
+    );
   });
   it('matches through timeout wrapper', () => {
     expect(
-      ruleMatches(
-        rule({ tool: 'Bash', pattern: 'rm -rf *' }),
-        'Bash',
-        { command: 'timeout 30 rm -rf /tmp/foo' },
-      ),
+      ruleMatches(rule({ tool: 'Bash', pattern: 'rm -rf *' }), 'Bash', {
+        command: 'timeout 30 rm -rf /tmp/foo',
+      }),
     ).toBe(true);
   });
 });
@@ -108,20 +105,16 @@ describe('ruleMatches — Bash patterns', () => {
 describe('ruleMatches — path patterns', () => {
   it('matches Read absolute path glob', () => {
     expect(
-      ruleMatches(
-        rule({ tool: 'Read', pattern: '//etc/**' }),
-        'Read',
-        { file_path: '/etc/passwd' },
-      ),
+      ruleMatches(rule({ tool: 'Read', pattern: '//etc/**' }), 'Read', {
+        file_path: '/etc/passwd',
+      }),
     ).toBe(true);
   });
   it('respects tool-name gate for paths', () => {
     expect(
-      ruleMatches(
-        rule({ tool: 'Read', pattern: '//etc/**' }),
-        'Edit',
-        { file_path: '/etc/passwd' },
-      ),
+      ruleMatches(rule({ tool: 'Read', pattern: '//etc/**' }), 'Edit', {
+        file_path: '/etc/passwd',
+      }),
     ).toBe(false);
   });
 });
@@ -129,36 +122,45 @@ describe('ruleMatches — path patterns', () => {
 describe('ruleMatches — WebFetch domain', () => {
   it('matches domain:', () => {
     expect(
-      ruleMatches(
-        rule({ tool: 'WebFetch', pattern: 'domain:example.com' }),
-        'WebFetch',
-        { url: 'https://example.com' },
-      ),
+      ruleMatches(rule({ tool: 'WebFetch', pattern: 'domain:example.com' }), 'WebFetch', {
+        url: 'https://example.com',
+      }),
     ).toBe(true);
   });
 });
 
 describe('evaluateToolCall — short circuits', () => {
   it('allows when feature disabled', () => {
-    const r = evaluateToolCall('Bash', { command: 'rm -rf /' }, compileRules([
-      rule({ decision: 'deny', pattern: 'rm -rf *', tool: 'Bash' }),
-    ]), settings({ toolPermissionsEnabled: false }));
+    const r = evaluateToolCall(
+      'Bash',
+      { command: 'rm -rf /' },
+      compileRules([rule({ decision: 'deny', pattern: 'rm -rf *', tool: 'Bash' })]),
+      settings({ toolPermissionsEnabled: false }),
+    );
     expect(r.decision).toBe('allow');
     expect(r.matchedRule).toBeNull();
   });
 
   it('allows when auto-mode active and skip enabled', () => {
-    const r = evaluateToolCall('Bash', { command: 'rm -rf /' }, compileRules([
-      rule({ decision: 'deny', pattern: 'rm -rf *', tool: 'Bash' }),
-    ]), settings({ toolPermissionAutoModeActive: true, toolPermissionSkipInAutoMode: true }));
+    const r = evaluateToolCall(
+      'Bash',
+      { command: 'rm -rf /' },
+      compileRules([rule({ decision: 'deny', pattern: 'rm -rf *', tool: 'Bash' })]),
+      settings({ toolPermissionAutoModeActive: true, toolPermissionSkipInAutoMode: true }),
+    );
     expect(r.decision).toBe('allow');
     expect(r.reason).toMatch(/auto mode/);
   });
 
   it('does NOT skip when auto-mode active but skip disabled', () => {
-    const r = evaluateToolCall('Bash', { command: 'rm -rf /' }, compileRules([
-      rule({ decision: 'deny', pattern: 'rm -rf *', tool: 'Bash', raw: 'Bash(rm -rf *)' }),
-    ]), settings({ toolPermissionAutoModeActive: true, toolPermissionSkipInAutoMode: false }));
+    const r = evaluateToolCall(
+      'Bash',
+      { command: 'rm -rf /' },
+      compileRules([
+        rule({ decision: 'deny', pattern: 'rm -rf *', tool: 'Bash', raw: 'Bash(rm -rf *)' }),
+      ]),
+      settings({ toolPermissionAutoModeActive: true, toolPermissionSkipInAutoMode: false }),
+    );
     expect(r.decision).toBe('deny');
   });
 });
@@ -176,8 +178,22 @@ describe('evaluateToolCall — deny > allow ordering', () => {
 
   it('first-matching deny in priority order wins', () => {
     const compiled = compileRules([
-      rule({ id: 'd1', decision: 'deny', tool: 'Bash', pattern: 'rm *', raw: 'Bash(rm *)', priority: 20 }),
-      rule({ id: 'd2', decision: 'deny', tool: 'Bash', pattern: 'rm -rf *', raw: 'Bash(rm -rf *)', priority: 10 }),
+      rule({
+        id: 'd1',
+        decision: 'deny',
+        tool: 'Bash',
+        pattern: 'rm *',
+        raw: 'Bash(rm *)',
+        priority: 20,
+      }),
+      rule({
+        id: 'd2',
+        decision: 'deny',
+        tool: 'Bash',
+        pattern: 'rm -rf *',
+        raw: 'Bash(rm -rf *)',
+        priority: 10,
+      }),
     ]);
     const r = evaluateToolCall('Bash', { command: 'rm -rf /' }, compiled, settings());
     expect(r.matchedRule?.id).toBe('d2');
@@ -196,16 +212,24 @@ describe('evaluateToolCall — deny > allow ordering', () => {
 
 describe('evaluateToolCall — default action fallback', () => {
   it('falls back to default allow when no rule matches', () => {
-    const compiled = compileRules([
-      rule({ decision: 'deny', tool: 'WebFetch' }),
-    ]);
-    const r = evaluateToolCall('Bash', { command: 'ls' }, compiled, settings({ toolPermissionDefaultAction: 'allow' }));
+    const compiled = compileRules([rule({ decision: 'deny', tool: 'WebFetch' })]);
+    const r = evaluateToolCall(
+      'Bash',
+      { command: 'ls' },
+      compiled,
+      settings({ toolPermissionDefaultAction: 'allow' }),
+    );
     expect(r.decision).toBe('allow');
     expect(r.matchedRule).toBeNull();
   });
   it('falls back to default deny when no rule matches', () => {
     const compiled = compileRules([]);
-    const r = evaluateToolCall('Bash', { command: 'ls' }, compiled, settings({ toolPermissionDefaultAction: 'deny' }));
+    const r = evaluateToolCall(
+      'Bash',
+      { command: 'ls' },
+      compiled,
+      settings({ toolPermissionDefaultAction: 'deny' }),
+    );
     expect(r.decision).toBe('deny');
     expect(r.matchedRule).toBeNull();
   });
@@ -217,13 +241,12 @@ describe('evaluateToolCall — per-rule input bypass', () => {
       rule({ id: 'd', decision: 'deny', tool: 'Bash', pattern: 'rm *', raw: 'Bash(rm *)' }),
     ]);
     let checkedRuleId: string | null = null;
-    const r = evaluateToolCall(
-      'Bash',
-      { command: 'rm -rf /tmp/x' },
-      compiled,
-      settings(),
-      { isBypassed: (ruleId) => { checkedRuleId = ruleId; return true; } },
-    );
+    const r = evaluateToolCall('Bash', { command: 'rm -rf /tmp/x' }, compiled, settings(), {
+      isBypassed: (ruleId) => {
+        checkedRuleId = ruleId;
+        return true;
+      },
+    });
     expect(r.decision).toBe('allow');
     expect(r.matchedRule?.id).toBe('d');
     expect(r.reason).toMatch(/bypassed/);
@@ -234,13 +257,9 @@ describe('evaluateToolCall — per-rule input bypass', () => {
     const compiled = compileRules([
       rule({ id: 'd', decision: 'deny', tool: 'Bash', pattern: 'rm *', raw: 'Bash(rm *)' }),
     ]);
-    const r = evaluateToolCall(
-      'Bash',
-      { command: 'rm -rf /tmp/x' },
-      compiled,
-      settings(),
-      { isBypassed: () => false },
-    );
+    const r = evaluateToolCall('Bash', { command: 'rm -rf /tmp/x' }, compiled, settings(), {
+      isBypassed: () => false,
+    });
     expect(r.decision).toBe('deny');
   });
 
@@ -251,7 +270,12 @@ describe('evaluateToolCall — per-rule input bypass', () => {
       rule({ id: 'd', decision: 'deny', tool: 'Write', pattern: '*', raw: 'Write(*)' }),
     ]);
     const seen: string[] = [];
-    const hook = { isBypassed: (_: string, h: string) => { seen.push(h); return false; } };
+    const hook = {
+      isBypassed: (_: string, h: string) => {
+        seen.push(h);
+        return false;
+      },
+    };
     evaluateToolCall('Write', { path: '/tmp/a', content: 'x' }, compiled, settings(), hook);
     evaluateToolCall('Write', { content: 'x', path: '/tmp/a' }, compiled, settings(), hook);
     expect(seen).toHaveLength(2);
@@ -282,9 +306,7 @@ describe('findWholeToolDeny', () => {
     expect(findWholeToolDeny('Bash', compiled, settings())).toBeNull();
   });
   it('matches * whole-tool deny against any tool', () => {
-    const compiled = compileRules([
-      rule({ decision: 'deny', tool: '*', pattern: null, raw: '*' }),
-    ]);
+    const compiled = compileRules([rule({ decision: 'deny', tool: '*', pattern: null, raw: '*' })]);
     expect(findWholeToolDeny('WebFetch', compiled, settings())).not.toBeNull();
     expect(findWholeToolDeny('Bash', compiled, settings())).not.toBeNull();
   });
@@ -292,13 +314,17 @@ describe('findWholeToolDeny', () => {
     const compiled = compileRules([
       rule({ decision: 'deny', tool: 'WebFetch', pattern: null, raw: 'WebFetch' }),
     ]);
-    expect(findWholeToolDeny('WebFetch', compiled, settings({ toolPermissionsEnabled: false }))).toBeNull();
+    expect(
+      findWholeToolDeny('WebFetch', compiled, settings({ toolPermissionsEnabled: false })),
+    ).toBeNull();
   });
   it('respects auto-mode skip', () => {
     const compiled = compileRules([
       rule({ decision: 'deny', tool: 'WebFetch', pattern: null, raw: 'WebFetch' }),
     ]);
-    expect(findWholeToolDeny('WebFetch', compiled, settings({ toolPermissionAutoModeActive: true }))).toBeNull();
+    expect(
+      findWholeToolDeny('WebFetch', compiled, settings({ toolPermissionAutoModeActive: true })),
+    ).toBeNull();
   });
 });
 
@@ -321,7 +347,9 @@ describe('evaluateToolCall — comprehensive scenarios', () => {
     expect(evaluateToolCall('Bash', { command: 'npm test' }, compiled, s).decision).toBe('allow');
     expect(evaluateToolCall('Bash', { command: 'git status' }, compiled, s).decision).toBe('allow');
     expect(evaluateToolCall('Bash', { command: 'rm -rf /' }, compiled, s).decision).toBe('deny');
-    expect(evaluateToolCall('WebFetch', { url: 'https://a.com' }, compiled, s).decision).toBe('deny');
+    expect(evaluateToolCall('WebFetch', { url: 'https://a.com' }, compiled, s).decision).toBe(
+      'deny',
+    );
     expect(evaluateToolCall('Read', { file_path: '/a/b' }, compiled, s).decision).toBe('allow');
   });
   it('deny WebFetch entirely (whole-tool)', () => {
@@ -336,24 +364,50 @@ describe('evaluateToolCall — comprehensive scenarios', () => {
       rule({ decision: 'deny', tool: 'Read', pattern: '*.env', raw: 'Read(*.env)' }),
     ]);
     expect(
-      evaluateToolCall('Read', { file_path: '/Users/jeff/app/.env' }, compiled, settings()).decision,
+      evaluateToolCall('Read', { file_path: '/Users/jeff/app/.env' }, compiled, settings())
+        .decision,
     ).toBe('deny');
     expect(
-      evaluateToolCall('Read', { file_path: '/Users/jeff/app/README.md' }, compiled, settings()).decision,
+      evaluateToolCall('Read', { file_path: '/Users/jeff/app/README.md' }, compiled, settings())
+        .decision,
     ).toBe('allow');
   });
   it('mcp server-level deny blocks all its tools', () => {
     const compiled = compileRules([
       rule({ decision: 'deny', tool: 'mcp__github__*', pattern: null, raw: 'mcp__github__*' }),
     ]);
-    expect(
-      evaluateToolCall('mcp__github__create_issue', {}, compiled, settings()).decision,
-    ).toBe('deny');
-    expect(
-      evaluateToolCall('mcp__github__search_code', {}, compiled, settings()).decision,
-    ).toBe('deny');
-    expect(
-      evaluateToolCall('mcp__gitlab__create_issue', {}, compiled, settings()).decision,
-    ).toBe('allow');
+    expect(evaluateToolCall('mcp__github__create_issue', {}, compiled, settings()).decision).toBe(
+      'deny',
+    );
+    expect(evaluateToolCall('mcp__github__search_code', {}, compiled, settings()).decision).toBe(
+      'deny',
+    );
+    expect(evaluateToolCall('mcp__gitlab__create_issue', {}, compiled, settings()).decision).toBe(
+      'allow',
+    );
+  });
+});
+
+describe('ruleMatches — fallback matcher + hashCanonicalToolInput', () => {
+  it('falls back to JSON-pattern match for custom (non-bash/path/web) tools', () => {
+    // Tool name 'Task' is neither Bash, path, web, nor MCP — ruleMatches
+    // dispatches to matchFallback, which greps the serialized input.
+    const r = rule({
+      decision: 'deny',
+      tool: 'Task',
+      pattern: '*dangerous*',
+      raw: 'Task(*dangerous*)',
+    });
+    expect(ruleMatches(r, 'Task', { description: 'run something dangerous' })).toBe(true);
+    expect(ruleMatches(r, 'Task', { description: 'harmless help' })).toBe(false);
+  });
+
+  it('hashCanonicalToolInput handles arrays at any nesting depth deterministically', () => {
+    const a = hashCanonicalToolInput('Bash', { a: [1, 2, { nested: [3, 4] }] });
+    const b = hashCanonicalToolInput('Bash', { a: [1, 2, { nested: [3, 4] }] });
+    expect(a).toBe(b);
+    // And the array-nesting branch differentiates from a non-array value.
+    const c = hashCanonicalToolInput('Bash', { a: [1, 2, { nested: 'str' }] });
+    expect(a).not.toBe(c);
   });
 });

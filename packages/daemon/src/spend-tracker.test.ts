@@ -8,12 +8,21 @@ import { RateLimitStore } from './rate-limit-store.js';
 import { DEFAULT_SETTINGS } from './settings.js';
 import { SpendTracker, isoWeekStartMs } from './spend-tracker.js';
 
-const TEST_DB = () => join(tmpdir(), `sentinel-spend-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+const TEST_DB = () =>
+  join(tmpdir(), `sentinel-spend-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 
 function seed(db: ReturnType<typeof getDb>, id: string): void {
   upsertAccount(db, {
-    id, accountUuid: id, email: `${id}@x`, displayName: id, orgUuid: id + '-org', orgName: '',
-    planType: 'max', isActive: false, createdAt: Date.now(), color: null,
+    id,
+    accountUuid: id,
+    email: `${id}@x`,
+    displayName: id,
+    orgUuid: id + '-org',
+    orgName: '',
+    planType: 'max',
+    isActive: false,
+    createdAt: Date.now(),
+    color: null,
   });
 }
 
@@ -35,7 +44,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
 function spendStub(initial: Record<string, number | null> = {}) {
   const map = new Map<string, number | null>(Object.entries(initial));
   return {
-    get: (id: string): number | null => (map.has(id) ? map.get(id) ?? null : null),
+    get: (id: string): number | null => (map.has(id) ? (map.get(id) ?? null) : null),
     set: (id: string, v: number | null) => map.set(id, v),
   };
 }
@@ -59,7 +68,9 @@ describe('isoWeekStartMs', () => {
 
 describe('SpendTracker', () => {
   let dbPath: string;
-  beforeEach(() => { dbPath = TEST_DB(); });
+  beforeEach(() => {
+    dbPath = TEST_DB();
+  });
   afterEach(() => {
     closeDb();
     if (existsSync(dbPath)) unlinkSync(dbPath);
@@ -71,10 +82,12 @@ describe('SpendTracker', () => {
     const ipc = ipcStub();
     seed(db, 'a');
     seed(db, 'b');
-    const spend = spendStub({ a: 15.00, b: 2.00 });
+    const spend = spendStub({ a: 15.0, b: 2.0 });
 
     const tracker = new SpendTracker({
-      db, rateLimitStore: store, ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
       getSettings: () => settings({ budgetWeeklyUsdByAccount: { a: 10 } }),
       getAnthropicSpend: spend.get,
       now: () => 1_700_000_000_000,
@@ -93,7 +106,9 @@ describe('SpendTracker', () => {
     const spend = spendStub({ a: null });
 
     const tracker = new SpendTracker({
-      db, rateLimitStore: store, ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
       getSettings: () => settings({ budgetWeeklyUsdByAccount: { a: 10 } }),
       getAnthropicSpend: spend.get,
       now: () => 1_700_000_000_000,
@@ -112,7 +127,9 @@ describe('SpendTracker', () => {
     const spend = spendStub({ a: 6, b: 7 });
 
     const tracker = new SpendTracker({
-      db, rateLimitStore: store, ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
       getSettings: () => settings({ budgetWeeklyUsdGlobal: 10 }),
       getAnthropicSpend: spend.get,
       now: () => 1_700_000_000_000,
@@ -131,7 +148,9 @@ describe('SpendTracker', () => {
     const spend = spendStub({ a: 50, b: null });
 
     const tracker = new SpendTracker({
-      db, rateLimitStore: store, ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
       getSettings: () => settings({ budgetWeeklyUsdGlobal: 10 }),
       getAnthropicSpend: spend.get,
       now: () => 1_700_000_000_000,
@@ -149,10 +168,13 @@ describe('SpendTracker', () => {
 
     let cap: number | undefined = 10;
     const tracker = new SpendTracker({
-      db, rateLimitStore: store, ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
-      getSettings: () => settings({
-        budgetWeeklyUsdByAccount: cap != null ? { a: cap } : {},
-      }),
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      getSettings: () =>
+        settings({
+          budgetWeeklyUsdByAccount: cap != null ? { a: cap } : {},
+        }),
       getAnthropicSpend: spend.get,
       now: () => 1_700_000_000_000,
     });
@@ -162,7 +184,9 @@ describe('SpendTracker', () => {
     cap = undefined;
     tracker.recompute();
     expect(tracker.getPausedIds().has('a')).toBe(false);
-    expect(ipc.broadcasts.some((b) => b.type === 'account_unpaused' && b['accountId'] === 'a')).toBe(true);
+    expect(
+      ipc.broadcasts.some((b) => b.type === 'account_unpaused' && b['accountId'] === 'a'),
+    ).toBe(true);
   });
 
   it('unpauses when Anthropic spend drops below cap (next billing period)', () => {
@@ -173,7 +197,9 @@ describe('SpendTracker', () => {
     const spend = spendStub({ a: 15 });
 
     const tracker = new SpendTracker({
-      db, rateLimitStore: store, ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
       getSettings: () => settings({ budgetWeeklyUsdByAccount: { a: 10 } }),
       getAnthropicSpend: spend.get,
       now: () => 1_700_000_000_000,
@@ -193,12 +219,20 @@ describe('SpendTracker', () => {
     const store = new RateLimitStore();
     const ipc = ipcStub();
     seed(db, 'a');
-    upsertAlert(db, { scope: 'budget', budgetScope: 'account', accountId: 'a', thresholdPct: 80, enabled: true });
+    upsertAlert(db, {
+      scope: 'budget',
+      budgetScope: 'account',
+      accountId: 'a',
+      thresholdPct: 80,
+      enabled: true,
+    });
     const spend = spendStub({ a: 9 });
 
     const now = new Date(2026, 3, 17, 12, 0, 0).getTime();
     const tracker = new SpendTracker({
-      db, rateLimitStore: store, ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
       getSettings: () => settings({ budgetWeeklyUsdByAccount: { a: 10 } }),
       getAnthropicSpend: spend.get,
       now: () => now,
@@ -218,12 +252,20 @@ describe('SpendTracker', () => {
     const store = new RateLimitStore();
     const ipc = ipcStub();
     seed(db, 'a');
-    upsertAlert(db, { scope: 'budget', budgetScope: 'account', accountId: 'a', thresholdPct: 80, enabled: true });
+    upsertAlert(db, {
+      scope: 'budget',
+      budgetScope: 'account',
+      accountId: 'a',
+      thresholdPct: 80,
+      enabled: true,
+    });
     const spend = spendStub({ a: 9 });
     let clock = new Date(2026, 3, 17, 12, 0, 0).getTime();
 
     const tracker = new SpendTracker({
-      db, rateLimitStore: store, ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
       getSettings: () => settings({ budgetWeeklyUsdByAccount: { a: 10 } }),
       getAnthropicSpend: spend.get,
       now: () => clock,
@@ -241,11 +283,19 @@ describe('SpendTracker', () => {
     const store = new RateLimitStore();
     const ipc = ipcStub();
     seed(db, 'a');
-    upsertAlert(db, { scope: 'budget', budgetScope: 'account', accountId: 'a', thresholdPct: 50, enabled: true });
+    upsertAlert(db, {
+      scope: 'budget',
+      budgetScope: 'account',
+      accountId: 'a',
+      thresholdPct: 50,
+      enabled: true,
+    });
     const spend = spendStub({ a: null });
 
     const tracker = new SpendTracker({
-      db, rateLimitStore: store, ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
       getSettings: () => settings({ budgetWeeklyUsdByAccount: { a: 10 } }),
       getAnthropicSpend: spend.get,
       now: () => Date.now(),
@@ -263,7 +313,9 @@ describe('SpendTracker', () => {
     const spend = spendStub({ a: 2, b: null });
 
     const tracker = new SpendTracker({
-      db, rateLimitStore: store, ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
       getSettings: () => settings(),
       getAnthropicSpend: spend.get,
       now: () => Date.now(),
@@ -271,8 +323,296 @@ describe('SpendTracker', () => {
     tracker.recompute();
     const update = ipc.broadcasts.find((b) => b.type === 'spend_update');
     expect(update).toBeDefined();
-    expect((update as unknown as { perAccount: Record<string, number | null> }).perAccount).toEqual({ a: 2, b: null });
+    expect((update as unknown as { perAccount: Record<string, number | null> }).perAccount).toEqual(
+      { a: 2, b: null },
+    );
     // Global sum skips null contributors.
     expect((update as unknown as { global: number }).global).toBe(2);
+  });
+
+  it('getSpendSummary returns the live computed summary', () => {
+    const db = getDb(dbPath);
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    seed(db, 'a');
+    seed(db, 'b');
+    const spend = spendStub({ a: 3.5, b: null });
+    const tracker = new SpendTracker({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      getSettings: () => settings(),
+      getAnthropicSpend: spend.get,
+      now: () => Date.now(),
+    });
+    const summary = tracker.getSpendSummary();
+    expect(summary.perAccount).toEqual({ a: 3.5, b: null });
+    expect(summary.global).toBe(3.5);
+  });
+
+  describe('handleRateLimitUpdate', () => {
+    it('no-ops when the rate-limit store has no unified-5h window for the account', () => {
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings(),
+        getAnthropicSpend: () => null,
+        now: () => Date.now(),
+      });
+      // No windows → early return, no broadcasts.
+      tracker.handleRateLimitUpdate('a');
+      expect(ipc.broadcasts).toHaveLength(0);
+    });
+
+    it('no-ops on the first observed reset (first-seen is not a rollover)', () => {
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      store.update('a', {
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-5h-reset': '1700000000',
+      });
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings(),
+        getAnthropicSpend: () => null,
+        now: () => Date.now(),
+      });
+      tracker.handleRateLimitUpdate('a');
+      // First-seen: store the reset but don't treat as rollover — no unpause
+      // broadcast (account isn't paused anyway) and no recompute-driven
+      // spend_update either because we short-circuit at "prev == null".
+      expect(ipc.broadcasts.filter((b) => b.type === 'account_unpaused')).toHaveLength(0);
+    });
+
+    it('no-ops when the reset timestamp went backward or stayed equal', () => {
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      store.update('a', {
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-5h-reset': '1700000000',
+      });
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings(),
+        getAnthropicSpend: () => null,
+        now: () => Date.now(),
+      });
+      tracker.handleRateLimitUpdate('a'); // Prime lastSessionReset
+      const before = ipc.broadcasts.length;
+      // Same timestamp again → not a rollover.
+      tracker.handleRateLimitUpdate('a');
+      expect(ipc.broadcasts.length).toBe(before);
+    });
+
+    it('clears a paused account and re-evaluates when the reset advances', () => {
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      const spend = spendStub({ a: 15 });
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings({ budgetWeeklyUsdByAccount: { a: 10 } }),
+        getAnthropicSpend: spend.get,
+        now: () => 1_700_000_000_000,
+      });
+      tracker.recompute();
+      expect(tracker.getPausedIds().has('a')).toBe(true);
+
+      // Prime lastSessionReset with an initial reset.
+      store.update('a', {
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-5h-reset': '1700000000',
+      });
+      tracker.handleRateLimitUpdate('a');
+
+      // Advance the reset + drop the spend so re-evaluation should unpause.
+      store.update('a', {
+        'anthropic-ratelimit-unified-5h-utilization': '0.1',
+        'anthropic-ratelimit-unified-5h-reset': '1700018000',
+      });
+      spend.set('a', 0);
+      tracker.handleRateLimitUpdate('a');
+
+      expect(tracker.getPausedIds().has('a')).toBe(false);
+      expect(ipc.broadcasts.some((b) => b.type === 'account_unpaused')).toBe(true);
+    });
+  });
+
+  it('uses the real wall clock when no `now` fn is injected', () => {
+    const db = getDb(dbPath);
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    seed(db, 'a');
+    // Omit `now` — triggers the Date.now() fallback branch in clock().
+    const tracker = new SpendTracker({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      getSettings: () => settings(),
+      getAnthropicSpend: () => 5,
+    });
+    tracker.recompute();
+    // Just enough to exercise the branch — no assertions on ts needed.
+    expect(ipc.broadcasts.some((b) => b.type === 'spend_update')).toBe(true);
+  });
+
+  it('pause-log formats without budgetWeeklyUsdByAccount or globalCap present (uses 0 fallback)', () => {
+    const db = getDb(dbPath);
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    seed(db, 'a');
+    // An account currently paused (carried over from a previous state) but
+    // neither per-account nor global cap is configured now — the unpause
+    // path in evaluatePauseSet fires and hits the `?? 0` fallback when it
+    // logs the prior spend.
+    const spend = spendStub({ a: 12 });
+    let cap: number | undefined = 10;
+    const tracker = new SpendTracker({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+      getSettings: () =>
+        settings({
+          budgetWeeklyUsdByAccount: cap != null ? { a: cap } : {},
+        }),
+      getAnthropicSpend: spend.get,
+      now: () => 1_700_000_000_000,
+    });
+    tracker.recompute();
+    expect(tracker.getPausedIds().has('a')).toBe(true);
+    // Remove cap AND simulate spend accessor returning null, so the logger's
+    // `?? 0` fallback fires during the unpause log line.
+    cap = undefined;
+    spend.set('a', null);
+    tracker.recompute();
+    expect(tracker.getPausedIds().has('a')).toBe(false);
+  });
+
+  describe('budget alerts — branch shapes', () => {
+    it('skips an alert when its cap is 0', () => {
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      upsertAlert(db, {
+        scope: 'budget',
+        budgetScope: 'account',
+        accountId: 'a',
+        thresholdPct: 50,
+        enabled: true,
+      });
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        // cap is 0 — resolveAlertContext returns cap=0, evaluate() drops it.
+        getSettings: () => settings({ budgetWeeklyUsdByAccount: { a: 0 } }),
+        getAnthropicSpend: () => 100,
+        now: () => Date.now(),
+      });
+      tracker.recompute();
+      expect(ipc.broadcasts.some((b) => b.type === 'alert_triggered')).toBe(false);
+    });
+
+    it('skips an alert when the observed pct is below threshold', () => {
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      upsertAlert(db, {
+        scope: 'budget',
+        budgetScope: 'account',
+        accountId: 'a',
+        thresholdPct: 80,
+        enabled: true,
+      });
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings({ budgetWeeklyUsdByAccount: { a: 10 } }),
+        // $5 of $10 = 50% — below 80% threshold.
+        getAnthropicSpend: () => 5,
+        now: () => Date.now(),
+      });
+      tracker.recompute();
+      expect(ipc.broadcasts.some((b) => b.type === 'alert_triggered')).toBe(false);
+    });
+
+    it('resolveAlertContext returns a null-cap entry when account alert targets a budget that is not set', () => {
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      upsertAlert(db, {
+        scope: 'budget',
+        budgetScope: 'account',
+        accountId: 'a',
+        thresholdPct: 50,
+        enabled: true,
+      });
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        // Per-account cap is not defined for 'a'; resolveAlertContext returns cap=null.
+        getSettings: () => settings({ budgetWeeklyUsdByAccount: {} }),
+        getAnthropicSpend: () => 100,
+        now: () => Date.now(),
+      });
+      tracker.recompute();
+      expect(ipc.broadcasts.some((b) => b.type === 'alert_triggered')).toBe(false);
+    });
+  });
+
+  describe('budget alerts — global scope', () => {
+    it('fires a global-scope budget alert only when every account has a known spend', () => {
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      seed(db, 'b');
+      upsertAlert(db, {
+        scope: 'budget',
+        budgetScope: 'global',
+        accountId: null,
+        thresholdPct: 50,
+        enabled: true,
+      });
+      const spend = spendStub({ a: 6, b: null });
+
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings({ budgetWeeklyUsdGlobal: 10 }),
+        getAnthropicSpend: spend.get,
+        now: () => Date.now(),
+      });
+      tracker.recompute();
+      // b is null — global cap is unknown, alert must not fire.
+      expect(ipc.broadcasts.some((b) => b.type === 'alert_triggered')).toBe(false);
+
+      // Fill in b's spend — now all accounts are known and alert should fire.
+      spend.set('b', 1);
+      tracker.recompute();
+      expect(ipc.broadcasts.some((b) => b.type === 'alert_triggered')).toBe(true);
+    });
   });
 });

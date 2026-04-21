@@ -26,7 +26,11 @@ export default function PersistenceBanner(): React.ReactElement | null {
   }, []);
 
   const dismiss = (): void => {
-    try { localStorage.setItem(STORAGE_KEY, '1'); } catch { /* no-op */ }
+    try {
+      localStorage.setItem(STORAGE_KEY, '1');
+    } catch {
+      /* no-op */
+    }
     setVisible(false);
   };
 
@@ -37,7 +41,8 @@ export default function PersistenceBanner(): React.ReactElement | null {
       <Info size={13} strokeWidth={2.5} className="text-ios-blue shrink-0 mt-0.5" />
       <div className="flex-1 min-w-0">
         <p className="text-[11px] text-black dark:text-white font-medium leading-snug">
-          The Sentinel background service keeps running when you close this window, so Claude Code continues to route through it.
+          The Sentinel background service keeps running when you close this window, so Claude Code
+          continues to route through it.
         </p>
         <p className="text-[10.5px] text-[#8E8E93] mt-0.5 leading-snug">
           Use the ⋯ menu → <span className="font-semibold">Quit Sentinel</span> to stop both.

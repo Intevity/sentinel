@@ -51,7 +51,9 @@ export function startUsageProber(deps: UsageProberDeps): UsageProberHandle {
       const fire = (): void => {
         const creds = readSentinelCredentials(acct.id);
         if (!creds?.accessToken) {
-          console.log(`[UsageProbe] Skipping ${acct.email} [${acct.planType}] (${acct.id}) — no stored credentials`);
+          console.log(
+            `[UsageProbe] Skipping ${acct.email} [${acct.planType}] (${acct.id}) — no stored credentials`,
+          );
           return;
         }
         console.log(`[UsageProbe] Probing ${acct.email} [${acct.planType}] (${acct.id})`);

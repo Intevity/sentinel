@@ -23,7 +23,8 @@ import {
 } from '../db.js';
 import type { InsertSecurityEvent } from '../db.js';
 
-const TEST_DB = () => join(tmpdir(), `sentinel-sec-db-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+const TEST_DB = () =>
+  join(tmpdir(), `sentinel-sec-db-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 
 function makeEvent(overrides: Partial<InsertSecurityEvent> = {}): InsertSecurityEvent {
   return {
@@ -51,7 +52,9 @@ function makeEvent(overrides: Partial<InsertSecurityEvent> = {}): InsertSecurity
 
 describe('security_events DB helpers', () => {
   let dbPath: string;
-  beforeEach(() => { dbPath = TEST_DB(); });
+  beforeEach(() => {
+    dbPath = TEST_DB();
+  });
   afterEach(() => {
     closeDb();
     if (existsSync(dbPath)) unlinkSync(dbPath);
@@ -190,7 +193,9 @@ describe('security_events DB helpers', () => {
 
 describe('security_allowlist DB helpers', () => {
   let dbPath: string;
-  beforeEach(() => { dbPath = TEST_DB(); });
+  beforeEach(() => {
+    dbPath = TEST_DB();
+  });
   afterEach(() => {
     closeDb();
     if (existsSync(dbPath)) unlinkSync(dbPath);
@@ -248,7 +253,10 @@ describe('security_allowlist DB helpers', () => {
   it('retroactively deletes mirrored notifications', () => {
     const db = getDb(dbPath);
     const ts = Date.now();
-    insertSecurityEvent(db, makeEvent({ ts, matchHash: 'h1', detectorId: 'd1', title: 'AWS access key' }));
+    insertSecurityEvent(
+      db,
+      makeEvent({ ts, matchHash: 'h1', detectorId: 'd1', title: 'AWS access key' }),
+    );
     insertNotification(db, {
       ts,
       accountId: 'acc-a',
@@ -274,7 +282,9 @@ describe('security_allowlist DB helpers', () => {
 
 describe('security_events — provenance column', () => {
   let dbPath: string;
-  beforeEach(() => { dbPath = TEST_DB(); });
+  beforeEach(() => {
+    dbPath = TEST_DB();
+  });
   afterEach(() => {
     closeDb();
     if (existsSync(dbPath)) unlinkSync(dbPath);

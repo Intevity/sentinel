@@ -46,8 +46,14 @@ export function usePermissionRules(): UsePermissionRulesResult {
       if (msg.type === 'permission_rules_changed') {
         setRules(msg.rules);
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, [refetch]);
 
   const upsert = useCallback(async (input: PermissionRuleInput): Promise<PermissionRule> => {

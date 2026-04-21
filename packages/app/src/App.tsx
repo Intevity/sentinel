@@ -1,5 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Users, Activity, BarChart3, AlertTriangle, Bell, Shield, ScrollText, Loader2, Settings as SettingsIcon, Repeat, HelpCircle } from 'lucide-react';
+import {
+  Users,
+  Activity,
+  BarChart3,
+  AlertTriangle,
+  Bell,
+  Shield,
+  ScrollText,
+  Loader2,
+  Settings as SettingsIcon,
+  Repeat,
+  HelpCircle,
+} from 'lucide-react';
 import SecurityShield from './components/SecurityShield.js';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import AccountSwitcher from './components/AccountSwitcher.js';
@@ -14,7 +26,9 @@ import ActivationBanner from './components/ActivationBanner.js';
 import HeaderMenu from './components/HeaderMenu.js';
 import PersistenceBanner from './components/PersistenceBanner.js';
 import SettingsPanel from './components/SettingsPanel.js';
-import SecurityRulesOverlay, { type SecurityOverlayTab } from './components/SecurityRulesOverlay.js';
+import SecurityRulesOverlay, {
+  type SecurityOverlayTab,
+} from './components/SecurityRulesOverlay.js';
 import SecurityPanel from './components/SecurityPanel.js';
 import SecurityEnforcementModal from './components/SecurityEnforcementModal.js';
 import SecuritySetupWizard from './components/SecuritySetupWizard.js';
@@ -37,13 +51,13 @@ import { listen } from '@tauri-apps/api/event';
 type Tab = 'accounts' | 'usage' | 'metrics' | 'overage' | 'notifications' | 'security' | 'logs';
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
-  { id: 'accounts',      label: 'Accounts', icon: Users         },
-  { id: 'security',      label: 'Security', icon: Shield        },
-  { id: 'notifications', label: 'Alerts',   icon: Bell          },
-  { id: 'usage',         label: 'Usage',    icon: Activity      },
-  { id: 'overage',       label: 'Overage',  icon: AlertTriangle },
-  { id: 'metrics',       label: 'Metrics',  icon: BarChart3     },
-  { id: 'logs',          label: 'Logs',     icon: ScrollText    },
+  { id: 'accounts', label: 'Accounts', icon: Users },
+  { id: 'security', label: 'Security', icon: Shield },
+  { id: 'notifications', label: 'Alerts', icon: Bell },
+  { id: 'usage', label: 'Usage', icon: Activity },
+  { id: 'overage', label: 'Overage', icon: AlertTriangle },
+  { id: 'metrics', label: 'Metrics', icon: BarChart3 },
+  { id: 'logs', label: 'Logs', icon: ScrollText },
 ];
 
 export default function App(): React.ReactElement {
@@ -67,7 +81,16 @@ export default function App(): React.ReactElement {
     setSettingsScrollTarget(target);
     setSettingsOpen(true);
   };
-  const { connected, activeAccount, accounts, rateLimitsVersion, overageVersion, probingAccountId, initializing, refetch } = useDaemon();
+  const {
+    connected,
+    activeAccount,
+    accounts,
+    rateLimitsVersion,
+    overageVersion,
+    probingAccountId,
+    initializing,
+    refetch,
+  } = useDaemon();
   const { recentErrors, hasUnseenErrors, markErrorsSeen } = useDaemonErrors();
   const { settings, update: updateSettings } = useSettings();
   // Which tab the SecurityRulesOverlay opens on. Header-shield click opens
@@ -94,9 +117,13 @@ export default function App(): React.ReactElement {
       setActiveTab('security');
       setSecurityExpandEventId(event.payload.eventId);
     })
-      .then((fn) => { unlisten = fn; })
+      .then((fn) => {
+        unlisten = fn;
+      })
       .catch(() => undefined);
-    return () => { unlisten?.(); };
+    return () => {
+      unlisten?.();
+    };
   }, []);
   const isRoundRobin = settings?.switchingMode === 'round-robin';
   // Picker status props — pulled once here so every tab's AccountViewPicker
@@ -111,10 +138,10 @@ export default function App(): React.ReactElement {
   // any enrolled account's data on a given tab without changing the proxy's
   // active token. Reset defaults on every tab switch so users aren't stuck on
   // a stale selection when they return.
-  const [usageView,    setUsageView]    = useState<PickerValue | undefined>(undefined);
-  const [metricsView,  setMetricsView]  = useState<string | undefined>(undefined);
-  const [overageView,  setOverageView]  = useState<string | undefined>(undefined);
-  const [alertsView,   setAlertsView]   = useState<string | undefined>(undefined);
+  const [usageView, setUsageView] = useState<PickerValue | undefined>(undefined);
+  const [metricsView, setMetricsView] = useState<string | undefined>(undefined);
+  const [overageView, setOverageView] = useState<string | undefined>(undefined);
+  const [alertsView, setAlertsView] = useState<string | undefined>(undefined);
   const [securityView, setSecurityView] = useState<string | undefined>(undefined);
 
   // First-run enforcement-mode picker. Shown once per install when scanning
@@ -127,6 +154,9 @@ export default function App(): React.ReactElement {
     if (settings.securityScanEnabled && settings.securityEnforcementMode === null) {
       setEnforcementModalOpen(true);
     }
+    // Deps intentionally scoped to the two scalar fields: a whole-object
+    // `settings` dep would re-fire every time any unrelated setting flips.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings?.securityScanEnabled, settings?.securityEnforcementMode]);
 
   // First-run tour. Opens when the user has never completed a tour
@@ -258,364 +288,409 @@ export default function App(): React.ReactElement {
 
   return (
     <MotionConfig reducedMotion="user">
-    <div ref={rootRef} className="flex flex-col h-full bg-[#F2F2F7] dark:bg-[#111111] select-none relative">
-
-      {/* ── Header ─────────────────────────────────────────── */}
-      {/* Responsive layout: brand on the left never shrinks; pill + icons
+      <div
+        ref={rootRef}
+        className="flex flex-col h-full bg-[#F2F2F7] dark:bg-[#111111] select-none relative"
+      >
+        {/* ── Header ─────────────────────────────────────────── */}
+        {/* Responsive layout: brand on the left never shrinks; pill + icons
           on the right never shrink; only the email absorbs the space
           pressure, truncating with an ellipsis and falling back to a
           hover tooltip with the full address. */}
-      <header className="flex items-center gap-3 px-4 pt-3 pb-2">
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <span className="relative flex h-2 w-2">
-            {connected && (
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-ios-green opacity-50" />
-            )}
-            <span
-              className={`relative inline-flex rounded-full h-2 w-2 ${
-                connected ? 'bg-ios-green' : 'bg-[#8E8E93]/40'
-              }`}
-            />
-          </span>
-          <span className="text-[15px] font-semibold text-black dark:text-white tracking-tight">
-            Sentinel
-          </span>
-          <button
-            onClick={() => setTourForceOpen(true)}
-            className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5 flex-shrink-0"
-            title="Replay the tour"
-            aria-label="Replay the tour"
-            data-tour-id="tour-replay"
-          >
-            <HelpCircle size={13} strokeWidth={2.2} />
-          </button>
-        </div>
+        <header className="flex items-center gap-3 px-4 pt-3 pb-2">
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className="relative flex h-2 w-2">
+              {connected && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-ios-green opacity-50" />
+              )}
+              <span
+                className={`relative inline-flex rounded-full h-2 w-2 ${
+                  connected ? 'bg-ios-green' : 'bg-[#8E8E93]/40'
+                }`}
+              />
+            </span>
+            <span className="text-[15px] font-semibold text-black dark:text-white tracking-tight">
+              Sentinel
+            </span>
+            <button
+              onClick={() => setTourForceOpen(true)}
+              className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5 flex-shrink-0"
+              title="Replay the tour"
+              aria-label="Replay the tour"
+              data-tour-id="tour-replay"
+            >
+              <HelpCircle size={13} strokeWidth={2.2} />
+            </button>
+          </div>
 
-        {/* Flex-1 + min-w-0 lets this cluster take the remaining width and
+          {/* Flex-1 + min-w-0 lets this cluster take the remaining width and
             pass the squeeze onto the email element below (which has truncate). */}
-        <div className="flex items-center gap-2 flex-1 min-w-0 justify-end">
-          {/* In round-robin mode, showing a single email is misleading
+          <div className="flex items-center gap-2 flex-1 min-w-0 justify-end">
+            {/* In round-robin mode, showing a single email is misleading
               (requests rotate) so we hide it — the RR pill below carries
               the signal. Otherwise show email + plan as pill, matching
               the account-card chip style. */}
-          {activeAccount && !isRoundRobin && (
-            <>
-              {activeInfo && <AccountColorDot color={accountColor(activeInfo)} size="xs" />}
-              <span
-                className="text-[11px] text-[#8E8E93] truncate min-w-0"
-                title={activeAccount.emailAddress + (planBadge ? ` (${planBadge})` : '')}
-              >
-                {activeAccount.emailAddress}
-              </span>
-              {planBadge && (
+            {activeAccount && !isRoundRobin && (
+              <>
+                {activeInfo && <AccountColorDot color={accountColor(activeInfo)} size="xs" />}
                 <span
-                  className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${planColor(activeAccount.billingType)}`}
+                  className="text-[11px] text-[#8E8E93] truncate min-w-0"
+                  title={activeAccount.emailAddress + (planBadge ? ` (${planBadge})` : '')}
                 >
-                  {planBadge}
+                  {activeAccount.emailAddress}
                 </span>
-              )}
-            </>
-          )}
-          {/* Round-robin pill — surfaced in the header so users always know
+                {planBadge && (
+                  <span
+                    className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${planColor(activeAccount.billingType)}`}
+                  >
+                    {planBadge}
+                  </span>
+                )}
+              </>
+            )}
+            {/* Round-robin pill — surfaced in the header so users always know
               their requests are rotating, even though the email above is
               still the single "active" account in ~/.claude.json.
               flex-shrink-0 + whitespace-nowrap keeps the pill at its
               natural width regardless of how cramped the email gets. */}
-          {isRoundRobin && (
-            <span
-              className="inline-flex items-center gap-1 text-[9px] font-semibold text-ios-blue bg-ios-blue/10 px-1.5 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0 whitespace-nowrap"
-              title={`Round-robin is on; rotating requests using the "${rrStrategyLabel}" strategy`}
+            {isRoundRobin && (
+              <span
+                className="inline-flex items-center gap-1 text-[9px] font-semibold text-ios-blue bg-ios-blue/10 px-1.5 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0 whitespace-nowrap"
+                title={`Round-robin is on; rotating requests using the "${rrStrategyLabel}" strategy`}
+              >
+                <Repeat size={9} strokeWidth={2.5} />
+                Round-Robin · {rrStrategyLabel}
+              </span>
+            )}
+            <button
+              onClick={() => {
+                setSecurityOverlayTab('rules');
+                setRulesOpen(true);
+              }}
+              className="inline-flex items-center justify-center hover:opacity-80 transition-opacity transform-gpu p-0.5 -m-0.5 flex-shrink-0 leading-none"
+              aria-label="Security"
             >
-              <Repeat size={9} strokeWidth={2.5} />
-              Round-Robin · {rrStrategyLabel}
-            </span>
-          )}
-          <button
-            onClick={() => {
-              setSecurityOverlayTab('rules');
-              setRulesOpen(true);
-            }}
-            className="inline-flex items-center justify-center hover:opacity-80 transition-opacity transform-gpu p-0.5 -m-0.5 flex-shrink-0 leading-none"
-            aria-label="Security"
-          >
-            <SecurityShield
-              scanOn={settings?.securityScanEnabled ?? false}
-              permsOn={settings?.toolPermissionsEnabled ?? false}
-            />
-          </button>
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5 flex-shrink-0"
-            title="Settings"
-            aria-label="Settings"
-          >
-            <SettingsIcon size={16} strokeWidth={2.2} />
-          </button>
-          <div className="flex-shrink-0">
-            <HeaderMenu measureRef={popoverRef} />
-          </div>
-        </div>
-      </header>
-
-      <AnimatePresence>
-        {settingsOpen && (
-          <SettingsPanel
-            onClose={() => {
-              setSettingsOpen(false);
-              setSettingsScrollTarget(null);
-            }}
-            measureRef={overlayRef}
-            initialScrollTarget={settingsScrollTarget}
-            onRunSetupWizard={() => {
-              setSettingsOpen(false);
-              setSettingsScrollTarget(null);
-              setWizardForceOpen(true);
-            }}
-            onManageRules={() => {
-              setSettingsOpen(false);
-              setSettingsScrollTarget(null);
-              setSecurityOverlayTab('rules');
-              setRulesOpen(true);
-            }}
-            onManageAllowlist={() => {
-              setSettingsOpen(false);
-              setSettingsScrollTarget(null);
-              setSecurityOverlayTab('allowlist');
-              setRulesOpen(true);
-            }}
-          />
-        )}
-        {rulesOpen && !settingsOpen && (
-          <SecurityRulesOverlay
-            onClose={() => setRulesOpen(false)}
-            measureRef={overlayRef}
-            initialTab={securityOverlayTab}
-            settings={settings}
-            updateSettings={updateSettings}
-            onRunSetupWizard={() => {
-              setRulesOpen(false);
-              setWizardForceOpen(true);
-            }}
-          />
-        )}
-      </AnimatePresence>
-
-      {enforcementModalOpen && settings && !wizardOpen && (
-        <SecurityEnforcementModal
-          initial={settings.securityEnforcementMode}
-          onClose={() => setEnforcementModalOpen(false)}
-        />
-      )}
-
-      {wizardOpen && (
-        <SecuritySetupWizard
-          measureRef={overlayRef}
-          isFirstRun={wizardIsFirstRun.current}
-          onClose={() => {
-            wizardClosedThisSession.current = true;
-            setWizardOpen(false);
-            // Applying a preset also writes a real enforcement mode, so
-            // dismiss the older enforcement modal once the wizard closes.
-            setEnforcementModalOpen(false);
-          }}
-        />
-      )}
-
-      {tourOpen && (
-        <Tour onFinish={finishTour} onStepEnter={handleTourStepEnter} />
-      )}
-
-      {/* ── Startup splash: shown until the first successful IPC round-trip,
-             so child components never get a chance to render their own
-             "Refresh failed" errors while the daemon is still coming up. */}
-      {initializing ? (
-        <main className="flex-1 flex flex-col items-center justify-center gap-3 px-6">
-          <Loader2 size={28} strokeWidth={2.2} className="animate-spin text-ios-blue" />
-          <p className="text-[13px] font-medium text-black dark:text-white">Starting daemon…</p>
-          <p className="text-[11px] text-[#8E8E93] text-center leading-relaxed max-w-[260px]">
-            Waiting for the Sentinel background service to come online. This usually takes a second.
-          </p>
-        </main>
-      ) : (
-        <>
-          {/* ── Security: pending block approval banner ──────────── */}
-          {/* Rendered above the other banners so a blocked request can't be
-              missed. Takes visual priority while any block is held. */}
-          <PendingBlockBanner />
-
-          {/* ── Activation banner (patches ~/.claude/settings.json) ─ */}
-          <ActivationBanner />
-
-          {/* ── One-time persistence explanation ─────────────────── */}
-          <PersistenceBanner />
-
-          {/* ── Segmented tab control ───────────────────────────── */}
-          <div className="px-4 py-2">
-            <div className="flex bg-black/[0.06] dark:bg-white/[0.08] rounded-xl p-[3px]">
-              {TABS.map(({ id, label, icon: Icon }) => {
-                const active = activeTab === id;
-                return (
-                  <button
-                    key={id}
-                    onClick={() => setActiveTab(id)}
-                    data-tour-id={`tab-${id}`}
-                    className={`relative flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-[9px] text-[11px] font-medium transition-colors duration-150 ${
-                      active
-                        ? 'text-black dark:text-white'
-                        : 'text-[#8E8E93] hover:text-black dark:hover:text-white'
-                    }`}
-                  >
-                    {active && (
-                      <motion.span
-                        layoutId="tab-pill"
-                        className="absolute inset-0 rounded-[9px] bg-white dark:bg-[#3A3A3C] shadow-[0_1px_3px_rgba(0,0,0,0.15)]"
-                        transition={{ type: 'spring', stiffness: 500, damping: 40 }}
-                      />
-                    )}
-                    <span className="relative z-10 flex items-center gap-1 transform-gpu">
-                      <Icon size={11} strokeWidth={2.2} />
-                      {label}
-                    </span>
-                  </button>
-                );
-              })}
+              <SecurityShield
+                scanOn={settings?.securityScanEnabled ?? false}
+                permsOn={settings?.toolPermissionsEnabled ?? false}
+              />
+            </button>
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5 flex-shrink-0"
+              title="Settings"
+              aria-label="Settings"
+            >
+              <SettingsIcon size={16} strokeWidth={2.2} />
+            </button>
+            <div className="flex-shrink-0">
+              <HeaderMenu measureRef={popoverRef} />
             </div>
           </div>
+        </header>
 
-          {/* ── Tab content ─────────────────────────────────────── */}
-          {/* Logs tab wants a single internal scroll — the log list inside
+        <AnimatePresence>
+          {settingsOpen && (
+            <SettingsPanel
+              onClose={() => {
+                setSettingsOpen(false);
+                setSettingsScrollTarget(null);
+              }}
+              measureRef={overlayRef}
+              initialScrollTarget={settingsScrollTarget}
+              onRunSetupWizard={() => {
+                setSettingsOpen(false);
+                setSettingsScrollTarget(null);
+                setWizardForceOpen(true);
+              }}
+              onManageRules={() => {
+                setSettingsOpen(false);
+                setSettingsScrollTarget(null);
+                setSecurityOverlayTab('rules');
+                setRulesOpen(true);
+              }}
+              onManageAllowlist={() => {
+                setSettingsOpen(false);
+                setSettingsScrollTarget(null);
+                setSecurityOverlayTab('allowlist');
+                setRulesOpen(true);
+              }}
+            />
+          )}
+          {rulesOpen && !settingsOpen && (
+            <SecurityRulesOverlay
+              onClose={() => setRulesOpen(false)}
+              measureRef={overlayRef}
+              initialTab={securityOverlayTab}
+              settings={settings}
+              updateSettings={updateSettings}
+              onRunSetupWizard={() => {
+                setRulesOpen(false);
+                setWizardForceOpen(true);
+              }}
+            />
+          )}
+        </AnimatePresence>
+
+        {enforcementModalOpen && settings && !wizardOpen && (
+          <SecurityEnforcementModal
+            initial={settings.securityEnforcementMode}
+            onClose={() => setEnforcementModalOpen(false)}
+          />
+        )}
+
+        {wizardOpen && (
+          <SecuritySetupWizard
+            measureRef={overlayRef}
+            isFirstRun={wizardIsFirstRun.current}
+            onClose={() => {
+              wizardClosedThisSession.current = true;
+              setWizardOpen(false);
+              // Applying a preset also writes a real enforcement mode, so
+              // dismiss the older enforcement modal once the wizard closes.
+              setEnforcementModalOpen(false);
+            }}
+          />
+        )}
+
+        {tourOpen && <Tour onFinish={finishTour} onStepEnter={handleTourStepEnter} />}
+
+        {/* ── Startup splash: shown until the first successful IPC round-trip,
+             so child components never get a chance to render their own
+             "Refresh failed" errors while the daemon is still coming up. */}
+        {initializing ? (
+          <main className="flex-1 flex flex-col items-center justify-center gap-3 px-6">
+            <Loader2 size={28} strokeWidth={2.2} className="animate-spin text-ios-blue" />
+            <p className="text-[13px] font-medium text-black dark:text-white">Starting daemon…</p>
+            <p className="text-[11px] text-[#8E8E93] text-center leading-relaxed max-w-[260px]">
+              Waiting for the Sentinel background service to come online. This usually takes a
+              second.
+            </p>
+          </main>
+        ) : (
+          <>
+            {/* ── Security: pending block approval banner ──────────── */}
+            {/* Rendered above the other banners so a blocked request can't be
+              missed. Takes visual priority while any block is held. */}
+            <PendingBlockBanner />
+
+            {/* ── Activation banner (patches ~/.claude/settings.json) ─ */}
+            <ActivationBanner />
+
+            {/* ── One-time persistence explanation ─────────────────── */}
+            <PersistenceBanner />
+
+            {/* ── Segmented tab control ───────────────────────────── */}
+            <div className="px-4 py-2">
+              <div className="flex bg-black/[0.06] dark:bg-white/[0.08] rounded-xl p-[3px]">
+                {TABS.map(({ id, label, icon: Icon }) => {
+                  const active = activeTab === id;
+                  return (
+                    <button
+                      key={id}
+                      onClick={() => setActiveTab(id)}
+                      data-tour-id={`tab-${id}`}
+                      className={`relative flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-[9px] text-[11px] font-medium transition-colors duration-150 ${
+                        active
+                          ? 'text-black dark:text-white'
+                          : 'text-[#8E8E93] hover:text-black dark:hover:text-white'
+                      }`}
+                    >
+                      {active && (
+                        <motion.span
+                          layoutId="tab-pill"
+                          className="absolute inset-0 rounded-[9px] bg-white dark:bg-[#3A3A3C] shadow-[0_1px_3px_rgba(0,0,0,0.15)]"
+                          transition={{ type: 'spring', stiffness: 500, damping: 40 }}
+                        />
+                      )}
+                      <span className="relative z-10 flex items-center gap-1 transform-gpu">
+                        <Icon size={11} strokeWidth={2.2} />
+                        {label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* ── Tab content ─────────────────────────────────────── */}
+            {/* Logs tab wants a single internal scroll — the log list inside
               LogsViewer uses flex-1 + overflow-y-auto, so <main> must NOT
               also scroll and must hand down a bounded height. Other tabs
               keep the outer overflow-y-auto so their content grows naturally
               under the auto-resize hook. */}
-          <main
-            // Force the 5px custom scrollbar track to always be rendered (not
-            // just on overflow). The app's ::-webkit-scrollbar in index.css is
-            // non-overlay so it occupies real layout space; with `auto`, the
-            // track toggles on/off at the overflow boundary, reflowing card
-            // widths and feeding useAutoResizeWindow → a visible flash on the
-            // right edge. `scroll` reserves the track permanently; the thumb
-            // still only renders when there's actually content to scroll.
-            className={`flex-1 min-h-0 px-4 pb-4 ${
-            activeTab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-y-scroll'
-          }`}>
-            <div
-              ref={contentRef}
-              className={activeTab === 'logs' ? 'flex-1 min-h-0 flex flex-col' : undefined}
+            <main
+              // Force the 5px custom scrollbar track to always be rendered (not
+              // just on overflow). The app's ::-webkit-scrollbar in index.css is
+              // non-overlay so it occupies real layout space; with `auto`, the
+              // track toggles on/off at the overflow boundary, reflowing card
+              // widths and feeding useAutoResizeWindow → a visible flash on the
+              // right edge. `scroll` reserves the track permanently; the thumb
+              // still only renders when there's actually content to scroll.
+              className={`flex-1 min-h-0 px-4 pb-4 ${
+                activeTab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-y-scroll'
+              }`}
             >
-              <AnimatePresence mode="wait" initial={false}>
-                <motion.div
-                  key={activeTab}
-                  initial={{ opacity: 0, x: 6 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -6 }}
-                  transition={{ duration: DUR.fast, ease: EASE_STD }}
-                  className={activeTab === 'logs' ? 'flex-1 min-h-0 flex flex-col' : undefined}
-                >
-                  {(() => {
-                    // Only show the "no accounts" empty state when the daemon confirms it
-                    // is connected and the accounts list is genuinely empty. While loading
-                    // (connected=false, accounts=[]) we fall through to the normal content
-                    // so each component can show its own disconnected state.
-                    const noAccounts = connected && accounts.length === 0;
-                    if (activeTab === 'accounts') return <AccountSwitcher onAccountsChanged={refetch} />;
-                    // Logs reads the daemon — no account required. Surface
-                    // it on fresh installs (users may want to see enrollment
-                    // activity before any account is added).
-                    if (activeTab === 'logs') return <LogsViewer />;
-                    if (noAccounts) return (
-                      <div className="rounded-2xl bg-white dark:bg-[#1E1E1E] shadow-card px-4 py-10 text-center mt-1">
-                        <p className="text-[14px] font-medium text-black dark:text-white">No accounts</p>
-                        <p className="text-[12px] text-[#8E8E93] mt-1">Add an account in the Accounts tab to see data here.</p>
-                      </div>
-                    );
-                    if (activeTab === 'usage') {
-                      const picker = (
-                        <AccountViewPicker
-                          accounts={accounts}
-                          activeAccount={activeAccount}
-                          showPoolOption={isRoundRobin}
-                          switchingMode={pickerSwitchingMode}
-                          poolExcludedIds={pickerPoolExcludedIds}
-                          {...(usageView !== undefined ? { value: usageView } : {})}
-                          onChange={setUsageView}
-                        />
-                      );
-                      return <>{picker}<UsageView rateLimitsVersion={rateLimitsVersion} isProbing={probingAccountId !== null} activeAccount={activeAccount} accounts={accounts} viewAccountId={usageView} /></>;
-                    }
-                    if (activeTab === 'metrics') {
-                      const picker = (
-                        <AccountViewPicker
-                          accounts={accounts}
-                          activeAccount={activeAccount}
-                          switchingMode={pickerSwitchingMode}
-                          poolExcludedIds={pickerPoolExcludedIds}
-                          {...(metricsView !== undefined ? { value: metricsView } : {})}
-                          onChange={(v) => setMetricsView(v === POOL_VIEW ? undefined : v)}
-                        />
-                      );
-                      return <>{picker}<MetricsDashboard viewAccountId={metricsView} /></>;
-                    }
-                    if (activeTab === 'overage') {
-                      const picker = (
-                        <AccountViewPicker
-                          accounts={accounts}
-                          activeAccount={activeAccount}
-                          switchingMode={pickerSwitchingMode}
-                          poolExcludedIds={pickerPoolExcludedIds}
-                          {...(overageView !== undefined ? { value: overageView } : {})}
-                          onChange={(v) => setOverageView(v === POOL_VIEW ? undefined : v)}
-                        />
-                      );
-                      return <>{picker}<OverageTimeline overageVersion={overageVersion} viewAccountId={overageView} /></>;
-                    }
-                    if (activeTab === 'notifications') {
-                      const picker = (
-                        <AccountViewPicker
-                          accounts={accounts}
-                          activeAccount={activeAccount}
-                          switchingMode={pickerSwitchingMode}
-                          poolExcludedIds={pickerPoolExcludedIds}
-                          {...(alertsView !== undefined ? { value: alertsView } : {})}
-                          onChange={(v) => setAlertsView(v === POOL_VIEW ? undefined : v)}
-                        />
-                      );
-                      return <>{picker}<AlertsEditor activeAccount={activeAccount} accounts={accounts} viewAccountId={alertsView} /></>;
-                    }
-                    if (activeTab === 'security') {
-                      const picker = (
-                        <AccountViewPicker
-                          accounts={accounts}
-                          activeAccount={activeAccount}
-                          switchingMode={pickerSwitchingMode}
-                          poolExcludedIds={pickerPoolExcludedIds}
-                          {...(securityView !== undefined ? { value: securityView } : {})}
-                          onChange={(v) => setSecurityView(v === POOL_VIEW ? undefined : v)}
-                        />
-                      );
-                      return <>{picker}<SecurityPanel
-                        viewAccountId={securityView}
-                        onRequestOpenSettings={openSettingsAt}
-                        autoExpandEventId={securityExpandEventId}
-                        onAutoExpandHandled={() => setSecurityExpandEventId(null)}
-                      /></>;
-                    }
-                    return null;
-                  })()}
-                </motion.div>
-              </AnimatePresence>
-            </div>
-          </main>
-        </>
-      )}
+              <div
+                ref={contentRef}
+                className={activeTab === 'logs' ? 'flex-1 min-h-0 flex flex-col' : undefined}
+              >
+                <AnimatePresence mode="wait" initial={false}>
+                  <motion.div
+                    key={activeTab}
+                    initial={{ opacity: 0, x: 6 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -6 }}
+                    transition={{ duration: DUR.fast, ease: EASE_STD }}
+                    className={activeTab === 'logs' ? 'flex-1 min-h-0 flex flex-col' : undefined}
+                  >
+                    {(() => {
+                      // Only show the "no accounts" empty state when the daemon confirms it
+                      // is connected and the accounts list is genuinely empty. While loading
+                      // (connected=false, accounts=[]) we fall through to the normal content
+                      // so each component can show its own disconnected state.
+                      const noAccounts = connected && accounts.length === 0;
+                      if (activeTab === 'accounts')
+                        return <AccountSwitcher onAccountsChanged={refetch} />;
+                      // Logs reads the daemon — no account required. Surface
+                      // it on fresh installs (users may want to see enrollment
+                      // activity before any account is added).
+                      if (activeTab === 'logs') return <LogsViewer />;
+                      if (noAccounts)
+                        return (
+                          <div className="rounded-2xl bg-white dark:bg-[#1E1E1E] shadow-card px-4 py-10 text-center mt-1">
+                            <p className="text-[14px] font-medium text-black dark:text-white">
+                              No accounts
+                            </p>
+                            <p className="text-[12px] text-[#8E8E93] mt-1">
+                              Add an account in the Accounts tab to see data here.
+                            </p>
+                          </div>
+                        );
+                      if (activeTab === 'usage') {
+                        const picker = (
+                          <AccountViewPicker
+                            accounts={accounts}
+                            activeAccount={activeAccount}
+                            showPoolOption={isRoundRobin}
+                            switchingMode={pickerSwitchingMode}
+                            poolExcludedIds={pickerPoolExcludedIds}
+                            {...(usageView !== undefined ? { value: usageView } : {})}
+                            onChange={setUsageView}
+                          />
+                        );
+                        return (
+                          <>
+                            {picker}
+                            <UsageView
+                              rateLimitsVersion={rateLimitsVersion}
+                              isProbing={probingAccountId !== null}
+                              activeAccount={activeAccount}
+                              accounts={accounts}
+                              viewAccountId={usageView}
+                            />
+                          </>
+                        );
+                      }
+                      if (activeTab === 'metrics') {
+                        const picker = (
+                          <AccountViewPicker
+                            accounts={accounts}
+                            activeAccount={activeAccount}
+                            switchingMode={pickerSwitchingMode}
+                            poolExcludedIds={pickerPoolExcludedIds}
+                            {...(metricsView !== undefined ? { value: metricsView } : {})}
+                            onChange={(v) => setMetricsView(v === POOL_VIEW ? undefined : v)}
+                          />
+                        );
+                        return (
+                          <>
+                            {picker}
+                            <MetricsDashboard viewAccountId={metricsView} />
+                          </>
+                        );
+                      }
+                      if (activeTab === 'overage') {
+                        const picker = (
+                          <AccountViewPicker
+                            accounts={accounts}
+                            activeAccount={activeAccount}
+                            switchingMode={pickerSwitchingMode}
+                            poolExcludedIds={pickerPoolExcludedIds}
+                            {...(overageView !== undefined ? { value: overageView } : {})}
+                            onChange={(v) => setOverageView(v === POOL_VIEW ? undefined : v)}
+                          />
+                        );
+                        return (
+                          <>
+                            {picker}
+                            <OverageTimeline
+                              overageVersion={overageVersion}
+                              viewAccountId={overageView}
+                            />
+                          </>
+                        );
+                      }
+                      if (activeTab === 'notifications') {
+                        const picker = (
+                          <AccountViewPicker
+                            accounts={accounts}
+                            activeAccount={activeAccount}
+                            switchingMode={pickerSwitchingMode}
+                            poolExcludedIds={pickerPoolExcludedIds}
+                            {...(alertsView !== undefined ? { value: alertsView } : {})}
+                            onChange={(v) => setAlertsView(v === POOL_VIEW ? undefined : v)}
+                          />
+                        );
+                        return (
+                          <>
+                            {picker}
+                            <AlertsEditor
+                              activeAccount={activeAccount}
+                              accounts={accounts}
+                              viewAccountId={alertsView}
+                            />
+                          </>
+                        );
+                      }
+                      if (activeTab === 'security') {
+                        const picker = (
+                          <AccountViewPicker
+                            accounts={accounts}
+                            activeAccount={activeAccount}
+                            switchingMode={pickerSwitchingMode}
+                            poolExcludedIds={pickerPoolExcludedIds}
+                            {...(securityView !== undefined ? { value: securityView } : {})}
+                            onChange={(v) => setSecurityView(v === POOL_VIEW ? undefined : v)}
+                          />
+                        );
+                        return (
+                          <>
+                            {picker}
+                            <SecurityPanel
+                              viewAccountId={securityView}
+                              onRequestOpenSettings={openSettingsAt}
+                              autoExpandEventId={securityExpandEventId}
+                              onAutoExpandHandled={() => setSecurityExpandEventId(null)}
+                            />
+                          </>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </motion.div>
+                </AnimatePresence>
+              </div>
+            </main>
+          </>
+        )}
 
-      <Footer
-        daemonErrors={recentErrors}
-        hasUnseenErrors={hasUnseenErrors}
-        markErrorsSeen={markErrorsSeen}
-      />
-
-    </div>
+        <Footer
+          daemonErrors={recentErrors}
+          hasUnseenErrors={hasUnseenErrors}
+          markErrorsSeen={markErrorsSeen}
+        />
+      </div>
     </MotionConfig>
   );
 }

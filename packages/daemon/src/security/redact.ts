@@ -54,9 +54,7 @@ export function buildSnippet(params: {
   const after = fullText.slice(matchEnd, windowEnd);
   const prefix = windowStart > 0 ? '…' : '';
   const suffix = windowEnd < fullText.length ? '…' : '';
-  return `${prefix}${before}[REDACTED:${kind}]${after}${suffix}`
-    .replace(/\s+/g, ' ')
-    .trim();
+  return `${prefix}${before}[REDACTED:${kind}]${after}${suffix}`.replace(/\s+/g, ' ').trim();
 }
 
 /** Hash of the 40-char window around a match — for secondary dedup when the

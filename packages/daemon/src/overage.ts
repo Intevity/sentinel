@@ -45,10 +45,10 @@ export class OverageStateMachine {
     const rawReason = headers[OVERAGE_REASON_HEADER];
     const rawInUse = headers[OVERAGE_IN_USE_HEADER];
 
-    const status = Array.isArray(rawStatus) ? rawStatus[0] ?? null : rawStatus ?? null;
-    const resetStr = Array.isArray(rawReset) ? rawReset[0] ?? null : rawReset ?? null;
-    const disabledReason = Array.isArray(rawReason) ? rawReason[0] ?? null : rawReason ?? null;
-    const inUseStr = Array.isArray(rawInUse) ? rawInUse[0] ?? null : rawInUse ?? null;
+    const status = Array.isArray(rawStatus) ? (rawStatus[0] ?? null) : (rawStatus ?? null);
+    const resetStr = Array.isArray(rawReset) ? (rawReset[0] ?? null) : (rawReset ?? null);
+    const disabledReason = Array.isArray(rawReason) ? (rawReason[0] ?? null) : (rawReason ?? null);
+    const inUseStr = Array.isArray(rawInUse) ? (rawInUse[0] ?? null) : (rawInUse ?? null);
 
     const resetsAt = resetStr !== null ? parseInt(resetStr, 10) : null;
     // `inUse` is null when the overage window is absent entirely (e.g. API-key
@@ -147,11 +147,7 @@ export class OverageStateMachine {
    * transition that was already persisted for the active overage window.
    * `transitions` are the transition types already recorded for this window.
    */
-  rehydrate(
-    accountId: string,
-    state: OverageState,
-    transitions: OverageTransition[],
-  ): void {
+  rehydrate(accountId: string, state: OverageState, transitions: OverageTransition[]): void {
     this.states.set(accountId, state);
     this.fired.set(accountId, {
       resetsAt: state.resetsAt,

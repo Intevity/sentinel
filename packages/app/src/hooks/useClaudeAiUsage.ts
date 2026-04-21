@@ -27,11 +27,17 @@ export function useClaudeAiUsage(accountId: string | undefined): UseClaudeAiUsag
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!accountId) { setLoading(false); return; }
+    if (!accountId) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
-        const res = await sendToSentinel<{ snapshot: ClaudeAiUsageSnapshot | null; error: UsageError }>({
+        const res = await sendToSentinel<{
+          snapshot: ClaudeAiUsageSnapshot | null;
+          error: UsageError;
+        }>({
           type: 'get_claude_ai_usage',
           accountId,
         });
@@ -44,7 +50,9 @@ export function useClaudeAiUsage(accountId: string | undefined): UseClaudeAiUsag
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   useEffect(() => {
@@ -55,8 +63,14 @@ export function useClaudeAiUsage(accountId: string | undefined): UseClaudeAiUsag
       if (msg.accountId !== accountId) return;
       setSnapshot(msg.snapshot);
       setError(msg.error);
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, [accountId]);
 
   return { snapshot, error, loading };

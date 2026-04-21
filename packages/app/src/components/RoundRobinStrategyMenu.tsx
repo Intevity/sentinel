@@ -24,7 +24,7 @@ const OPTIONS: StrategyOption[] = [
   {
     value: 'earliest-reset',
     label: 'Earliest reset',
-    description: "Pin to the account whose window resets soonest.",
+    description: 'Pin to the account whose window resets soonest.',
   },
 ];
 

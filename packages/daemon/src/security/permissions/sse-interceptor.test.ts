@@ -17,7 +17,9 @@ function collectingSink(): InterceptorSink & { chunks: string[]; joined: () => s
       chunks.push(typeof c === 'string' ? c : c.toString('utf-8'));
     },
     chunks,
-    joined() { return chunks.join(''); },
+    joined() {
+      return chunks.join('');
+    },
   };
 }
 
@@ -70,7 +72,10 @@ function buildToolUseStream(opts: {
     });
   }
   out += formatSseFrame('content_block_stop', { type: 'content_block_stop', index: idx });
-  out += formatSseFrame('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' } });
+  out += formatSseFrame('message_delta', {
+    type: 'message_delta',
+    delta: { stop_reason: 'end_turn' },
+  });
   out += formatSseFrame('message_stop', { type: 'message_stop' });
   return out;
 }
@@ -138,7 +143,9 @@ describe('interceptor — allow decision', () => {
     const stream = buildToolUseStream({ name: 'Bash', inputParts: ['{"command":"rm -rf /"}'] });
     const it = createPermissionsSseInterceptor({
       sink,
-      rules: compileRules([rule({ decision: 'deny', tool: 'Bash', pattern: 'rm -rf *', raw: 'Bash(rm -rf *)' })]),
+      rules: compileRules([
+        rule({ decision: 'deny', tool: 'Bash', pattern: 'rm -rf *', raw: 'Bash(rm -rf *)' }),
+      ]),
       settings: settings({ toolPermissionsEnabled: false }),
       accountId: 'acc-1',
     });
@@ -152,7 +159,12 @@ describe('interceptor — deny decision', () => {
   it('substitutes synthetic text block for a denied tool_use', () => {
     const sink = collectingSink();
     const onBlocked = vi.fn();
-    const denyRule = rule({ decision: 'deny', tool: 'Bash', pattern: 'rm -rf *', raw: 'Bash(rm -rf *)' });
+    const denyRule = rule({
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: 'rm -rf *',
+      raw: 'Bash(rm -rf *)',
+    });
     const stream = buildToolUseStream({ name: 'Bash', inputParts: ['{"command":"rm -rf /tmp"}'] });
     const it = createPermissionsSseInterceptor({
       sink,
@@ -180,7 +192,10 @@ describe('interceptor — deny decision', () => {
   it('denies whole-tool denied WebFetch (even though request-level strip usually handles that)', () => {
     const sink = collectingSink();
     const denyRule = rule({ decision: 'deny', tool: 'WebFetch', pattern: null, raw: 'WebFetch' });
-    const stream = buildToolUseStream({ name: 'WebFetch', inputParts: ['{"url":"https://example.com"}'] });
+    const stream = buildToolUseStream({
+      name: 'WebFetch',
+      inputParts: ['{"url":"https://example.com"}'],
+    });
     const it = createPermissionsSseInterceptor({
       sink,
       rules: compileRules([denyRule]),
@@ -482,5 +497,222 @@ describe('interceptor — multiple blocks', () => {
     // Read tool_use should be passed verbatim
     expect(out).toContain('"name":"Read"');
     expect(out).toContain('\\"file_path\\":\\"/a\\"');
+  });
+});
+
+describe('interceptor — async hold flow', () => {
+  const denyRule = rule({ decision: 'deny', tool: 'Bash', pattern: 'rm *', raw: 'Bash(rm *)' });
+
+  it('approve: flushes the buffered tool_use frames verbatim to the client', async () => {
+    const sink = collectingSink();
+    let resolveDecision: ((o: 'approve' | 'deny' | 'timeout') => void) | null = null;
+    const onBlocked = vi.fn();
+    const it = createPermissionsSseInterceptor({
+      sink,
+      rules: compileRules([denyRule]),
+      settings: settings(),
+      accountId: 'acc-h',
+      awaitDecision: () =>
+        new Promise<'approve' | 'deny' | 'timeout'>((resolve) => {
+          resolveDecision = resolve;
+        }),
+      onBlocked,
+    });
+    const stream = buildToolUseStream({ name: 'Bash', inputParts: ['{"command":"rm -rf /tmp"}'] });
+    it.push(stream);
+
+    // Pending decision has been triggered; let the microtask settle.
+    await Promise.resolve();
+    expect(resolveDecision).not.toBeNull();
+
+    // Frames that arrive during the hold must accumulate in holdBuffer.
+    it.push(formatSseFrame('ping', { type: 'ping' }));
+
+    resolveDecision!('approve');
+    // Let the async decideAndFlush finish.
+    await new Promise((r) => setTimeout(r, 0));
+    it.flush();
+
+    const out = sink.joined();
+    // Approved → original tool_use body flushed verbatim.
+    expect(out).toContain('"name":"Bash"');
+    expect(out).toContain('rm -rf /tmp');
+    // And the ping emitted during the hold came through.
+    expect(out).toContain('"type":"ping"');
+    // No synthetic block text was inserted.
+    expect(out).not.toContain('[Blocked by Claude Sentinel');
+    // onBlocked is NOT invoked on the async-approve path (the pending
+    // registry's onFinalized already persists the event — no double-fire).
+    expect(onBlocked).not.toHaveBeenCalled();
+  });
+
+  it('deny: substitutes the synthetic block text even on the async path', async () => {
+    const sink = collectingSink();
+    let resolveDecision: ((o: 'approve' | 'deny' | 'timeout') => void) | null = null;
+    const it = createPermissionsSseInterceptor({
+      sink,
+      rules: compileRules([denyRule]),
+      settings: settings(),
+      accountId: 'acc-h',
+      awaitDecision: () =>
+        new Promise<'approve' | 'deny' | 'timeout'>((resolve) => {
+          resolveDecision = resolve;
+        }),
+    });
+    const stream = buildToolUseStream({ name: 'Bash', inputParts: ['{"command":"rm -rf /tmp"}'] });
+    it.push(stream);
+    await Promise.resolve();
+    resolveDecision!('deny');
+    await new Promise((r) => setTimeout(r, 0));
+    it.flush();
+
+    const out = sink.joined();
+    expect(out).toContain('[Blocked by Claude Sentinel: Bash(rm *)]');
+    // Original tool_use frames must NOT appear.
+    expect(out).not.toContain('rm -rf /tmp');
+  });
+
+  it('timeout: treated identically to deny on the async path', async () => {
+    const sink = collectingSink();
+    let resolveDecision: ((o: 'approve' | 'deny' | 'timeout') => void) | null = null;
+    const it = createPermissionsSseInterceptor({
+      sink,
+      rules: compileRules([denyRule]),
+      settings: settings(),
+      accountId: 'acc-h',
+      awaitDecision: () =>
+        new Promise<'approve' | 'deny' | 'timeout'>((resolve) => {
+          resolveDecision = resolve;
+        }),
+    });
+    it.push(buildToolUseStream({ name: 'Bash', inputParts: ['{"command":"rm -rf /"}'] }));
+    await Promise.resolve();
+    resolveDecision!('timeout');
+    await new Promise((r) => setTimeout(r, 0));
+    it.flush();
+
+    expect(sink.joined()).toContain('[Blocked by Claude Sentinel: Bash(rm *)]');
+  });
+
+  it('awaitDecision throws → treated as deny (fail-closed)', async () => {
+    const sink = collectingSink();
+    const it = createPermissionsSseInterceptor({
+      sink,
+      rules: compileRules([denyRule]),
+      settings: settings(),
+      accountId: 'acc-h',
+      awaitDecision: () => {
+        throw new Error('hook blew up');
+      },
+    });
+    it.push(buildToolUseStream({ name: 'Bash', inputParts: ['{"command":"rm -rf /"}'] }));
+    await new Promise((r) => setTimeout(r, 0));
+    it.flush();
+
+    expect(sink.joined()).toContain('[Blocked by Claude Sentinel: Bash(rm *)]');
+  });
+
+  it('destroy during a pending hold discards every buffer cleanly', async () => {
+    const sink = collectingSink();
+    let resolveDecision: ((o: 'approve' | 'deny' | 'timeout') => void) | null = null;
+    const it = createPermissionsSseInterceptor({
+      sink,
+      rules: compileRules([denyRule]),
+      settings: settings(),
+      accountId: 'acc-h',
+      awaitDecision: () =>
+        new Promise<'approve' | 'deny' | 'timeout'>((resolve) => {
+          resolveDecision = resolve;
+        }),
+    });
+    it.push(buildToolUseStream({ name: 'Bash', inputParts: ['{"command":"rm -rf /"}'] }));
+    await Promise.resolve();
+
+    // Tear down mid-hold.
+    it.destroy();
+    resolveDecision!('approve');
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Post-destroy push is a no-op.
+    it.push('event: later\ndata: {}\n\n');
+    // Post-destroy flush also a no-op.
+    it.flush();
+
+    // Some frames may have been emitted before decideAndFlush awaited, but
+    // nothing after the destroy should land. Most importantly, no synthetic
+    // block, no "later" frame.
+    expect(sink.joined()).not.toContain('[Blocked by Claude Sentinel');
+    expect(sink.joined()).not.toContain('event: later');
+  });
+
+  it('push accepts a Buffer chunk and decodes it as utf-8', () => {
+    const sink = collectingSink();
+    const it = createPermissionsSseInterceptor({
+      sink,
+      rules: compileRules([]),
+      settings: settings({ toolPermissionDefaultAction: 'allow' }),
+      accountId: 'acc-1',
+    });
+    it.push(Buffer.from('event: ping\ndata: {"type":"ping"}\n\n', 'utf-8'));
+    it.flush();
+    expect(sink.joined()).toContain('"type":"ping"');
+  });
+
+  it('content_block_start with a non-string name field falls back to empty toolName', () => {
+    const sink = collectingSink();
+    const it = createPermissionsSseInterceptor({
+      sink,
+      rules: compileRules([rule({ decision: 'deny', tool: '*', pattern: null, raw: '*' })]),
+      settings: settings(),
+      accountId: 'acc-1',
+    });
+    // Manually build a tool_use stream where `name` is a number, exercising
+    // the `typeof block["name"] === "string" ? ... : ""` branch.
+    const stream =
+      formatSseFrame('content_block_start', {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 't1', name: 123, input: {} },
+      }) +
+      formatSseFrame('content_block_delta', {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: '{"x":1}' },
+      }) +
+      formatSseFrame('content_block_stop', { type: 'content_block_stop', index: 0 }) +
+      formatSseFrame('message_stop', { type: 'message_stop' });
+    it.push(stream);
+    it.flush();
+    // Wildcard deny still matches the empty tool name; synthesized block emitted.
+    expect(sink.joined()).toContain('[Blocked by Claude Sentinel');
+  });
+
+  it('flush during an active hold emits buffered tool_use frames verbatim (fail-open)', async () => {
+    const sink = collectingSink();
+    const pending: Array<() => void> = [];
+    const it = createPermissionsSseInterceptor({
+      sink,
+      rules: compileRules([denyRule]),
+      settings: settings(),
+      accountId: 'acc-h',
+      // Never resolves — simulates the decision hanging past end-of-stream.
+      awaitDecision: () =>
+        new Promise<'approve' | 'deny' | 'timeout'>(() => {
+          pending.push(() => undefined);
+        }),
+    });
+    it.push(buildToolUseStream({ name: 'Bash', inputParts: ['{"command":"rm -rf /"}'] }));
+    await Promise.resolve();
+    // An in-flight SSE frame (arrives during hold) must be captured in
+    // holdBuffer and then emitted by the end-of-stream flush.
+    it.push(formatSseFrame('ping', { type: 'ping' }));
+    // End of stream with hold still active — fail open.
+    it.flush();
+
+    const out = sink.joined();
+    // Buffered tool_use frames come through verbatim.
+    expect(out).toContain('"name":"Bash"');
+    expect(out).toContain('rm -rf /');
+    expect(out).toContain('"type":"ping"');
   });
 });

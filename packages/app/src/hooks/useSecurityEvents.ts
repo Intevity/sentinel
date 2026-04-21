@@ -21,9 +21,7 @@ interface UseSecurityEventsResult {
   addToAllowlist: (eventId: number, note?: string) => Promise<void>;
 }
 
-export function useSecurityEvents(
-  params: UseSecurityEventsParams = {},
-): UseSecurityEventsResult {
+export function useSecurityEvents(params: UseSecurityEventsParams = {}): UseSecurityEventsResult {
   const { accountId, includeWeakSignals = false, limit = 200 } = params;
   const [events, setEvents] = useState<SecurityEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,10 +48,13 @@ export function useSecurityEvents(
     }
   }, [accountId, includeWeakSignals, limit]);
 
-  const acknowledge = useCallback(async (id: number) => {
-    await sendToSentinel({ type: 'acknowledge_security_event', id });
-    await refetch();
-  }, [refetch]);
+  const acknowledge = useCallback(
+    async (id: number) => {
+      await sendToSentinel({ type: 'acknowledge_security_event', id });
+      await refetch();
+    },
+    [refetch],
+  );
 
   const acknowledgeAll = useCallback(async () => {
     await sendToSentinel(
@@ -73,14 +74,17 @@ export function useSecurityEvents(
     await refetch();
   }, [accountId, refetch]);
 
-  const addToAllowlist = useCallback(async (eventId: number, note?: string) => {
-    await sendToSentinel(
-      note !== undefined
-        ? { type: 'add_to_security_allowlist', eventId, note }
-        : { type: 'add_to_security_allowlist', eventId },
-    );
-    await refetch();
-  }, [refetch]);
+  const addToAllowlist = useCallback(
+    async (eventId: number, note?: string) => {
+      await sendToSentinel(
+        note !== undefined
+          ? { type: 'add_to_security_allowlist', eventId, note }
+          : { type: 'add_to_security_allowlist', eventId },
+      );
+      await refetch();
+    },
+    [refetch],
+  );
 
   useEffect(() => {
     void refetch();
@@ -89,8 +93,14 @@ export function useSecurityEvents(
       if (msg.type === 'security_event_detected') {
         void refetch();
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, [refetch]);
 
   return { events, loading, error, refetch, acknowledge, acknowledgeAll, clearAll, addToAllowlist };

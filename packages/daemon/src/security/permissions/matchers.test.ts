@@ -180,14 +180,18 @@ describe('matchBash', () => {
 
 describe('matchPath', () => {
   it('matches absolute path via //', () => {
-    expect(matchPath('//Users/jeff/secrets.txt', { file_path: '/Users/jeff/secrets.txt' })).toBe(true);
+    expect(matchPath('//Users/jeff/secrets.txt', { file_path: '/Users/jeff/secrets.txt' })).toBe(
+      true,
+    );
   });
   it('matches home-relative via ~/', () => {
     const home = homedir();
     expect(matchPath('~/secrets.txt', { file_path: `${home}/secrets.txt` })).toBe(true);
   });
   it('matches recursive glob with //', () => {
-    expect(matchPath('//Users/jeff/**/*.env', { file_path: '/Users/jeff/app/config/.env' })).toBe(true);
+    expect(matchPath('//Users/jeff/**/*.env', { file_path: '/Users/jeff/app/config/.env' })).toBe(
+      true,
+    );
   });
   it('glob respects path segment boundaries', () => {
     expect(matchPath('//foo/*.txt', { file_path: '/foo/sub/a.txt' })).toBe(false);
@@ -244,6 +248,59 @@ describe('matchMcpTool', () => {
   });
   it('returns false for non-MCP rule tool', () => {
     expect(matchMcpTool('Bash', 'mcp__github__create_issue')).toBe(false);
+  });
+  it('returns false when a non-wildcard MCP rule does not match the tool name exactly', () => {
+    expect(matchMcpTool('mcp__github__create_issue', 'mcp__github__search_code')).toBe(false);
+  });
+});
+
+describe('matchFallback and misc matcher edge-cases', () => {
+  it('matchFallback works on a string input (no JSON serialization needed)', () => {
+    expect(matchFallback('*foo*', 'bar-foo-bar')).toBe(true);
+    expect(matchFallback('*never*', 'bar-foo-bar')).toBe(false);
+  });
+
+  it('matchFallback handles null input by serializing to "{}"', () => {
+    expect(matchFallback('*', null)).toBe(true);
+    expect(matchFallback('{', null)).toBe(false);
+  });
+
+  it('splitPipeline preserves escaped characters inside quoted segments', () => {
+    // Escaped backslash-then-char inside double quotes; hits the `\\` branch.
+    const parts = splitPipeline('echo "a\\"b" | cat');
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toContain('echo');
+    expect(parts[1]).toContain('cat');
+  });
+
+  it('matchPath searches the basename only when the pattern is not anchored', () => {
+    // `*.env` is a basename pattern — should match the last path segment.
+    expect(matchPath('*.env', { file_path: '/home/user/project/.env' })).toBe(true);
+    // An anchored pattern must not trigger the basename fallback.
+    expect(matchPath('/not-a-match', { file_path: '/home/user/project/.env' })).toBe(false);
+  });
+
+  it('matchPath returns false when input has no usable path field', () => {
+    expect(matchPath('*', { nothing: 1 })).toBe(false);
+    expect(matchPath('*', null)).toBe(false);
+  });
+
+  it('globToRegex with pathMode honors `?` as a single non-slash character', () => {
+    // ? in pathMode should match exactly one non-slash char.
+    const re = globToRegex('a?b', { pathMode: true });
+    expect(re.test('axb')).toBe(true);
+    expect(re.test('a/b')).toBe(false);
+  });
+
+  it('normalizePatternToAbsolute treats a bare "~" as the home dir', () => {
+    // Match via matchPath since normalizePatternToAbsolute is not exported.
+    expect(matchPath('~', { file_path: homedir() })).toBe(true);
+  });
+
+  it('pickUrl returns null when every candidate key is missing or empty', () => {
+    expect(matchWeb('*', { unrelated: 'x' })).toBe(false);
+    // Empty string should be ignored (not counted as a URL).
+    expect(matchWeb('*', { url: '' })).toBe(false);
   });
 });
 

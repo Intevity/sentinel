@@ -213,9 +213,7 @@ export function Switch(props: {
       disabled={props.disabled}
       onClick={() => !props.disabled && props.onChange(!props.checked)}
       className={`relative inline-flex w-[34px] h-[20px] rounded-full transition-colors flex-shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ios-blue focus-visible:ring-offset-1 disabled:opacity-40 ${
-        props.checked
-          ? 'bg-ios-blue'
-          : 'bg-black/10 dark:bg-white/15'
+        props.checked ? 'bg-ios-blue' : 'bg-black/10 dark:bg-white/15'
       }`}
     >
       <span
@@ -253,9 +251,11 @@ export function SettingsCard(props: {
         aria-controls={bodyId}
         className="w-full flex items-center gap-1.5 px-3 py-2 text-left hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors"
       >
-        {open
-          ? <ChevronDown size={11} strokeWidth={2.5} className="text-[#8E8E93]" />
-          : <ChevronRight size={11} strokeWidth={2.5} className="text-[#8E8E93]" />}
+        {open ? (
+          <ChevronDown size={11} strokeWidth={2.5} className="text-[#8E8E93]" />
+        ) : (
+          <ChevronRight size={11} strokeWidth={2.5} className="text-[#8E8E93]" />
+        )}
         <span className="text-[10px] font-semibold uppercase tracking-wider text-[#8E8E93]">
           {props.title}
         </span>
@@ -296,9 +296,7 @@ export function SettingsRow(props: {
           <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">{props.description}</p>
         )}
       </div>
-      <div className="flex-shrink-0 flex items-center justify-end mt-0.5">
-        {props.children}
-      </div>
+      <div className="flex-shrink-0 flex items-center justify-end mt-0.5">{props.children}</div>
     </div>
   );
 }

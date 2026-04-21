@@ -62,13 +62,16 @@ export function accountColor(account: Pick<AccountInfo, 'id' | 'color'>): string
  * variant). Otherwise we return the Tailwind class for the preset gradient
  * so Tailwind's bundler keeps these classes in the build.
  */
-export function avatarStyle(
-  account: Pick<AccountInfo, 'id' | 'color'>,
-): { className: string; style?: CSSProperties } {
+export function avatarStyle(account: Pick<AccountInfo, 'id' | 'color'>): {
+  className: string;
+  style?: CSSProperties;
+} {
   if (account.color) {
     return {
       className: '',
-      style: { backgroundImage: `linear-gradient(to bottom right, ${account.color}, ${darken(account.color, 0.75)})` },
+      style: {
+        backgroundImage: `linear-gradient(to bottom right, ${account.color}, ${darken(account.color, 0.75)})`,
+      },
     };
   }
   const entry = PALETTE[paletteIndex(account.id)];

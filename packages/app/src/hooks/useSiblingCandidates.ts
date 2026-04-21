@@ -66,9 +66,13 @@ export function useSiblingCandidates(): UseSiblingCandidatesResult {
         });
       }
     })
-      .then((fn) => { unlisten = fn; })
+      .then((fn) => {
+        unlisten = fn;
+      })
       .catch(() => {});
-    return () => { unlisten?.(); };
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   const consume = useCallback((email: string, orgUuid: string): void => {

@@ -43,7 +43,8 @@ export default function Footer({
     // copy-paste them. The badge's "unseen" signal clears regardless of
     // whether the GitHub composer actually opens — we don't want the dot
     // to stay red forever if the user abandons the report.
-    const source = hasUnseenErrors && daemonErrors && daemonErrors.length > 0 ? 'daemon-error' : 'manual';
+    const source =
+      hasUnseenErrors && daemonErrors && daemonErrors.length > 0 ? 'daemon-error' : 'manual';
     void openBugReport({ source, daemonErrors: daemonErrors ?? [] });
     markErrorsSeen?.();
   };
@@ -59,7 +60,6 @@ export default function Footer({
     void invoke('toggle_devtools').catch((err: unknown) => {
       const msg = typeof err === 'string' ? err : String(err);
       setInspectorError(msg);
-      // eslint-disable-next-line no-console
       console.error('toggle_devtools failed:', err);
     });
   };
@@ -80,48 +80,50 @@ export default function Footer({
         </div>
       )}
       <div className="flex items-center justify-between px-4 py-1.5">
-      <div className="flex items-center gap-2">
-        {isDevBuild ? (
+        <div className="flex items-center gap-2">
+          {isDevBuild ? (
+            <button
+              type="button"
+              onClick={handleVersionClick}
+              className="font-mono tabular-nums rounded-md px-1 -mx-1 py-0.5 hover:text-[#3A3A3C] dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ios-blue"
+              title="Click to open DevTools (Safari Web Inspector on macOS)"
+            >
+              {displayVersion}
+            </button>
+          ) : (
+            <span className="font-mono tabular-nums" title={`Claude Sentinel ${displayVersion}`}>
+              {displayVersion}
+            </span>
+          )}
+          <span aria-hidden="true" className="h-3 w-px bg-black/15 dark:bg-white/15" />
           <button
             type="button"
-            onClick={handleVersionClick}
-            className="font-mono tabular-nums rounded-md px-1 -mx-1 py-0.5 hover:text-[#3A3A3C] dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ios-blue"
-            title="Click to open DevTools (Safari Web Inspector on macOS)"
+            onClick={handleReportBug}
+            className="relative flex items-center gap-1 rounded-md px-1 py-0.5 hover:text-[#3A3A3C] dark:hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ios-blue"
+            aria-label={
+              hasUnseenErrors ? 'Report a bug (new daemon errors detected)' : 'Report a bug'
+            }
+            title={hasUnseenErrors ? 'Recent daemon errors detected; report a bug' : 'Report a bug'}
           >
-            {displayVersion}
+            <Bug size={11} strokeWidth={2.2} />
+            <span>Report</span>
+            {hasUnseenErrors && (
+              <span
+                aria-hidden="true"
+                className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-ios-red"
+              />
+            )}
           </button>
-        ) : (
-          <span className="font-mono tabular-nums" title={`Claude Sentinel ${displayVersion}`}>
-            {displayVersion}
-          </span>
-        )}
-        <span aria-hidden="true" className="h-3 w-px bg-black/15 dark:bg-white/15" />
+        </div>
         <button
           type="button"
-          onClick={handleReportBug}
-          className="relative flex items-center gap-1 rounded-md px-1 py-0.5 hover:text-[#3A3A3C] dark:hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ios-blue"
-          aria-label={hasUnseenErrors ? 'Report a bug (new daemon errors detected)' : 'Report a bug'}
-          title={hasUnseenErrors ? 'Recent daemon errors detected; report a bug' : 'Report a bug'}
+          onClick={handleOpen}
+          className="flex items-center gap-1.5 rounded-md px-1 py-0.5 hover:text-[#3A3A3C] dark:hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ios-blue"
+          aria-label="Built by Intevity; open intevity.com"
         >
-          <Bug size={11} strokeWidth={2.2} />
-          <span>Report</span>
-          {hasUnseenErrors && (
-            <span
-              aria-hidden="true"
-              className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-ios-red"
-            />
-          )}
+          <span>Built by</span>
+          <img src={intevityLogo} alt="Intevity" className="h-3.5 w-auto" />
         </button>
-      </div>
-      <button
-        type="button"
-        onClick={handleOpen}
-        className="flex items-center gap-1.5 rounded-md px-1 py-0.5 hover:text-[#3A3A3C] dark:hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ios-blue"
-        aria-label="Built by Intevity; open intevity.com"
-      >
-        <span>Built by</span>
-        <img src={intevityLogo} alt="Intevity" className="h-3.5 w-auto" />
-      </button>
       </div>
     </footer>
   );

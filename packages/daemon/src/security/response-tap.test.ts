@@ -103,7 +103,9 @@ describe('ResponseTap', () => {
   it('is a no-op after destroy()', () => {
     const tap = new ResponseTap();
     tap.destroy();
-    tap.push('data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"B","input":{}}}\n\n');
+    tap.push(
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"B","input":{}}}\n\n',
+    );
     const { blocks } = tap.flush();
     expect(blocks).toEqual([]);
   });
@@ -217,8 +219,7 @@ describe('ResponseTap', () => {
         type: 'content_block_start',
         index: 0,
         content_block: { type: 'tool_use', id: 123, name: null, input: {} },
-      })}\n\n` +
-      `data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`;
+      })}\n\n` + `data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`;
     const tap = new ResponseTap();
     tap.push(stream);
     const { blocks } = tap.flush();

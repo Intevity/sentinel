@@ -56,7 +56,12 @@ function toRaw(tool: string, pattern: string | null): string {
 const SHARED_DENY_RULES: PresetRule[] = [
   { decision: 'deny', tool: 'Bash', pattern: 'rm -rf *', note: 'Irreversible recursive delete.' },
   { decision: 'deny', tool: 'Bash', pattern: 'sudo *', note: 'Privilege escalation.' },
-  { decision: 'deny', tool: 'Bash', pattern: 'chmod 777 *', note: 'World-writable perms are rarely intentional.' },
+  {
+    decision: 'deny',
+    tool: 'Bash',
+    pattern: 'chmod 777 *',
+    note: 'World-writable perms are rarely intentional.',
+  },
   { decision: 'deny', tool: 'Bash', pattern: 'curl * | bash', note: 'Remote script execution.' },
   { decision: 'deny', tool: 'Bash', pattern: 'curl * | sh', note: 'Remote script execution.' },
   { decision: 'deny', tool: 'Bash', pattern: 'wget * | bash', note: 'Remote script execution.' },
@@ -67,8 +72,18 @@ const SHARED_DENY_RULES: PresetRule[] = [
   { decision: 'deny', tool: 'Write', pattern: '~/.aws/credentials', note: 'AWS credentials file.' },
   { decision: 'deny', tool: 'Write', pattern: '~/.aws/config', note: 'AWS config file.' },
   { decision: 'deny', tool: 'Read', pattern: '~/.aws/credentials', note: 'AWS credentials file.' },
-  { decision: 'deny', tool: 'WebFetch', pattern: 'domain:pastebin.com', note: 'Common exfil surface.' },
-  { decision: 'deny', tool: 'WebFetch', pattern: 'domain:webhook.site', note: 'Common exfil surface.' },
+  {
+    decision: 'deny',
+    tool: 'WebFetch',
+    pattern: 'domain:pastebin.com',
+    note: 'Common exfil surface.',
+  },
+  {
+    decision: 'deny',
+    tool: 'WebFetch',
+    pattern: 'domain:webhook.site',
+    note: 'Common exfil surface.',
+  },
   { decision: 'deny', tool: 'WebFetch', pattern: 'domain:ngrok.io', note: 'Common exfil surface.' },
 ];
 
@@ -92,9 +107,19 @@ const HIGH_ALLOW_RULES: PresetRule[] = [
   { decision: 'allow', tool: 'Bash', pattern: 'grep *', note: 'Search.' },
   { decision: 'allow', tool: 'Bash', pattern: 'find *', note: 'Find files.' },
   { decision: 'allow', tool: 'WebSearch', pattern: null, note: 'Web search.' },
-  { decision: 'allow', tool: 'WebFetch', pattern: 'domain:docs.anthropic.com', note: 'Anthropic docs.' },
+  {
+    decision: 'allow',
+    tool: 'WebFetch',
+    pattern: 'domain:docs.anthropic.com',
+    note: 'Anthropic docs.',
+  },
   { decision: 'allow', tool: 'WebFetch', pattern: 'domain:github.com', note: 'GitHub.' },
-  { decision: 'allow', tool: 'WebFetch', pattern: 'domain:*.githubusercontent.com', note: 'Raw GitHub content.' },
+  {
+    decision: 'allow',
+    tool: 'WebFetch',
+    pattern: 'domain:*.githubusercontent.com',
+    note: 'Raw GitHub content.',
+  },
 ];
 
 // ─── Presets ──────────────────────────────────────────────────────────────

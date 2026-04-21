@@ -41,10 +41,10 @@ jobs:
         shell: bash
 
       # Build shared first so its dist/ (types + JS) exists on disk — daemon
-       # imports @claude-sentinel/shared via package.json's `types` / `main`
-       # which point at ./dist. Using tsc --noEmit on shared would typecheck
-       # it but produce no dist, so the daemon typecheck then fails with
-       # TS2307 "Cannot find module '@claude-sentinel/shared'".
+      # imports @claude-sentinel/shared via package.json's `types` / `main`
+      # which point at ./dist. Using tsc --noEmit on shared would typecheck
+      # it but produce no dist, so the daemon typecheck then fails with
+      # TS2307 "Cannot find module '@claude-sentinel/shared'".
       - name: Build shared (emits dist/ for daemon typecheck)
         run: pnpm --filter @claude-sentinel/shared run build
 

@@ -39,13 +39,13 @@ export function probeRateLimits(accountId: string, ipcServer?: IpcServer, token?
 
   const baseHeaders: Record<string, string | number> = {
     'anthropic-version': '2023-06-01',
-    'anthropic-beta':    'oauth-2025-04-20',
-    'user-agent':        'claude-cli/sentinel-probe',
-    'accept':            'application/json',
+    'anthropic-beta': 'oauth-2025-04-20',
+    'user-agent': 'claude-cli/sentinel-probe',
+    accept: 'application/json',
     // Deliberately no accept-encoding — keeps failure bodies readable
     // in daemon.log instead of printing gzip binary.
-    'content-type':      'application/json',
-    'content-length':    Buffer.byteLength(body),
+    'content-type': 'application/json',
+    'content-length': Buffer.byteLength(body),
   };
   if (token) {
     baseHeaders['x-sentinel-probe-token'] = token;

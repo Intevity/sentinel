@@ -1,11 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { Database } from 'better-sqlite3';
-import {
-  insertUsageEvent,
-  insertToolEvent,
-  insertApiError,
-  insertActivityEvent,
-} from './db.js';
+import { insertUsageEvent, insertToolEvent, insertApiError, insertActivityEvent } from './db.js';
 import type { ActiveAccountId } from './proxy.js';
 import type { IpcServer } from './ipc.js';
 
@@ -47,7 +42,10 @@ interface OtelAttributes {
 }
 
 interface OtelNumberDataPoint {
-  attributes?: Array<{ key: string; value: { stringValue?: string; intValue?: number; doubleValue?: number } }>;
+  attributes?: Array<{
+    key: string;
+    value: { stringValue?: string; intValue?: number; doubleValue?: number };
+  }>;
   timeUnixNano?: string;
   asDouble?: number;
   asInt?: number;
@@ -77,7 +75,10 @@ interface OtelLogRecord {
    *  the `event.name` attribute — handleLogs checks both. */
   eventName?: string;
   body?: { stringValue?: string };
-  attributes?: Array<{ key: string; value: { stringValue?: string; intValue?: number; doubleValue?: number } }>;
+  attributes?: Array<{
+    key: string;
+    value: { stringValue?: string; intValue?: number; doubleValue?: number };
+  }>;
 }
 
 interface OtelScopeLog {
@@ -103,7 +104,10 @@ function normalizeEventName(name: string | undefined): string | undefined {
  * Parse a flat attribute list from OTLP JSON format into a plain object.
  */
 function parseAttributes(
-  attrs?: Array<{ key: string; value: { stringValue?: string; intValue?: number; doubleValue?: number } }>,
+  attrs?: Array<{
+    key: string;
+    value: { stringValue?: string; intValue?: number; doubleValue?: number };
+  }>,
 ): OtelAttributes {
   /* v8 ignore next 1 */
   if (!attrs) return {};
@@ -195,7 +199,9 @@ export class OtelReceiver {
    *  swallowed so an unrelated failure can't break the OTEL request path. */
   private fireBatchSubscribers(): void {
     for (const cb of this.batchSubscribers) {
-      try { cb(); } catch (err) {
+      try {
+        cb();
+      } catch (err) {
         console.error('[OTEL] batch subscriber threw:', err);
       }
     }
@@ -258,7 +264,9 @@ export class OtelReceiver {
             const attrs = parseAttributes(dp.attributes);
             /* v8 ignore next 1 */
             const value = dp.asDouble ?? dp.asInt ?? 0;
-            const ts = dp.timeUnixNano ? Number(BigInt(dp.timeUnixNano) / BigInt(1_000_000)) : Date.now();
+            const ts = dp.timeUnixNano
+              ? Number(BigInt(dp.timeUnixNano) / BigInt(1_000_000))
+              : Date.now();
             this.handleMetricDataPoint(metric.name, attrs, value, ts);
           }
         }
@@ -266,7 +274,12 @@ export class OtelReceiver {
     }
   }
 
-  private handleMetricDataPoint(name: string, attrs: OtelAttributes, value: number, ts: number): void {
+  private handleMetricDataPoint(
+    name: string,
+    attrs: OtelAttributes,
+    value: number,
+    ts: number,
+  ): void {
     const accountId = this.resolveAccountId(attrs);
     const sessionId = (attrs['session.id'] as string | undefined) ?? null;
 
@@ -294,36 +307,36 @@ export class OtelReceiver {
       }
 
       case METRIC_SESSION: {
-        this.insertActivity( { ts, accountId, sessionId, kind: 'session', value });
+        this.insertActivity({ ts, accountId, sessionId, kind: 'session', value });
         return;
       }
 
       case METRIC_LINES: {
         const type = (attrs['type'] as string | undefined) ?? 'added';
         const kind = type === 'removed' ? 'lines_removed' : 'lines_added';
-        this.insertActivity( { ts, accountId, sessionId, kind, value });
+        this.insertActivity({ ts, accountId, sessionId, kind, value });
         return;
       }
 
       case METRIC_PR: {
-        this.insertActivity( { ts, accountId, sessionId, kind: 'pull_request', value });
+        this.insertActivity({ ts, accountId, sessionId, kind: 'pull_request', value });
         return;
       }
 
       case METRIC_COMMIT: {
-        this.insertActivity( { ts, accountId, sessionId, kind: 'commit', value });
+        this.insertActivity({ ts, accountId, sessionId, kind: 'commit', value });
         return;
       }
 
       case METRIC_ACTIVE_TIME: {
         const type = (attrs['type'] as string | undefined) ?? 'user';
         const kind = type === 'cli' ? 'active_cli_seconds' : 'active_user_seconds';
-        this.insertActivity( { ts, accountId, sessionId, kind, value });
+        this.insertActivity({ ts, accountId, sessionId, kind, value });
         return;
       }
 
       case METRIC_EDIT_DECISION: {
-        this.insertActivity( {
+        this.insertActivity({
           ts,
           accountId,
           sessionId,
@@ -373,7 +386,7 @@ export class OtelReceiver {
 
     switch (eventName) {
       case EVENT_API_REQUEST: {
-        this.insertUsage( {
+        this.insertUsage({
           ts,
           accountId,
           sessionId,
@@ -389,7 +402,7 @@ export class OtelReceiver {
       }
 
       case EVENT_API_ERROR: {
-        this.insertError( {
+        this.insertError({
           ts,
           accountId,
           sessionId,
@@ -409,7 +422,7 @@ export class OtelReceiver {
       case EVENT_TOOL_RESULT: {
         const successAttr = attrs['success'];
         const success = successAttr === true || successAttr === 'true' || successAttr === 1;
-        this.insertTool( {
+        this.insertTool({
           ts,
           accountId,
           sessionId,
@@ -430,7 +443,7 @@ export class OtelReceiver {
         // from the `code_edit_tool.decision` metric which is limited to Edit /
         // Write / NotebookEdit — tool_decision covers ALL tools (Bash, Read,
         // WebFetch, MCP, etc.).
-        this.insertActivity( {
+        this.insertActivity({
           ts,
           accountId,
           sessionId,
@@ -447,7 +460,7 @@ export class OtelReceiver {
         // Fires when the user submits a prompt. `prompt` body is redacted
         // unless OTEL_LOG_USER_PROMPTS=1 is set — we only persist the length
         // for now (pairs nicely with active_time for an engagement signal).
-        this.insertActivity( {
+        this.insertActivity({
           ts,
           accountId,
           sessionId,
@@ -458,7 +471,7 @@ export class OtelReceiver {
       }
 
       case EVENT_SKILL_ACTIVATED: {
-        this.insertActivity( {
+        this.insertActivity({
           ts,
           accountId,
           sessionId,
@@ -474,7 +487,7 @@ export class OtelReceiver {
       }
 
       case EVENT_PLUGIN_INSTALLED: {
-        this.insertActivity( {
+        this.insertActivity({
           ts,
           accountId,
           sessionId,
@@ -530,9 +543,7 @@ export class OtelReceiver {
 }
 
 function logRecordTs(lr: OtelLogRecord): number {
-  return lr.timeUnixNano
-    ? Number(BigInt(lr.timeUnixNano) / BigInt(1_000_000))
-    : Date.now();
+  return lr.timeUnixNano ? Number(BigInt(lr.timeUnixNano) / BigInt(1_000_000)) : Date.now();
 }
 
 function asString(v: OtelAttributes[string]): string | null {

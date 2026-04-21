@@ -54,8 +54,12 @@ export function useAutoResizeWindow(): AutoResizeRefs {
   const [overlay, setOverlay] = useState<HTMLElement | null>(null);
   const [popover, setPopover] = useState<HTMLElement | null>(null);
 
-  const rootRef    = useCallback((el: HTMLDivElement | null) => { setRoot(el); }, []);
-  const contentRef = useCallback((el: HTMLDivElement | null) => { setContent(el); }, []);
+  const rootRef = useCallback((el: HTMLDivElement | null) => {
+    setRoot(el);
+  }, []);
+  const contentRef = useCallback((el: HTMLDivElement | null) => {
+    setContent(el);
+  }, []);
   // Overlay ref is SHARED across Settings / Rules / Wizard. Two races
   // matter here:
   //   (A) Open wizard from Settings: Settings stays mounted during its
@@ -106,10 +110,8 @@ export function useAutoResizeWindow(): AutoResizeRefs {
     if (pendingNullCheckRef.current !== null) return; // already queued
     pendingNullCheckRef.current = requestAnimationFrame(() => {
       pendingNullCheckRef.current = null;
-      const result = reconcileOverlayRef(
-        overlayElRef.current,
-        null,
-        (x) => document.body.contains(x),
+      const result = reconcileOverlayRef(overlayElRef.current, null, (x) =>
+        document.body.contains(x),
       );
       if (AUTO_RESIZE_DEBUG) {
         console.info('[AutoResize] overlayRef deferred reconcile', {
@@ -124,7 +126,9 @@ export function useAutoResizeWindow(): AutoResizeRefs {
       }
     });
   }, []);
-  const popoverRef = useCallback((el: HTMLElement | null)    => { setPopover(el); }, []);
+  const popoverRef = useCallback((el: HTMLElement | null) => {
+    setPopover(el);
+  }, []);
 
   // DevTools open/close state — stored in a ref (not the main effect's
   // closure) so it survives effect re-runs triggered by `popover` /
@@ -159,8 +163,14 @@ export function useAutoResizeWindow(): AutoResizeRefs {
       if (!event.payload.open) {
         setRecalibVersion((v) => v + 1);
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -258,21 +268,27 @@ export function useAutoResizeWindow(): AutoResizeRefs {
       const actualInner = window.innerHeight;
       const baselineDrift =
         lastTargetRef.current > 0 &&
-        Math.abs((lastTargetRef.current - chromeOverheadRef.current) - actualInner) > 4;
+        Math.abs(lastTargetRef.current - chromeOverheadRef.current - actualInner) > 4;
       if (baselineDrift) {
         calibratedRef.current = false;
         lastTargetRef.current = 0;
       }
 
       if (target === lastTargetRef.current) {
-        if (AUTO_RESIZE_DEBUG) console.info('[AutoResize] apply() early-return: target matches lastTarget', { target });
+        if (AUTO_RESIZE_DEBUG)
+          console.info('[AutoResize] apply() early-return: target matches lastTarget', { target });
         return;
       }
       lastTargetRef.current = target;
       inFlight = true;
       try {
         if (AUTO_RESIZE_DEBUG) {
-          console.info('[AutoResize] setSize → requesting', { width: WIDTH, height: target, targetInner, chromeOverhead: chromeOverheadRef.current });
+          console.info('[AutoResize] setSize → requesting', {
+            width: WIDTH,
+            height: target,
+            targetInner,
+            chromeOverhead: chromeOverheadRef.current,
+          });
         }
         try {
           await appWindow.setSize(new LogicalSize(WIDTH, target));
@@ -281,7 +297,12 @@ export function useAutoResizeWindow(): AutoResizeRefs {
           return;
         }
         if (AUTO_RESIZE_DEBUG) {
-          console.info('[AutoResize] setSize #1 → actual innerHeight', window.innerHeight, 'outerHeight', window.outerHeight);
+          console.info(
+            '[AutoResize] setSize #1 → actual innerHeight',
+            window.innerHeight,
+            'outerHeight',
+            window.outerHeight,
+          );
         }
         if (!calibratedRef.current) {
           // Empirically measure: did setSize give us targetInner pixels of
@@ -303,7 +324,14 @@ export function useAutoResizeWindow(): AutoResizeRefs {
               return;
             }
             if (AUTO_RESIZE_DEBUG) {
-              console.info('[AutoResize] setSize #2 (grow) → actual innerHeight', window.innerHeight, 'outerHeight', window.outerHeight, 'asked for', lastTargetRef.current);
+              console.info(
+                '[AutoResize] setSize #2 (grow) → actual innerHeight',
+                window.innerHeight,
+                'outerHeight',
+                window.outerHeight,
+                'asked for',
+                lastTargetRef.current,
+              );
             }
           } else if (deficit < -1) {
             // Overshoot (webview ended up LARGER than target). Happens when
@@ -320,7 +348,14 @@ export function useAutoResizeWindow(): AutoResizeRefs {
               return;
             }
             if (AUTO_RESIZE_DEBUG) {
-              console.info('[AutoResize] setSize #2 (shrink) → actual innerHeight', window.innerHeight, 'outerHeight', window.outerHeight, 'asked for', lastTargetRef.current);
+              console.info(
+                '[AutoResize] setSize #2 (shrink) → actual innerHeight',
+                window.innerHeight,
+                'outerHeight',
+                window.outerHeight,
+                'asked for',
+                lastTargetRef.current,
+              );
             }
           }
           calibratedRef.current = true;
@@ -332,7 +367,9 @@ export function useAutoResizeWindow(): AutoResizeRefs {
 
     const schedule = (): void => {
       if (rafId !== null) return;
-      rafId = requestAnimationFrame(() => { void apply(); });
+      rafId = requestAnimationFrame(() => {
+        void apply();
+      });
     };
 
     const ro = new ResizeObserver(schedule);

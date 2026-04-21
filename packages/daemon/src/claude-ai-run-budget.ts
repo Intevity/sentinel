@@ -73,7 +73,7 @@ export async function fetchRunBudget(
     resp = await fetch(`${BASE_URL}/v1/code/routines/run-budget`, {
       method: 'GET',
       headers: {
-        'Cookie': `sessionKeyLC=${trimmed}; sessionKey=${trimmed}`,
+        Cookie: `sessionKeyLC=${trimmed}; sessionKey=${trimmed}`,
         // Beta header gating + org routing header are both required
         // (confirmed via live-captured curl from claude.ai/settings/usage).
         'anthropic-beta': 'ccr-triggers-2026-01-30',
@@ -81,7 +81,7 @@ export async function fetchRunBudget(
         'anthropic-client-version': '1.0.0',
         'anthropic-version': '2023-06-01',
         'x-organization-uuid': orgUuid,
-        'Accept': '*/*',
+        Accept: '*/*',
       },
     });
   } catch {

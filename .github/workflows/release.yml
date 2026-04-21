@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # Must match the pnpm version that produced pnpm-lock.yaml (pnpm 10
-       # writes `pnpmfileChecksum` into the lockfile, which pnpm 9 rejects).
+      # writes `pnpmfileChecksum` into the lockfile, which pnpm 9 rejects).
       - uses: pnpm/action-setup@v4
         with:
           version: 10

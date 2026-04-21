@@ -116,7 +116,10 @@ export default function Tour({ onFinish, onStepEnter }: TourProps): React.ReactE
     return () => window.removeEventListener('keydown', onKey);
   }, [next, back, skip]);
 
-  const cardPosition = useMemo(() => computeCardPosition(step, rect, viewport), [step, rect, viewport]);
+  const cardPosition = useMemo(
+    () => computeCardPosition(step, rect, viewport),
+    [step, rect, viewport],
+  );
 
   if (!step) return null;
 
@@ -167,12 +170,7 @@ export default function Tour({ onFinish, onStepEnter }: TourProps): React.ReactE
           {/* Much darker backdrop than v1 (0.55 → 0.78) so the spotlight
               hole stands out even when the target sits against a light
               iOS-style app surface. */}
-          <rect
-            width="100%"
-            height="100%"
-            fill="rgba(0,0,0,0.78)"
-            mask="url(#tour-mask)"
-          />
+          <rect width="100%" height="100%" fill="rgba(0,0,0,0.78)" mask="url(#tour-mask)" />
           {hasTarget && (
             <>
               {/* Outer blue glow — soft, diffuse, catches the eye. */}
@@ -240,9 +238,7 @@ export default function Tour({ onFinish, onStepEnter }: TourProps): React.ReactE
             <h3 className="text-[13px] font-semibold text-black dark:text-white mb-1">
               {step.title}
             </h3>
-            <p className="text-[11px] text-[#8E8E93] leading-snug">
-              {step.body}
-            </p>
+            <p className="text-[11px] text-[#8E8E93] leading-snug">{step.body}</p>
             <div className="flex items-center justify-between gap-2 mt-3">
               <button
                 onClick={back}

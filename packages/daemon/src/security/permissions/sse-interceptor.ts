@@ -158,7 +158,9 @@ export interface CreateInterceptorOptions {
 export function createPermissionsSseInterceptor(
   opts: CreateInterceptorOptions,
 ): PermissionsSseInterceptor {
-  const compiled: CompiledRuleSet = Array.isArray(opts.rules) ? compileRules(opts.rules) : opts.rules;
+  const compiled: CompiledRuleSet = Array.isArray(opts.rules)
+    ? compileRules(opts.rules)
+    : opts.rules;
   const sink = opts.sink;
   const blocks = new Map<number, BlockState>();
 
@@ -236,7 +238,14 @@ export function createPermissionsSseInterceptor(
     if (type === 'content_block_start') {
       const block = evt['content_block'] as Record<string, unknown> | undefined;
       if (!block || block['type'] !== 'tool_use' || index < 0) {
-        blocks.set(index, { mode: 'passthrough', bufferedRaw: [], bufferedBytes: 0, toolName: '', partialJson: '', overflowed: false });
+        blocks.set(index, {
+          mode: 'passthrough',
+          bufferedRaw: [],
+          bufferedBytes: 0,
+          toolName: '',
+          partialJson: '',
+          overflowed: false,
+        });
         sink.write(frame);
         return;
       }
@@ -265,7 +274,11 @@ export function createPermissionsSseInterceptor(
       state.bufferedRaw.push(frame);
       state.bufferedBytes += frame.length;
       const delta = evt['delta'] as Record<string, unknown> | undefined;
-      if (delta && delta['type'] === 'input_json_delta' && typeof delta['partial_json'] === 'string') {
+      if (
+        delta &&
+        delta['type'] === 'input_json_delta' &&
+        typeof delta['partial_json'] === 'string'
+      ) {
         state.partialJson += delta['partial_json'];
       }
       if (state.bufferedBytes > MAX_BLOCK_BUFFER_BYTES) {
@@ -331,7 +344,13 @@ export function createPermissionsSseInterceptor(
         toolInput = {};
       }
     }
-    const decision = evaluateToolCall(state.toolName, toolInput, compiled, opts.settings, opts.evaluatorHooks);
+    const decision = evaluateToolCall(
+      state.toolName,
+      toolInput,
+      compiled,
+      opts.settings,
+      opts.evaluatorHooks,
+    );
     if (decision.decision === 'allow' || !decision.matchedRule) {
       // Flush verbatim.
       for (const f of state.bufferedRaw) sink.write(f);

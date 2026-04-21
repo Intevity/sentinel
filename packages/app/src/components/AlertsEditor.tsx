@@ -32,7 +32,11 @@ interface AlertsEditorProps {
  * utilization crosses the threshold. Both re-fire only once their governing
  * window (per-account or earliest-in-pool) rolls over.
  */
-export default function AlertsEditor({ activeAccount, accounts, viewAccountId }: AlertsEditorProps): React.ReactElement {
+export default function AlertsEditor({
+  activeAccount,
+  accounts,
+  viewAccountId,
+}: AlertsEditorProps): React.ReactElement {
   const { settings, update } = useSettings();
   const isRoundRobin = settings?.switchingMode === 'round-robin';
   const overageOsNotify = settings?.overageOsNotify ?? true;
@@ -46,8 +50,9 @@ export default function AlertsEditor({ activeAccount, accounts, viewAccountId }:
   const viewedInfo = viewAccountId ? accounts.find((a) => a.id === viewAccountId) : undefined;
   // Resolve the matching AccountInfo for dot coloring. Prefer viewed-scope,
   // fall back to the enrolled account whose id matches the active OAuth context.
-  const rowInfo = viewedInfo
-    ?? (activeAccount ? accounts.find((a) => a.id === sentinelKey(activeAccount)) : undefined);
+  const rowInfo =
+    viewedInfo ??
+    (activeAccount ? accounts.find((a) => a.id === sentinelKey(activeAccount)) : undefined);
   const hasAccountContext = Boolean(viewedInfo || activeAccount);
 
   const accountTarget: UseAlertsTarget = { scope: 'account', accountId };
@@ -67,18 +72,22 @@ export default function AlertsEditor({ activeAccount, accounts, viewAccountId }:
             type="button"
             onClick={toggleOverageNotify}
             aria-pressed={!overageOsNotify}
-            title={overageOsNotify
-              ? 'Overage notifications are ON; click to mute'
-              : 'Overage notifications are muted; click to re-enable'}
+            title={
+              overageOsNotify
+                ? 'Overage notifications are ON; click to mute'
+                : 'Overage notifications are muted; click to re-enable'
+            }
             className={`flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-full transition-colors active:scale-95 ${
               overageOsNotify
                 ? 'text-[#8E8E93] hover:text-black dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
                 : 'text-ios-orange bg-ios-orange/10 hover:bg-ios-orange/15'
             }`}
           >
-            {overageOsNotify
-              ? <Bell size={12} strokeWidth={2.2} />
-              : <BellOff size={12} strokeWidth={2.2} />}
+            {overageOsNotify ? (
+              <Bell size={12} strokeWidth={2.2} />
+            ) : (
+              <BellOff size={12} strokeWidth={2.2} />
+            )}
             <span>{overageOsNotify ? 'Notifications on' : 'Muted'}</span>
           </button>
         </div>
@@ -125,7 +134,9 @@ export default function AlertsEditor({ activeAccount, accounts, viewAccountId }:
           notifications={notifications}
           accounts={accounts}
           {...(accountId !== undefined ? { accountId } : {})}
-          onRefresh={() => { void refetchNotifications(); }}
+          onRefresh={() => {
+            void refetchNotifications();
+          }}
         />
       </div>
     </div>
@@ -154,8 +165,19 @@ interface AlertListProps {
 }
 
 function AlertList({
-  title, emptyCopy, rowSuffix, available, unavailableCopy, rowColor,
-  alerts, loading, error, create, update, toggle, remove,
+  title,
+  emptyCopy,
+  rowSuffix,
+  available,
+  unavailableCopy,
+  rowColor,
+  alerts,
+  loading,
+  error,
+  create,
+  update,
+  toggle,
+  remove,
 }: AlertListProps): React.ReactElement {
   const [adding, setAdding] = useState(false);
   const [draftThreshold, setDraftThreshold] = useState(90);
@@ -225,9 +247,7 @@ function AlertList({
         </div>
       )}
 
-      {available && !loading && error && (
-        <p className="text-[12px] text-ios-red px-1">{error}</p>
-      )}
+      {available && !loading && error && <p className="text-[12px] text-ios-red px-1">{error}</p>}
 
       {available && !loading && !error && (
         <div className="space-y-2">
@@ -237,12 +257,14 @@ function AlertList({
             </div>
           )}
 
-          {alerts.map((alert) => (
+          {alerts.map((alert) =>
             editingId === alert.id ? (
               <div key={alert.id} className="glass-card px-3 py-3">
                 <div className="flex items-center justify-between text-[11px] text-[#8E8E93] mb-1.5">
                   <span>Edit threshold</span>
-                  <span className="font-semibold text-black dark:text-white tabular-nums">{editThreshold}%</span>
+                  <span className="font-semibold text-black dark:text-white tabular-nums">
+                    {editThreshold}%
+                  </span>
                 </div>
                 <input
                   type="range"
@@ -308,14 +330,16 @@ function AlertList({
                   <Trash2 size={12} strokeWidth={2.2} />
                 </button>
               </div>
-            )
-          ))}
+            ),
+          )}
 
           {adding && (
             <div className="glass-card px-3 py-3">
               <div className="flex items-center justify-between text-[11px] text-[#8E8E93] mb-1.5">
                 <span>New alert threshold</span>
-                <span className="font-semibold text-black dark:text-white tabular-nums">{draftThreshold}%</span>
+                <span className="font-semibold text-black dark:text-white tabular-nums">
+                  {draftThreshold}%
+                </span>
               </div>
               <input
                 type="range"
@@ -335,7 +359,10 @@ function AlertList({
                   {saving ? 'Saving…' : 'Save'}
                 </button>
                 <button
-                  onClick={() => { setAdding(false); setDraftThreshold(90); }}
+                  onClick={() => {
+                    setAdding(false);
+                    setDraftThreshold(90);
+                  }}
                   disabled={saving}
                   className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
                 >

@@ -24,8 +24,19 @@ export default defineConfig({
         // with usage-probe.ts; inherits index.ts's coverage exemption.
         'packages/daemon/src/rate-limit-probe.ts',
         // OAuth orchestration: opens browser, spins up local HTTP server, and
-        // makes external API calls — better covered by integration tests.
+        // makes external API calls: better covered by integration tests.
         'packages/daemon/src/oauth.ts',
+        // Claude.ai usage + run-budget endpoints: authenticated HTTP calls
+        // against undocumented claude.ai endpoints; same exemption rationale
+        // as oauth.ts.
+        'packages/daemon/src/claude-ai-usage.ts',
+        'packages/daemon/src/claude-ai-run-budget.ts',
+        // Bi-directional file-watcher sync against ~/.claude/settings.json:
+        // uses fs.watch on the parent directory; external-integration module.
+        'packages/daemon/src/security/permissions/claude-sync.ts',
+        // Benchmark harness: runs via `vitest bench`, not `vitest run`, so
+        // it's never exercised during the CI test step.
+        'packages/daemon/src/security/scanner.bench.ts',
         // Shared types-only files (no runtime logic)
         'packages/shared/src/**',
         // App frontend (requires browser/Tauri)

@@ -14,7 +14,12 @@ vi.stubGlobal('__APP_VERSION__', 'v-test-1.0.0');
 import { buildBody, buildIssueUrl, buildTitle, openBugReport } from './bugReport.js';
 import { openUrl } from '@tauri-apps/plugin-opener';
 
-function makeLog(seq: number, level: LogEntry['level'], message: string, tag: string | null = null): LogEntry {
+function makeLog(
+  seq: number,
+  level: LogEntry['level'],
+  message: string,
+  tag: string | null = null,
+): LogEntry {
   return { seq, timestamp: 1_700_000_000_000 + seq * 1000, level, message, tag };
 }
 

@@ -42,8 +42,14 @@ export function usePausedAccounts(): Record<string, PausedState> {
           return next;
         });
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   return paused;

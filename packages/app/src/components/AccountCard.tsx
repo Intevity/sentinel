@@ -101,24 +101,34 @@ export default function AccountCard({
 
   // Matches UsageView's rounding: plain round on the header value. Pin the
   // 0 / 100 boundaries so a fresh account isn't mislabeled.
-  const fiveHourPct = fiveHourUtil == null
-    ? null
-    : fiveHourUtil <= 0 ? 0
-    : fiveHourUtil >= 1 ? 100
-    : Math.min(100, Math.round(fiveHourUtil * 100));
+  const fiveHourPct =
+    fiveHourUtil == null
+      ? null
+      : fiveHourUtil <= 0
+        ? 0
+        : fiveHourUtil >= 1
+          ? 100
+          : Math.min(100, Math.round(fiveHourUtil * 100));
   const utilChipStyle =
-    fiveHourPct == null ? ''
-    : fiveHourPct >= 90 ? 'bg-ios-red/10 text-ios-red'
-    : fiveHourPct >= 70 ? 'bg-ios-orange/10 text-ios-orange'
-    : 'bg-[#8E8E93]/10 text-[#8E8E93]';
+    fiveHourPct == null
+      ? ''
+      : fiveHourPct >= 90
+        ? 'bg-ios-red/10 text-ios-red'
+        : fiveHourPct >= 70
+          ? 'bg-ios-orange/10 text-ios-orange'
+          : 'bg-[#8E8E93]/10 text-[#8E8E93]';
 
   // ── Status dot/label for the bottom-left of the action row ──
   // Three states driven by `getAccountStatus`: active (green), excluded
   // (gray, RR-only), inactive (empty placeholder to keep row alignment).
   const statusNode: React.ReactNode =
-    status === 'active'   ? <StatusDot label="Active"   tone="green" />
-  : status === 'excluded' ? <StatusDot label="Excluded" tone="gray"  />
-  :                         <span />;
+    status === 'active' ? (
+      <StatusDot label="Active" tone="green" />
+    ) : status === 'excluded' ? (
+      <StatusDot label="Excluded" tone="gray" />
+    ) : (
+      <span />
+    );
 
   // ── Primary action for the bottom-right of the action row ──
   // Non-RR non-active → Switch pill (blue). RR excluded → Include pill (blue,
@@ -133,9 +143,11 @@ export default function AccountCard({
           onClick={() => onTogglePool?.(account.id, false)}
           disabled={disabled}
           className="text-[11px] font-medium text-[#8E8E93] hover:text-ios-red disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          title={disabled
-            ? 'At least one account must stay in the pool'
-            : 'Exclude from round-robin rotation'}
+          title={
+            disabled
+              ? 'At least one account must stay in the pool'
+              : 'Exclude from round-robin rotation'
+          }
         >
           Exclude
         </button>
@@ -225,7 +237,9 @@ export default function AccountCard({
           {fiveHourPct != null && (
             <div className="flex items-center gap-1.5">
               <div className="relative group">
-                <span className={`text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-full ${utilChipStyle}`}>
+                <span
+                  className={`text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-full ${utilChipStyle}`}
+                >
                   5h · {fiveHourPct}%
                 </span>
                 <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
@@ -240,9 +254,16 @@ export default function AccountCard({
             </div>
           )}
           {paused ? (
-            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-ios-red/15 text-ios-red" title="Sentinel paused this account; weekly budget reached">
-              Paused
-            </span>
+            <div className="relative group">
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-ios-red/15 text-ios-red">
+                Paused
+              </span>
+              <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
+                <div className="bg-black/85 dark:bg-white/90 text-white dark:text-black text-[10px] font-medium px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
+                  Paused: weekly budget reached
+                </div>
+              </div>
+            </div>
           ) : hasRealUsage && weeklyCapUsd != null && weeklyCapUsd > 0 ? (
             <SpendChip spend={extraUsage!.usedUsd} cap={weeklyCapUsd} label="Sentinel" />
           ) : hasRealUsage && extraUsage!.limitUsd > 0 ? (
@@ -291,19 +312,33 @@ export default function AccountCard({
  *  visually anchored regardless of whether the card is active/excluded. */
 /** Small $spend / $cap chip shown next to the 5h chip on AccountCard. The
  *  color tiers mirror the 5h chip so "nearly capped" reads the same on both. */
-function SpendChip({ spend, cap, label }: { spend: number; cap: number; label: string }): React.ReactElement {
+function SpendChip({
+  spend,
+  cap,
+  label,
+}: {
+  spend: number;
+  cap: number;
+  label: string;
+}): React.ReactElement {
   const pct = cap > 0 ? Math.min(100, (spend / cap) * 100) : 0;
   const tone =
-    pct >= 90 ? 'bg-ios-red/10 text-ios-red' :
-    pct >= 70 ? 'bg-ios-orange/10 text-ios-orange' :
-    'bg-[#8E8E93]/10 text-[#8E8E93]';
+    pct >= 90
+      ? 'bg-ios-red/10 text-ios-red'
+      : pct >= 70
+        ? 'bg-ios-orange/10 text-ios-orange'
+        : 'bg-[#8E8E93]/10 text-[#8E8E93]';
   return (
-    <span
-      className={`text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-full ${tone}`}
-      title={`Rolling 7-day spend vs ${label} cap`}
-    >
-      ${spend.toFixed(2)} / ${cap.toFixed(2)}
-    </span>
+    <div className="relative group">
+      <span className={`text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-full ${tone}`}>
+        ${spend.toFixed(2)} / ${cap.toFixed(2)}
+      </span>
+      <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
+        <div className="bg-black/85 dark:bg-white/90 text-white dark:text-black text-[10px] font-medium px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
+          Rolling 7-day spend vs {label} cap
+        </div>
+      </div>
+    </div>
   );
 }
 

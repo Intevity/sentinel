@@ -23,19 +23,39 @@ interface OverageTimelineProps {
 }
 
 const TRANSITION_META = {
-  entered:  { Icon: AlertTriangle, color: 'text-ios-orange', bg: 'bg-ios-orange/10', label: 'Overage started' },
-  exited:   { Icon: CheckCircle,   color: 'text-ios-green',  bg: 'bg-ios-green/10',  label: 'Overage ended'   },
-  disabled: { Icon: XCircle,       color: 'text-ios-red',    bg: 'bg-ios-red/10',    label: 'Overage disabled' },
+  entered: {
+    Icon: AlertTriangle,
+    color: 'text-ios-orange',
+    bg: 'bg-ios-orange/10',
+    label: 'Overage started',
+  },
+  exited: {
+    Icon: CheckCircle,
+    color: 'text-ios-green',
+    bg: 'bg-ios-green/10',
+    label: 'Overage ended',
+  },
+  disabled: {
+    Icon: XCircle,
+    color: 'text-ios-red',
+    bg: 'bg-ios-red/10',
+    label: 'Overage disabled',
+  },
 } as const;
 
 function formatDate(ts: number): string {
   return new Intl.DateTimeFormat('en-US', {
-    month: 'short', day: 'numeric',
-    hour: '2-digit', minute: '2-digit',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
   }).format(new Date(ts));
 }
 
-export default function OverageTimeline({ overageVersion, viewAccountId }: OverageTimelineProps): React.ReactElement {
+export default function OverageTimeline({
+  overageVersion,
+  viewAccountId,
+}: OverageTimelineProps): React.ReactElement {
   const [events, setEvents] = useState<OverageEvent[]>([]);
   const [pauseEvents, setPauseEvents] = useState<PauseEvent[]>([]);
   const [loading, setLoading] = useState(false);
@@ -58,7 +78,10 @@ export default function OverageTimeline({ overageVersion, viewAccountId }: Overa
           reason: msg.reason,
         };
         setPauseEvents((prev) => [pe, ...prev].slice(0, 50));
-      } else if (msg.type === 'account_unpaused' && (!viewAccountId || msg.accountId === viewAccountId)) {
+      } else if (
+        msg.type === 'account_unpaused' &&
+        (!viewAccountId || msg.accountId === viewAccountId)
+      ) {
         const pe: PauseEvent = {
           id: `unpause-${msg.accountId}-${Date.now()}`,
           ts: Date.now(),
@@ -67,8 +90,14 @@ export default function OverageTimeline({ overageVersion, viewAccountId }: Overa
         };
         setPauseEvents((prev) => [pe, ...prev].slice(0, 50));
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, [viewAccountId]);
 
   const fetchEvents = useCallback(async () => {
@@ -91,9 +120,12 @@ export default function OverageTimeline({ overageVersion, viewAccountId }: Overa
     void fetchEvents();
   }, [fetchEvents, overageVersion]);
 
-  useEffect(() => () => {
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    },
+    [],
+  );
 
   const handleClearClick = useCallback(async () => {
     if (!confirmingClear) {
@@ -148,13 +180,18 @@ export default function OverageTimeline({ overageVersion, viewAccountId }: Overa
             const Icon = pe.kind === 'paused' ? PauseCircle : PlayCircle;
             const color = pe.kind === 'paused' ? 'text-ios-red' : 'text-ios-green';
             const bg = pe.kind === 'paused' ? 'bg-ios-red/10' : 'bg-ios-green/10';
-            const label = pe.kind === 'paused'
-              ? (pe.reason === 'sentinel_budget' ? 'Paused by Sentinel budget' : 'Paused: overage disabled')
-              : 'Resumed';
+            const label =
+              pe.kind === 'paused'
+                ? pe.reason === 'sentinel_budget'
+                  ? 'Paused by Sentinel budget'
+                  : 'Paused: overage disabled'
+                : 'Resumed';
             return (
               <div key={pe.id} className="glass-card p-3">
                 <div className="flex items-start gap-3">
-                  <div className={`flex-shrink-0 w-8 h-8 rounded-full ${bg} flex items-center justify-center`}>
+                  <div
+                    className={`flex-shrink-0 w-8 h-8 rounded-full ${bg} flex items-center justify-center`}
+                  >
                     <Icon size={15} className={color} strokeWidth={2} />
                   </div>
                   <div className="flex-1 min-w-0">
@@ -174,7 +211,9 @@ export default function OverageTimeline({ overageVersion, viewAccountId }: Overa
             return (
               <div key={event.id} className="glass-card p-3">
                 <div className="flex items-start gap-3">
-                  <div className={`flex-shrink-0 w-8 h-8 rounded-full ${bg} flex items-center justify-center`}>
+                  <div
+                    className={`flex-shrink-0 w-8 h-8 rounded-full ${bg} flex items-center justify-center`}
+                  >
                     <Icon size={15} className={color} strokeWidth={2} />
                   </div>
                   <div className="flex-1 min-w-0">

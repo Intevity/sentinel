@@ -1,5 +1,13 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ChevronDown, ChevronRight, Copy, FileJson, FileText, Trash2 } from 'lucide-react';
+import {
+  ArrowDown,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  FileJson,
+  FileText,
+  Trash2,
+} from 'lucide-react';
 import type { LogEntry, LogLevel, RequestDetail } from '@claude-sentinel/shared';
 import { useDaemonLogs } from '../hooks/useDaemonLogs.js';
 import { useSettings } from '../hooks/useSettings.js';
@@ -13,8 +21,8 @@ const LEVEL_ORDER: LogLevel[] = ['debug', 'info', 'warn', 'error'];
 
 const LEVEL_STYLE: Record<LogLevel, string> = {
   debug: 'text-[#8E8E93]',
-  info:  'text-black dark:text-white',
-  warn:  'text-ios-orange',
+  info: 'text-black dark:text-white',
+  warn: 'text-ios-orange',
   error: 'text-ios-red',
 };
 
@@ -34,13 +42,21 @@ function formatExportLine(e: LogEntry): string {
   return `[${iso}] ${lvl} ${tag}${e.message}`;
 }
 
-function useConfirmButton(action: () => void | Promise<void>, timeoutMs = 4000): {
+function useConfirmButton(
+  action: () => void | Promise<void>,
+  timeoutMs = 4000,
+): {
   pending: boolean;
   trigger: () => void;
 } {
   const [pending, setPending] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
   const trigger = (): void => {
     if (!pending) {
       setPending(true);
@@ -61,9 +77,7 @@ export default function LogsViewer(): React.ReactElement {
   // Client-side level filter — independent of the daemon's emit level. Shows
   // everything by default; the user can mute noisy levels in-view without
   // losing them from the ring buffer.
-  const [levelMask, setLevelMask] = useState<Set<LogLevel>>(
-    () => new Set(LEVEL_ORDER),
-  );
+  const [levelMask, setLevelMask] = useState<Set<LogLevel>>(() => new Set(LEVEL_ORDER));
   const [tagMask, setTagMask] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -301,7 +315,8 @@ export default function LogsViewer(): React.ReactElement {
         <div className="flex items-center gap-2">
           <span className="section-label">Logs</span>
           <span className="text-[10px] text-[#8E8E93]">
-            {filtered.length}{filtered.length !== entries.length ? ` / ${entries.length}` : ''}
+            {filtered.length}
+            {filtered.length !== entries.length ? ` / ${entries.length}` : ''}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -328,7 +343,9 @@ export default function LogsViewer(): React.ReactElement {
               onClick={clearConfirm.trigger}
               disabled={clearing}
               className={`flex items-center gap-1 text-[11px] font-medium transition-colors active:scale-95 ${
-                clearConfirm.pending ? 'text-white bg-ios-red px-2 py-0.5 rounded-full' : 'text-ios-red hover:text-ios-red/70'
+                clearConfirm.pending
+                  ? 'text-white bg-ios-red px-2 py-0.5 rounded-full'
+                  : 'text-ios-red hover:text-ios-red/70'
               }`}
               title={clearConfirm.pending ? 'Click again to clear' : 'Clear all logs'}
             >
@@ -348,9 +365,11 @@ export default function LogsViewer(): React.ReactElement {
           title={filtersOpen ? 'Hide filters' : 'Show filters'}
           aria-expanded={filtersOpen}
         >
-          {filtersOpen
-            ? <ChevronDown size={11} strokeWidth={2.5} />
-            : <ChevronRight size={11} strokeWidth={2.5} />}
+          {filtersOpen ? (
+            <ChevronDown size={11} strokeWidth={2.5} />
+          ) : (
+            <ChevronRight size={11} strokeWidth={2.5} />
+          )}
           <span>Filters</span>
           {activeFilterSummary && (
             <span className="text-[10px] text-ios-blue">· {activeFilterSummary}</span>
@@ -364,13 +383,17 @@ export default function LogsViewer(): React.ReactElement {
               <label className="text-[11px] text-[#8E8E93]">Daemon log level:</label>
               <select
                 value={settings?.logLevel ?? 'info'}
-                onChange={(e) => { void handleLevelEmitChange(e.target.value as LogLevel); }}
+                onChange={(e) => {
+                  void handleLevelEmitChange(e.target.value as LogLevel);
+                }}
                 disabled={!settings}
                 className="text-[11px] font-medium bg-[#8E8E93]/10 text-black dark:text-white rounded-full px-2 py-0.5 disabled:opacity-40"
                 title="Minimum severity the daemon emits. Lower to DEBUG only when troubleshooting."
               >
                 {LEVEL_ORDER.map((l) => (
-                  <option key={l} value={l}>{l.toUpperCase()}</option>
+                  <option key={l} value={l}>
+                    {l.toUpperCase()}
+                  </option>
                 ))}
               </select>
             </div>
@@ -423,7 +446,9 @@ export default function LogsViewer(): React.ReactElement {
       </div>
 
       {error && (
-        <div className="glass-card px-3 py-2 text-[11px] text-ios-red flex-shrink-0 mb-2">{error}</div>
+        <div className="glass-card px-3 py-2 text-[11px] text-ios-red flex-shrink-0 mb-2">
+          {error}
+        </div>
       )}
 
       {/* Log list — fills remaining height with a single internal scroll.
@@ -441,9 +466,7 @@ export default function LogsViewer(): React.ReactElement {
 
         {showNoMatchState && (
           <div className="glass-card px-4 py-6 text-center">
-            <p className="text-[12px] text-[#8E8E93]">
-              No entries match your filters.
-            </p>
+            <p className="text-[12px] text-[#8E8E93]">No entries match your filters.</p>
           </div>
         )}
 
@@ -484,16 +507,25 @@ export default function LogsViewer(): React.ReactElement {
                       }`}
                     >
                       {hasDetail ? (
-                        isOpen
-                          ? <ChevronDown size={10} strokeWidth={2.5} className="inline text-ios-blue" />
-                          : <ChevronRight size={10} strokeWidth={2.5} className="inline text-ios-blue" />
+                        isOpen ? (
+                          <ChevronDown
+                            size={10}
+                            strokeWidth={2.5}
+                            className="inline text-ios-blue"
+                          />
+                        ) : (
+                          <ChevronRight
+                            size={10}
+                            strokeWidth={2.5}
+                            className="inline text-ios-blue"
+                          />
+                        )
                       ) : (
                         <span className="inline-block w-[10px]" />
                       )}{' '}
                       <span className="text-[#8E8E93]">{formatTime(e.timestamp)}</span>{' '}
                       <span className="font-semibold">{e.level.toUpperCase().padEnd(5)}</span>{' '}
-                      {e.tag && <span className="text-ios-blue">[{e.tag}]</span>}{' '}
-                      {displayMessage}
+                      {e.tag && <span className="text-ios-blue">[{e.tag}]</span>} {displayMessage}
                     </div>
                     {isOpen && <RequestDetailPanel state={detail} />}
                   </React.Fragment>
@@ -562,7 +594,9 @@ function RequestDetailPanel({
   state: RequestDetail | 'loading' | 'error' | undefined;
 }): React.ReactElement {
   if (state === 'loading' || state === undefined) {
-    return <div className="mx-4 my-1 px-3 py-2 text-[10px] text-[#8E8E93]">Loading request detail…</div>;
+    return (
+      <div className="mx-4 my-1 px-3 py-2 text-[10px] text-[#8E8E93]">Loading request detail…</div>
+    );
   }
   if (state === 'error') {
     return (
@@ -657,12 +691,17 @@ function RequestResponseCard({
         className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] font-semibold hover:bg-[#8E8E93]/10"
       >
         <span className="flex items-center gap-1.5">
-          {open
-            ? <ChevronDown size={10} strokeWidth={2.5} />
-            : <ChevronRight size={10} strokeWidth={2.5} />}
+          {open ? (
+            <ChevronDown size={10} strokeWidth={2.5} />
+          ) : (
+            <ChevronRight size={10} strokeWidth={2.5} />
+          )}
           {label}
         </span>
-        <span className="text-[#8E8E93] font-normal">{formatBytes(bodySize)}{bodyTruncated ? ' · truncated' : ''}</span>
+        <span className="text-[#8E8E93] font-normal">
+          {formatBytes(bodySize)}
+          {bodyTruncated ? ' · truncated' : ''}
+        </span>
       </button>
       {open && (
         <div className="px-3 pb-2 space-y-2">
@@ -671,10 +710,7 @@ function RequestResponseCard({
               {Object.entries(headers).map(([k, v]) => (
                 <div key={k} className="flex gap-2">
                   <span className="text-[#8E8E93] shrink-0">{k}:</span>
-                  <span
-                    className="truncate break-all"
-                    title={v}
-                  >
+                  <span className="truncate break-all" title={v}>
                     {v}
                   </span>
                 </div>
@@ -710,7 +746,7 @@ function RequestResponseCard({
                 </div>
               )}
               <pre className="bg-[#000000]/5 dark:bg-[#ffffff]/5 rounded px-2 py-1.5 text-[10px] font-mono whitespace-pre-wrap break-words max-h-[300px] overflow-auto">
-{displayBody}
+                {displayBody}
               </pre>
             </div>
           )}

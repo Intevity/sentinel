@@ -5,7 +5,10 @@ import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { loadSettings, saveSettings, updateSettings, DEFAULT_SETTINGS } from './settings.js';
 
 function tempSettingsPath(): string {
-  const dir = join(tmpdir(), `sentinel-settings-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(
+    tmpdir(),
+    `sentinel-settings-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   mkdirSync(dir, { recursive: true });
   return join(dir, 'settings.json');
 }
@@ -13,7 +16,9 @@ function tempSettingsPath(): string {
 describe('settings', () => {
   let path: string;
 
-  beforeEach(() => { path = tempSettingsPath(); });
+  beforeEach(() => {
+    path = tempSettingsPath();
+  });
   afterEach(() => {
     const dir = join(path, '..');
     if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
@@ -35,10 +40,14 @@ describe('settings', () => {
     });
 
     it('preserves valid fields and backfills invalid ones with defaults', () => {
-      writeFileSync(path, JSON.stringify({
-        launchAtLogin: false,
-        switchingMode: 'bogus-mode',
-      }), 'utf-8');
+      writeFileSync(
+        path,
+        JSON.stringify({
+          launchAtLogin: false,
+          switchingMode: 'bogus-mode',
+        }),
+        'utf-8',
+      );
       const got = loadSettings(path);
       expect(got.launchAtLogin).toBe(false);
       expect(got.switchingMode).toBe(DEFAULT_SETTINGS.switchingMode);
@@ -62,7 +71,11 @@ describe('settings', () => {
 
     it('accepts both valid roundRobinStrategy values', () => {
       for (const strategy of ['balance', 'earliest-reset'] as const) {
-        writeFileSync(path, JSON.stringify({ ...DEFAULT_SETTINGS, roundRobinStrategy: strategy }), 'utf-8');
+        writeFileSync(
+          path,
+          JSON.stringify({ ...DEFAULT_SETTINGS, roundRobinStrategy: strategy }),
+          'utf-8',
+        );
         expect(loadSettings(path).roundRobinStrategy).toBe(strategy);
       }
     });
@@ -118,7 +131,11 @@ describe('settings', () => {
     });
 
     it('filters non-string entries out of overageEnabledIds', () => {
-      writeFileSync(path, JSON.stringify({ overageEnabledIds: ['acc-1', 5, null, 'acc-2', {}] }), 'utf-8');
+      writeFileSync(
+        path,
+        JSON.stringify({ overageEnabledIds: ['acc-1', 5, null, 'acc-2', {}] }),
+        'utf-8',
+      );
       expect(loadSettings(path).overageEnabledIds).toEqual(['acc-1', 'acc-2']);
     });
 
@@ -132,16 +149,20 @@ describe('settings', () => {
     });
 
     it('accepts a valid budgetWeeklyUsdByAccount and drops invalid entries', () => {
-      writeFileSync(path, JSON.stringify({
-        budgetWeeklyUsdByAccount: {
-          'acc-a': 10,
-          'acc-b': -3,             // negative — dropped
-          'acc-c': 'not-a-number', // non-number — dropped
-          'acc-d': Number.POSITIVE_INFINITY, // non-finite — dropped
-          '':      7,               // empty key — dropped
-          'acc-e': 250_000,         // clamped to 100_000
-        },
-      }), 'utf-8');
+      writeFileSync(
+        path,
+        JSON.stringify({
+          budgetWeeklyUsdByAccount: {
+            'acc-a': 10,
+            'acc-b': -3, // negative — dropped
+            'acc-c': 'not-a-number', // non-number — dropped
+            'acc-d': Number.POSITIVE_INFINITY, // non-finite — dropped
+            '': 7, // empty key — dropped
+            'acc-e': 250_000, // clamped to 100_000
+          },
+        }),
+        'utf-8',
+      );
       expect(loadSettings(path).budgetWeeklyUsdByAccount).toEqual({
         'acc-a': 10,
         'acc-e': 100_000,
@@ -199,11 +220,17 @@ describe('settings', () => {
       writeFileSync(path, JSON.stringify({ telemetryRetentionDays: 60 }), 'utf-8');
       expect(loadSettings(path).telemetryRetentionDays).toBe(60);
       writeFileSync(path, JSON.stringify({ telemetryRetentionDays: 0 }), 'utf-8');
-      expect(loadSettings(path).telemetryRetentionDays).toBe(DEFAULT_SETTINGS.telemetryRetentionDays);
+      expect(loadSettings(path).telemetryRetentionDays).toBe(
+        DEFAULT_SETTINGS.telemetryRetentionDays,
+      );
       writeFileSync(path, JSON.stringify({ telemetryRetentionDays: 500 }), 'utf-8');
-      expect(loadSettings(path).telemetryRetentionDays).toBe(DEFAULT_SETTINGS.telemetryRetentionDays);
+      expect(loadSettings(path).telemetryRetentionDays).toBe(
+        DEFAULT_SETTINGS.telemetryRetentionDays,
+      );
       writeFileSync(path, JSON.stringify({ telemetryRetentionDays: 'month' }), 'utf-8');
-      expect(loadSettings(path).telemetryRetentionDays).toBe(DEFAULT_SETTINGS.telemetryRetentionDays);
+      expect(loadSettings(path).telemetryRetentionDays).toBe(
+        DEFAULT_SETTINGS.telemetryRetentionDays,
+      );
     });
 
     it('defaults securitySetupCompleted and tourCompleted to false', () => {
@@ -214,12 +241,20 @@ describe('settings', () => {
     });
 
     it('round-trips securitySetupCompleted/tourCompleted and rejects non-boolean input', () => {
-      writeFileSync(path, JSON.stringify({ securitySetupCompleted: true, tourCompleted: true }), 'utf-8');
+      writeFileSync(
+        path,
+        JSON.stringify({ securitySetupCompleted: true, tourCompleted: true }),
+        'utf-8',
+      );
       const loaded = loadSettings(path);
       expect(loaded.securitySetupCompleted).toBe(true);
       expect(loaded.tourCompleted).toBe(true);
 
-      writeFileSync(path, JSON.stringify({ securitySetupCompleted: 'yes', tourCompleted: 1 }), 'utf-8');
+      writeFileSync(
+        path,
+        JSON.stringify({ securitySetupCompleted: 'yes', tourCompleted: 1 }),
+        'utf-8',
+      );
       const bad = loadSettings(path);
       expect(bad.securitySetupCompleted).toBe(DEFAULT_SETTINGS.securitySetupCompleted);
       expect(bad.tourCompleted).toBe(DEFAULT_SETTINGS.tourCompleted);
@@ -293,6 +328,45 @@ describe('settings', () => {
       expect(loadSettings(path).autoUpdate).toBe(true);
       const off = updateSettings({ autoUpdate: false }, path);
       expect(off.autoUpdate).toBe(false);
+    });
+
+    it('accepts a well-formed lastScanBenchmark payload', () => {
+      // Valid payload — every field passes the shape check, gets persisted.
+      const goodUpdate = updateSettings(
+        {
+          lastScanBenchmark: {
+            results: [{ sizeMb: 1, meanMs: 2, p99Ms: 3 }],
+            recommendedMb: 4,
+            ranAt: 1_700_000_000,
+            platform: 'darwin-arm64',
+          } as unknown as import('@claude-sentinel/shared').Settings['lastScanBenchmark'],
+        },
+        path,
+      );
+      expect(goodUpdate.lastScanBenchmark).not.toBeNull();
+      expect(goodUpdate.lastScanBenchmark?.recommendedMb).toBe(4);
+      expect(goodUpdate.lastScanBenchmark?.results).toHaveLength(1);
+    });
+
+    it('silently drops a malformed lastScanBenchmark payload', () => {
+      const bad = updateSettings(
+        {
+          lastScanBenchmark: {
+            results: 'not-an-array',
+            recommendedMb: 999,
+            ranAt: 'nope',
+            platform: 42,
+          } as unknown as import('@claude-sentinel/shared').Settings['lastScanBenchmark'],
+        },
+        path,
+      );
+      // The malformed fields fail the shape check → value stays at its default.
+      expect(bad.lastScanBenchmark).toBeNull();
+    });
+
+    it('accepts an explicit null to clear lastScanBenchmark', () => {
+      const cleared = updateSettings({ lastScanBenchmark: null }, path);
+      expect(cleared.lastScanBenchmark).toBeNull();
     });
   });
 });

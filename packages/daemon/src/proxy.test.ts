@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { IncomingMessage, ServerResponse, ClientRequest, IncomingHttpHeaders, RequestOptions } from 'http';
+import type {
+  IncomingMessage,
+  ServerResponse,
+  ClientRequest,
+  IncomingHttpHeaders,
+  RequestOptions,
+} from 'http';
 import { OverageStateMachine } from './overage.js';
 
 // Mock the https module to avoid real network calls
@@ -7,15 +13,24 @@ vi.mock('https', () => ({
   request: vi.fn(),
 }));
 
-import { createProxyServer, DAEMON_PORT, ANTHROPIC_HOST, summarizeOverageHeaders } from './proxy.js';
+import {
+  createProxyServer,
+  DAEMON_PORT,
+  ANTHROPIC_HOST,
+  summarizeOverageHeaders,
+} from './proxy.js';
 import type { IpcServer } from './ipc.js';
 import { RateLimitStore } from './rate-limit-store.js';
 import type Database from 'better-sqlite3';
 import * as https from 'https';
 
 // Typed helper to avoid TypeScript overload ambiguity when mocking https.request
-type HttpsRequestMock = (opts: RequestOptions, cb?: (res: IncomingMessage) => void) => ClientRequest;
-const httpsRequestMock = https.request as unknown as import('vitest').MockedFunction<HttpsRequestMock>;
+type HttpsRequestMock = (
+  opts: RequestOptions,
+  cb?: (res: IncomingMessage) => void,
+) => ClientRequest;
+const httpsRequestMock =
+  https.request as unknown as import('vitest').MockedFunction<HttpsRequestMock>;
 
 // Helper to create a minimal mock DB
 function makeMockDb(): Database.Database {
@@ -45,7 +60,7 @@ function makeReq(url: string, method = 'POST', body = '{"test": true}'): Incomin
     method,
     headers: {
       'content-type': 'application/json',
-      'authorization': 'Bearer test-token',
+      authorization: 'Bearer test-token',
     } as IncomingHttpHeaders,
     on: (event: string, cb: (arg?: unknown) => void) => {
       listeners[event] = listeners[event] ?? [];
@@ -160,19 +175,31 @@ describe('createProxyServer', () => {
     httpsRequestMock.mockImplementation((opts, cb) => {
       Object.assign(capturedHeaders, opts.headers);
       if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 10);
-      return { on: vi.fn().mockReturnThis(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() } as unknown as ClientRequest;
+      return {
+        on: vi.fn().mockReturnThis(),
+        write: vi.fn(),
+        end: vi.fn(),
+        destroy: vi.fn(),
+      } as unknown as ClientRequest;
     });
 
     const rateLimitStore = new RateLimitStore();
-    const server = createProxyServer({
-      db,
-      ipcServer,
-      rateLimitStore,
-      activeToken: { value: 'primary-token' },
-      activeAccountId: { value: 'primary-id' },
-      tokenProvider: () => ({ token: 'rotated-token', accountId: 'rotated-id' }),
-    }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        rateLimitStore,
+        activeToken: { value: 'primary-token' },
+        activeAccountId: { value: 'primary-id' },
+        tokenProvider: () => ({ token: 'rotated-token', accountId: 'rotated-id' }),
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/messages', 'POST');
     const { res } = makeRes();
@@ -205,19 +232,31 @@ describe('createProxyServer', () => {
     httpsRequestMock.mockImplementation((opts, cb) => {
       Object.assign(capturedHeaders, opts.headers);
       if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 10);
-      return { on: vi.fn().mockReturnThis(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() } as unknown as ClientRequest;
+      return {
+        on: vi.fn().mockReturnThis(),
+        write: vi.fn(),
+        end: vi.fn(),
+        destroy: vi.fn(),
+      } as unknown as ClientRequest;
     });
 
     const rateLimitStore = new RateLimitStore();
-    const server = createProxyServer({
-      db,
-      ipcServer,
-      rateLimitStore,
-      activeToken: { value: 'primary-token' },
-      activeAccountId: { value: 'primary-id' },
-      tokenProvider: () => ({ token: 'rotated-token', accountId: 'rotated-id' }),
-    }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        rateLimitStore,
+        activeToken: { value: 'primary-token' },
+        activeAccountId: { value: 'primary-id' },
+        tokenProvider: () => ({ token: 'rotated-token', accountId: 'rotated-id' }),
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/messages', 'POST');
     req.headers['x-sentinel-probe-token'] = 'probe-token';
@@ -253,17 +292,29 @@ describe('createProxyServer', () => {
     httpsRequestMock.mockImplementation((opts, cb) => {
       Object.assign(capturedHeaders, opts.headers);
       if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 10);
-      return { on: vi.fn().mockReturnThis(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() } as unknown as ClientRequest;
+      return {
+        on: vi.fn().mockReturnThis(),
+        write: vi.fn(),
+        end: vi.fn(),
+        destroy: vi.fn(),
+      } as unknown as ClientRequest;
     });
 
-    const server = createProxyServer({
-      db,
-      ipcServer,
-      activeToken: { value: 'primary-token' },
-      activeAccountId: { value: 'primary-id' },
-      tokenProvider: () => null,
-    }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'primary-token' },
+        activeAccountId: { value: 'primary-id' },
+        tokenProvider: () => null,
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/messages', 'POST');
     const { res } = makeRes();
@@ -276,15 +327,23 @@ describe('createProxyServer', () => {
 
   it('handles /health GET request', () => {
     const server = createProxyServer({ db, ipcServer }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/health', 'GET', '');
     const { res } = makeRes();
 
     let writtenBody = '';
-    (res as unknown as { end: (data?: string) => void }).end = (data?: string) => { writtenBody = data ?? ''; };
+    (res as unknown as { end: (data?: string) => void }).end = (data?: string) => {
+      writtenBody = data ?? '';
+    };
     let code = 0;
-    (res as unknown as { writeHead: (c: number) => void }).writeHead = (c: number) => { code = c; };
+    (res as unknown as { writeHead: (c: number) => void }).writeHead = (c: number) => {
+      code = c;
+    };
 
     handler?.(req, res);
     expect(code).toBe(200);
@@ -294,7 +353,11 @@ describe('createProxyServer', () => {
 
   it('routes OTEL paths to otelHandler', async () => {
     const server = createProxyServer({ db, ipcServer }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/metrics', 'POST');
     const { res } = makeRes();
@@ -308,7 +371,11 @@ describe('createProxyServer', () => {
 
   it('routes /v1/logs to otelHandler', async () => {
     const server = createProxyServer({ db, ipcServer }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/logs', 'POST');
     const { res } = makeRes();
@@ -343,9 +410,17 @@ describe('createProxyServer', () => {
     });
 
     const server = createProxyServer({ db, ipcServer }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
-    const req = makeReq('/v1/messages', 'POST', JSON.stringify({ model: 'claude-opus-4', messages: [] }));
+    const req = makeReq(
+      '/v1/messages',
+      'POST',
+      JSON.stringify({ model: 'claude-opus-4', messages: [] }),
+    );
     const { res } = makeRes();
 
     handler?.(req, res);
@@ -385,7 +460,11 @@ describe('createProxyServer', () => {
     });
 
     const server = createProxyServer({ db, ipcServer, overageMachine: machine }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/messages', 'POST');
     const { res } = makeRes();
@@ -403,12 +482,18 @@ describe('createProxyServer', () => {
     otelHandler.mockRejectedValue(new Error('otel error'));
 
     const server = createProxyServer({ db, ipcServer }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/metrics', 'POST');
     let code = 200;
     const res = {
-      writeHead: (c: number) => { code = c; },
+      writeHead: (c: number) => {
+        code = c;
+      },
       end: vi.fn(),
     } as unknown as ServerResponse;
 
@@ -432,12 +517,18 @@ describe('createProxyServer', () => {
     });
 
     const server = createProxyServer({ db, ipcServer }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/messages', 'POST');
     let code = 200;
     const res = {
-      writeHead: (c: number) => { code = c; },
+      writeHead: (c: number) => {
+        code = c;
+      },
       end: vi.fn(),
       write: vi.fn(),
     } as unknown as ServerResponse;
@@ -474,7 +565,11 @@ describe('createProxyServer', () => {
     });
 
     const server = createProxyServer({ db, ipcServer, overageMachine: machine }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/messages', 'POST');
     const { res } = makeRes();
@@ -518,7 +613,11 @@ describe('createProxyServer', () => {
     });
 
     const server = createProxyServer({ db, ipcServer, overageMachine: machine }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/messages', 'POST');
     const { res } = makeRes();
@@ -553,7 +652,11 @@ describe('createProxyServer', () => {
     });
 
     const server = createProxyServer({ db, ipcServer }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     // Use a path not in ANTHROPIC_PATHS or OTEL_PATHS
     const req = makeReq('/v1/some-future-endpoint', 'GET', '');
@@ -579,12 +682,18 @@ describe('createProxyServer', () => {
     });
 
     const server = createProxyServer({ db, ipcServer }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/unknown-path', 'GET', '');
     let code = 200;
     const res = {
-      writeHead: (c: number) => { code = c; },
+      writeHead: (c: number) => {
+        code = c;
+      },
       end: vi.fn(),
     } as unknown as ServerResponse;
 
@@ -620,7 +729,11 @@ describe('createProxyServer', () => {
     });
 
     const server = createProxyServer({ db, ipcServer, rateLimitStore }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/messages', 'POST');
     const { res } = makeRes();
@@ -660,7 +773,11 @@ describe('createProxyServer', () => {
     });
 
     const server = createProxyServer({ db, ipcServer, rateLimitStore }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     // Fire two requests back-to-back; only one broadcast should go out
     handler?.(makeReq('/v1/messages'), makeRes().res);
@@ -668,9 +785,9 @@ describe('createProxyServer', () => {
     handler?.(makeReq('/v1/messages'), makeRes().res);
     await new Promise((r) => setTimeout(r, 100));
 
-    const rlCalls = vi.mocked(ipcServer.broadcast).mock.calls.filter(
-      ([m]) => (m as { type: string }).type === 'rate_limits_updated',
-    );
+    const rlCalls = vi
+      .mocked(ipcServer.broadcast)
+      .mock.calls.filter(([m]) => (m as { type: string }).type === 'rate_limits_updated');
     expect(rlCalls).toHaveLength(1);
     server.close();
   });
@@ -702,7 +819,11 @@ describe('createProxyServer', () => {
     });
 
     const server = createProxyServer({ db, ipcServer, overageMachine: machine }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/messages', 'POST');
     const { res } = makeRes();
@@ -718,18 +839,37 @@ describe('createProxyServer', () => {
 
   it('returns a 403 and does not forward when securityScanner.scanOutbound blocks', async () => {
     const scanner = {
-      scanOutbound: vi.fn(() => ({ action: 'block_immediate', blockReason: 'AWS access key', findings: [] })),
+      scanOutbound: vi.fn(() => ({
+        action: 'block_immediate',
+        blockReason: 'AWS access key',
+        findings: [],
+      })),
       startResponseTap: vi.fn(() => null),
     };
-    const server = createProxyServer({ db, ipcServer, securityScanner: scanner as never }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const server = createProxyServer(
+      { db, ipcServer, securityScanner: scanner as never },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
-    const req = makeReq('/v1/messages', 'POST', JSON.stringify({ messages: [{ role: 'user', content: 'AKIA' }] }));
+    const req = makeReq(
+      '/v1/messages',
+      'POST',
+      JSON.stringify({ messages: [{ role: 'user', content: 'AKIA' }] }),
+    );
     const { res } = makeRes();
     let writtenBody = '';
     let code = 0;
-    (res as unknown as { writeHead: (c: number) => void }).writeHead = (c: number) => { code = c; };
-    (res as unknown as { end: (data?: string) => void }).end = (data?: string) => { writtenBody = data ?? ''; };
+    (res as unknown as { writeHead: (c: number) => void }).writeHead = (c: number) => {
+      code = c;
+    };
+    (res as unknown as { end: (data?: string) => void }).end = (data?: string) => {
+      writtenBody = data ?? '';
+    };
 
     handler?.(req, res);
     await new Promise((r) => setTimeout(r, 30));
@@ -746,10 +886,16 @@ describe('createProxyServer', () => {
     let resolveOutcome: ((o: 'approve' | 'deny' | 'timeout') => void) | null = null;
     const scanner = {
       scanOutbound: vi.fn(() => ({
-        action: 'pending', pendingId: 'abc', blockReason: 'AWS access key', findings: [],
+        action: 'pending',
+        pendingId: 'abc',
+        blockReason: 'AWS access key',
+        findings: [],
       })),
-      awaitPendingResolution: vi.fn(() =>
-        new Promise<'approve' | 'deny' | 'timeout'>((resolve) => { resolveOutcome = resolve; }),
+      awaitPendingResolution: vi.fn(
+        () =>
+          new Promise<'approve' | 'deny' | 'timeout'>((resolve) => {
+            resolveOutcome = resolve;
+          }),
       ),
       resolvePending: vi.fn(() => true),
       listPending: vi.fn(() => []),
@@ -769,11 +915,23 @@ describe('createProxyServer', () => {
     httpsRequestMock.mockImplementation((opts, cb) => {
       Object.assign(capturedUpstream, opts);
       if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 5);
-      return { on: vi.fn().mockReturnThis(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() } as unknown as ClientRequest;
+      return {
+        on: vi.fn().mockReturnThis(),
+        write: vi.fn(),
+        end: vi.fn(),
+        destroy: vi.fn(),
+      } as unknown as ClientRequest;
     });
 
-    const server = createProxyServer({ db, ipcServer, securityScanner: scanner as never }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const server = createProxyServer(
+      { db, ipcServer, securityScanner: scanner as never },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
     const req = makeReq('/v1/messages', 'POST');
     const { res } = makeRes();
     handler?.(req, res);
@@ -795,23 +953,40 @@ describe('createProxyServer', () => {
     let resolveOutcome: ((o: 'approve' | 'deny' | 'timeout') => void) | null = null;
     const scanner = {
       scanOutbound: vi.fn(() => ({
-        action: 'pending', pendingId: 'abc', blockReason: 'AWS access key', findings: [],
+        action: 'pending',
+        pendingId: 'abc',
+        blockReason: 'AWS access key',
+        findings: [],
       })),
-      awaitPendingResolution: vi.fn(() =>
-        new Promise<'approve' | 'deny' | 'timeout'>((resolve) => { resolveOutcome = resolve; }),
+      awaitPendingResolution: vi.fn(
+        () =>
+          new Promise<'approve' | 'deny' | 'timeout'>((resolve) => {
+            resolveOutcome = resolve;
+          }),
       ),
       resolvePending: vi.fn(() => true),
       listPending: vi.fn(() => []),
       startResponseTap: vi.fn(() => null),
     };
-    const server = createProxyServer({ db, ipcServer, securityScanner: scanner as never }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const server = createProxyServer(
+      { db, ipcServer, securityScanner: scanner as never },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
     const req = makeReq('/v1/messages', 'POST');
     const { res } = makeRes();
     let code = 0;
     let writtenBody = '';
-    (res as unknown as { writeHead: (c: number) => void }).writeHead = (c: number) => { code = c; };
-    (res as unknown as { end: (data?: string) => void }).end = (data?: string) => { writtenBody = data ?? ''; };
+    (res as unknown as { writeHead: (c: number) => void }).writeHead = (c: number) => {
+      code = c;
+    };
+    (res as unknown as { end: (data?: string) => void }).end = (data?: string) => {
+      writtenBody = data ?? '';
+    };
 
     handler?.(req, res);
     await new Promise((r) => setTimeout(r, 20));
@@ -829,7 +1004,9 @@ describe('createProxyServer', () => {
     let flushCount = 0;
     const tap = {
       push: (chunk: Buffer) => pushed.push(chunk),
-      flush: () => { flushCount++; },
+      flush: () => {
+        flushCount++;
+      },
       destroy: vi.fn(),
     };
     const scanner = {
@@ -852,11 +1029,23 @@ describe('createProxyServer', () => {
     };
     httpsRequestMock.mockImplementation((_opts, cb) => {
       if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 5);
-      return { on: vi.fn().mockReturnThis(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() } as unknown as ClientRequest;
+      return {
+        on: vi.fn().mockReturnThis(),
+        write: vi.fn(),
+        end: vi.fn(),
+        destroy: vi.fn(),
+      } as unknown as ClientRequest;
     });
 
-    const server = createProxyServer({ db, ipcServer, securityScanner: scanner as never }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const server = createProxyServer(
+      { db, ipcServer, securityScanner: scanner as never },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
     const req = makeReq('/v1/messages', 'POST');
     const { res } = makeRes();
     handler?.(req, res);
@@ -889,11 +1078,23 @@ describe('createProxyServer', () => {
     };
     httpsRequestMock.mockImplementation((_opts, cb) => {
       if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 5);
-      return { on: vi.fn().mockReturnThis(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() } as unknown as ClientRequest;
+      return {
+        on: vi.fn().mockReturnThis(),
+        write: vi.fn(),
+        end: vi.fn(),
+        destroy: vi.fn(),
+      } as unknown as ClientRequest;
     });
 
-    const server = createProxyServer({ db, ipcServer, securityScanner: scanner as never }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const server = createProxyServer(
+      { db, ipcServer, securityScanner: scanner as never },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
     const req = makeReq('/v1/messages', 'POST');
     const { res } = makeRes();
     handler?.(req, res);
@@ -906,15 +1107,22 @@ describe('createProxyServer', () => {
   });
 
   it('short-circuits with 503 + Retry-After when the active account is paused', async () => {
-    const server = createProxyServer({
-      db,
-      ipcServer,
-      activeToken: { value: 'tok' },
-      activeAccountId: { value: 'paused-acct' },
-      getPausedAccountIds: () => new Set(['paused-acct']),
-      getSessionResetAt: () => Math.floor(Date.now() / 1000) + 600, // 10 min from now
-    }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'tok' },
+        activeAccountId: { value: 'paused-acct' },
+        getPausedAccountIds: () => new Set(['paused-acct']),
+        getSessionResetAt: () => Math.floor(Date.now() / 1000) + 600, // 10 min from now
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/messages', 'POST');
     let code = 0;
@@ -925,7 +1133,9 @@ describe('createProxyServer', () => {
         code = c;
         if (hdrs && typeof hdrs === 'object') capturedHeaders = hdrs as Record<string, unknown>;
       },
-      end: (data?: string) => { bodyStr = data ?? ''; },
+      end: (data?: string) => {
+        bodyStr = data ?? '';
+      },
       write: vi.fn(),
       pipe: vi.fn(),
     } as unknown as ServerResponse;
@@ -945,15 +1155,22 @@ describe('createProxyServer', () => {
   });
 
   it('falls back to 300s Retry-After when no 5h reset is known', async () => {
-    const server = createProxyServer({
-      db,
-      ipcServer,
-      activeToken: { value: 'tok' },
-      activeAccountId: { value: 'paused-acct' },
-      getPausedAccountIds: () => new Set(['paused-acct']),
-      getSessionResetAt: () => null,
-    }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'tok' },
+        activeAccountId: { value: 'paused-acct' },
+        getPausedAccountIds: () => new Set(['paused-acct']),
+        getSessionResetAt: () => null,
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     const req = makeReq('/v1/messages', 'POST');
     let capturedHeaders: Record<string, unknown> = {};
@@ -971,15 +1188,22 @@ describe('createProxyServer', () => {
   });
 
   it('does not short-circuit requests to non-Anthropic paths when paused', async () => {
-    const server = createProxyServer({
-      db,
-      ipcServer,
-      activeToken: { value: 'tok' },
-      activeAccountId: { value: 'paused-acct' },
-      getPausedAccountIds: () => new Set(['paused-acct']),
-      getSessionResetAt: () => null,
-    }, otelHandler);
-    const handler = (server as unknown as { listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void> }).listeners('request')[0];
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'tok' },
+        activeAccountId: { value: 'paused-acct' },
+        getPausedAccountIds: () => new Set(['paused-acct']),
+        getSessionResetAt: () => null,
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
 
     // Health check — pause gate fires BEFORE the path check, so this
     // currently also returns 503. Worth documenting the behaviour so future
@@ -987,13 +1211,318 @@ describe('createProxyServer', () => {
     const req = makeReq('/health', 'GET', '');
     let code = 0;
     const res = {
-      writeHead: (c: number) => { code = c; },
+      writeHead: (c: number) => {
+        code = c;
+      },
       end: vi.fn(),
       write: vi.fn(),
     } as unknown as ServerResponse;
     handler?.(req, res);
     // Health has no credential-selection so is not paused. /health returns 200.
     expect(code).toBe(200);
+    server.close();
+  });
+});
+
+describe('createProxyServer cache TTL capture', () => {
+  let realDb: Database.Database;
+  let ipcServer: IpcServer;
+  let otelHandler: ReturnType<typeof vi.fn>;
+  let broadcastCalls: Array<{ type: string }>;
+
+  beforeEach(async () => {
+    const BetterSqlite = (await import('better-sqlite3')).default;
+    realDb = new BetterSqlite(':memory:') as unknown as Database.Database;
+    const { SCHEMA } = await import('./db.js');
+    (realDb as unknown as { exec: (sql: string) => void }).exec(SCHEMA);
+    broadcastCalls = [];
+    ipcServer = {
+      broadcast: (msg: { type: string }) => broadcastCalls.push(msg),
+      onMessage: vi.fn(),
+      start: vi.fn(),
+      close: vi.fn(),
+      connectedClients: 0,
+    } as unknown as IpcServer;
+    otelHandler = vi.fn().mockResolvedValue(undefined);
+    httpsRequestMock.mockReset();
+  });
+
+  function reqWithBody(body: unknown): IncomingMessage {
+    const bytes = JSON.stringify(body);
+    return makeReq('/v1/messages', 'POST', bytes);
+  }
+
+  function setupUpstream(params: { contentType: string; chunks: string[] }): {
+    dataListeners: Array<(c: Buffer) => void>;
+    endListeners: Array<() => void>;
+  } {
+    const dataListeners: Array<(c: Buffer) => void> = [];
+    const endListeners: Array<() => void> = [];
+    const mockProxyRes = {
+      statusCode: 200,
+      headers: { 'content-type': params.contentType },
+      on: vi.fn((event: string, cb: (arg?: unknown) => void) => {
+        if (event === 'data') dataListeners.push(cb as (c: Buffer) => void);
+        if (event === 'end') endListeners.push(cb as () => void);
+        return mockProxyRes;
+      }),
+      pipe: vi.fn(),
+    };
+    httpsRequestMock.mockImplementation((_opts, cb) => {
+      if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 5);
+      return {
+        on: vi.fn().mockReturnThis(),
+        write: vi.fn(),
+        end: vi.fn(),
+        destroy: vi.fn(),
+      } as unknown as ClientRequest;
+    });
+    // Deliver chunks after the upstream handler has been installed.
+    setTimeout(() => {
+      for (const chunk of params.chunks) {
+        dataListeners.forEach((cb) => cb(Buffer.from(chunk)));
+      }
+      endListeners.forEach((cb) => cb());
+    }, 15);
+    return { dataListeners, endListeners };
+  }
+
+  it('inserts a cache_ttl_events row from an SSE message_delta usage payload', async () => {
+    const body = {
+      model: 'claude-sonnet-4-6',
+      system: [
+        { type: 'text', text: 'instr', cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: 'tail', cache_control: { type: 'ephemeral', ttl: '1h' } },
+      ],
+      messages: [{ role: 'user', content: 'hi' }],
+      metadata: { user_id: JSON.stringify({ session_id: 'sess-ABC', account_uuid: 'u1' }) },
+    };
+    setupUpstream({
+      contentType: 'text/event-stream',
+      chunks: [
+        `data: ${JSON.stringify({
+          type: 'message_start',
+          message: {
+            model: 'claude-sonnet-4-6',
+            usage: { input_tokens: 1 },
+          },
+        })}\n\n`,
+        `data: ${JSON.stringify({
+          type: 'message_delta',
+          usage: {
+            input_tokens: 1,
+            cache_creation: {
+              ephemeral_5m_input_tokens: 1000,
+              ephemeral_1h_input_tokens: 2000,
+            },
+            cache_read_input_tokens: 500,
+            output_tokens: 42,
+          },
+        })}\n\n`,
+      ],
+    });
+
+    const server = createProxyServer(
+      {
+        db: realDb,
+        ipcServer,
+        activeToken: { value: 't' },
+        activeAccountId: { value: 'acct-1' },
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+    const req = reqWithBody(body);
+    const { res } = makeRes();
+    handler?.(req, res);
+    await new Promise((r) => setTimeout(r, 80));
+
+    const rows = realDb.prepare('SELECT * FROM cache_ttl_events').all() as Array<
+      Record<string, unknown>
+    >;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      account_id: 'acct-1',
+      session_id: 'sess-ABC',
+      model: 'claude-sonnet-4-6',
+      req_markers_5m: 1,
+      req_markers_1h: 1,
+      cache_create_5m: 1000,
+      cache_create_1h: 2000,
+      cache_read: 500,
+      input_tokens: 1,
+    });
+    // Cost fields: 1000 tokens 5m = 1000/1e6 * 3 * 1.25 = 0.00375
+    expect(rows[0]?.['cost_5m_write']).toBeCloseTo(0.00375, 6);
+    // 2000 tokens 1h = 2000/1e6 * 3 * 2.0 = 0.012
+    expect(rows[0]?.['cost_1h_write']).toBeCloseTo(0.012, 6);
+    // 500 tokens read = 500/1e6 * 3 * 0.1 = 0.00015
+    expect(rows[0]?.['cost_read']).toBeCloseTo(0.00015, 6);
+    expect(broadcastCalls.some((c) => c.type === 'metrics_updated')).toBe(true);
+
+    server.close();
+  });
+
+  it('skips the insert when no usage arrives in the response', async () => {
+    setupUpstream({
+      contentType: 'text/event-stream',
+      chunks: ['data: {"type":"ping"}\n\n'],
+    });
+    const server = createProxyServer(
+      {
+        db: realDb,
+        ipcServer,
+        activeToken: { value: 't' },
+        activeAccountId: { value: 'acct-2' },
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+    const req = reqWithBody({ model: 'm', messages: [] });
+    const { res } = makeRes();
+    handler?.(req, res);
+    await new Promise((r) => setTimeout(r, 60));
+
+    const rows = realDb.prepare('SELECT COUNT(*) AS n FROM cache_ttl_events').get() as {
+      n: number;
+    };
+    expect(rows.n).toBe(0);
+    server.close();
+  });
+
+  it('falls back to JSON parsing for non-SSE responses', async () => {
+    const responsePayload = JSON.stringify({
+      model: 'claude-opus-4-7',
+      usage: {
+        input_tokens: 4,
+        cache_creation: {
+          ephemeral_5m_input_tokens: 10,
+          ephemeral_1h_input_tokens: 0,
+        },
+        cache_read_input_tokens: 7,
+        output_tokens: 1,
+      },
+    });
+    setupUpstream({
+      contentType: 'application/json',
+      chunks: [responsePayload],
+    });
+    const server = createProxyServer(
+      {
+        db: realDb,
+        ipcServer,
+        activeToken: { value: 't' },
+        activeAccountId: { value: 'acct-3' },
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+    const req = reqWithBody({
+      model: 'claude-opus-4-7',
+      messages: [],
+      metadata: { user_id: JSON.stringify({ session_id: 'sess-JSON' }) },
+    });
+    const { res } = makeRes();
+    handler?.(req, res);
+    await new Promise((r) => setTimeout(r, 60));
+
+    const row = realDb.prepare('SELECT * FROM cache_ttl_events').get() as Record<string, unknown>;
+    expect(row).toMatchObject({
+      account_id: 'acct-3',
+      session_id: 'sess-JSON',
+      model: 'claude-opus-4-7',
+      cache_create_5m: 10,
+      cache_create_1h: 0,
+      cache_read: 7,
+    });
+    server.close();
+  });
+
+  it('skips count_tokens paths', async () => {
+    setupUpstream({
+      contentType: 'application/json',
+      chunks: [
+        JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 0 },
+        }),
+      ],
+    });
+    const server = createProxyServer(
+      {
+        db: realDb,
+        ipcServer,
+        activeToken: { value: 't' },
+        activeAccountId: { value: 'acct-4' },
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+    const req = makeReq('/v1/messages/count_tokens', 'POST', '{}');
+    const { res } = makeRes();
+    handler?.(req, res);
+    await new Promise((r) => setTimeout(r, 60));
+
+    const rows = realDb.prepare('SELECT COUNT(*) AS n FROM cache_ttl_events').get() as {
+      n: number;
+    };
+    expect(rows.n).toBe(0);
+    server.close();
+  });
+
+  it('debounces the metrics_updated broadcast to one per window per account', async () => {
+    const sseChunk = `data: ${JSON.stringify({
+      type: 'message_delta',
+      usage: { cache_read_input_tokens: 1 },
+    })}\n\n`;
+
+    const server = createProxyServer(
+      {
+        db: realDb,
+        ipcServer,
+        activeToken: { value: 't' },
+        activeAccountId: { value: 'acct-debounce' },
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+
+    // Two back-to-back requests against the SAME server — the second must
+    // NOT fire a second metrics_updated inside the 1 s debounce window.
+    for (let i = 0; i < 2; i++) {
+      setupUpstream({ contentType: 'text/event-stream', chunks: [sseChunk] });
+      const req = makeReq('/v1/messages', 'POST', '{}');
+      const { res } = makeRes();
+      handler?.(req, res);
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    const metricsFires = broadcastCalls.filter((c) => c.type === 'metrics_updated').length;
+    expect(metricsFires).toBe(1);
+
+    const rowCount = (
+      realDb.prepare('SELECT COUNT(*) AS n FROM cache_ttl_events').get() as { n: number }
+    ).n;
+    expect(rowCount).toBe(2);
     server.close();
   });
 });

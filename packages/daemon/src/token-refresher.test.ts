@@ -9,7 +9,8 @@ const listAccountsMock = vi.fn<() => Array<{ id: string; email: string }>>();
 
 vi.mock('./accounts.js', () => ({
   readSentinelCredentials: (k: string) => readSentinelCredentialsMock(k),
-  writeSentinelCredentials: (k: string, c: ClaudeCodeCredentials) => writeSentinelCredentialsMock(k, c),
+  writeSentinelCredentials: (k: string, c: ClaudeCodeCredentials) =>
+    writeSentinelCredentialsMock(k, c),
   writeClaudeCodeCredentials: (c: ClaudeCodeCredentials) => writeClaudeCodeCredentialsMock(c),
 }));
 
@@ -22,11 +23,8 @@ vi.mock('./db.js', () => ({
   listAccounts: () => listAccountsMock(),
 }));
 
-const {
-  refreshIfNeeded,
-  markAccountReauthenticated,
-  startTokenRefresher,
-} = await import('./token-refresher.js');
+const { refreshIfNeeded, markAccountReauthenticated, startTokenRefresher } =
+  await import('./token-refresher.js');
 
 function makeCreds(overrides: Partial<ClaudeCodeCredentials> = {}): ClaudeCodeCredentials {
   return {
@@ -74,7 +72,9 @@ describe('token-refresher', () => {
 
   describe('refreshIfNeeded', () => {
     it('skips refresh when token has > 30 min remaining', async () => {
-      readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 45 * 60 * 1000 }));
+      readSentinelCredentialsMock.mockReturnValue(
+        makeCreds({ expiresAt: Date.now() + 45 * 60 * 1000 }),
+      );
       const { deps } = makeDeps();
 
       const result = await refreshIfNeeded(deps, 'acct-1', 'a@b.com');
@@ -84,7 +84,9 @@ describe('token-refresher', () => {
     });
 
     it('refreshes when inside the threshold and updates active-account state', async () => {
-      readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 5 * 60 * 1000 }));
+      readSentinelCredentialsMock.mockReturnValue(
+        makeCreds({ expiresAt: Date.now() + 5 * 60 * 1000 }),
+      );
       refreshAccessTokenMock.mockResolvedValue({
         access_token: 'at-new',
         refresh_token: 'rt-new',
@@ -105,11 +107,15 @@ describe('token-refresher', () => {
       expect(written?.subscriptionType).toBe('team'); // preserved
       expect(writeClaudeCodeCredentialsMock).toHaveBeenCalledOnce();
       expect(deps.activeToken.value).toBe('at-new');
-      expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ type: 'token_refreshed', accountId: 'acct-1' }));
+      expect(broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'token_refreshed', accountId: 'acct-1' }),
+      );
     });
 
     it('does not touch Claude Code keychain or activeToken for inactive accounts', async () => {
-      readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 5 * 60 * 1000 }));
+      readSentinelCredentialsMock.mockReturnValue(
+        makeCreds({ expiresAt: Date.now() + 5 * 60 * 1000 }),
+      );
       refreshAccessTokenMock.mockResolvedValue({
         access_token: 'at-new',
         refresh_token: 'rt-new',
@@ -128,9 +134,14 @@ describe('token-refresher', () => {
     it('invalidates the rotator pool after a successful refresh of an inactive account', async () => {
       // Regression: round-robin pool kept serving the pre-refresh token on the
       // non-active account until the daemon was restarted, causing 401s.
-      readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 5 * 60 * 1000 }));
+      readSentinelCredentialsMock.mockReturnValue(
+        makeCreds({ expiresAt: Date.now() + 5 * 60 * 1000 }),
+      );
       refreshAccessTokenMock.mockResolvedValue({
-        access_token: 'at-new', refresh_token: 'rt-new', expires_in: 3600, token_type: 'Bearer',
+        access_token: 'at-new',
+        refresh_token: 'rt-new',
+        expires_in: 3600,
+        token_type: 'Bearer',
       });
       const { deps, rotatorRefresh } = makeDeps();
       deps.activeAccountId.value = 'different-account'; // refreshed account is NOT active
@@ -141,7 +152,9 @@ describe('token-refresher', () => {
     });
 
     it('does not invalidate the rotator pool when the refresh is skipped', async () => {
-      readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 45 * 60 * 1000 }));
+      readSentinelCredentialsMock.mockReturnValue(
+        makeCreds({ expiresAt: Date.now() + 45 * 60 * 1000 }),
+      );
       const { deps, rotatorRefresh } = makeDeps();
 
       await refreshIfNeeded(deps, 'acct-1', 'a@b.com');
@@ -151,7 +164,9 @@ describe('token-refresher', () => {
     });
 
     it('force=true refreshes even when token is fresh', async () => {
-      readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 60 * 60 * 1000 }));
+      readSentinelCredentialsMock.mockReturnValue(
+        makeCreds({ expiresAt: Date.now() + 60 * 60 * 1000 }),
+      );
       refreshAccessTokenMock.mockResolvedValue({
         access_token: 'at-new',
         refresh_token: 'rt-new',
@@ -181,7 +196,9 @@ describe('token-refresher', () => {
 
       const first = await refreshIfNeeded(deps, 'acct-1', 'a@b.com');
       expect(first.needsReauth).toBe(true);
-      expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ type: 'token_refresh_failed', reason: 'expired' }));
+      expect(broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'token_refresh_failed', reason: 'expired' }),
+      );
 
       // Second call should not re-hit the token endpoint.
       refreshAccessTokenMock.mockClear();
@@ -192,7 +209,10 @@ describe('token-refresher', () => {
       // After markAccountReauthenticated, we should try again.
       markAccountReauthenticated('acct-1');
       refreshAccessTokenMock.mockResolvedValueOnce({
-        access_token: 'at-new', refresh_token: 'rt-new', expires_in: 3600, token_type: 'Bearer',
+        access_token: 'at-new',
+        refresh_token: 'rt-new',
+        expires_in: 3600,
+        token_type: 'Bearer',
       });
       readSentinelCredentialsMock.mockReturnValueOnce(makeCreds({ expiresAt: Date.now() + 1_000 }));
       const third = await refreshIfNeeded(deps, 'acct-1', 'a@b.com');
@@ -207,25 +227,36 @@ describe('token-refresher', () => {
       const result = await refreshIfNeeded(deps, 'acct-1', 'a@b.com');
 
       expect(result.success).toBe(false);
-      expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ type: 'token_refresh_failed', reason: 'network' }));
+      expect(broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'token_refresh_failed', reason: 'network' }),
+      );
     });
 
     it('broadcasts reason=unknown for token-endpoint failures outside 400/401', async () => {
       readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 1_000 }));
-      refreshAccessTokenMock.mockRejectedValue(new Error('Token refresh failed (503): maintenance'));
+      refreshAccessTokenMock.mockRejectedValue(
+        new Error('Token refresh failed (503): maintenance'),
+      );
       const { deps, broadcast } = makeDeps();
 
       await refreshIfNeeded(deps, 'acct-1', 'a@b.com');
 
-      expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ type: 'token_refresh_failed', reason: 'unknown' }));
+      expect(broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'token_refresh_failed', reason: 'unknown' }),
+      );
     });
 
     it('keeps going when writeClaudeCodeCredentials throws (active account only)', async () => {
       readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 1_000 }));
       refreshAccessTokenMock.mockResolvedValue({
-        access_token: 'at-new', refresh_token: 'rt-new', expires_in: 3600, token_type: 'Bearer',
+        access_token: 'at-new',
+        refresh_token: 'rt-new',
+        expires_in: 3600,
+        token_type: 'Bearer',
       });
-      writeClaudeCodeCredentialsMock.mockImplementation(() => { throw new Error('keychain busy'); });
+      writeClaudeCodeCredentialsMock.mockImplementation(() => {
+        throw new Error('keychain busy');
+      });
       const { deps } = makeDeps();
       deps.activeAccountId.value = 'acct-1';
 
@@ -236,10 +267,16 @@ describe('token-refresher', () => {
     });
 
     it('falls back to existing scopes when the refresh response omits them', async () => {
-      const creds = makeCreds({ expiresAt: Date.now() + 1_000, scopes: ['user:profile', 'user:inference'] });
+      const creds = makeCreds({
+        expiresAt: Date.now() + 1_000,
+        scopes: ['user:profile', 'user:inference'],
+      });
       readSentinelCredentialsMock.mockReturnValue(creds);
       refreshAccessTokenMock.mockResolvedValue({
-        access_token: 'at-new', refresh_token: 'rt-new', expires_in: 3600, token_type: 'Bearer',
+        access_token: 'at-new',
+        refresh_token: 'rt-new',
+        expires_in: 3600,
+        token_type: 'Bearer',
       });
       const { deps } = makeDeps();
 
@@ -250,9 +287,13 @@ describe('token-refresher', () => {
     });
 
     it('keeps the old refresh token when the endpoint does not rotate it', async () => {
-      readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 1_000, refreshToken: 'rt-keep' }));
+      readSentinelCredentialsMock.mockReturnValue(
+        makeCreds({ expiresAt: Date.now() + 1_000, refreshToken: 'rt-keep' }),
+      );
       refreshAccessTokenMock.mockResolvedValue({
-        access_token: 'at-new', expires_in: 3600, token_type: 'Bearer',
+        access_token: 'at-new',
+        expires_in: 3600,
+        token_type: 'Bearer',
       });
       const { deps } = makeDeps();
 
@@ -265,7 +306,9 @@ describe('token-refresher', () => {
     it('uses a 1h default expiry when expires_in is omitted', async () => {
       readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 1_000 }));
       refreshAccessTokenMock.mockResolvedValue({
-        access_token: 'at-new', refresh_token: 'rt-new', token_type: 'Bearer',
+        access_token: 'at-new',
+        refresh_token: 'rt-new',
+        token_type: 'Bearer',
       });
       const { deps } = makeDeps();
       const before = Date.now();
@@ -283,7 +326,9 @@ describe('token-refresher', () => {
     it('scans all accounts immediately and on interval, stops when cancelled', async () => {
       vi.useFakeTimers();
       listAccountsMock.mockReturnValue([{ id: 'acct-1', email: 'a@b.com' }]);
-      readSentinelCredentialsMock.mockReturnValue(makeCreds({ expiresAt: Date.now() + 60 * 60 * 1000 }));
+      readSentinelCredentialsMock.mockReturnValue(
+        makeCreds({ expiresAt: Date.now() + 60 * 60 * 1000 }),
+      );
       const { deps } = makeDeps();
 
       const stop = startTokenRefresher(deps);

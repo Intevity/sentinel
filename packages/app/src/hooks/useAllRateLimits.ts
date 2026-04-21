@@ -45,8 +45,14 @@ export function useAllRateLimits(): {
       ) {
         void refetch();
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, [refetch]);
 
   return { byAccount, refetch };

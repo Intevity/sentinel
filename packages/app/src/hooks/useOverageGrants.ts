@@ -26,7 +26,9 @@ export function useOverageGrants(): UseOverageGrantsResult {
 
   const fetchOnce = async (): Promise<void> => {
     try {
-      const res = await sendToSentinel<Record<string, OverageCreditGrant>>({ type: 'get_overage_grants' });
+      const res = await sendToSentinel<Record<string, OverageCreditGrant>>({
+        type: 'get_overage_grants',
+      });
       if (res.success && res.data) setGrants(res.data);
     } finally {
       setLoading(false);
@@ -39,15 +41,23 @@ export function useOverageGrants(): UseOverageGrantsResult {
       if (cancelled) return;
       await fetchOnce();
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     onDaemonMessage((msg) => {
       if (msg.type === 'overage_grants_updated') setGrants(msg.grants);
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   const refresh = async (): Promise<void> => {

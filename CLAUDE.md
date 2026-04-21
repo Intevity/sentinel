@@ -28,6 +28,7 @@ tail -f ~/.claude-sentinel/daemon.log
 ## Test cycle checklist
 
 Before declaring a fix complete, always:
+
 1. Build daemon (if changed): `pnpm --filter @claude-sentinel/daemon run build && pnpm --filter @claude-sentinel/daemon run build:sidecar`
 2. Build full app (if frontend/Rust changed): `pnpm --filter @claude-sentinel/app run tauri:build`
 3. Ask the user to quit Claude Sentinel, then install + open
@@ -47,6 +48,7 @@ node scripts/ipc.mjs '{"type":"switch_account","accountId":"<uuid>","email":"<em
 ```
 
 Verify a switch by reading the results directly:
+
 ```sh
 # Active account in ~/.claude.json
 node -e "const s=require('fs').readFileSync(require('path').join(require('os').homedir(),'.claude.json'),'utf-8'); const p=JSON.parse(s); console.log(p.oauthAccount?.emailAddress, p.oauthAccount?.accountUuid)"
@@ -60,6 +62,7 @@ curl -s http://localhost:47284/health
 ```
 
 Test the profile API directly with an existing access token:
+
 ```sh
 AT=$(security find-generic-password -s "Claude Sentinel-credentials" -a "<key>" -w 2>/dev/null \
      | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8').trim()).accessToken||'')")
@@ -83,6 +86,7 @@ pnpm --filter @claude-sentinel/app run tauri:build
 Artifacts land in `packages/app/src-tauri/target/release/bundle/macos/`.
 
 To install (only when user has quit the app first):
+
 ```sh
 cp -R "packages/app/src-tauri/target/release/bundle/macos/Claude Sentinel.app" /Applications/
 open "/Applications/Claude Sentinel.app"
@@ -162,6 +166,7 @@ to click.
 
 Ask for screenshots / Console tab contents / Network tab entries when
 diagnosing frontend or auth issues. The usual culprits:
+
 - Google OAuth rejecting the embedded webview (UA/fingerprint related)
 - claude.ai returning 401/403 on a stored sessionKey (cookie expired)
 - Tauri IPC errors between frontend and daemon
@@ -169,6 +174,7 @@ diagnosing frontend or auth issues. The usual culprits:
 
 **Ask the user for DevTools logs when diagnosing frontend / auth issues.**
 Console and Network tab contents are usually enough to pinpoint:
+
 - Google OAuth rejecting the embedded webview (stealth patches may need updating)
 - claude.ai returning 401/403 on a stored sessionKey (cookie expired)
 - Tauri IPC errors between frontend and daemon
@@ -206,12 +212,14 @@ packages/app/src-tauri/src/
 ## IPC message reference (shared types)
 
 **App → Daemon** (in addition to the core account/usage ones):
+
 - `get_settings` / `update_settings` — `Settings` is `{ launchAtLogin, switchingMode, roundRobinStrategy, poolExcludedIds, … }`
 - `list_alerts` / `upsert_alert` / `delete_alert` — alerts carry a `scope`
   (`'account'` bound to a Sentinel key, or `'pool'` for round-robin-wide)
 - `get_notifications` — history for the Alerts tab
 
 **Daemon → App** broadcasts (in addition to the core ones):
+
 - `settings_changed` — fires on every `update_settings` write
 - `alert_triggered` — a user alert crossed its threshold (per-account or pool); UI fires a native notification
 

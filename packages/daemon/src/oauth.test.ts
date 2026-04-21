@@ -20,11 +20,11 @@ describe('refreshAccessToken', () => {
       ok: true,
       status: 200,
       json: async () => ({
-        access_token:  'new-access',
+        access_token: 'new-access',
         refresh_token: 'new-refresh',
-        expires_in:    3600,
-        scope:         'user:profile',
-        token_type:    'Bearer',
+        expires_in: 3600,
+        scope: 'user:profile',
+        token_type: 'Bearer',
       }),
     });
     global.fetch = fetchMock as unknown as typeof global.fetch;
@@ -83,7 +83,9 @@ describe('refreshAccessToken', () => {
       ok: false,
       status: 500,
       statusText: 'Server Error',
-      text: async () => { throw new Error('boom'); },
+      text: async () => {
+        throw new Error('boom');
+      },
     }) as unknown as typeof global.fetch;
 
     await expect(refreshAccessToken('any')).rejects.toThrow(/500.*Server Error/);

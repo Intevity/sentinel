@@ -49,7 +49,8 @@ interface UseNotificationsResult {
 export function useNativeAlertNotifications(): void {
   const { settings } = useSettings();
   const soundName = settings?.alertSoundName ?? null;
-  const securityThreshold: SecurityOsNotifyThreshold = settings?.securityOsNotifyThreshold ?? 'high';
+  const securityThreshold: SecurityOsNotifyThreshold =
+    settings?.securityOsNotifyThreshold ?? 'high';
   const overageOsNotify = settings?.overageOsNotify ?? true;
 
   useEffect(() => {
@@ -67,12 +68,14 @@ export function useNativeAlertNotifications(): void {
     onDaemonMessage((msg) => {
       if (msg.type === 'alert_triggered') {
         const pct = (msg.utilization * 100).toFixed(1);
-        const headline = msg.scope === 'pool'
-          ? `Sentinel: pool at ${msg.thresholdPct}%`
-          : `Sentinel: ${msg.thresholdPct}% usage reached`;
-        const body = msg.scope === 'pool'
-          ? `Round-robin pool has used ${pct}% on average across its 5-hour window.`
-          : `Active account has used ${pct}% of its 5-hour window.`;
+        const headline =
+          msg.scope === 'pool'
+            ? `Sentinel: pool at ${msg.thresholdPct}%`
+            : `Sentinel: ${msg.thresholdPct}% usage reached`;
+        const body =
+          msg.scope === 'pool'
+            ? `Round-robin pool has used ${pct}% on average across its 5-hour window.`
+            : `Active account has used ${pct}% of its 5-hour window.`;
         void fireNativeStandard(headline, body, soundName);
       } else if (msg.type === 'overage_entered') {
         if (overageOsNotify) {
@@ -101,11 +104,12 @@ export function useNativeAlertNotifications(): void {
         // per-signal toggle because an account going silent is rare
         // and load-bearing enough to surface unconditionally.
         const short = msg.accountId.slice(0, 8);
-        const reasonBlurb = msg.reason === 'sentinel_budget'
-          ? 'hit weekly budget cap'
-          : msg.reason === 'anthropic_overage_disabled'
-            ? 'Anthropic disabled overage'
-            : 'paused';
+        const reasonBlurb =
+          msg.reason === 'sentinel_budget'
+            ? 'hit weekly budget cap'
+            : msg.reason === 'anthropic_overage_disabled'
+              ? 'Anthropic disabled overage'
+              : 'paused';
         void fireNativeStandard(
           'Claude Sentinel: Account paused',
           `${short}… ${reasonBlurb}.`,
@@ -138,9 +142,15 @@ export function useNativeAlertNotifications(): void {
           soundName,
         );
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
 
-    return () => { unlisten?.(); };
+    return () => {
+      unlisten?.();
+    };
   }, [soundName, securityThreshold, overageOsNotify]);
 }
 
@@ -185,9 +195,15 @@ export function useNotifications(): UseNotificationsResult {
       ) {
         void refetch();
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
 
-    return () => { unlisten?.(); };
+    return () => {
+      unlisten?.();
+    };
   }, [refetch]);
 
   return { notifications, loading, error, refetch };
@@ -202,7 +218,11 @@ export function useNotifications(): UseNotificationsResult {
  * 5-hour window hits 95% or an account exhausts overage. Keeping this
  * path preserves the sound integration the plugin already handles.
  */
-async function fireNativeStandard(title: string, body: string, sound: string | null): Promise<void> {
+async function fireNativeStandard(
+  title: string,
+  body: string,
+  sound: string | null,
+): Promise<void> {
   try {
     const granted = await isPermissionGranted();
     if (!granted) return;

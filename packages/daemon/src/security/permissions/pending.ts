@@ -131,7 +131,9 @@ export function createPermissionsPendingRegistry(
   /** Short human-readable "title" shown in the banner + OS notification.
    *  Must be stable so duplicate-broadcast collapsing works later. */
   const buildTitle = (toolName: string, rule: PermissionRule): string =>
-    `Tool blocked: ${rule.raw}`.length > 0 ? `Tool blocked: ${rule.raw}` : `Tool blocked: ${toolName}`;
+    `Tool blocked: ${rule.raw}`.length > 0
+      ? `Tool blocked: ${rule.raw}`
+      : `Tool blocked: ${toolName}`;
 
   const buildReason = (toolName: string, rule: PermissionRule): string => {
     const note = rule.note ? ` — ${rule.note}` : '';
@@ -168,7 +170,11 @@ export function createPermissionsPendingRegistry(
     let externalSettle: (outcome: PendingOutcome) => void = () => undefined;
     let resolverCalled = false;
 
-    const finalize = (entry: PendingPermissionEntry, outcome: PendingOutcome, opts: ResolveOpts | null): void => {
+    const finalize = (
+      entry: PendingPermissionEntry,
+      outcome: PendingOutcome,
+      opts: ResolveOpts | null,
+    ): void => {
       try {
         deps.onFinalized(
           {
@@ -226,7 +232,9 @@ export function createPermissionsPendingRegistry(
       matchedRule: args.matchedRule,
       expiresAt,
       timeoutHandle,
-      settle: (outcome) => { externalSettle(outcome); },
+      settle: (outcome) => {
+        externalSettle(outcome);
+      },
     };
 
     entries.set(id, entry);
@@ -244,9 +252,11 @@ export function createPermissionsPendingRegistry(
     // `_installResolver` to register its Promise.resolve callback;
     // we overwrite `externalSettle` so the timer or `resolvePending`
     // call routes through to the awaiter.
-    (entry as PendingPermissionEntry & {
-      _installResolver?: (fn: (outcome: PendingOutcome) => void) => void;
-    })._installResolver = (fn) => {
+    (
+      entry as PendingPermissionEntry & {
+        _installResolver?: (fn: (outcome: PendingOutcome) => void) => void;
+      }
+    )._installResolver = (fn) => {
       externalSettle = (outcome) => {
         /* v8 ignore next 1 — defensive double-call guard */
         if (resolverCalled) return;
@@ -308,8 +318,7 @@ export function createPermissionsPendingRegistry(
     return true;
   };
 
-  const listPending = (): PendingSecurityBlock[] =>
-    Array.from(entries.values()).map(toSnapshot);
+  const listPending = (): PendingSecurityBlock[] => Array.from(entries.values()).map(toSnapshot);
 
   return { beginPending, awaitPendingResolution, resolvePending, listPending };
 }

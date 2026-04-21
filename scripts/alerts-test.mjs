@@ -27,35 +27,42 @@ import os from 'os';
 // ─── Scenarios ────────────────────────────────────────────────────────
 const SCENARIOS = {
   'usage-account': {
-    description: 'Per-account usage alert (threshold crossed). Fires alert_triggered + usage_alert notification.',
+    description:
+      'Per-account usage alert (threshold crossed). Fires alert_triggered + usage_alert notification.',
   },
   'usage-pool': {
     description: 'Pool-wide usage alert (round-robin pool-average).',
   },
   'usage-budget': {
-    description: 'Budget-scope spend alert (per-account weekly cap). Carries spendUsd/budgetUsd for the UI.',
+    description:
+      'Budget-scope spend alert (per-account weekly cap). Carries spendUsd/budgetUsd for the UI.',
   },
   'overage-entered': {
-    description: 'Account enters overage. Fires overage_entered broadcast + notification + OS notification.',
+    description:
+      'Account enters overage. Fires overage_entered broadcast + notification + OS notification.',
   },
   'overage-disabled': {
-    description: 'Overage cap hit / disabled. Fires overage_disabled broadcast + notification + OS notification.',
+    description:
+      'Overage cap hit / disabled. Fires overage_disabled broadcast + notification + OS notification.',
   },
   'account-switched': {
-    description: 'Active-account switch. Diverges from live: synthetic inserts a history row for verifiability.',
+    description:
+      'Active-account switch. Diverges from live: synthetic inserts a history row for verifiability.',
   },
   'account-paused': {
     description: 'Account paused on spend cap (SpendTracker-style broadcast + usage_alert row).',
   },
   'account-unpaused': {
-    description: 'Account unpaused after window rolled. Broadcast only — no history row (mirrors live).',
+    description:
+      'Account unpaused after window rolled. Broadcast only — no history row (mirrors live).',
   },
 };
 
 // ─── CLI ─────────────────────────────────────────────────────────────
 
 function printHelp() {
-  console.log(`
+  console.log(
+    `
 pnpm alerts:test <scenario>
 
 Fires a synthetic user-visible alert scenario against the running daemon.
@@ -68,7 +75,8 @@ Flags:
 Synthetic triggers are safe to run repeatedly — they do not mutate real
 alert state. See the module docstring for the account-switched /
 account-unpaused behavioral notes.
-`.trim());
+`.trim(),
+  );
 }
 
 function printList() {
@@ -101,9 +109,10 @@ if (!scenario) {
 // ─── Delivery: IPC ────────────────────────────────────────────────────
 
 function runIpc() {
-  const sockPath = process.platform === 'win32'
-    ? '\\\\.\\pipe\\claude-sentinel'
-    : path.join(os.homedir(), '.claude-sentinel', 'daemon.sock');
+  const sockPath =
+    process.platform === 'win32'
+      ? '\\\\.\\pipe\\claude-sentinel'
+      : path.join(os.homedir(), '.claude-sentinel', 'daemon.sock');
   const socket = net.connect(sockPath);
   const msg = { type: 'dev_trigger_alert_event', scenario: arg };
   let buf = '';
@@ -121,7 +130,9 @@ function runIpc() {
         const parsed = JSON.parse(line);
         if (parsed.requestType === msg.type) {
           if (parsed.success) {
-            console.log(`[${arg}] ✓ Synthetic alert fired. Check the Alerts tab + OS notifications.`);
+            console.log(
+              `[${arg}] ✓ Synthetic alert fired. Check the Alerts tab + OS notifications.`,
+            );
           } else {
             console.error(`[${arg}] daemon returned error: ${parsed.error ?? 'unknown'}`);
           }

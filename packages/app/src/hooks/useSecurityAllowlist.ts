@@ -24,7 +24,9 @@ export function useSecurityAllowlist(): UseSecurityAllowlistResult {
 
   const refetch = useCallback(async () => {
     try {
-      const res = await sendToSentinel<SecurityAllowlistEntry[]>({ type: 'get_security_allowlist' });
+      const res = await sendToSentinel<SecurityAllowlistEntry[]>({
+        type: 'get_security_allowlist',
+      });
       if (res.success) {
         setEntries(res.data ?? []);
         setError(null);
@@ -38,10 +40,13 @@ export function useSecurityAllowlist(): UseSecurityAllowlistResult {
     }
   }, []);
 
-  const remove = useCallback(async (id: number) => {
-    await sendToSentinel({ type: 'remove_from_security_allowlist', id });
-    await refetch();
-  }, [refetch]);
+  const remove = useCallback(
+    async (id: number) => {
+      await sendToSentinel({ type: 'remove_from_security_allowlist', id });
+      await refetch();
+    },
+    [refetch],
+  );
 
   useEffect(() => {
     void refetch();
@@ -50,8 +55,14 @@ export function useSecurityAllowlist(): UseSecurityAllowlistResult {
       if (msg.type === 'security_event_detected' || msg.type === 'security_allowlist_updated') {
         void refetch();
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, [refetch]);
 
   return { entries, loading, error, refetch, remove };

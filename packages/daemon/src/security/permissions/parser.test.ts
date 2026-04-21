@@ -133,6 +133,13 @@ describe('parseRule — rejections', () => {
   it('rejects invalid tool name with hyphens', () => {
     expect(parseRule('bad-tool').ok).toBe(false);
   });
+  it('rejects an invalid tool name when the rule has a pattern', () => {
+    // Hits the parenthesized-form branch where VALID_TOOL_RE fails on the
+    // extracted tool — line 69-70 of parser.ts.
+    const r = parseRule('bad-tool(rm *)');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/invalid tool name/);
+  });
   it('rejects non-string input', () => {
     // @ts-expect-error intentional invalid input
     expect(parseRule(null).ok).toBe(false);

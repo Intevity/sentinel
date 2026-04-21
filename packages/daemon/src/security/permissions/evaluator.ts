@@ -60,9 +60,7 @@ export function compileRules(rules: PermissionRule[]): CompiledRuleSet {
   const sorted = rules
     .filter((r) => r.enabled)
     .slice()
-    .sort(
-      (a, b) => a.priority - b.priority || a.createdAt - b.createdAt,
-    );
+    .sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt);
   return {
     denies: sorted.filter((r) => r.decision === 'deny' || r.decision === 'ask'),
     allows: sorted.filter((r) => r.decision === 'allow'),
@@ -71,11 +69,7 @@ export function compileRules(rules: PermissionRule[]): CompiledRuleSet {
 
 /** True iff `rule` matches the tool call. Handles both whole-tool rules
  *  (pattern === null) and specifier rules. Exported for unit tests. */
-export function ruleMatches(
-  rule: PermissionRule,
-  toolName: string,
-  toolInput: unknown,
-): boolean {
+export function ruleMatches(rule: PermissionRule, toolName: string, toolInput: unknown): boolean {
   // Tool-name gate. A rule targeting 'Bash' does not match a 'Read' tool_use.
   // '*' matches any tool. MCP wildcard rules are handled here.
   if (!toolNameMatches(rule.tool, toolName)) return false;

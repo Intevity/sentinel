@@ -42,9 +42,11 @@ export function useAlerts(arg: string | undefined | UseAlertsTarget): UseAlertsR
 
   const scope: AlertScope = target.scope;
   const accountId =
-    target.scope === 'account' ? target.accountId
-    : target.scope === 'budget' ? target.accountId
-    : undefined;
+    target.scope === 'account'
+      ? target.accountId
+      : target.scope === 'budget'
+        ? target.accountId
+        : undefined;
   const budgetScope: BudgetAlertScope | undefined =
     target.scope === 'budget' ? target.budgetScope : undefined;
 
@@ -71,16 +73,14 @@ export function useAlerts(arg: string | undefined | UseAlertsTarget): UseAlertsR
         scope === 'pool'
           ? { type: 'list_alerts', scope: 'pool' }
           : scope === 'budget'
-            ? (accountId
-                ? { type: 'list_alerts', scope: 'budget', accountId }
-                : { type: 'list_alerts', scope: 'budget' })
+            ? accountId
+              ? { type: 'list_alerts', scope: 'budget', accountId }
+              : { type: 'list_alerts', scope: 'budget' }
             : { type: 'list_alerts', scope: 'account', accountId: accountId as string },
       );
       if (res.success) {
         const filtered = (res.data ?? []).filter((a) =>
-          scope === 'budget' && budgetScope
-            ? a.budgetScope === budgetScope
-            : true,
+          scope === 'budget' && budgetScope ? a.budgetScope === budgetScope : true,
         );
         setAlerts(filtered);
         setError(null);
@@ -94,59 +94,77 @@ export function useAlerts(arg: string | undefined | UseAlertsTarget): UseAlertsR
     }
   }, [scope, accountId, budgetScope]);
 
-  useEffect(() => { void refetch(); }, [refetch]);
-
-  const create = useCallback(async (thresholdPct: number): Promise<void> => {
-    if (scope === 'account' && !accountId) return;
-    if (scope === 'budget' && budgetScope === 'account' && !accountId) return;
-    const payloadAccountId =
-      scope === 'pool' ? null
-      : scope === 'budget' && budgetScope === 'global' ? null
-      : (accountId as string);
-    const res = await sendToSentinel<Alert>({
-      type: 'upsert_alert',
-      scope,
-      accountId: payloadAccountId,
-      thresholdPct,
-      enabled: true,
-      ...(scope === 'budget' && budgetScope ? { budgetScope } : {}),
-    });
-    if (!res.success) throw new Error(res.error ?? 'create failed');
-    await refetch();
-  }, [scope, accountId, budgetScope, refetch]);
-
-  const update = useCallback(async (alert: Alert, thresholdPct: number): Promise<void> => {
-    const res = await sendToSentinel<Alert>({
-      type: 'upsert_alert',
-      id: alert.id,
-      scope: alert.scope,
-      accountId: alert.accountId,
-      thresholdPct,
-      enabled: alert.enabled,
-      ...(alert.scope === 'budget' && alert.budgetScope ? { budgetScope: alert.budgetScope } : {}),
-    });
-    if (!res.success) throw new Error(res.error ?? 'update failed');
-    await refetch();
+  useEffect(() => {
+    void refetch();
   }, [refetch]);
 
-  const toggle = useCallback(async (alert: Alert): Promise<void> => {
-    const res = await sendToSentinel<Alert>({
-      type: 'upsert_alert',
-      id: alert.id,
-      scope: alert.scope,
-      accountId: alert.accountId,
-      thresholdPct: alert.thresholdPct,
-      enabled: !alert.enabled,
-    });
-    if (!res.success) throw new Error(res.error ?? 'toggle failed');
-    await refetch();
-  }, [refetch]);
+  const create = useCallback(
+    async (thresholdPct: number): Promise<void> => {
+      if (scope === 'account' && !accountId) return;
+      if (scope === 'budget' && budgetScope === 'account' && !accountId) return;
+      const payloadAccountId =
+        scope === 'pool'
+          ? null
+          : scope === 'budget' && budgetScope === 'global'
+            ? null
+            : (accountId as string);
+      const res = await sendToSentinel<Alert>({
+        type: 'upsert_alert',
+        scope,
+        accountId: payloadAccountId,
+        thresholdPct,
+        enabled: true,
+        ...(scope === 'budget' && budgetScope ? { budgetScope } : {}),
+      });
+      if (!res.success) throw new Error(res.error ?? 'create failed');
+      await refetch();
+    },
+    [scope, accountId, budgetScope, refetch],
+  );
 
-  const remove = useCallback(async (id: number): Promise<void> => {
-    const res = await sendToSentinel({ type: 'delete_alert', id });
-    if (!res.success) throw new Error(res.error ?? 'delete failed');
-    await refetch();
-  }, [refetch]);
+  const update = useCallback(
+    async (alert: Alert, thresholdPct: number): Promise<void> => {
+      const res = await sendToSentinel<Alert>({
+        type: 'upsert_alert',
+        id: alert.id,
+        scope: alert.scope,
+        accountId: alert.accountId,
+        thresholdPct,
+        enabled: alert.enabled,
+        ...(alert.scope === 'budget' && alert.budgetScope
+          ? { budgetScope: alert.budgetScope }
+          : {}),
+      });
+      if (!res.success) throw new Error(res.error ?? 'update failed');
+      await refetch();
+    },
+    [refetch],
+  );
+
+  const toggle = useCallback(
+    async (alert: Alert): Promise<void> => {
+      const res = await sendToSentinel<Alert>({
+        type: 'upsert_alert',
+        id: alert.id,
+        scope: alert.scope,
+        accountId: alert.accountId,
+        thresholdPct: alert.thresholdPct,
+        enabled: !alert.enabled,
+      });
+      if (!res.success) throw new Error(res.error ?? 'toggle failed');
+      await refetch();
+    },
+    [refetch],
+  );
+
+  const remove = useCallback(
+    async (id: number): Promise<void> => {
+      const res = await sendToSentinel({ type: 'delete_alert', id });
+      if (!res.success) throw new Error(res.error ?? 'delete failed');
+      await refetch();
+    },
+    [refetch],
+  );
 
   return { alerts, loading, error, refetch, create, update, toggle, remove };
 }

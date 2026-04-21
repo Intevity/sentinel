@@ -1,4 +1,57 @@
-import { getDb, closeDb, listAccounts, listRemovedAccounts, upsertAccount, deleteAccount, deleteStaleAccountRows, markAccountRemoved, purgeAccount, reactivateAccount, hasActiveAccount, getAccount, setAccountColor, getUsageByDayModel, acknowledgeNotification, acknowledgeAllNotifications, upsertRateLimit, loadRateLimits, getOverageEvents, clearOverageEvents, getLastOverageEventPerAccount, listNotifications, listAlerts, upsertAlert, deleteAlert, deleteRateLimitsForAccount, getTokensByDayModel, getCacheHitRate, getApiErrorsByDay, getToolStats, getActivityCounters, getEditAcceptRate, getToolDecisionBreakdown, getUserPromptStats, getTopSkills, getRecentPlugins,listSecurityEvents, acknowledgeSecurityEvent, acknowledgeAllSecurityEvents, clearSecurityEvents, purgeSecurityEventsOlderThan, purgeTelemetryOlderThan, addSecurityAllowlist, removeSecurityAllowlist, listSecurityAllowlist, listPermissionBypasses, removePermissionBypass, upsertPermissionRule, deletePermissionRule, insertNotification } from './db.js';
+import {
+  getDb,
+  closeDb,
+  listAccounts,
+  listRemovedAccounts,
+  upsertAccount,
+  deleteAccount,
+  deleteStaleAccountRows,
+  markAccountRemoved,
+  purgeAccount,
+  reactivateAccount,
+  hasActiveAccount,
+  getAccount,
+  setAccountColor,
+  getUsageByDayModel,
+  acknowledgeNotification,
+  acknowledgeAllNotifications,
+  upsertRateLimit,
+  loadRateLimits,
+  getOverageEvents,
+  clearOverageEvents,
+  getLastOverageEventPerAccount,
+  listNotifications,
+  listAlerts,
+  upsertAlert,
+  deleteAlert,
+  deleteRateLimitsForAccount,
+  getTokensByDayModel,
+  getCacheHitRate,
+  getApiErrorsByDay,
+  getToolStats,
+  getActivityCounters,
+  getEditAcceptRate,
+  getToolDecisionBreakdown,
+  getUserPromptStats,
+  getTopSkills,
+  getRecentPlugins,
+  listSecurityEvents,
+  acknowledgeSecurityEvent,
+  acknowledgeAllSecurityEvents,
+  clearSecurityEvents,
+  purgeSecurityEventsOlderThan,
+  purgeTelemetryOlderThan,
+  addSecurityAllowlist,
+  removeSecurityAllowlist,
+  listSecurityAllowlist,
+  listPermissionBypasses,
+  removePermissionBypass,
+  upsertPermissionRule,
+  deletePermissionRule,
+  insertNotification,
+  getCacheTtlByDayModel,
+  getCacheTtlBySession,
+} from './db.js';
 import { loadSettings, updateSettings as writeSettings } from './settings.js';
 import { IpcServer } from './ipc.js';
 import { OtelReceiver } from './otel-receiver.js';
@@ -17,7 +70,12 @@ import {
   readClaudeAiSessionKey,
 } from './accounts.js';
 import { fetchBootstrap } from './claude-ai-bootstrap.js';
-import { startAlertEvaluator, startPoolAlertEvaluator, evaluatePoolOnce, primeNewAlertAgainstCurrentWindow } from './alerts.js';
+import {
+  startAlertEvaluator,
+  startPoolAlertEvaluator,
+  evaluatePoolOnce,
+  primeNewAlertAgainstCurrentWindow,
+} from './alerts.js';
 import { createSecurityScanner } from './security/scanner.js';
 import { createPermissionsEnforcer } from './security/permissions/enforcer.js';
 import { createClaudeSyncEngine } from './security/permissions/claude-sync.js';
@@ -25,11 +83,22 @@ import { runScanBenchmark } from './security/scanner-benchmark.js';
 import { parseRule as parsePermissionRule } from './security/permissions/parser.js';
 import type { Settings } from '@claude-sentinel/shared';
 import { getActiveAccount, setActiveAccount } from './claude-state.js';
-import { readActiveCredentials, captureCurrentCredentials, writeSentinelCredentials, writeClaudeCodeCredentials, deleteSentinelCredentials, readSentinelCredentials } from './accounts.js';
+import {
+  readActiveCredentials,
+  captureCurrentCredentials,
+  writeSentinelCredentials,
+  writeClaudeCodeCredentials,
+  deleteSentinelCredentials,
+  readSentinelCredentials,
+} from './accounts.js';
 import { startOAuthLogin, OAUTH_ABORTED } from './oauth.js';
 import type { OAuthResult } from './oauth.js';
 import { switchActiveOrg } from './claude-ai-bootstrap.js';
-import { startTokenRefresher, refreshIfNeeded, markAccountReauthenticated } from './token-refresher.js';
+import {
+  startTokenRefresher,
+  refreshIfNeeded,
+  markAccountReauthenticated,
+} from './token-refresher.js';
 import { probeRateLimits } from './rate-limit-probe.js';
 import { startUsageProber, type UsageProberHandle } from './usage-probe.js';
 import type { OAuthAccount, PlanType, ClaudeCodeCredentials } from '@claude-sentinel/shared';
@@ -98,9 +167,9 @@ function inferPlanType(account: OAuthAccount, creds?: ClaudeCodeCredentials | nu
   // as the authoritative source — it reflects the actual org type the token was minted for.
   const sub = creds?.subscriptionType?.toLowerCase() ?? '';
   if (sub === 'enterprise') return 'enterprise';
-  if (sub === 'max')        return 'max';
-  if (sub === 'team')       return 'team';
-  if (sub === 'pro')        return 'pro';
+  if (sub === 'max') return 'max';
+  if (sub === 'team') return 'team';
+  if (sub === 'pro') return 'pro';
   //
   // Prior versions upgraded `team` → `max` when `account.hasExtraUsageEnabled`
   // (aka `account.has_claude_max` from the OAuth profile) was true. That was
@@ -386,7 +455,10 @@ export async function startDaemon(): Promise<void> {
    * Used by the `switch_account` IPC handler. Returns a serializable result
    * so callers can decide whether to retry or surface the failure.
    */
-  function performSwitch(accountId: string, email: string): { success: true; data: OAuthAccount } | { success: false; error: string } {
+  function performSwitch(
+    accountId: string,
+    email: string,
+  ): { success: true; data: OAuthAccount } | { success: false; error: string } {
     const currentActive = getActiveAccount();
     const lookupKey = accountId || email;
     const activeKey = currentActive
@@ -405,25 +477,25 @@ export async function startDaemon(): Promise<void> {
       ? existingAccounts.find((a) => a.id === accountId)
       : existingAccounts.find((a) => a.email === email);
 
-    const realAccountUuid = existingAccount?.accountUuid || existingAccount?.id || accountId || email;
+    const realAccountUuid =
+      existingAccount?.accountUuid || existingAccount?.id || accountId || email;
 
-    const switchPlanType: PlanType = existingAccount?.planType ?? inferPlanType(
-      { hasExtraUsageEnabled: false, workspaceRole: null } as OAuthAccount,
-      creds,
-    );
+    const switchPlanType: PlanType =
+      existingAccount?.planType ??
+      inferPlanType({ hasExtraUsageEnabled: false, workspaceRole: null } as OAuthAccount, creds);
 
     const oauthAccount: OAuthAccount = {
-      accountUuid:           realAccountUuid,
-      emailAddress:          email,
-      organizationUuid:      existingAccount?.orgUuid ?? '',
-      hasExtraUsageEnabled:  switchPlanType === 'max' || switchPlanType === 'enterprise',
-      billingType:           creds.subscriptionType ?? 'unknown',
-      accountCreatedAt:      new Date().toISOString(),
+      accountUuid: realAccountUuid,
+      emailAddress: email,
+      organizationUuid: existingAccount?.orgUuid ?? '',
+      hasExtraUsageEnabled: switchPlanType === 'max' || switchPlanType === 'enterprise',
+      billingType: creds.subscriptionType ?? 'unknown',
+      accountCreatedAt: new Date().toISOString(),
       subscriptionCreatedAt: new Date().toISOString(),
-      displayName:           existingAccount?.displayName ?? '',
-      organizationRole:      'user',
-      workspaceRole:         (switchPlanType === 'team' || switchPlanType === 'enterprise') ? 'member' : null,
-      organizationName:      existingAccount?.orgName ?? '',
+      displayName: existingAccount?.displayName ?? '',
+      organizationRole: 'user',
+      workspaceRole: switchPlanType === 'team' || switchPlanType === 'enterprise' ? 'member' : null,
+      organizationName: existingAccount?.orgName ?? '',
     };
 
     setActiveAccount(oauthAccount);
@@ -443,7 +515,10 @@ export async function startDaemon(): Promise<void> {
     try {
       writeClaudeCodeCredentials(creds);
     } catch (err) {
-      console.warn('[Switch] Could not update Claude Code keychain:', err instanceof Error ? err.message : String(err));
+      console.warn(
+        '[Switch] Could not update Claude Code keychain:',
+        err instanceof Error ? err.message : String(err),
+      );
     }
 
     reactivateAccount(db, lookupKey);
@@ -535,17 +610,17 @@ export async function startDaemon(): Promise<void> {
     writeSentinelCredentials(credKey, credentials);
 
     const newAccount: OAuthAccount = {
-      accountUuid:          accountUuid || email,
-      emailAddress:         email,
-      organizationUuid:     orgUuid,
+      accountUuid: accountUuid || email,
+      emailAddress: email,
+      organizationUuid: orgUuid,
       hasExtraUsageEnabled,
-      billingType:          subscriptionType ?? 'unknown',
-      accountCreatedAt:     new Date().toISOString(),
+      billingType: subscriptionType ?? 'unknown',
+      accountCreatedAt: new Date().toISOString(),
       subscriptionCreatedAt: new Date().toISOString(),
       displayName,
-      organizationRole:     (organizationRole as OAuthAccount['organizationRole']) || 'user',
+      organizationRole: (organizationRole as OAuthAccount['organizationRole']) || 'user',
       workspaceRole,
-      organizationName:     orgName,
+      organizationName: orgName,
     };
 
     reactivateAccount(db, credKey);
@@ -553,16 +628,16 @@ export async function startDaemon(): Promise<void> {
 
     const planType = inferPlanType(newAccount, credentials);
     upsertAccount(db, {
-      id:          credKey,
+      id: credKey,
       accountUuid: newAccount.accountUuid,
-      email:       newAccount.emailAddress,
+      email: newAccount.emailAddress,
       displayName: newAccount.displayName,
-      orgUuid:     newAccount.organizationUuid,
-      orgName:     newAccount.organizationName,
+      orgUuid: newAccount.organizationUuid,
+      orgName: newAccount.organizationName,
       planType,
-      isActive:    false,
-      createdAt:   Date.now(),
-      color:       null,
+      isActive: false,
+      createdAt: Date.now(),
+      color: null,
     });
 
     if (listAlerts(db, { scope: 'account', accountId: credKey }).length === 0) {
@@ -578,7 +653,9 @@ export async function startDaemon(): Promise<void> {
 
     tokenRotator.refresh();
 
-    console.log(`[OAuth] Login complete for ${email} (org: ${orgName || '?'}, reauth: ${wasReauth}), broadcasting to ${ipcServer.connectedClients} client(s)`);
+    console.log(
+      `[OAuth] Login complete for ${email} (org: ${orgName || '?'}, reauth: ${wasReauth}), broadcasting to ${ipcServer.connectedClients} client(s)`,
+    );
     ipcServer.broadcast({ type: 'login_complete', email, orgName, reauth: wasReauth });
   };
 
@@ -607,7 +684,11 @@ export async function startDaemon(): Promise<void> {
         if (blob !== null) {
           respond({ requestType: 'get_credentials', success: true, data: blob });
         } else {
-          respond({ requestType: 'get_credentials', success: false, error: `No credentials stored for ${msg.email}` });
+          respond({
+            requestType: 'get_credentials',
+            success: false,
+            error: `No credentials stored for ${msg.email}`,
+          });
         }
         break;
       }
@@ -648,7 +729,11 @@ export async function startDaemon(): Promise<void> {
           if (active) key = sentinelKey(active.organizationUuid ?? '', active.accountUuid);
         }
         if (!key) {
-          respond({ requestType: 'get_metrics_summary', success: false, error: 'No active account' });
+          respond({
+            requestType: 'get_metrics_summary',
+            success: false,
+            error: 'No active account',
+          });
           break;
         }
         const days = msg.days ?? 7;
@@ -660,15 +745,23 @@ export async function startDaemon(): Promise<void> {
         const errors = getApiErrorsByDay(db, key, days);
         const tools = getToolStats(db, key, days);
         const perDayCounters = getActivityCounters(db, key, days, [
-          'session', 'commit', 'pull_request',
-          'lines_added', 'lines_removed',
-          'active_user_seconds', 'active_cli_seconds',
+          'session',
+          'commit',
+          'pull_request',
+          'lines_added',
+          'lines_removed',
+          'active_user_seconds',
+          'active_cli_seconds',
         ]);
         const editAcceptRate = getEditAcceptRate(db, key, days);
         const toolDecisions = getToolDecisionBreakdown(db, key, days);
         const prompts = getUserPromptStats(db, key, days);
         const skills = getTopSkills(db, key, days, 10);
         const plugins = getRecentPlugins(db, key, 10);
+        const cacheTtl = {
+          byDayModel: getCacheTtlByDayModel(db, key, days),
+          bySession: getCacheTtlBySession(db, key, days),
+        };
 
         // Reshape per-day counters into the flat per-kind records the UI wants.
         const sessionsPerDay: Record<string, number> = {};
@@ -684,7 +777,10 @@ export async function startDaemon(): Promise<void> {
             linesPerDay[day] = { added: row.lines_added ?? 0, removed: row.lines_removed ?? 0 };
           }
           if (row.active_user_seconds != null || row.active_cli_seconds != null) {
-            activeTimePerDay[day] = { user: row.active_user_seconds ?? 0, cli: row.active_cli_seconds ?? 0 };
+            activeTimePerDay[day] = {
+              user: row.active_user_seconds ?? 0,
+              cli: row.active_cli_seconds ?? 0,
+            };
           }
         }
 
@@ -704,6 +800,7 @@ export async function startDaemon(): Promise<void> {
             prompts,
             skills,
             plugins,
+            cacheTtl,
           },
         });
         break;
@@ -894,24 +991,38 @@ export async function startDaemon(): Promise<void> {
       }
 
       case 'get_overage_grants': {
-        respond({ requestType: 'get_overage_grants', success: true, data: overageGrantStore.getAll() });
+        respond({
+          requestType: 'get_overage_grants',
+          success: true,
+          data: overageGrantStore.getAll(),
+        });
         break;
       }
 
       case 'refresh_overage_grants': {
         overageGrantStore.load();
-        respond({ requestType: 'refresh_overage_grants', success: true, data: overageGrantStore.getAll() });
+        respond({
+          requestType: 'refresh_overage_grants',
+          success: true,
+          data: overageGrantStore.getAll(),
+        });
         break;
       }
 
       case 'get_spend_summary': {
-        respond({ requestType: 'get_spend_summary', success: true, data: spendTracker.getSpendSummary() });
+        respond({
+          requestType: 'get_spend_summary',
+          success: true,
+          data: spendTracker.getSpendSummary(),
+        });
         break;
       }
 
       case 'set_claude_ai_session_key': {
         try {
-          console.log(`[SessionMirror] set_claude_ai_session_key received for ${msg.accountId} (key len=${msg.sessionKey.length})`);
+          console.log(
+            `[SessionMirror] set_claude_ai_session_key received for ${msg.accountId} (key len=${msg.sessionKey.length})`,
+          );
           writeClaudeAiSessionKey(msg.accountId, msg.sessionKey);
           void claudeAiUsageStore.refresh(msg.accountId);
           // Respond to the UI immediately so the spinner on the
@@ -937,7 +1048,9 @@ export async function startDaemon(): Promise<void> {
             console.log(`[SessionMirror] calling fetchBootstrap (orgHint=${orgHint})…`);
             const boot = await fetchBootstrap(msg.sessionKey, orgHint);
             if (!boot) {
-              console.log('[SessionMirror] fetchBootstrap returned null, aborting sibling mirror/prompt');
+              console.log(
+                '[SessionMirror] fetchBootstrap returned null, aborting sibling mirror/prompt',
+              );
               return;
             }
             console.log(
@@ -953,11 +1066,20 @@ export async function startDaemon(): Promise<void> {
                 void claudeAiUsageStore.refresh(acc.id);
                 mirrored++;
               } catch (e) {
-                console.warn('[SessionMirror] write failed for', acc.id, e instanceof Error ? e.message : String(e));
+                console.warn(
+                  '[SessionMirror] write failed for',
+                  acc.id,
+                  e instanceof Error ? e.message : String(e),
+                );
               }
             }
             if (mirrored > 0) {
-              console.log('[SessionMirror] mirrored sessionKey to', mirrored, 'sibling account(s) for email', boot.email);
+              console.log(
+                '[SessionMirror] mirrored sessionKey to',
+                mirrored,
+                'sibling account(s) for email',
+                boot.email,
+              );
             }
 
             // Sibling enrollment prompt: bootstrap lists every chat-capable
@@ -971,9 +1093,7 @@ export async function startDaemon(): Promise<void> {
             const enrolledOrgUuids = new Set(
               allAccounts.map((a) => a.orgUuid).filter((u): u is string => !!u),
             );
-            const missing = boot.orgs.filter(
-              (o) => !enrolledOrgUuids.has(o.orgUuid),
-            );
+            const missing = boot.orgs.filter((o) => !enrolledOrgUuids.has(o.orgUuid));
             console.log(
               `[SessionMirror] enrolled orgs: [${Array.from(enrolledOrgUuids).join(', ')}]; missing: [${missing.map((o) => o.orgName || o.orgUuid).join(', ')}]`,
             );
@@ -996,7 +1116,11 @@ export async function startDaemon(): Promise<void> {
             }
           })();
         } catch (err) {
-          respond({ requestType: 'set_claude_ai_session_key', success: false, error: err instanceof Error ? err.message : String(err) });
+          respond({
+            requestType: 'set_claude_ai_session_key',
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
         break;
       }
@@ -1044,11 +1168,19 @@ export async function startDaemon(): Promise<void> {
               void claudeAiUsageStore.refresh(acc.id);
               cleared++;
             } catch (e) {
-              console.warn('[SessionMirror] clear failed for', acc.id, e instanceof Error ? e.message : String(e));
+              console.warn(
+                '[SessionMirror] clear failed for',
+                acc.id,
+                e instanceof Error ? e.message : String(e),
+              );
             }
           }
           if (cleared > 0) {
-            console.log('[SessionMirror] byte-match cleared sessionKey for', cleared, 'sibling account(s)');
+            console.log(
+              '[SessionMirror] byte-match cleared sessionKey for',
+              cleared,
+              'sibling account(s)',
+            );
           }
 
           // Async bootstrap pass — catches siblings whose stored key
@@ -1070,11 +1202,20 @@ export async function startDaemon(): Promise<void> {
                 void claudeAiUsageStore.refresh(acc.id);
                 clearedByBoot++;
               } catch (e) {
-                console.warn('[SessionMirror] bootstrap-clear failed for', acc.id, e instanceof Error ? e.message : String(e));
+                console.warn(
+                  '[SessionMirror] bootstrap-clear failed for',
+                  acc.id,
+                  e instanceof Error ? e.message : String(e),
+                );
               }
             }
             if (clearedByBoot > 0) {
-              console.log('[SessionMirror] bootstrap-match cleared', clearedByBoot, 'extra sibling(s) for email', boot.email);
+              console.log(
+                '[SessionMirror] bootstrap-match cleared',
+                clearedByBoot,
+                'extra sibling(s) for email',
+                boot.email,
+              );
             }
           })();
         }
@@ -1125,7 +1266,8 @@ export async function startDaemon(): Promise<void> {
         // current spend — the pause fires right away.
         const budgetsChanged =
           prev.budgetWeeklyUsdGlobal !== next.budgetWeeklyUsdGlobal ||
-          JSON.stringify(prev.budgetWeeklyUsdByAccount) !== JSON.stringify(next.budgetWeeklyUsdByAccount);
+          JSON.stringify(prev.budgetWeeklyUsdByAccount) !==
+            JSON.stringify(next.budgetWeeklyUsdByAccount);
         if (budgetsChanged) spendTracker.recompute();
         // Pool composition may have changed (mode toggle or exclusion list
         // edit). Re-evaluate pool alerts so crossings visible to the new
@@ -1243,7 +1385,11 @@ export async function startDaemon(): Promise<void> {
 
       case 'acknowledge_all_security_events': {
         const n = acknowledgeAllSecurityEvents(db, msg.accountId);
-        respond({ requestType: 'acknowledge_all_security_events', success: true, data: { count: n } });
+        respond({
+          requestType: 'acknowledge_all_security_events',
+          success: true,
+          data: { count: n },
+        });
         break;
       }
 
@@ -1270,12 +1416,18 @@ export async function startDaemon(): Promise<void> {
 
         if (msg.eventId !== undefined) {
           const row = db
-            .prepare('SELECT match_hash, detector_id, match_mask, title FROM security_events WHERE id = ?')
+            .prepare(
+              'SELECT match_hash, detector_id, match_mask, title FROM security_events WHERE id = ?',
+            )
             .get(msg.eventId) as
-              | { match_hash: string; detector_id: string; match_mask: string | null; title: string }
-              | undefined;
+            | { match_hash: string; detector_id: string; match_mask: string | null; title: string }
+            | undefined;
           if (!row) {
-            respond({ requestType: 'add_to_security_allowlist', success: false, error: 'event not found' });
+            respond({
+              requestType: 'add_to_security_allowlist',
+              success: false,
+              error: 'event not found',
+            });
             break;
           }
           args = {
@@ -1294,7 +1446,11 @@ export async function startDaemon(): Promise<void> {
             note: msg.note ?? null,
           };
         } else {
-          respond({ requestType: 'add_to_security_allowlist', success: false, error: 'eventId or (matchHash, detectorId) required' });
+          respond({
+            requestType: 'add_to_security_allowlist',
+            success: false,
+            error: 'eventId or (matchHash, detectorId) required',
+          });
           break;
         }
 
@@ -1426,9 +1582,7 @@ export async function startDaemon(): Promise<void> {
         // packages/daemon/src/security/scanner.ts for the scanner scenario
         // set and packages/daemon/src/security/permissions/enforcer.ts for
         // the permissions-* scenario set.
-        const targetAccountId = msg.accountId
-          ?? activeAccountId.value
-          ?? 'default';
+        const targetAccountId = msg.accountId ?? activeAccountId.value ?? 'default';
         try {
           if (msg.scenario.startsWith('permissions-')) {
             permissionsEnforcer.triggerTestScenario(
@@ -1457,9 +1611,7 @@ export async function startDaemon(): Promise<void> {
         // lifecycle) through the same insertNotification + broadcast path the
         // real evaluators use. Safe to run repeatedly: does NOT mutate real
         // alert-row `last_triggered_reset_ts` or the SpendTracker paused set.
-        const targetAccountId = msg.accountId
-          ?? activeAccountId.value
-          ?? 'default';
+        const targetAccountId = msg.accountId ?? activeAccountId.value ?? 'default';
         const now = Date.now();
         try {
           switch (msg.scenario) {
@@ -1621,26 +1773,46 @@ export async function startDaemon(): Promise<void> {
 
       case 'upsert_alert': {
         if (msg.thresholdPct < 1 || msg.thresholdPct > 99) {
-          respond({ requestType: 'upsert_alert', success: false, error: 'thresholdPct must be between 1 and 99' });
+          respond({
+            requestType: 'upsert_alert',
+            success: false,
+            error: 'thresholdPct must be between 1 and 99',
+          });
           break;
         }
         const scope = msg.scope ?? 'account';
         if (scope === 'pool' && msg.accountId != null) {
-          respond({ requestType: 'upsert_alert', success: false, error: 'pool alerts must have accountId = null' });
+          respond({
+            requestType: 'upsert_alert',
+            success: false,
+            error: 'pool alerts must have accountId = null',
+          });
           break;
         }
         if (scope === 'account' && !msg.accountId) {
-          respond({ requestType: 'upsert_alert', success: false, error: 'account alerts require an accountId' });
+          respond({
+            requestType: 'upsert_alert',
+            success: false,
+            error: 'account alerts require an accountId',
+          });
           break;
         }
         if (scope === 'budget') {
           const budgetScope = msg.budgetScope ?? 'account';
           if (budgetScope === 'account' && !msg.accountId) {
-            respond({ requestType: 'upsert_alert', success: false, error: 'budget account alerts require an accountId' });
+            respond({
+              requestType: 'upsert_alert',
+              success: false,
+              error: 'budget account alerts require an accountId',
+            });
             break;
           }
           if (budgetScope === 'global' && msg.accountId != null) {
-            respond({ requestType: 'upsert_alert', success: false, error: 'budget global alerts must have accountId = null' });
+            respond({
+              requestType: 'upsert_alert',
+              success: false,
+              error: 'budget global alerts must have accountId = null',
+            });
             break;
           }
         }
@@ -1753,9 +1925,17 @@ export async function startDaemon(): Promise<void> {
         )
           .then((result) => {
             if (result.success) {
-              respond({ requestType: 'refresh_token', success: true, data: { expiresAt: result.expiresAt ?? 0 } });
+              respond({
+                requestType: 'refresh_token',
+                success: true,
+                data: { expiresAt: result.expiresAt ?? 0 },
+              });
             } else {
-              respond({ requestType: 'refresh_token', success: false, error: result.error ?? 'Refresh failed' });
+              respond({
+                requestType: 'refresh_token',
+                success: false,
+                error: result.error ?? 'Refresh failed',
+              });
             }
           })
           .catch((err: unknown) => {
@@ -1791,14 +1971,10 @@ export async function startDaemon(): Promise<void> {
         // state.
         void (async (): Promise<void> => {
           const all = listAccounts(db);
-          const emails = Array.from(
-            new Set(all.map((a) => a.email).filter((e) => e.length > 0)),
-          );
+          const emails = Array.from(new Set(all.map((a) => a.email).filter((e) => e.length > 0)));
           const out: Record<string, Array<{ orgUuid: string; orgName: string }>> = {};
           for (const email of emails) {
-            const bearer = all.find(
-              (a) => a.email === email && hasClaudeAiSessionKey(a.id),
-            );
+            const bearer = all.find((a) => a.email === email && hasClaudeAiSessionKey(a.id));
             if (!bearer) continue;
             const key = readClaudeAiSessionKey(bearer.id);
             if (!key) continue;
@@ -1861,9 +2037,7 @@ export async function startDaemon(): Promise<void> {
           const parentAccount = listAccounts(db).find(
             (a) => a.email === msg.email && hasClaudeAiSessionKey(a.id),
           );
-          const parentSessionKey = parentAccount
-            ? readClaudeAiSessionKey(parentAccount.id)
-            : null;
+          const parentSessionKey = parentAccount ? readClaudeAiSessionKey(parentAccount.id) : null;
           if (!parentSessionKey) {
             console.warn(
               `[SilentSibling] no sessionKey on file for ${msg.email} — aborting silent enrollment`,
@@ -1903,13 +2077,19 @@ export async function startDaemon(): Promise<void> {
           // are the values we've observed. Anything else → 'pro' as
           // the safe default.
           const planType: PlanType =
-            target.ravenType === 'team'              ? 'team' :
-            target.ravenType === 'claude_max'        ? 'max' :
-            target.ravenType === 'max'               ? 'max' :
-            target.ravenType === 'claude_pro'        ? 'pro' :
-            target.ravenType === 'pro'               ? 'pro' :
-            target.ravenType === 'claude_enterprise' ? 'enterprise' :
-            'pro';
+            target.ravenType === 'team'
+              ? 'team'
+              : target.ravenType === 'claude_max'
+                ? 'max'
+                : target.ravenType === 'max'
+                  ? 'max'
+                  : target.ravenType === 'claude_pro'
+                    ? 'pro'
+                    : target.ravenType === 'pro'
+                      ? 'pro'
+                      : target.ravenType === 'claude_enterprise'
+                        ? 'enterprise'
+                        : 'pro';
 
           const credKey = sentinelKey(orgUuid, accountUuid) || email;
 
@@ -1920,22 +2100,27 @@ export async function startDaemon(): Promise<void> {
           const wasReauth = hasActiveAccount(db, credKey);
           reactivateAccount(db, credKey);
           upsertAccount(db, {
-            id:          credKey,
+            id: credKey,
             accountUuid: accountUuid || email,
             email,
             displayName,
             orgUuid,
             orgName,
             planType,
-            isActive:    false,
-            createdAt:   Date.now(),
-            color:       null,
+            isActive: false,
+            createdAt: Date.now(),
+            color: null,
           });
 
           // Seed a default alert on first enrollment (same policy as
           // full OAuth path so stub vs full parity is preserved).
           if (listAlerts(db, { scope: 'account', accountId: credKey }).length === 0) {
-            upsertAlert(db, { scope: 'account', accountId: credKey, thresholdPct: 95, enabled: true });
+            upsertAlert(db, {
+              scope: 'account',
+              accountId: credKey,
+              thresholdPct: 95,
+              enabled: true,
+            });
           }
 
           // 5. Mirror the sessionKey into the sibling's keychain
@@ -2024,7 +2209,9 @@ export async function startDaemon(): Promise<void> {
               return;
             }
             console.error('[OAuth] Login failed:', errMsg);
-            console.log(`[OAuth] Broadcasting login_complete(failure) to ${ipcServer.connectedClients} client(s)`);
+            console.log(
+              `[OAuth] Broadcasting login_complete(failure) to ${ipcServer.connectedClients} client(s)`,
+            );
             ipcServer.broadcast({ type: 'login_complete', email: '' });
           });
         break;
@@ -2057,7 +2244,9 @@ export async function startDaemon(): Promise<void> {
     const cutoff = Date.now() - currentSettings.securityEventRetentionDays * 24 * 60 * 60 * 1000;
     const purged = purgeSecurityEventsOlderThan(db, cutoff);
     if (purged > 0) {
-      console.log(`[Security] Purged ${purged} security event(s) older than ${currentSettings.securityEventRetentionDays} days`);
+      console.log(
+        `[Security] Purged ${purged} security event(s) older than ${currentSettings.securityEventRetentionDays} days`,
+      );
     }
   } catch (err) {
     console.error('[Security] retention purge failed:', err);
@@ -2072,7 +2261,9 @@ export async function startDaemon(): Promise<void> {
       const cutoff = Date.now() - currentSettings.telemetryRetentionDays * 24 * 60 * 60 * 1000;
       const purged = purgeTelemetryOlderThan(db, cutoff);
       if (purged > 0) {
-        console.log(`[Telemetry] Purged ${purged} row(s) older than ${currentSettings.telemetryRetentionDays} days`);
+        console.log(
+          `[Telemetry] Purged ${purged} row(s) older than ${currentSettings.telemetryRetentionDays} days`,
+        );
       }
     } catch (err) {
       console.error('[Telemetry] retention purge failed:', err);
@@ -2091,7 +2282,9 @@ export async function startDaemon(): Promise<void> {
       const cutoff = Date.now() - currentSettings.requestLogRetentionDays * 24 * 60 * 60 * 1000;
       const purged = requestLogStore.purgeOlderThan(cutoff);
       if (purged > 0) {
-        console.log(`[RequestLog] Purged ${purged} row(s) older than ${currentSettings.requestLogRetentionDays} days`);
+        console.log(
+          `[RequestLog] Purged ${purged} row(s) older than ${currentSettings.requestLogRetentionDays} days`,
+        );
       }
     } catch (err) {
       console.error('[RequestLog] retention purge failed:', err);
@@ -2199,7 +2392,13 @@ export async function startDaemon(): Promise<void> {
 
   // Keep OAuth tokens fresh in the background. Runs once immediately (catching
   // any account whose token expired overnight) then every 15 minutes.
-  const stopTokenRefresher = startTokenRefresher({ db, activeToken, activeAccountId, ipcServer, tokenRotator });
+  const stopTokenRefresher = startTokenRefresher({
+    db,
+    activeToken,
+    activeAccountId,
+    ipcServer,
+    tokenRotator,
+  });
 
   // Keep rate-limit / usage state fresh for all non-active accounts so the
   // Usage tab reflects consumption from other Anthropic surfaces (claude.ai,

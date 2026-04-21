@@ -16,9 +16,9 @@ interface PlanMeta {
 }
 
 const PLAN_META: Record<string, PlanMeta> = {
-  pro:        { label: 'Pro',        color: 'bg-ios-blue/10 text-ios-blue' },
-  max:        { label: 'Max',        color: 'bg-ios-purple/10 text-ios-purple' },
-  team:       { label: 'Team',       color: 'bg-ios-indigo/10 text-ios-indigo' },
+  pro: { label: 'Pro', color: 'bg-ios-blue/10 text-ios-blue' },
+  max: { label: 'Max', color: 'bg-ios-purple/10 text-ios-purple' },
+  team: { label: 'Team', color: 'bg-ios-indigo/10 text-ios-indigo' },
   enterprise: { label: 'Enterprise', color: 'bg-ios-orange/10 text-ios-orange' },
 };
 

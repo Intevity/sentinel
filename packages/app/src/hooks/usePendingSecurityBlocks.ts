@@ -70,11 +70,14 @@ export function usePendingSecurityBlocks(): UsePendingBlocksResult {
     await sendToSentinel({ type: 'deny_blocked_request', pendingId }).catch(() => undefined);
   }, []);
 
-  const secondsRemaining = useCallback((pendingId: string): number => {
-    const entry = pending.find((p) => p.pendingId === pendingId);
-    if (!entry) return 0;
-    return Math.max(0, Math.ceil((entry.expiresAt - Date.now()) / 1000));
-  }, [pending]);
+  const secondsRemaining = useCallback(
+    (pendingId: string): number => {
+      const entry = pending.find((p) => p.pendingId === pendingId);
+      if (!entry) return 0;
+      return Math.max(0, Math.ceil((entry.expiresAt - Date.now()) / 1000));
+    },
+    [pending],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -91,7 +94,11 @@ export function usePendingSecurityBlocks(): UsePendingBlocksResult {
       } else if (msg.type === 'security_block_resolved') {
         setPending((prev) => prev.filter((p) => p.pendingId !== msg.pendingId));
       }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
 
     // 1 s tick so consumers (the banner countdown) re-render without
     // wiring their own timer.

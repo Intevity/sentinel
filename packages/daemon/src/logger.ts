@@ -1,4 +1,14 @@
-import { closeSync, existsSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import type { LogEntry, LogLevel } from '@claude-sentinel/shared';
@@ -135,12 +145,20 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
     // Close the current fd so the rename is safe on platforms that hold
     // file locks (primarily Windows).
     /* v8 ignore next 2 */
-    try { closeSync(fd); } catch { /* best effort */ }
+    try {
+      closeSync(fd);
+    } catch {
+      /* best effort */
+    }
     // Drop oldest rotation (.maxRotations) if present.
     const oldest = `${path}.${maxRotations}`;
     if (existsSync(oldest)) {
       /* v8 ignore next 2 */
-      try { unlinkSync(oldest); } catch { /* best effort */ }
+      try {
+        unlinkSync(oldest);
+      } catch {
+        /* best effort */
+      }
     }
     // Shift: .N-1 → .N, ..., .1 → .2
     for (let i = maxRotations - 1; i >= 1; i--) {
@@ -148,13 +166,21 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
       const to = `${path}.${i + 1}`;
       if (existsSync(from)) {
         /* v8 ignore next 2 */
-        try { renameSync(from, to); } catch { /* best effort */ }
+        try {
+          renameSync(from, to);
+        } catch {
+          /* best effort */
+        }
       }
     }
     // base → .1
     if (existsSync(path)) {
       /* v8 ignore next 2 */
-      try { renameSync(path, `${path}.1`); } catch { /* best effort */ }
+      try {
+        renameSync(path, `${path}.1`);
+      } catch {
+        /* best effort */
+      }
     }
     fd = openSync(path, 'a');
     bytesWritten = 0;
@@ -166,7 +192,9 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
        keep the daemon alive if the log volume briefly fills the disk. */
     try {
       writeSync(fd, buf);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     bytesWritten += buf.length;
     if (bytesWritten >= maxBytes) {
       rotate();
@@ -215,8 +243,7 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
     const cap = Math.min(limit ?? ringBufferSize, ringSize);
     const out: LogEntry[] = new Array(cap);
     // Oldest index in the buffer.
-    const oldest =
-      ringSize < ringBufferSize ? 0 : writeIdx;
+    const oldest = ringSize < ringBufferSize ? 0 : writeIdx;
     const startOffset = ringSize - cap;
     for (let i = 0; i < cap; i++) {
       const idx = (oldest + startOffset + i) % ringBufferSize;
@@ -244,10 +271,14 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
     /* v8 ignore next 7 */
     try {
       closeSync(fd);
-    } catch { /* best effort */ }
+    } catch {
+      /* best effort */
+    }
     try {
       writeFileSync(path, '');
-    } catch { /* best effort */ }
+    } catch {
+      /* best effort */
+    }
     fd = openSync(path, 'a');
     bytesWritten = 0;
     return { count };
@@ -273,24 +304,41 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
   }
 
   return {
-    debug(...args) { emit('debug', args); },
-    info(...args)  { emit('info', args); },
-    warn(...args)  { emit('warn', args); },
-    error(...args) { emit('error', args); },
+    debug(...args) {
+      emit('debug', args);
+    },
+    info(...args) {
+      emit('info', args);
+    },
+    warn(...args) {
+      emit('warn', args);
+    },
+    error(...args) {
+      emit('error', args);
+    },
     request(input) {
       emit(input.errored ? 'error' : 'info', [formatRequestMessage(input)], input.requestId);
     },
-    setLevel(l) { level = l; },
-    getLevel() { return level; },
+    setLevel(l) {
+      level = l;
+    },
+    getLevel() {
+      return level;
+    },
     getHistory,
     clear: clearBuffer,
-    onBroadcast(h) { broadcastHandlers.push(h); },
+    onBroadcast(h) {
+      broadcastHandlers.push(h);
+    },
     installConsolePatch,
     async shutdown() {
       flushBroadcast();
       /* v8 ignore next 3 */
-      try { closeSync(fd); }
-      catch { /* best effort */ }
+      try {
+        closeSync(fd);
+      } catch {
+        /* best effort */
+      }
     },
   };
 }

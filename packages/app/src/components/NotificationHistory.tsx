@@ -42,13 +42,13 @@ interface NotificationHistoryProps {
 }
 
 const TYPE_COLORS: Record<string, string> = {
-  overage_entered:        'bg-ios-orange/10 text-ios-orange',
-  overage_disabled:       'bg-ios-red/10 text-ios-red',
-  account_switched:       'bg-ios-blue/10 text-ios-blue',
-  usage_alert:            'bg-ios-blue/10 text-ios-blue',
-  security_low:           'bg-ios-green/10 text-ios-green',
-  security_medium:        'bg-ios-orange/10 text-ios-orange',
-  security_high:          'bg-ios-red/10 text-ios-red',
+  overage_entered: 'bg-ios-orange/10 text-ios-orange',
+  overage_disabled: 'bg-ios-red/10 text-ios-red',
+  account_switched: 'bg-ios-blue/10 text-ios-blue',
+  usage_alert: 'bg-ios-blue/10 text-ios-blue',
+  security_low: 'bg-ios-green/10 text-ios-green',
+  security_medium: 'bg-ios-orange/10 text-ios-orange',
+  security_high: 'bg-ios-red/10 text-ios-red',
 };
 
 function isSecurityType(t: NotificationType): boolean {
@@ -57,8 +57,10 @@ function isSecurityType(t: NotificationType): boolean {
 
 function formatDate(ts: number): string {
   return new Intl.DateTimeFormat('en-US', {
-    month: 'short', day: 'numeric',
-    hour: '2-digit', minute: '2-digit',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
   }).format(new Date(ts));
 }
 
@@ -74,7 +76,7 @@ export default function NotificationHistory({
   const colorFor = useMemo(() => {
     const map = new Map<string, string>();
     for (const a of accounts ?? []) map.set(a.id, accountColor(a));
-    return (id: string | null): string | null => (id ? map.get(id) ?? null : null);
+    return (id: string | null): string | null => (id ? (map.get(id) ?? null) : null);
   }, [accounts]);
 
   const handleAcknowledge = async (id: number): Promise<void> => {
@@ -103,9 +105,10 @@ export default function NotificationHistory({
 
   // Show only notifications tied to the active account, plus global events
   // that aren't bound to any account (account_id IS NULL).
-  const scoped = accountId !== undefined
-    ? notifications.filter((n) => n.accountId === accountId || n.accountId == null)
-    : notifications;
+  const scoped =
+    accountId !== undefined
+      ? notifications.filter((n) => n.accountId === accountId || n.accountId == null)
+      : notifications;
 
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'usage' | 'security'>('all');
   const filtered = scoped.filter((n) => {
@@ -115,7 +118,7 @@ export default function NotificationHistory({
   });
 
   const unread = filtered.filter((n) => !n.acknowledged);
-  const read   = filtered.filter((n) => n.acknowledged);
+  const read = filtered.filter((n) => n.acknowledged);
   const sorted = [...unread, ...read];
 
   const hasSecurity = scoped.some((n) => isSecurityType(n.type));
@@ -185,7 +188,9 @@ export default function NotificationHistory({
               >
                 <div className="flex items-start gap-3">
                   {security && SeverityIcon ? (
-                    <div className={`flex-shrink-0 w-8 h-8 rounded-full ${severityBg} flex items-center justify-center`}>
+                    <div
+                      className={`flex-shrink-0 w-8 h-8 rounded-full ${severityBg} flex items-center justify-center`}
+                    >
                       <SeverityIcon size={15} className={severityColor} strokeWidth={2} />
                     </div>
                   ) : (
@@ -200,14 +205,16 @@ export default function NotificationHistory({
                           SECURITY
                         </span>
                       )}
-                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${typeStyle}`}>
+                      <span
+                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${typeStyle}`}
+                      >
                         {security
                           ? notif.type.replace('security_', '').toUpperCase()
                           : notif.type.replace(/_/g, ' ')}
                       </span>
                     </div>
                     <p className="text-[13px] font-semibold text-black dark:text-white leading-snug">
-                      {notif.title.replace(/^[⚠️🚫✅]\s*/, '')}
+                      {notif.title.replace(/^(?:⚠️|🚫|✅)\s*/u, '')}
                     </p>
                     <p className="text-[11px] text-[#8E8E93] mt-0.5 leading-snug">{notif.body}</p>
                     <p className="text-[10px] text-[#8E8E93]/70 mt-1.5">{formatDate(notif.ts)}</p>

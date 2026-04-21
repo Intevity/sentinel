@@ -1,6 +1,22 @@
 import React, { useState } from 'react';
-import { Shield, ShieldCheck, ShieldAlert, ShieldX, X, Check, ArrowLeft, AlertTriangle, Loader2, Gauge } from 'lucide-react';
-import { applyPreset, markSetupSkipped, PRESETS, type RiskProfile } from '../lib/securityPresets.js';
+import {
+  Shield,
+  ShieldCheck,
+  ShieldAlert,
+  ShieldX,
+  X,
+  Check,
+  ArrowLeft,
+  AlertTriangle,
+  Loader2,
+  Gauge,
+} from 'lucide-react';
+import {
+  applyPreset,
+  markSetupSkipped,
+  PRESETS,
+  type RiskProfile,
+} from '../lib/securityPresets.js';
 import { useScanBenchmark } from '../hooks/useScanBenchmark.js';
 import { sendToSentinel } from '../lib/ipc.js';
 import type { SecurityBenchmarkResult } from '@claude-sentinel/shared';
@@ -33,7 +49,11 @@ const PROFILE_ICON_CLASS: Record<RiskProfile, string> = {
 
 type Step = 'select' | 'benchmark' | 'review';
 
-export default function SecuritySetupWizard({ onClose, measureRef, isFirstRun = true }: SecuritySetupWizardProps): React.ReactElement {
+export default function SecuritySetupWizard({
+  onClose,
+  measureRef,
+  isFirstRun = true,
+}: SecuritySetupWizardProps): React.ReactElement {
   const [step, setStep] = useState<Step>('select');
   const [choice, setChoice] = useState<RiskProfile>('medium');
   const [applying, setApplying] = useState(false);
@@ -102,9 +122,7 @@ export default function SecuritySetupWizard({ onClose, measureRef, isFirstRun = 
         <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5">
           <div className="flex items-center gap-2">
             <ShieldCheck size={14} className="text-ios-blue" />
-            <h2 className="text-[14px] font-semibold text-black dark:text-white">
-              Security setup
-            </h2>
+            <h2 className="text-[14px] font-semibold text-black dark:text-white">Security setup</h2>
           </div>
           <button
             onClick={() => {
@@ -186,8 +204,15 @@ export default function SecuritySetupWizard({ onClose, measureRef, isFirstRun = 
                       </p>
                       <ul className="mt-1.5 space-y-0.5">
                         {preset.highlights.map((h) => (
-                          <li key={h} className="text-[10px] text-[#8E8E93] leading-snug flex items-start gap-1">
-                            <Check size={10} strokeWidth={2.6} className="text-ios-blue flex-shrink-0 mt-[2px]" />
+                          <li
+                            key={h}
+                            className="text-[10px] text-[#8E8E93] leading-snug flex items-start gap-1"
+                          >
+                            <Check
+                              size={10}
+                              strokeWidth={2.6}
+                              className="text-ios-blue flex-shrink-0 mt-[2px]"
+                            />
                             <span>{h}</span>
                           </li>
                         ))}
@@ -228,9 +253,9 @@ export default function SecuritySetupWizard({ onClose, measureRef, isFirstRun = 
                   Tune for this system
                 </p>
                 <p className="text-[11px] text-[#8E8E93] leading-snug">
-                  Scan cost depends on your hardware. A quick benchmark will measure it
-                  and recommend a threshold — bodies under the threshold scan
-                  synchronously, larger ones are deferred off the hot path.
+                  Scan cost depends on your hardware. A quick benchmark will measure it and
+                  recommend a threshold — bodies under the threshold scan synchronously, larger ones
+                  are deferred off the hot path.
                 </p>
               </div>
             </div>
@@ -238,12 +263,14 @@ export default function SecuritySetupWizard({ onClose, measureRef, isFirstRun = 
             {!benchResult && !scanBench.running && !scanBench.error && (
               <div className="rounded-xl bg-[#F2F2F7] dark:bg-[#2A2A2A] p-3 text-center">
                 <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
-                  Takes a few seconds. We'll measure scan cost at 1 / 2 / 4 / 8 / 16 MB
-                  and recommend the largest size that stays under 50 ms p99.
+                  Takes a few seconds. We'll measure scan cost at 1 / 2 / 4 / 8 / 16 MB and
+                  recommend the largest size that stays under 50 ms p99.
                 </p>
                 <button
                   onClick={() => {
-                    void scanBench.run().then((r) => { if (r) setBenchResult(r); });
+                    void scanBench.run().then((r) => {
+                      if (r) setBenchResult(r);
+                    });
                   }}
                   className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-ios-blue text-white hover:bg-ios-blue/90 active:scale-95 transition-all"
                 >
@@ -273,12 +300,18 @@ export default function SecuritySetupWizard({ onClose, measureRef, isFirstRun = 
                 <div className="grid grid-cols-5 gap-1 text-[11px]">
                   {benchResult.results.map((r) => (
                     <div key={r.sizeMb} className="text-center">
-                      <div className={`font-semibold tabular-nums ${
-                        r.sizeMb === benchResult.recommendedMb ? 'text-ios-blue' : 'text-black dark:text-white'
-                      }`}>
+                      <div
+                        className={`font-semibold tabular-nums ${
+                          r.sizeMb === benchResult.recommendedMb
+                            ? 'text-ios-blue'
+                            : 'text-black dark:text-white'
+                        }`}
+                      >
                         {r.sizeMb} MB
                       </div>
-                      <div className="text-[10px] text-[#8E8E93] tabular-nums">{r.p99Ms.toFixed(1)}ms</div>
+                      <div className="text-[10px] text-[#8E8E93] tabular-nums">
+                        {r.p99Ms.toFixed(1)}ms
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -291,7 +324,9 @@ export default function SecuritySetupWizard({ onClose, measureRef, isFirstRun = 
                 </p>
                 <button
                   onClick={() => {
-                    void scanBench.run().then((r) => { if (r) setBenchResult(r); });
+                    void scanBench.run().then((r) => {
+                      if (r) setBenchResult(r);
+                    });
                   }}
                   className="text-[10px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white"
                 >
@@ -341,9 +376,7 @@ export default function SecuritySetupWizard({ onClose, measureRef, isFirstRun = 
                 <p className="text-[13px] font-semibold text-black dark:text-white">
                   {selected.label} profile
                 </p>
-                <p className="text-[11px] text-[#8E8E93] leading-snug">
-                  {selected.description}
-                </p>
+                <p className="text-[11px] text-[#8E8E93] leading-snug">{selected.description}</p>
               </div>
             </div>
 
@@ -352,20 +385,30 @@ export default function SecuritySetupWizard({ onClose, measureRef, isFirstRun = 
                 Will apply
               </p>
               <dl className="space-y-1 text-[11px]">
-                <Row label="Enforcement mode" value={labelForEnforcement(selected.settings.securityEnforcementMode)} />
+                <Row
+                  label="Enforcement mode"
+                  value={labelForEnforcement(selected.settings.securityEnforcementMode)}
+                />
                 <Row label="Scanner categories" value={scannerLabel(selected.settings)} />
-                <Row label="Notification floor" value={selected.settings.securityOsNotifyThreshold.toUpperCase()} />
+                <Row
+                  label="Notification floor"
+                  value={selected.settings.securityOsNotifyThreshold.toUpperCase()}
+                />
                 <Row
                   label="Hold blocked requests"
-                  value={selected.settings.securityBlockHoldEnabled
-                    ? `Up to ${selected.settings.securityApproveHoldSec}s for approval`
-                    : 'No, block immediately'}
+                  value={
+                    selected.settings.securityBlockHoldEnabled
+                      ? `Up to ${selected.settings.securityApproveHoldSec}s for approval`
+                      : 'No, block immediately'
+                  }
                 />
                 <Row
                   label="Tool permissions"
-                  value={selected.settings.toolPermissionsEnabled
-                    ? `On, default ${selected.settings.toolPermissionDefaultAction}`
-                    : 'Off'}
+                  value={
+                    selected.settings.toolPermissionsEnabled
+                      ? `On, default ${selected.settings.toolPermissionDefaultAction}`
+                      : 'Off'
+                  }
                 />
                 {ruleCount > 0 && (
                   <Row

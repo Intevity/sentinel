@@ -5,10 +5,10 @@ describe('pickRecommendedMb', () => {
   it('returns the largest size whose p99 is within budget', () => {
     // 1 MB and 2 MB both fit; 4, 8, 16 all blow the 50 ms budget.
     const results = [
-      { sizeMb: 1,  meanMs: 1,   p99Ms: 2   },
-      { sizeMb: 2,  meanMs: 3,   p99Ms: 40  },
-      { sizeMb: 4,  meanMs: 60,  p99Ms: 80  },
-      { sizeMb: 8,  meanMs: 120, p99Ms: 160 },
+      { sizeMb: 1, meanMs: 1, p99Ms: 2 },
+      { sizeMb: 2, meanMs: 3, p99Ms: 40 },
+      { sizeMb: 4, meanMs: 60, p99Ms: 80 },
+      { sizeMb: 8, meanMs: 120, p99Ms: 160 },
       { sizeMb: 16, meanMs: 250, p99Ms: 320 },
     ];
     expect(pickRecommendedMb(results, 50)).toBe(2);
@@ -17,10 +17,10 @@ describe('pickRecommendedMb', () => {
   it('returns the largest size when all fit comfortably', () => {
     // Fast hardware path: even 16 MB stays under budget.
     const results = [
-      { sizeMb: 1,  meanMs: 1, p99Ms: 2 },
-      { sizeMb: 2,  meanMs: 3, p99Ms: 4 },
-      { sizeMb: 4,  meanMs: 7, p99Ms: 8 },
-      { sizeMb: 8,  meanMs: 15, p99Ms: 16 },
+      { sizeMb: 1, meanMs: 1, p99Ms: 2 },
+      { sizeMb: 2, meanMs: 3, p99Ms: 4 },
+      { sizeMb: 4, meanMs: 7, p99Ms: 8 },
+      { sizeMb: 8, meanMs: 15, p99Ms: 16 },
       { sizeMb: 16, meanMs: 28, p99Ms: 32 },
     ];
     expect(pickRecommendedMb(results, 50)).toBe(16);
@@ -29,9 +29,9 @@ describe('pickRecommendedMb', () => {
   it('falls back to the smallest size when nothing qualifies', () => {
     // Pathological slow-hardware path — even 1 MB exceeds the budget.
     const results = [
-      { sizeMb: 1,  meanMs: 60, p99Ms: 80 },
-      { sizeMb: 2,  meanMs: 120, p99Ms: 160 },
-      { sizeMb: 4,  meanMs: 240, p99Ms: 320 },
+      { sizeMb: 1, meanMs: 60, p99Ms: 80 },
+      { sizeMb: 2, meanMs: 120, p99Ms: 160 },
+      { sizeMb: 4, meanMs: 240, p99Ms: 320 },
     ];
     expect(pickRecommendedMb(results, 50)).toBe(1);
   });

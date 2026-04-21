@@ -10,7 +10,12 @@ export function useInlineConfirm(
 ): { pending: boolean; trigger: () => void } {
   const [pending, setPending] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
   const trigger = (): void => {
     if (!pending) {
       setPending(true);

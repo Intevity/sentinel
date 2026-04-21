@@ -4,27 +4,27 @@ import type { PendingSecurityBlock, SecuritySeverity } from '@claude-sentinel/sh
 import { usePendingSecurityBlocks } from '../hooks/usePendingSecurityBlocks.js';
 
 const SEVERITY_ICON: Record<SecuritySeverity, typeof Shield> = {
-  low:    Shield,
+  low: Shield,
   medium: ShieldAlert,
-  high:   ShieldX,
+  high: ShieldX,
 };
 
 const SEVERITY_RING: Record<SecuritySeverity, string> = {
-  low:    'ring-ios-green/30',
+  low: 'ring-ios-green/30',
   medium: 'ring-ios-orange/30',
-  high:   'ring-ios-red/40',
+  high: 'ring-ios-red/40',
 };
 
 const SEVERITY_BG: Record<SecuritySeverity, string> = {
-  low:    'bg-ios-green/[0.08] dark:bg-ios-green/[0.12]',
+  low: 'bg-ios-green/[0.08] dark:bg-ios-green/[0.12]',
   medium: 'bg-ios-orange/[0.08] dark:bg-ios-orange/[0.12]',
-  high:   'bg-ios-red/[0.08] dark:bg-ios-red/[0.12]',
+  high: 'bg-ios-red/[0.08] dark:bg-ios-red/[0.12]',
 };
 
 const SEVERITY_ICON_COLOR: Record<SecuritySeverity, string> = {
-  low:    'text-ios-green',
+  low: 'text-ios-green',
   medium: 'text-ios-orange',
-  high:   'text-ios-red',
+  high: 'text-ios-red',
 };
 
 function formatCountdown(sec: number): string {
@@ -82,7 +82,11 @@ function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): R
 
   const handleDeny = async (): Promise<void> => {
     setBusy('deny');
-    try { await onDeny(); } finally { setBusy(null); }
+    try {
+      await onDeny();
+    } finally {
+      setBusy(null);
+    }
   };
   const handleApprove = async (): Promise<void> => {
     setBusy('approve');

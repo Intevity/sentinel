@@ -17,7 +17,12 @@ import {
   addSecurityAllowlist,
   type InsertSecurityEvent,
 } from '../db.js';
-import { scanRequestBody, scanToolUseBlocks, type Finding, type DetectorOptions } from './detectors.js';
+import {
+  scanRequestBody,
+  scanToolUseBlocks,
+  type Finding,
+  type DetectorOptions,
+} from './detectors.js';
 import { ResponseTap, DEFAULT_TAP_BUDGET_BYTES } from './response-tap.js';
 import { hashText } from './redact.js';
 
@@ -75,13 +80,14 @@ function decideBlock(
   if (mode === 'observe') return null;
   const floor: SecuritySeverity = mode === 'block_high' ? 'high' : 'medium';
   const hits = findings.filter(
-    (f) => SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER[floor] && f.confidence >= BLOCK_CONFIDENCE_FLOOR,
+    (f) =>
+      SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER[floor] && f.confidence >= BLOCK_CONFIDENCE_FLOOR,
   );
   if (hits.length === 0) return null;
   // Sort: high severity first, then confidence desc.
-  hits.sort((a, b) =>
-    SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] ||
-    b.confidence - a.confidence,
+  hits.sort(
+    (a, b) =>
+      SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] || b.confidence - a.confidence,
   );
   const top = hits[0];
   if (!top) return null;
@@ -213,11 +219,7 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     // Mirror into notifications table so the existing Alerts tab badge
     // picks it up. The type carries severity so the UI can render the
     // right icon and colour.
-    const titlePrefix = approved
-      ? 'Approved:'
-      : blocked
-        ? 'Blocked:'
-        : 'Security:';
+    const titlePrefix = approved ? 'Approved:' : blocked ? 'Blocked:' : 'Security:';
     try {
       insertNotification(deps.db, {
         ts: now,
@@ -400,7 +402,8 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     // tool_use proposals, aren't about data exfiltration, and block as
     // configured regardless of provenance.
     const isBlockableForPolicy = (f: Finding): boolean => {
-      if (f.kind === 'risky_bash' || f.kind === 'risky_write' || f.kind === 'risky_webfetch') return true;
+      if (f.kind === 'risky_bash' || f.kind === 'risky_write' || f.kind === 'risky_webfetch')
+        return true;
       return f.provenance === 'file-read' || f.provenance === 'tool-use';
     };
     const blockableFindings = findings.filter(isBlockableForPolicy);
@@ -517,12 +520,16 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
       blockCauseFindings: args.blockCauseFindings,
       allFindings: args.allFindings,
       timeoutHandle,
-      settle: (outcome) => { externalSettle(outcome); },
+      settle: (outcome) => {
+        externalSettle(outcome);
+      },
     };
 
     // Wire the external settle path. `awaitPendingResolution` installs the
     // real Promise.resolve here; until then, settle is a no-op.
-    entry.settle = (outcome) => { externalSettle(outcome); };
+    entry.settle = (outcome) => {
+      externalSettle(outcome);
+    };
 
     pendingBlocks.set(id, entry);
 
@@ -540,7 +547,11 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     // overwrites it when called. `resolverCalled` guards against the
     // timer + user-resolve race — whichever fires first wins, the other
     // becomes a no-op.
-    (entry as PendingBlockEntry & { _installResolver?: (fn: (outcome: PendingOutcome) => void) => void })._installResolver = (fn) => {
+    (
+      entry as PendingBlockEntry & {
+        _installResolver?: (fn: (outcome: PendingOutcome) => void) => void;
+      }
+    )._installResolver = (fn) => {
       externalSettle = (outcome) => {
         /* v8 ignore next 1 */
         if (resolverCalled) return;
@@ -806,11 +817,7 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     persistAndBroadcast(accountId, finding, direction);
   };
 
-  const runOutboundObserve = (
-    body: Buffer,
-    accountId: string,
-    options: DetectorOptions,
-  ): void => {
+  const runOutboundObserve = (body: Buffer, accountId: string, options: DetectorOptions): void => {
     let parsed: unknown = null;
     try {
       parsed = JSON.parse(body.toString('utf-8'));
@@ -825,7 +832,10 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     }
   };
 
-  const startResponseTap = (accountId: string, url: string | undefined): ResponseTapHandle | null => {
+  const startResponseTap = (
+    accountId: string,
+    url: string | undefined,
+  ): ResponseTapHandle | null => {
     const settings = deps.getSettings();
     if (!settings.securityScanEnabled) return null;
     if (!settings.securityScanToolUse) return null;

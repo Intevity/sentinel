@@ -8,10 +8,15 @@ interface UseAccountsResult {
   loading: boolean;
   error: string | null;
   switchAccount: (id: string, email: string) => Promise<{ success: boolean; message: string }>;
-  removeAccount: (id: string, deleteData: boolean) => Promise<{ success: boolean; message: string }>;
+  removeAccount: (
+    id: string,
+    deleteData: boolean,
+  ) => Promise<{ success: boolean; message: string }>;
   purgeAccount: (id: string) => Promise<{ success: boolean; message: string }>;
   refreshAccounts: () => Promise<{ ok: boolean; error?: string }>;
-  refreshToken: (accountId: string) => Promise<{ success: boolean; message: string; needsReauth?: boolean }>;
+  refreshToken: (
+    accountId: string,
+  ) => Promise<{ success: boolean; message: string; needsReauth?: boolean }>;
 }
 
 export function useAccounts(): UseAccountsResult {
@@ -51,67 +56,82 @@ export function useAccounts(): UseAccountsResult {
     }
   }, []);
 
-  const switchAccount = useCallback(async (id: string, email: string): Promise<{ success: boolean; message: string }> => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await sendToSentinel({ type: 'switch_account', accountId: id, email: email });
-      if (res.success) {
-        await refreshAccounts();
-        return { success: true, message: `Switched to ${email}. API calls are already using this account. Open a new terminal to update the displayed account in Claude Code.` };
-      }
-      return { success: false, message: res.error ?? 'Switch failed' };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Switch failed';
-      setError(msg);
-      return { success: false, message: msg };
-    } finally {
-      setLoading(false);
-    }
-  }, [refreshAccounts]);
-
-  const removeAccount = useCallback(async (id: string, deleteData: boolean): Promise<{ success: boolean; message: string }> => {
-    setError(null);
-    try {
-      const res = await sendToSentinel({ type: 'remove_account', accountId: id, deleteData });
-      if (res.success) {
-        // For "Keep Data" — move account from active list to removed list without a full
-        // refreshAccounts() call (which would re-add the active account from ~/.claude.json).
-        if (!deleteData) {
-          setAccounts((prev) => {
-            const moved = prev.find((a) => a.id === id);
-            if (moved) setRemovedAccounts((r) => [moved, ...r]);
-            return prev.filter((a) => a.id !== id);
-          });
-        } else {
-          // "Delete Data" — account is hard-deleted, just remove from active list.
-          setAccounts((prev) => prev.filter((a) => a.id !== id));
+  const switchAccount = useCallback(
+    async (id: string, email: string): Promise<{ success: boolean; message: string }> => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await sendToSentinel({ type: 'switch_account', accountId: id, email: email });
+        if (res.success) {
+          await refreshAccounts();
+          return {
+            success: true,
+            message: `Switched to ${email}. API calls are already using this account. Open a new terminal to update the displayed account in Claude Code.`,
+          };
         }
-        return { success: true, message: deleteData ? 'Account and data deleted' : 'Account removed' };
+        return { success: false, message: res.error ?? 'Switch failed' };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Switch failed';
+        setError(msg);
+        return { success: false, message: msg };
+      } finally {
+        setLoading(false);
       }
-      return { success: false, message: res.error ?? 'Remove failed' };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Remove failed';
-      setError(msg);
-      return { success: false, message: msg };
-    }
-  }, []);
+    },
+    [refreshAccounts],
+  );
 
-  const purgeAccount = useCallback(async (id: string): Promise<{ success: boolean; message: string }> => {
-    setError(null);
-    try {
-      const res = await sendToSentinel({ type: 'purge_account', accountId: id });
-      if (res.success) {
-        setRemovedAccounts((prev) => prev.filter((a) => a.id !== id));
-        return { success: true, message: 'Account and all data permanently deleted' };
+  const removeAccount = useCallback(
+    async (id: string, deleteData: boolean): Promise<{ success: boolean; message: string }> => {
+      setError(null);
+      try {
+        const res = await sendToSentinel({ type: 'remove_account', accountId: id, deleteData });
+        if (res.success) {
+          // For "Keep Data" — move account from active list to removed list without a full
+          // refreshAccounts() call (which would re-add the active account from ~/.claude.json).
+          if (!deleteData) {
+            setAccounts((prev) => {
+              const moved = prev.find((a) => a.id === id);
+              if (moved) setRemovedAccounts((r) => [moved, ...r]);
+              return prev.filter((a) => a.id !== id);
+            });
+          } else {
+            // "Delete Data" — account is hard-deleted, just remove from active list.
+            setAccounts((prev) => prev.filter((a) => a.id !== id));
+          }
+          return {
+            success: true,
+            message: deleteData ? 'Account and data deleted' : 'Account removed',
+          };
+        }
+        return { success: false, message: res.error ?? 'Remove failed' };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Remove failed';
+        setError(msg);
+        return { success: false, message: msg };
       }
-      return { success: false, message: res.error ?? 'Delete failed' };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Delete failed';
-      setError(msg);
-      return { success: false, message: msg };
-    }
-  }, []);
+    },
+    [],
+  );
+
+  const purgeAccount = useCallback(
+    async (id: string): Promise<{ success: boolean; message: string }> => {
+      setError(null);
+      try {
+        const res = await sendToSentinel({ type: 'purge_account', accountId: id });
+        if (res.success) {
+          setRemovedAccounts((prev) => prev.filter((a) => a.id !== id));
+          return { success: true, message: 'Account and all data permanently deleted' };
+        }
+        return { success: false, message: res.error ?? 'Delete failed' };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Delete failed';
+        setError(msg);
+        return { success: false, message: msg };
+      }
+    },
+    [],
+  );
 
   // Refetch when the daemon broadcasts `account_updated` (e.g. the avatar
   // color changed via the picker). Without this the local `accounts` state
@@ -121,29 +141,51 @@ export function useAccounts(): UseAccountsResult {
     let unlisten: (() => void) | null = null;
     onDaemonMessage((msg) => {
       if (msg.type === 'account_updated') void refreshAccounts();
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
   }, [refreshAccounts]);
 
-  const refreshToken = useCallback(async (
-    accountId: string,
-  ): Promise<{ success: boolean; message: string; needsReauth?: boolean }> => {
-    setError(null);
-    try {
-      const res = await sendToSentinel<{ expiresAt: number }>({ type: 'refresh_token', accountId });
-      if (res.success) {
-        return { success: true, message: 'Token refreshed.' };
+  const refreshToken = useCallback(
+    async (
+      accountId: string,
+    ): Promise<{ success: boolean; message: string; needsReauth?: boolean }> => {
+      setError(null);
+      try {
+        const res = await sendToSentinel<{ expiresAt: number }>({
+          type: 'refresh_token',
+          accountId,
+        });
+        if (res.success) {
+          return { success: true, message: 'Token refreshed.' };
+        }
+        // Daemon returns needsReauth via error text convention; surface the hint.
+        const err = res.error ?? 'Refresh failed';
+        const needsReauth = /expired|re-authenticate|sign in/i.test(err);
+        return { success: false, message: err, needsReauth };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Refresh failed';
+        setError(msg);
+        return { success: false, message: msg };
       }
-      // Daemon returns needsReauth via error text convention; surface the hint.
-      const err = res.error ?? 'Refresh failed';
-      const needsReauth = /expired|re-authenticate|sign in/i.test(err);
-      return { success: false, message: err, needsReauth };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Refresh failed';
-      setError(msg);
-      return { success: false, message: msg };
-    }
-  }, []);
+    },
+    [],
+  );
 
-  return { accounts, removedAccounts, loading, error, switchAccount, removeAccount, purgeAccount, refreshAccounts, refreshToken };
+  return {
+    accounts,
+    removedAccounts,
+    loading,
+    error,
+    switchAccount,
+    removeAccount,
+    purgeAccount,
+    refreshAccounts,
+    refreshToken,
+  };
 }
