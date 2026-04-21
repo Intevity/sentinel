@@ -15,16 +15,22 @@ type AllRateLimits = Record<string, RateLimitWindow[]>;
  */
 export function useAllRateLimits(): {
   byAccount: AllRateLimits;
-  refetch: () => Promise<void>;
+  refetch: () => Promise<{ ok: boolean; error?: string }>;
 } {
   const [byAccount, setByAccount] = useState<AllRateLimits>({});
 
-  const refetch = useCallback(async () => {
+  const refetch = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
     try {
       const res = await sendToSentinel<AllRateLimits>({ type: 'get_all_rate_limits' });
-      if (res.success) setByAccount(res.data ?? {});
-    } catch {
-      // Non-fatal — indicator just won't show. The Usage tab surfaces real errors.
+      if (res.success) {
+        setByAccount(res.data ?? {});
+        return { ok: true };
+      }
+      return { ok: false, error: res.error ?? 'Refresh failed' };
+    } catch (err) {
+      // Keep the state update path non-fatal — the indicator just won't show.
+      // The caller still gets the error so refresh-button feedback is truthful.
+      return { ok: false, error: err instanceof Error ? err.message : 'Refresh failed' };
     }
   }, []);
 

@@ -6,8 +6,9 @@ import { useSecurityEvents } from '../hooks/useSecurityEvents.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { useAutoModeStatus } from '../hooks/useAutoModeStatus.js';
 import { usePermissionRules } from '../hooks/usePermissionRules.js';
-import { QuickToggle, QuickSegmented, QuickChipToggle } from './settings/primitives.js';
+import { QuickSegmented, QuickChipToggle, Switch, SettingsCard, SettingsRow } from './settings/primitives.js';
 import InfoTooltip from './InfoTooltip.js';
+import { describeScanSummary } from '../lib/securityScanSummary.js';
 
 /** Inline two-click confirm: first click transitions into `pending`
  *  state which reverts after `timeoutMs`. Second click while pending
@@ -391,68 +392,85 @@ export default function SecurityPanel({
         </div>
       </div>
 
-      {/* Quick-access strip — always visible so common settings don't require
-          opening Settings. The master "Scan" pill is always shown (so the
-          user always has a one-click path to re-enable); enforcement +
-          categories are gated behind `securityScanEnabled` to avoid
-          offering no-op toggles. Writes flow through useSettings().update,
-          exactly the same path as the full SettingsPanel controls. */}
+      {/* Scanning card — labeled, collapsible, visually distinct from the
+          filter pills below. Collapsed by default with a one-line summary
+          in the header so state is visible at a glance. Writes flow through
+          useSettings().update, same path as the full SettingsPanel. */}
       {settings && (
-        <div className="flex flex-wrap items-center gap-1.5 mb-2">
-          <QuickToggle
-            label="Scan"
-            checked={settings.securityScanEnabled}
-            onChange={(v) => void update({ securityScanEnabled: v }).catch(() => undefined)}
-            title={settings.securityScanEnabled ? 'Security scanning is on' : 'Security scanning is off'}
-          />
-          <QuickToggle
-            label={
-              settings.toolPermissionsEnabled && enabledRuleCount > 0
-                ? `Permissions · ${enabledRuleCount}`
-                : 'Permissions'
-            }
-            checked={settings.toolPermissionsEnabled}
-            onChange={(v) => void update({ toolPermissionsEnabled: v }).catch(() => undefined)}
-            title={
+        <SettingsCard
+          title="Scanning"
+          summary={describeScanSummary(settings)}
+          defaultOpen={false}
+        >
+          <SettingsRow
+            label="Security scanning"
+            description="Inspect prompts, files, and tool calls for risks."
+          >
+            <Switch
+              label="Security scanning"
+              checked={settings.securityScanEnabled}
+              onChange={(v) => void update({ securityScanEnabled: v }).catch(() => undefined)}
+            />
+          </SettingsRow>
+          <SettingsRow
+            label="Tool permissions"
+            description={
               settings.toolPermissionsEnabled
-                ? `Tool permissions are on (${enabledRuleCount} enabled rule${enabledRuleCount === 1 ? '' : 's'})`
-                : 'Tool permissions are off'
+                ? `${enabledRuleCount} rule${enabledRuleCount === 1 ? '' : 's'} enforced`
+                : 'Allow/deny rules not applied'
             }
-          />
+          >
+            <Switch
+              label="Tool permissions"
+              checked={settings.toolPermissionsEnabled}
+              onChange={(v) => void update({ toolPermissionsEnabled: v }).catch(() => undefined)}
+            />
+          </SettingsRow>
           {settings.securityScanEnabled && (
             <>
-              <QuickSegmented
-                ariaLabel="Enforcement mode"
-                value={(settings.securityEnforcementMode ?? 'observe') as 'observe' | 'block_high' | 'block_medium_high'}
-                onChange={(v) => void update({ securityEnforcementMode: v }).catch(() => undefined)}
-                options={[
-                  { value: 'observe',           label: 'Observe',  title: 'Record findings; never block' },
-                  { value: 'block_high',        label: 'HIGH',     title: 'Block only HIGH-severity findings' },
-                  { value: 'block_medium_high', label: 'MED+HIGH', title: 'Block MEDIUM and HIGH findings' },
-                ]}
-              />
-              <span className="text-[10px] text-[#8E8E93]">·</span>
-              <QuickChipToggle
-                label="Secrets"
-                active={settings.securityScanSecrets}
-                onChange={(v) => void update({ securityScanSecrets: v }).catch(() => undefined)}
-                title="Scan for API keys, tokens, private keys"
-              />
-              <QuickChipToggle
-                label="Injection"
-                active={settings.securityScanInjection}
-                onChange={(v) => void update({ securityScanInjection: v }).catch(() => undefined)}
-                title="Heuristic prompt-injection detection"
-              />
-              <QuickChipToggle
-                label="Tool-use"
-                active={settings.securityScanToolUse}
-                onChange={(v) => void update({ securityScanToolUse: v }).catch(() => undefined)}
-                title="Inspect proposed Bash / Write / WebFetch tool calls"
-              />
+              <SettingsRow
+                label="When a risk is detected"
+                description="Observe records findings; Block stops the outbound request."
+              >
+                <QuickSegmented
+                  ariaLabel="Enforcement mode"
+                  value={(settings.securityEnforcementMode ?? 'observe') as 'observe' | 'block_high' | 'block_medium_high'}
+                  onChange={(v) => void update({ securityEnforcementMode: v }).catch(() => undefined)}
+                  options={[
+                    { value: 'observe',           label: 'Observe',  title: 'Record findings; never block' },
+                    { value: 'block_high',        label: 'HIGH',     title: 'Block only HIGH-severity findings' },
+                    { value: 'block_medium_high', label: 'MED+HIGH', title: 'Block MEDIUM and HIGH findings' },
+                  ]}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Scan for"
+                description="Categories inspected on every outbound request."
+              >
+                <div className="flex flex-wrap gap-1 justify-end">
+                  <QuickChipToggle
+                    label="Secrets"
+                    active={settings.securityScanSecrets}
+                    onChange={(v) => void update({ securityScanSecrets: v }).catch(() => undefined)}
+                    title="Scan for API keys, tokens, private keys"
+                  />
+                  <QuickChipToggle
+                    label="Injection"
+                    active={settings.securityScanInjection}
+                    onChange={(v) => void update({ securityScanInjection: v }).catch(() => undefined)}
+                    title="Heuristic prompt-injection detection"
+                  />
+                  <QuickChipToggle
+                    label="Tool-use"
+                    active={settings.securityScanToolUse}
+                    onChange={(v) => void update({ securityScanToolUse: v }).catch(() => undefined)}
+                    title="Inspect proposed Bash / Write / WebFetch tool calls"
+                  />
+                </div>
+              </SettingsRow>
             </>
           )}
-        </div>
+        </SettingsCard>
       )}
 
       {/* Collapsible filter section. Mirrors the Logs tab pattern: a chevron
@@ -812,31 +830,45 @@ function AutoModeBanner({
               )}
             </button>
 
-            {hasSessions && expanded && (
-              <div className={`mt-2 pt-2 border-t ${accent.cardDivider} space-y-1.5`}>
-                {status.sessions.map((s) => (
-                  <div key={s.sessionId} className="flex items-center gap-2 text-[10.5px]">
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                        s.autoMode ? accent.dot : 'bg-[#8E8E93]/60'
-                      }`}
-                    />
-                    <span className={`font-semibold tabular-nums ${s.autoMode ? accent.icon : 'text-[#8E8E93]'}`}>
-                      {s.autoMode ? 'AUTO' : 'normal'}
-                    </span>
-                    <span className="text-[#8E8E93] font-mono truncate flex-1 min-w-0" title={s.sessionId}>
-                      {s.sessionId.slice(0, 8)}…
-                    </span>
-                    <span className="text-[#8E8E93] flex-shrink-0">{formatAgo(s.lastSeenAt)}</span>
+            <AnimatePresence initial={false}>
+              {hasSessions && expanded && (
+                <motion.div
+                  key="sessions"
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{
+                    height: { duration: 0.26, ease: [0.22, 1, 0.36, 1] },
+                    opacity: { duration: 0.18, ease: 'easeOut' },
+                  }}
+                  className="overflow-hidden"
+                >
+                  <div className={`mt-2 pt-2 border-t ${accent.cardDivider} space-y-1.5`}>
+                    {status.sessions.map((s) => (
+                      <div key={s.sessionId} className="flex items-center gap-2 text-[10.5px]">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                            s.autoMode ? accent.dot : 'bg-[#8E8E93]/60'
+                          }`}
+                        />
+                        <span className={`font-semibold tabular-nums ${s.autoMode ? accent.icon : 'text-[#8E8E93]'}`}>
+                          {s.autoMode ? 'AUTO' : 'normal'}
+                        </span>
+                        <span className="text-[#8E8E93] font-mono truncate flex-1 min-w-0" title={s.sessionId}>
+                          {s.sessionId.slice(0, 8)}…
+                        </span>
+                        <span className="text-[#8E8E93] flex-shrink-0">{formatAgo(s.lastSeenAt)}</span>
+                      </div>
+                    ))}
+                    {status.processCount !== null && (
+                      <p className="text-[10px] text-[#8E8E93] pt-1 italic">
+                        {status.processCount} claude-code {status.processCount === 1 ? 'process' : 'processes'} running
+                      </p>
+                    )}
                   </div>
-                ))}
-                {status.processCount !== null && (
-                  <p className="text-[10px] text-[#8E8E93] pt-1 italic">
-                    {status.processCount} claude-code {status.processCount === 1 ? 'process' : 'processes'} running
-                  </p>
-                )}
-              </div>
-            )}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </motion.div>
       )}

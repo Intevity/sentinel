@@ -10,7 +10,7 @@ interface UseAccountsResult {
   switchAccount: (id: string, email: string) => Promise<{ success: boolean; message: string }>;
   removeAccount: (id: string, deleteData: boolean) => Promise<{ success: boolean; message: string }>;
   purgeAccount: (id: string) => Promise<{ success: boolean; message: string }>;
-  refreshAccounts: () => Promise<void>;
+  refreshAccounts: () => Promise<{ ok: boolean; error?: string }>;
   refreshToken: (accountId: string) => Promise<{ success: boolean; message: string; needsReauth?: boolean }>;
 }
 
@@ -26,8 +26,10 @@ export function useAccounts(): UseAccountsResult {
 
   // Syncs daemon DB with ~/.claude.json and returns the latest account list.
   // Also fetches the removed-accounts list so the Deleted Accounts section stays fresh.
-  const refreshAccounts = useCallback(async (): Promise<void> => {
-    if (refreshingRef.current) return;
+  // Returns { ok, error? } so callers can show refresh feedback without
+  // racing React's batched `error` state update.
+  const refreshAccounts = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
+    if (refreshingRef.current) return { ok: true };
     refreshingRef.current = true;
     setLoading(true);
     setError(null);
@@ -38,8 +40,11 @@ export function useAccounts(): UseAccountsResult {
       ]);
       setAccounts(res.data ?? []);
       setRemovedAccounts(removedRes.data ?? []);
+      return { ok: true };
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Refresh failed');
+      const msg = err instanceof Error ? err.message : 'Refresh failed';
+      setError(msg);
+      return { ok: false, error: msg };
     } finally {
       setLoading(false);
       refreshingRef.current = false;

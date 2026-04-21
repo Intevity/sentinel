@@ -308,7 +308,7 @@ export default function LogsViewer(): React.ReactElement {
           <button
             onClick={() => void exportLogs('txt')}
             disabled={exporting || filtered.length === 0}
-            className="flex items-center gap-1 text-[11px] font-medium text-ios-blue hover:opacity-80 transition-opacity active:scale-95 disabled:opacity-40"
+            className="flex items-center gap-1 text-[11px] font-medium text-ios-blue hover:text-ios-blue/70 transition-colors active:scale-95 disabled:opacity-40"
             title="Export filtered logs as text"
           >
             <FileText size={12} strokeWidth={2.5} />
@@ -317,7 +317,7 @@ export default function LogsViewer(): React.ReactElement {
           <button
             onClick={() => void exportLogs('json')}
             disabled={exporting || filtered.length === 0}
-            className="flex items-center gap-1 text-[11px] font-medium text-ios-blue hover:opacity-80 transition-opacity active:scale-95 disabled:opacity-40"
+            className="flex items-center gap-1 text-[11px] font-medium text-ios-blue hover:text-ios-blue/70 transition-colors active:scale-95 disabled:opacity-40"
             title="Export filtered logs as JSON"
           >
             <FileJson size={12} strokeWidth={2.5} />
@@ -327,8 +327,8 @@ export default function LogsViewer(): React.ReactElement {
             <button
               onClick={clearConfirm.trigger}
               disabled={clearing}
-              className={`flex items-center gap-1 text-[11px] font-medium transition-opacity active:scale-95 ${
-                clearConfirm.pending ? 'text-white bg-ios-red px-2 py-0.5 rounded-full' : 'text-ios-red hover:opacity-80'
+              className={`flex items-center gap-1 text-[11px] font-medium transition-colors active:scale-95 ${
+                clearConfirm.pending ? 'text-white bg-ios-red px-2 py-0.5 rounded-full' : 'text-ios-red hover:text-ios-red/70'
               }`}
               title={clearConfirm.pending ? 'Click again to clear' : 'Clear all logs'}
             >

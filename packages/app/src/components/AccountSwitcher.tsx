@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshCw, Plus, Loader2, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { invoke } from '@tauri-apps/api/core';
@@ -57,6 +57,17 @@ export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherPr
     text: string;
     kind: 'success' | 'error' | 'info';
   } | null>(null);
+  const [refreshStatus, setRefreshStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const refreshStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleRefreshClick = useCallback(async (): Promise<void> => {
+    const result = await refreshAccounts();
+    if (refreshStatusTimerRef.current) clearTimeout(refreshStatusTimerRef.current);
+    setRefreshStatus(result.ok
+      ? { kind: 'ok', text: 'Updated' }
+      : { kind: 'err', text: result.error ?? 'Failed' });
+    refreshStatusTimerRef.current = setTimeout(() => setRefreshStatus(null), 3000);
+  }, [refreshAccounts]);
   const [loggingIn, setLoggingIn] = useState(false);
   const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null);
   const [purgingId, setPurgingId] = useState<string | null>(null);
@@ -433,8 +444,13 @@ export default function AccountSwitcher({ onAccountsChanged }: AccountSwitcherPr
           )}
         </div>
         <div className="flex items-center gap-2">
+          {refreshStatus && (
+            <span className={`text-[10px] font-medium ${refreshStatus.kind === 'ok' ? 'text-ios-green' : 'text-ios-red'}`}>
+              {refreshStatus.text}
+            </span>
+          )}
           <button
-            onClick={() => void refreshAccounts()}
+            onClick={() => void handleRefreshClick()}
             disabled={loading}
             className="text-[#8E8E93] hover:text-ios-blue disabled:opacity-40 transition-colors active:scale-90"
             title="Sync with Claude Code"

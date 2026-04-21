@@ -8,6 +8,15 @@ import type { SecurityBenchmarkResult } from '@claude-sentinel/shared';
 interface SecuritySetupWizardProps {
   /** Dismiss the wizard. Called after Apply succeeds or Skip/Close. */
   onClose: () => void;
+  /** Callback ref forwarded from `useAutoResizeWindow().overlayRef` so the
+   *  tray window grows up to its max height to fit wizard content instead
+   *  of forcing an internal scroll. */
+  measureRef?: ((el: HTMLElement | null) => void) | undefined;
+  /** True only for the automatic first-install open. Re-runs from Settings
+   *  pass false, which bypasses the "Skip security setup?" confirmation on
+   *  the header X: the user already has a configured profile, so dismissing
+   *  isn't a consequential decision. */
+  isFirstRun?: boolean;
 }
 
 const PROFILE_ICONS: Record<RiskProfile, typeof Shield> = {
@@ -24,7 +33,7 @@ const PROFILE_ICON_CLASS: Record<RiskProfile, string> = {
 
 type Step = 'select' | 'benchmark' | 'review';
 
-export default function SecuritySetupWizard({ onClose }: SecuritySetupWizardProps): React.ReactElement {
+export default function SecuritySetupWizard({ onClose, measureRef, isFirstRun = true }: SecuritySetupWizardProps): React.ReactElement {
   const [step, setStep] = useState<Step>('select');
   const [choice, setChoice] = useState<RiskProfile>('medium');
   const [applying, setApplying] = useState(false);
@@ -85,7 +94,11 @@ export default function SecuritySetupWizard({ onClose }: SecuritySetupWizardProp
 
   return (
     <div className="absolute inset-0 bg-black/40 z-40 flex items-center justify-center p-3">
-      <div className="bg-white dark:bg-[#1E1E1E] rounded-2xl shadow-card max-w-[460px] w-full max-h-full overflow-y-auto">
+      <div
+        ref={measureRef}
+        data-expand-max
+        className="bg-white dark:bg-[#1E1E1E] rounded-2xl shadow-card max-w-[460px] w-full max-h-full overflow-y-auto"
+      >
         <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5">
           <div className="flex items-center gap-2">
             <ShieldCheck size={14} className="text-ios-blue" />
@@ -94,7 +107,18 @@ export default function SecuritySetupWizard({ onClose }: SecuritySetupWizardProp
             </h2>
           </div>
           <button
-            onClick={() => setSkipConfirmOpen(true)}
+            onClick={() => {
+              if (isFirstRun) {
+                // First install: dismissal is consequential, so gate it
+                // behind an explicit confirm that spells out what the user
+                // is giving up.
+                setSkipConfirmOpen(true);
+              } else {
+                // Re-run from Settings: securitySetupCompleted is already
+                // true, so closing is just closing. No confirm, no IPC.
+                onClose();
+              }
+            }}
             className="w-7 h-7 rounded-full hover:bg-[#8E8E93]/10 flex items-center justify-center"
             title="Close"
             aria-label="Close"

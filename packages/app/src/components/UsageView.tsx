@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
 import { invoke } from '@tauri-apps/api/core';
@@ -504,7 +504,9 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
     : null;
   const viewPauseState = viewAccountKey ? paused[viewAccountKey] ?? null : null;
 
-  const fetchRateLimits = useCallback(async () => {
+  // Returns { ok, error? } so the refresh-button handler can surface
+  // success/failure without racing the error-state render.
+  const fetchRateLimits = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
     setLoading(true);
     setError(null);
     try {
@@ -515,12 +517,27 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
       );
       setWindows(res.data ?? []);
       setLastUpdated(Date.now());
+      return { ok: true };
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load rate limits');
+      const msg = err instanceof Error ? err.message : 'Failed to load rate limits';
+      setError(msg);
+      return { ok: false, error: msg };
     } finally {
       setLoading(false);
     }
   }, [viewAccountId]);
+
+  const [refreshStatus, setRefreshStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const refreshStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleRefreshClick = useCallback(async (): Promise<void> => {
+    const result = await fetchRateLimits();
+    if (refreshStatusTimerRef.current) clearTimeout(refreshStatusTimerRef.current);
+    setRefreshStatus(result.ok
+      ? { kind: 'ok', text: 'Updated' }
+      : { kind: 'err', text: result.error ?? 'Failed' });
+    refreshStatusTimerRef.current = setTimeout(() => setRefreshStatus(null), 3000);
+  }, [fetchRateLimits]);
 
   // Re-fetch on mount and whenever the daemon reports new rate-limit data.
   // rateLimitsVersion is bumped by useDaemon (always-mounted) on rate_limits_updated
@@ -577,8 +594,13 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
           {isProbing && (
             <span className="text-[10px] text-ios-blue font-medium">Refreshing…</span>
           )}
+          {!isProbing && refreshStatus && (
+            <span className={`text-[10px] font-medium ${refreshStatus.kind === 'ok' ? 'text-ios-green' : 'text-ios-red'}`}>
+              {refreshStatus.text}
+            </span>
+          )}
           <button
-            onClick={() => void fetchRateLimits()}
+            onClick={() => void handleRefreshClick()}
             disabled={busy}
             className="text-[#8E8E93] hover:text-ios-blue disabled:opacity-40 transition-colors active:scale-90"
             title="Refresh"
@@ -658,6 +680,17 @@ function SingleAccountUsageView({ rateLimitsVersion, isProbing, activeAccount, v
 function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.ReactElement {
   const { byAccount, refetch } = useAllRateLimits();
   const { settings } = useSettings();
+  const [poolRefreshStatus, setPoolRefreshStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const poolRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handlePoolRefreshClick = useCallback(async (): Promise<void> => {
+    const result = await refetch();
+    if (poolRefreshTimerRef.current) clearTimeout(poolRefreshTimerRef.current);
+    setPoolRefreshStatus(result.ok
+      ? { kind: 'ok', text: 'Updated' }
+      : { kind: 'err', text: result.error ?? 'Failed' });
+    poolRefreshTimerRef.current = setTimeout(() => setPoolRefreshStatus(null), 3000);
+  }, [refetch]);
   // Excluded accounts are sitting out of rotation, so they shouldn't
   // contribute to the pool average — the meter should reflect what's
   // actually rotating. Per-account rows still render them (dimmed) so
@@ -699,13 +732,20 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
           </span>
           <InfoTooltip text={USAGE_VARIANCE_NOTE} placement="bottom" />
         </div>
-        <button
-          onClick={() => void refetch()}
-          className="text-[#8E8E93] hover:text-ios-blue transition-colors active:scale-90"
-          title="Refresh"
-        >
-          <RefreshCw size={13} strokeWidth={2.5} />
-        </button>
+        <div className="flex items-center gap-2">
+          {poolRefreshStatus && (
+            <span className={`text-[10px] font-medium ${poolRefreshStatus.kind === 'ok' ? 'text-ios-green' : 'text-ios-red'}`}>
+              {poolRefreshStatus.text}
+            </span>
+          )}
+          <button
+            onClick={() => void handlePoolRefreshClick()}
+            className="text-[#8E8E93] hover:text-ios-blue transition-colors active:scale-90"
+            title="Refresh"
+          >
+            <RefreshCw size={13} strokeWidth={2.5} />
+          </button>
+        </div>
       </div>
 
       {/* Pool meter */}

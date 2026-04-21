@@ -177,9 +177,26 @@ fn main() {
             if window.label() != "main" {
                 return;
             }
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+                // Notification-click → app-activation is our routing
+                // channel instead of the dead
+                // NSUserNotificationCenterDelegate callback on macOS
+                // 26. Two code paths call `notify::route_recent_event`
+                // for the same reason: this one catches clicks that
+                // arrive with the window already visible; notify.rs's
+                // NSApplicationDidBecomeActive observer catches clicks
+                // that arrive with the window hidden (the tray app
+                // default). Keeping both handlers means it works in
+                // either state.
+                tauri::WindowEvent::Focused(true) => {
+                    let _ = window;
+                    notify::route_recent_event();
+                }
+                _ => {}
             }
         })
         .setup(|app| {

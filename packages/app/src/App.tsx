@@ -38,11 +38,11 @@ type Tab = 'accounts' | 'usage' | 'metrics' | 'overage' | 'notifications' | 'sec
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: 'accounts',      label: 'Accounts', icon: Users         },
-  { id: 'usage',         label: 'Usage',    icon: Activity      },
-  { id: 'metrics',       label: 'Metrics',  icon: BarChart3     },
-  { id: 'overage',       label: 'Overage',  icon: AlertTriangle },
-  { id: 'notifications', label: 'Alerts',   icon: Bell          },
   { id: 'security',      label: 'Security', icon: Shield        },
+  { id: 'notifications', label: 'Alerts',   icon: Bell          },
+  { id: 'usage',         label: 'Usage',    icon: Activity      },
+  { id: 'overage',       label: 'Overage',  icon: AlertTriangle },
+  { id: 'metrics',       label: 'Metrics',  icon: BarChart3     },
   { id: 'logs',          label: 'Logs',     icon: ScrollText    },
 ];
 
@@ -186,11 +186,17 @@ export default function App(): React.ReactElement {
   // closes it (Apply / Skip / X), don't re-open while the
   // `securitySetupCompleted: true` broadcast is still in flight.
   const wizardClosedThisSession = useRef(false);
+  // Captured at the moment the wizard opens: true only for the automatic
+  // first-install path. Re-runs triggered by the Settings "Run setup
+  // wizard" button set this to false so the header X closes without the
+  // "Skip security setup?" confirm.
+  const wizardIsFirstRun = useRef(false);
   useEffect(() => {
     if (!settings) return;
     if (wizardOpen) return;
     if (wizardForceOpen) {
       wizardClosedThisSession.current = false;
+      wizardIsFirstRun.current = false;
       setWizardOpen(true);
       setWizardForceOpen(false);
       return;
@@ -205,6 +211,7 @@ export default function App(): React.ReactElement {
     // the wizard opens on the very next tick.
     if (!settings.tourCompleted && !tourClosedThisSession.current) return;
     if (tourOpen) return;
+    wizardIsFirstRun.current = true;
     setWizardOpen(true);
   }, [
     settings?.securitySetupCompleted,
@@ -328,7 +335,7 @@ export default function App(): React.ReactElement {
               setSecurityOverlayTab('rules');
               setRulesOpen(true);
             }}
-            className="inline-flex items-center justify-center hover:opacity-80 transition-opacity p-0.5 -m-0.5 flex-shrink-0 leading-none"
+            className="inline-flex items-center justify-center hover:opacity-80 transition-opacity transform-gpu p-0.5 -m-0.5 flex-shrink-0 leading-none"
             aria-label="Security"
           >
             <SecurityShield
@@ -402,6 +409,8 @@ export default function App(): React.ReactElement {
 
       {wizardOpen && (
         <SecuritySetupWizard
+          measureRef={overlayRef}
+          isFirstRun={wizardIsFirstRun.current}
           onClose={() => {
             wizardClosedThisSession.current = true;
             setWizardOpen(false);

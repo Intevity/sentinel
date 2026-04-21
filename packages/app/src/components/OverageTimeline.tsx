@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { AlertTriangle, CheckCircle, XCircle, PauseCircle, PlayCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle, XCircle, PauseCircle, PlayCircle, Trash2 } from 'lucide-react';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import type { OverageEvent } from '@claude-sentinel/shared';
 
@@ -122,13 +122,15 @@ export default function OverageTimeline({ overageVersion, viewAccountId }: Overa
         {events.length > 0 && (
           <button
             onClick={() => void handleClearClick()}
-            className={`text-[11px] font-medium transition-colors ${
+            className={`flex items-center gap-1 text-[11px] font-medium transition-colors active:scale-95 ${
               confirmingClear
-                ? 'text-ios-red'
-                : 'text-[#8E8E93] hover:text-ios-red'
+                ? 'text-white bg-ios-red px-2 py-0.5 rounded-full'
+                : 'text-ios-red hover:text-ios-red/70'
             }`}
+            title={confirmingClear ? 'Click again to clear' : 'Clear all overage events'}
           >
-            {confirmingClear ? 'Click again to clear' : 'Clear events…'}
+            <Trash2 size={12} strokeWidth={2.5} />
+            {confirmingClear ? 'Click again' : 'Clear'}
           </button>
         )}
       </div>
