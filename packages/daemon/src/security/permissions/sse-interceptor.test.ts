@@ -32,6 +32,7 @@ function rule(overrides: Partial<PermissionRule>): PermissionRule {
     enabled: overrides.enabled ?? true,
     priority: overrides.priority ?? 100,
     createdAt: overrides.createdAt ?? 0,
+    source: overrides.source ?? 'local',
   };
 }
 

@@ -41,7 +41,32 @@ export const DEFAULT_SETTINGS: Settings = {
   toolPermissionDefaultAction: 'allow',
   toolPermissionSkipInAutoMode: true,
   toolPermissionAutoModeActive: false,
+  // 4 MB chosen from request-size telemetry + scanner.bench.ts on an
+  // M-series Mac (Apple Silicon). Observed Claude Code request-body
+  // distribution: 100% under 2 MB across 1,500+ captured requests.
+  // Sync-scan cost by body size (mean / p99 ms) from the bench:
+  //   1 MB:  1.75 / 2.07
+  //   2 MB:  3.47 / 3.92
+  //   4 MB:  7.00 / 7.47   ← default; negligible vs. Claude RTT
+  //   8 MB: 14.12 / 15.67
+  //  16 MB: 28.31 / 31.53   ← slider max; still noise against RTT
+  // 4 MB gives 2× headroom over observed p100 and a worst-case latency
+  // adder low enough that most users won't notice sync-scan even on
+  // their biggest requests. Power users can push higher (or lower)
+  // from Settings → Security → Oversized request scanning.
+  securityOversizedThresholdMb: 4,
+  securityScanOversizedSync: false,
+  securityMuteScanDeferred: false,
+  securityMuteScanTruncated: false,
+  securityMuteScanSkipped: false,
+  lastScanBenchmark: null,
+  claudeCodeSyncEnabled: false,
   logLevel: 'info',
+  requestLoggingEnabled: false,
+  requestLogRetentionDays: 7,
+  requestLogMaxBodyKb: 256,
+  requestLogCaptureResponse: true,
+  requestLogRedactAuthHeaders: true,
   securitySetupCompleted: false,
   tourCompleted: false,
 };
@@ -195,11 +220,90 @@ function coerce(raw: unknown): Settings {
   if (typeof obj['toolPermissionAutoModeActive'] === 'boolean') {
     next.toolPermissionAutoModeActive = obj['toolPermissionAutoModeActive'];
   }
+  if (typeof obj['securityOversizedThresholdMb'] === 'number') {
+    // Clamp 1–16 MB. Values outside the range fall back to the
+    // existing setting rather than reverting to the default — avoids
+    // silently wiping a user's choice on a partial update payload.
+    const n = Math.floor(obj['securityOversizedThresholdMb']);
+    if (n >= 1 && n <= 16) next.securityOversizedThresholdMb = n;
+  }
+  if (typeof obj['securityScanOversizedSync'] === 'boolean') {
+    next.securityScanOversizedSync = obj['securityScanOversizedSync'];
+  }
+  if (typeof obj['securityMuteScanDeferred'] === 'boolean') {
+    next.securityMuteScanDeferred = obj['securityMuteScanDeferred'];
+  }
+  if (typeof obj['securityMuteScanTruncated'] === 'boolean') {
+    next.securityMuteScanTruncated = obj['securityMuteScanTruncated'];
+  }
+  if (typeof obj['securityMuteScanSkipped'] === 'boolean') {
+    next.securityMuteScanSkipped = obj['securityMuteScanSkipped'];
+  }
+  if (obj['lastScanBenchmark'] === null) {
+    next.lastScanBenchmark = null;
+  } else if (obj['lastScanBenchmark'] && typeof obj['lastScanBenchmark'] === 'object') {
+    // Shape-check the incoming benchmark. Reject anything with the
+    // wrong schema outright — the field is user-invisible, so silently
+    // ignoring a bad payload is safer than throwing.
+    const bench = obj['lastScanBenchmark'] as Record<string, unknown>;
+    const results = Array.isArray(bench['results']) ? bench['results'] : null;
+    const recommendedMb = typeof bench['recommendedMb'] === 'number' ? Math.floor(bench['recommendedMb']) : null;
+    const ranAt = typeof bench['ranAt'] === 'number' ? bench['ranAt'] : null;
+    const platform = typeof bench['platform'] === 'string' ? bench['platform'] : null;
+    if (
+      results !== null &&
+      recommendedMb !== null &&
+      recommendedMb >= 1 && recommendedMb <= 16 &&
+      ranAt !== null &&
+      platform !== null &&
+      results.every(
+        (r) =>
+          r && typeof r === 'object' &&
+          typeof (r as Record<string, unknown>)['sizeMb'] === 'number' &&
+          typeof (r as Record<string, unknown>)['meanMs'] === 'number' &&
+          typeof (r as Record<string, unknown>)['p99Ms'] === 'number',
+      )
+    ) {
+      next.lastScanBenchmark = {
+        ranAt,
+        platform,
+        recommendedMb,
+        results: results.map((r) => {
+          const row = r as Record<string, unknown>;
+          return {
+            sizeMb: Math.floor(row['sizeMb'] as number),
+            meanMs: row['meanMs'] as number,
+            p99Ms: row['p99Ms'] as number,
+          };
+        }),
+      };
+    }
+  }
+  if (typeof obj['claudeCodeSyncEnabled'] === 'boolean') {
+    next.claudeCodeSyncEnabled = obj['claudeCodeSyncEnabled'];
+  }
   if (
     typeof obj['logLevel'] === 'string' &&
     VALID_LOG_LEVELS.includes(obj['logLevel'] as LogLevel)
   ) {
     next.logLevel = obj['logLevel'] as LogLevel;
+  }
+  if (typeof obj['requestLoggingEnabled'] === 'boolean') {
+    next.requestLoggingEnabled = obj['requestLoggingEnabled'];
+  }
+  if (typeof obj['requestLogRetentionDays'] === 'number') {
+    const n = Math.floor(obj['requestLogRetentionDays']);
+    if (n >= 1 && n <= 90) next.requestLogRetentionDays = n;
+  }
+  if (typeof obj['requestLogMaxBodyKb'] === 'number') {
+    const n = Math.floor(obj['requestLogMaxBodyKb']);
+    if (n >= 1 && n <= 5000) next.requestLogMaxBodyKb = n;
+  }
+  if (typeof obj['requestLogCaptureResponse'] === 'boolean') {
+    next.requestLogCaptureResponse = obj['requestLogCaptureResponse'];
+  }
+  if (typeof obj['requestLogRedactAuthHeaders'] === 'boolean') {
+    next.requestLogRedactAuthHeaders = obj['requestLogRedactAuthHeaders'];
   }
   if (typeof obj['securitySetupCompleted'] === 'boolean') {
     next.securitySetupCompleted = obj['securitySetupCompleted'];

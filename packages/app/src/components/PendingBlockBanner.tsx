@@ -54,7 +54,7 @@ export default function PendingBlockBanner(): React.ReactElement | null {
           key={entry.pendingId}
           entry={entry}
           remaining={secondsRemaining(entry.pendingId)}
-          onApprove={() => void approve(entry.pendingId)}
+          onApprove={(opts) => void approve(entry.pendingId, opts)}
           onDeny={() => void deny(entry.pendingId)}
         />
       ))}
@@ -65,17 +65,32 @@ export default function PendingBlockBanner(): React.ReactElement | null {
 interface PendingRowProps {
   entry: PendingSecurityBlock;
   remaining: number;
-  onApprove: () => void | Promise<void>;
+  onApprove: (opts?: { addBypass?: boolean }) => void | Promise<void>;
   onDeny: () => void | Promise<void>;
 }
 
 function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): React.ReactElement {
   const [busy, setBusy] = useState<null | 'approve' | 'deny'>(null);
+  // Only the tool_use permission path has a hashable input; the
+  // scanner variant has its own implicit allowlist-on-approve, and
+  // `permissions_strip` doesn't see tool inputs (the tool
+  // advertisement is what's being blocked, not a specific call).
+  // Default off — explicit user opt-in.
+  const canBypass = entry.source === 'permissions_tool_use';
+  const [addBypass, setAddBypass] = useState(false);
   const Icon = SEVERITY_ICON[entry.severity];
 
-  const handle = (action: 'approve' | 'deny', fn: () => void | Promise<void>) => async (): Promise<void> => {
-    setBusy(action);
-    try { await fn(); } finally { setBusy(null); }
+  const handleDeny = async (): Promise<void> => {
+    setBusy('deny');
+    try { await onDeny(); } finally { setBusy(null); }
+  };
+  const handleApprove = async (): Promise<void> => {
+    setBusy('approve');
+    try {
+      await onApprove(canBypass && addBypass ? { addBypass: true } : undefined);
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
@@ -97,8 +112,9 @@ function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): R
             </span>
           </div>
           <p className="text-[11px] text-[#8E8E93] mt-0.5 leading-snug">
-            Approve to forward this request and allow this match in the future.
-            Deny to refuse it now. Approval expires automatically.
+            {canBypass
+              ? 'Approve to forward this call. Deny to refuse it. Approval expires automatically.'
+              : 'Approve to forward this request and allow this match in the future. Deny to refuse it now. Approval expires automatically.'}
           </p>
           {entry.matchMask && (
             <code className="inline-block mt-1.5 text-[10px] font-mono bg-black/5 dark:bg-white/10 px-1.5 py-0.5 rounded">
@@ -110,33 +126,49 @@ function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): R
             for users who want to get rid of the banner fast without
             hunting for the Deny button below. Reuses the deny path. */}
         <button
-          onClick={handle('deny', onDeny)}
+          onClick={handleDeny}
           disabled={busy !== null}
           className="flex-shrink-0 w-6 h-6 rounded-full text-[#8E8E93] hover:bg-black/10 dark:hover:bg-white/10 active:scale-90 transition-all disabled:opacity-40 flex items-center justify-center"
-          title="Dismiss — same effect as letting the timer run out"
+          title="Dismiss: same effect as letting the timer run out"
           aria-label="Dismiss"
         >
           <X size={12} strokeWidth={2.5} />
         </button>
       </div>
+      {canBypass && (
+        <label className="mt-2 flex items-center gap-1.5 text-[11px] text-black/75 dark:text-white/75 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={addBypass}
+            onChange={(e) => setAddBypass(e.target.checked)}
+            disabled={busy !== null}
+            className="accent-ios-blue"
+          />
+          <span>Always allow this exact input (skip banner next time)</span>
+        </label>
+      )}
       <div className="flex items-center justify-end gap-2 mt-3">
         <button
-          onClick={handle('deny', onDeny)}
+          onClick={handleDeny}
           disabled={busy !== null}
           className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-full text-ios-red hover:bg-ios-red/10 active:scale-95 transition-all disabled:opacity-40"
-          title="Deny — synthesize a 403 now"
+          title="Deny: synthesize a 403 now"
         >
           <X size={12} strokeWidth={2.5} />
           Deny
         </button>
         <button
-          onClick={handle('approve', onApprove)}
+          onClick={handleApprove}
           disabled={busy !== null}
           className="flex items-center gap-1 text-[12px] font-semibold px-3 py-1.5 rounded-full bg-ios-blue text-white hover:bg-ios-blue/90 active:scale-95 transition-all disabled:opacity-40"
-          title="Approve — forward upstream and always allow this match"
+          title={
+            canBypass && addBypass
+              ? 'Approve this call and add a bypass so future identical calls skip the banner'
+              : 'Approve: forward upstream'
+          }
         >
           <ShieldCheck size={13} strokeWidth={2.5} />
-          {busy === 'approve' ? 'Approving…' : 'Approve & allow'}
+          {busy === 'approve' ? 'Approving…' : canBypass ? 'Approve' : 'Approve & allow'}
         </button>
       </div>
     </div>

@@ -18,7 +18,7 @@ export const TOUR_STEPS: TourStep[] = [
     targetId: null,
     title: 'Welcome to Sentinel',
     body:
-      'A 30-second tour of the highlights — round-robin account pooling, live usage, security scanning, and threshold alerts.',
+      'A 30-second tour of the highlights: round-robin account pooling, live usage, security scanning, and threshold alerts.',
     placement: 'auto',
   },
   {
@@ -34,14 +34,14 @@ export const TOUR_STEPS: TourStep[] = [
     tab: 'accounts',
     title: 'Combine them with round-robin',
     body:
-      'Flip on round-robin and Sentinel rotates the OAuth token on every request so your accounts drain within ~1% of each other. Flip it off for classic one-at-a-time switching.',
+      'Flip on round-robin and Sentinel rotates the OAuth token on every request across your pool. Two strategies: Balance drains every account evenly so they all hit their 5-hour reset together; Earliest reset hard-targets the account whose window resets soonest so fresh quota is used first. Flip round-robin off for classic one-at-a-time switching.',
     placement: 'auto',
   },
   {
     targetId: 'tab-security',
     title: 'Security is built in',
     body:
-      'Sentinel scans outbound requests and model responses for secrets, prompt injection, and risky tool calls — and lets you gate Claude Code tools with allow/deny rules you control.',
+      'Sentinel scans outbound requests and model responses for secrets, prompt injection, and risky tool calls; it also lets you gate Claude Code tools with allow/deny rules you control.',
     placement: 'bottom',
   },
   {
@@ -55,7 +55,7 @@ export const TOUR_STEPS: TourStep[] = [
     targetId: 'tour-replay',
     title: 'Replay any time',
     body:
-      'Click this icon in the header to replay the tour whenever you want. You can dive into Settings → Security to fine-tune what Sentinel protects you from.',
+      'Click this icon in the header to replay the tour whenever you want. You can dive into Settings then Security to fine-tune what Sentinel protects you from.',
     placement: 'bottom',
   },
 ];

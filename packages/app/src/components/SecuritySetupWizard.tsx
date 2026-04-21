@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
-import { Shield, ShieldCheck, ShieldAlert, ShieldX, X, Check, ArrowLeft, AlertTriangle } from 'lucide-react';
+import { Shield, ShieldCheck, ShieldAlert, ShieldX, X, Check, ArrowLeft, AlertTriangle, Loader2, Gauge } from 'lucide-react';
 import { applyPreset, markSetupSkipped, PRESETS, type RiskProfile } from '../lib/securityPresets.js';
+import { useScanBenchmark } from '../hooks/useScanBenchmark.js';
+import { sendToSentinel } from '../lib/ipc.js';
+import type { SecurityBenchmarkResult } from '@claude-sentinel/shared';
 
 interface SecuritySetupWizardProps {
   /** Dismiss the wizard. Called after Apply succeeds or Skip/Close. */
@@ -19,7 +22,7 @@ const PROFILE_ICON_CLASS: Record<RiskProfile, string> = {
   high: 'text-ios-red',
 };
 
-type Step = 'select' | 'review';
+type Step = 'select' | 'benchmark' | 'review';
 
 export default function SecuritySetupWizard({ onClose }: SecuritySetupWizardProps): React.ReactElement {
   const [step, setStep] = useState<Step>('select');
@@ -30,6 +33,28 @@ export default function SecuritySetupWizard({ onClose }: SecuritySetupWizardProp
   // for now" button bypasses this prompt — that's the explicit escape
   // hatch for people who know what they're giving up.
   const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
+  // Fresh bench result captured in this wizard session. Kept locally
+  // (not read from Settings.lastScanBenchmark) so the "Use recommendation"
+  // button only activates on numbers we just measured — avoids silently
+  // reapplying an old result from a different machine.
+  const [benchResult, setBenchResult] = useState<SecurityBenchmarkResult | null>(null);
+  const scanBench = useScanBenchmark();
+
+  const useRecommendation = async (): Promise<void> => {
+    if (!benchResult) return;
+    // Patch the threshold before we leave the bench step so applyPreset's
+    // later settings write doesn't clobber it. applyPreset's presets
+    // don't touch securityOversizedThresholdMb, so this write survives.
+    try {
+      await sendToSentinel({
+        type: 'update_settings',
+        settings: { securityOversizedThresholdMb: benchResult.recommendedMb },
+      });
+    } catch {
+      /* non-fatal — user can retune from Settings later */
+    }
+    setStep('review');
+  };
 
   const apply = async (): Promise<void> => {
     setApplying(true);
@@ -158,12 +183,126 @@ export default function SecuritySetupWizard({ onClose }: SecuritySetupWizardProp
                 Skip for now
               </button>
               <button
-                onClick={() => setStep('review')}
+                onClick={() => setStep('benchmark')}
                 disabled={applying}
                 className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-ios-blue text-white hover:bg-ios-blue/90 active:scale-95 transition-all disabled:opacity-40"
               >
                 Continue
               </button>
+            </div>
+          </div>
+        )}
+
+        {step === 'benchmark' && (
+          <div className="px-4 py-3">
+            <div className="flex items-start gap-3 mb-3">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-[#F2F2F7] dark:bg-[#2A2A2A] flex items-center justify-center">
+                <Gauge size={18} className="text-ios-blue" />
+              </div>
+              <div>
+                <p className="text-[13px] font-semibold text-black dark:text-white">
+                  Tune for this system
+                </p>
+                <p className="text-[11px] text-[#8E8E93] leading-snug">
+                  Scan cost depends on your hardware. A quick benchmark will measure it
+                  and recommend a threshold — bodies under the threshold scan
+                  synchronously, larger ones are deferred off the hot path.
+                </p>
+              </div>
+            </div>
+
+            {!benchResult && !scanBench.running && !scanBench.error && (
+              <div className="rounded-xl bg-[#F2F2F7] dark:bg-[#2A2A2A] p-3 text-center">
+                <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
+                  Takes a few seconds. We'll measure scan cost at 1 / 2 / 4 / 8 / 16 MB
+                  and recommend the largest size that stays under 50 ms p99.
+                </p>
+                <button
+                  onClick={() => {
+                    void scanBench.run().then((r) => { if (r) setBenchResult(r); });
+                  }}
+                  className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-ios-blue text-white hover:bg-ios-blue/90 active:scale-95 transition-all"
+                >
+                  Run benchmark
+                </button>
+              </div>
+            )}
+
+            {scanBench.running && (
+              <div className="rounded-xl bg-[#F2F2F7] dark:bg-[#2A2A2A] p-4 flex items-center justify-center gap-2">
+                <Loader2 size={14} className="animate-spin text-ios-blue" strokeWidth={2.5} />
+                <span className="text-[11px] text-[#8E8E93]">Measuring scan cost…</span>
+              </div>
+            )}
+
+            {scanBench.error && !scanBench.running && (
+              <div className="rounded-lg bg-ios-red/10 px-3 py-2 text-[11px] text-ios-red mb-2">
+                {scanBench.error} — you can skip tuning and tweak the threshold later in Settings.
+              </div>
+            )}
+
+            {benchResult && !scanBench.running && (
+              <div className="rounded-xl bg-[#F2F2F7] dark:bg-[#2A2A2A] p-3 space-y-2">
+                <p className="text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider">
+                  Scan cost on this system
+                </p>
+                <div className="grid grid-cols-5 gap-1 text-[11px]">
+                  {benchResult.results.map((r) => (
+                    <div key={r.sizeMb} className="text-center">
+                      <div className={`font-semibold tabular-nums ${
+                        r.sizeMb === benchResult.recommendedMb ? 'text-ios-blue' : 'text-black dark:text-white'
+                      }`}>
+                        {r.sizeMb} MB
+                      </div>
+                      <div className="text-[10px] text-[#8E8E93] tabular-nums">{r.p99Ms.toFixed(1)}ms</div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] text-[#8E8E93] leading-snug">
+                  p99 scan cost per body size.{' '}
+                  <span className="font-semibold text-black dark:text-white">
+                    Recommended: {benchResult.recommendedMb} MB
+                  </span>{' '}
+                  (largest size under 50 ms).
+                </p>
+                <button
+                  onClick={() => {
+                    void scanBench.run().then((r) => { if (r) setBenchResult(r); });
+                  }}
+                  className="text-[10px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white"
+                >
+                  Re-run
+                </button>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-2 mt-4">
+              <button
+                onClick={() => setStep('select')}
+                disabled={applying || scanBench.running}
+                className="text-[11px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors disabled:opacity-40 inline-flex items-center gap-1"
+              >
+                <ArrowLeft size={11} strokeWidth={2.4} />
+                Back
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setStep('review')}
+                  disabled={applying || scanBench.running}
+                  className="text-[11px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors disabled:opacity-40"
+                >
+                  Skip
+                </button>
+                {benchResult && (
+                  <button
+                    onClick={() => void useRecommendation()}
+                    disabled={applying || scanBench.running}
+                    className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-ios-blue text-white hover:bg-ios-blue/90 active:scale-95 transition-all disabled:opacity-40"
+                  >
+                    Use {benchResult.recommendedMb} MB & continue
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -196,7 +335,7 @@ export default function SecuritySetupWizard({ onClose }: SecuritySetupWizardProp
                   label="Hold blocked requests"
                   value={selected.settings.securityBlockHoldEnabled
                     ? `Up to ${selected.settings.securityApproveHoldSec}s for approval`
-                    : 'No — block immediately'}
+                    : 'No, block immediately'}
                 />
                 <Row
                   label="Tool permissions"
@@ -226,7 +365,7 @@ export default function SecuritySetupWizard({ onClose }: SecuritySetupWizardProp
 
             <div className="flex items-center justify-between gap-2 mt-4">
               <button
-                onClick={() => setStep('select')}
+                onClick={() => setStep('benchmark')}
                 disabled={applying}
                 className="text-[11px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors disabled:opacity-40 inline-flex items-center gap-1"
               >

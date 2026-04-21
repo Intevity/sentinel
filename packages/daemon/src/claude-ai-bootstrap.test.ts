@@ -80,10 +80,12 @@ describe('fetchBootstrap', () => {
     const result = await fetchBootstrap('key');
     expect(result).toEqual({
       email: 'jeff@example.com',
+      accountUuid: null,
+      displayName: null,
       orgUuids: ['team-org', 'max-org'],
       orgs: [
-        { orgUuid: 'team-org', orgName: 'Intevity' },
-        { orgUuid: 'max-org', orgName: 'Jeff Max' },
+        { orgUuid: 'team-org', orgName: 'Intevity', ravenType: null },
+        { orgUuid: 'max-org', orgName: 'Jeff Max', ravenType: null },
       ],
     });
   });
@@ -101,15 +103,23 @@ describe('fetchBootstrap', () => {
     const result = await fetchBootstrap('key');
     expect(result).toEqual({
       email: 'jeff@example.com',
+      accountUuid: null,
+      displayName: null,
       orgUuids: ['legacy-org'],
-      orgs: [{ orgUuid: 'legacy-org', orgName: 'Legacy' }],
+      orgs: [{ orgUuid: 'legacy-org', orgName: 'Legacy', ravenType: null }],
     });
   });
 
   it('handles missing account and memberships fields', async () => {
     global.fetch = vi.fn().mockResolvedValue(makeResp({})) as unknown as typeof global.fetch;
     const result = await fetchBootstrap('key');
-    expect(result).toEqual({ email: null, orgUuids: [], orgs: [] });
+    expect(result).toEqual({
+      email: null,
+      accountUuid: null,
+      displayName: null,
+      orgUuids: [],
+      orgs: [],
+    });
   });
 
   it('sends both sessionKey and sessionKeyLC cookies', async () => {
@@ -184,8 +194,8 @@ describe('fetchBootstrap', () => {
 
     const result = await fetchBootstrap('k', 'team');
     expect(result?.orgs).toEqual([
-      { orgUuid: 'team', orgName: 'Intevity' },
-      { orgUuid: 'max',  orgName: 'Max' },
+      { orgUuid: 'team', orgName: 'Intevity', ravenType: null },
+      { orgUuid: 'max',  orgName: 'Max',      ravenType: null },
     ]);
   });
 

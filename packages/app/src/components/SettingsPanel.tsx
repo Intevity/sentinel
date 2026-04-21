@@ -12,7 +12,10 @@ import { ALERT_SOUNDS } from '@claude-sentinel/shared';
 import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel } from '../lib/ipc.js';
 import { useSettings } from '../hooks/useSettings.js';
-import { useSecurityAllowlist } from '../hooks/useSecurityAllowlist.js';
+import { useInlineConfirm } from '../hooks/useInlineConfirm.js';
+import { usePermissionBypasses } from '../hooks/usePermissionBypasses.js';
+import { useClaudeSyncStatus } from '../hooks/useClaudeSyncStatus.js';
+import { useScanBenchmark } from '../hooks/useScanBenchmark.js';
 import { useDaemon } from '../hooks/useDaemon.js';
 import { useClaudeAiLogin } from '../hooks/useClaudeAiLogin.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
@@ -21,7 +24,6 @@ import { useSiblingCandidates } from '../hooks/useSiblingCandidates.js';
 import { accountColor } from '../lib/accountColor.js';
 import AccountColorDot from './AccountColorDot.js';
 import OverlayPanel from './OverlayPanel.js';
-import PermissionsEditor from './PermissionsEditor.js';
 import { Section, ToggleRow, RadioRow } from './settings/primitives.js';
 
 /**
@@ -35,6 +37,8 @@ const ANCHOR_TO_TAB: Record<string, SettingsTabId> = {
   // Security tab anchors
   'security-enable-toggle': 'security',
   'security-enforcement-heading': 'security',
+  'tool-permissions-toggle': 'security',
+  'oversized-threshold-slider': 'security',
 };
 
 const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string }> = [
@@ -58,6 +62,16 @@ interface SettingsPanelProps {
    *  by the parent so the replay button in the Security tab can reopen
    *  the wizard without tripping over `securitySetupCompleted`. */
   onRunSetupWizard?: () => void;
+  /** Close the panel and open the Tool-permission-rules editor. Provided
+   *  by the parent so the rules editor renders at App level (outside the
+   *  Settings scroll container) — otherwise the editor positions itself
+   *  to the top of the scroll area and appears off-screen when the user
+   *  is scrolled down to the Security tab. */
+  onManageRules?: () => void;
+  /** Close the panel and open the security overlay on the Allowlist tab.
+   *  Symmetric with onManageRules — lets the Allowlist section act as a
+   *  deep-link rather than rendering its entries inline. */
+  onManageAllowlist?: () => void;
 }
 
 /**
@@ -65,7 +79,7 @@ interface SettingsPanelProps {
  * tray window. Reached by the cog icon in the header. Writes propagate to the
  * daemon via `update_settings` — no Save button, every change persists live.
  */
-export default function SettingsPanel({ onClose, measureRef, initialScrollTarget, onRunSetupWizard }: SettingsPanelProps): React.ReactElement {
+export default function SettingsPanel({ onClose, measureRef, initialScrollTarget, onRunSetupWizard, onManageRules, onManageAllowlist }: SettingsPanelProps): React.ReactElement {
   const { settings, loading, error, update } = useSettings();
   const { accounts } = useDaemon();
   const { refreshToken } = useAccounts();
@@ -138,6 +152,44 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
     void update({ telemetryRetentionDays: days }).catch(() => undefined);
   };
 
+  const setRequestLoggingEnabled = (enabled: boolean): void => {
+    void update({ requestLoggingEnabled: enabled }).catch(() => undefined);
+  };
+  const setRequestLogRetentionDays = (days: number): void => {
+    void update({ requestLogRetentionDays: days }).catch(() => undefined);
+  };
+  const setRequestLogMaxBodyKb = (kb: number): void => {
+    void update({ requestLogMaxBodyKb: kb }).catch(() => undefined);
+  };
+  const setRequestLogCaptureResponse = (v: boolean): void => {
+    void update({ requestLogCaptureResponse: v }).catch(() => undefined);
+  };
+  const setRequestLogRedactAuthHeaders = (v: boolean): void => {
+    void update({ requestLogRedactAuthHeaders: v }).catch(() => undefined);
+  };
+  const [requestLogClearConfirm, setRequestLogClearConfirm] = useState(false);
+  const clearRequestLogsConfirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (clearRequestLogsConfirmTimerRef.current) {
+      clearTimeout(clearRequestLogsConfirmTimerRef.current);
+    }
+  }, []);
+  const triggerClearRequestLogs = (): void => {
+    if (!requestLogClearConfirm) {
+      setRequestLogClearConfirm(true);
+      clearRequestLogsConfirmTimerRef.current = setTimeout(
+        () => setRequestLogClearConfirm(false),
+        4000,
+      );
+      return;
+    }
+    if (clearRequestLogsConfirmTimerRef.current) {
+      clearTimeout(clearRequestLogsConfirmTimerRef.current);
+    }
+    setRequestLogClearConfirm(false);
+    void sendToSentinel({ type: 'clear_request_logs' }).catch(() => undefined);
+  };
+
   const setSecurityEnabled = (enabled: boolean): void => {
     void update({ securityScanEnabled: enabled }).catch(() => undefined);
     // When turning ON, scroll so the newly-revealed enforcement + category
@@ -192,8 +244,24 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
   const setToolPermissionAutoModeActive = (v: boolean): void => {
     void update({ toolPermissionAutoModeActive: v }).catch(() => undefined);
   };
-
-  const [showRulesEditor, setShowRulesEditor] = useState(false);
+  const setClaudeCodeSyncEnabled = (v: boolean): void => {
+    void update({ claudeCodeSyncEnabled: v }).catch(() => undefined);
+  };
+  const setOversizedThresholdMb = (n: number): void => {
+    void update({ securityOversizedThresholdMb: n }).catch(() => undefined);
+  };
+  const setScanOversizedSync = (v: boolean): void => {
+    void update({ securityScanOversizedSync: v }).catch(() => undefined);
+  };
+  const setMuteScanDeferred = (v: boolean): void => {
+    void update({ securityMuteScanDeferred: v }).catch(() => undefined);
+  };
+  const setMuteScanTruncated = (v: boolean): void => {
+    void update({ securityMuteScanTruncated: v }).catch(() => undefined);
+  };
+  const setMuteScanSkipped = (v: boolean): void => {
+    void update({ securityMuteScanSkipped: v }).catch(() => undefined);
+  };
 
   const clearAllSecurityEvents = async (): Promise<void> => {
     await sendToSentinel({ type: 'clear_security_events' }).catch(() => undefined);
@@ -381,7 +449,7 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
               <Section title="Overage spend tracking">
                 <div className="px-3 pt-2.5 pb-1.5 space-y-1">
                   <p className="text-[11px] text-[#8E8E93] leading-snug">
-                    Overage controls need a live claude.ai connection — Anthropic's dollar-denominated spend numbers aren't in any OAuth API, only the web session. Connect once per account; the cookie renews automatically on each fetch.
+                    Overage controls need a live claude.ai connection; Anthropic's dollar-denominated spend numbers aren't in any OAuth API, only the web session. Connect once per account; the cookie renews automatically on each fetch.
                   </p>
                 </div>
                 {(() => {
@@ -556,6 +624,99 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
                   <span>1d</span>
                   <span>365d</span>
                 </div>
+              </div>
+            </Section>
+            )}
+
+            {activeTab === 'data' && (
+            <Section title="Request logging">
+              <ToggleRow
+                label="Capture API request/response bodies"
+                description="When on, every proxied Claude API call is recorded to ~/.claude-sentinel/request-logs.db and surfaced in the Logs tab as an expandable row. Captured bodies include prompts and model output, so this is off by default."
+                checked={settings.requestLoggingEnabled}
+                onChange={setRequestLoggingEnabled}
+              />
+              <div className={`px-3 py-2.5 ${settings.requestLoggingEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
+                <div className="flex items-center justify-between text-[13px] mb-0.5">
+                  <span className="font-medium text-black dark:text-white">Keep request logs for</span>
+                  <span className="font-semibold text-black dark:text-white tabular-nums">
+                    {settings.requestLogRetentionDays} {settings.requestLogRetentionDays === 1 ? 'day' : 'days'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
+                  Rows older than this are purged at daemon startup and once every 24 hours. Bodies are large, so a shorter default than telemetry retention keeps disk usage bounded.
+                </p>
+                <input
+                  type="range"
+                  min={1}
+                  max={90}
+                  step={1}
+                  value={settings.requestLogRetentionDays}
+                  onChange={(e) => setRequestLogRetentionDays(Number(e.target.value))}
+                  className="w-full accent-ios-blue"
+                />
+                <div className="flex justify-between text-[10px] text-[#8E8E93] mt-0.5 tabular-nums">
+                  <span>1d</span>
+                  <span>90d</span>
+                </div>
+              </div>
+              <div className={`px-3 py-2.5 ${settings.requestLoggingEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
+                <div className="flex items-center justify-between text-[13px] mb-0.5">
+                  <span className="font-medium text-black dark:text-white">Max body size</span>
+                  <span className="font-semibold text-black dark:text-white tabular-nums">
+                    {settings.requestLogMaxBodyKb} KB
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
+                  Applied independently to request and response bodies. Larger bodies are truncated in storage; the proxy still forwards the full stream to Claude Code.
+                </p>
+                <input
+                  type="range"
+                  min={1}
+                  max={5000}
+                  step={1}
+                  value={settings.requestLogMaxBodyKb}
+                  onChange={(e) => setRequestLogMaxBodyKb(Number(e.target.value))}
+                  className="w-full accent-ios-blue"
+                />
+                <div className="flex justify-between text-[10px] text-[#8E8E93] mt-0.5 tabular-nums">
+                  <span>1 KB</span>
+                  <span>5 MB</span>
+                </div>
+              </div>
+              <div className={settings.requestLoggingEnabled ? '' : 'opacity-50 pointer-events-none'}>
+                <ToggleRow
+                  label="Capture response bodies"
+                  description="Turn off to store only the request side. Useful when debugging your own prompts without persisting large model outputs."
+                  checked={settings.requestLogCaptureResponse}
+                  onChange={setRequestLogCaptureResponse}
+                />
+                <ToggleRow
+                  label="Redact Authorization header"
+                  description="When on, the OAuth bearer token is replaced with [REDACTED] before storage. Static API keys and cookies are always redacted regardless of this setting."
+                  checked={settings.requestLogRedactAuthHeaders}
+                  onChange={setRequestLogRedactAuthHeaders}
+                />
+              </div>
+              <div className="px-3 py-2.5 flex items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-medium text-black dark:text-white">Clear all request logs</p>
+                  <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+                    Permanently deletes every captured request/response pair. Does not change the toggle above.
+                  </p>
+                </div>
+                <button
+                  onClick={triggerClearRequestLogs}
+                  className={`text-[11px] font-semibold transition-opacity active:scale-95 px-2.5 py-1 rounded-full ${
+                    requestLogClearConfirm
+                      ? 'bg-ios-red text-white'
+                      : 'bg-ios-red/10 text-ios-red hover:bg-ios-red/20'
+                  }`}
+                  title={requestLogClearConfirm ? 'Click again to confirm' : 'Clear all request logs'}
+                >
+                  <Trash2 size={11} strokeWidth={2.5} className="inline mr-1" />
+                  {requestLogClearConfirm ? 'Click again' : 'Clear'}
+                </button>
               </div>
             </Section>
             )}
@@ -764,27 +925,102 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
                     />
                   </div>
                   <ClearAllSecurityEventsRow onConfirm={clearAllSecurityEvents} />
-                  <div className="px-3 pt-2.5 pb-1">
-                    <p className="text-[11px] text-[#8E8E93] mb-1">Allowlist</p>
-                    <p className="text-[10px] text-[#8E8E93] leading-snug mb-2">
-                      Matches you&apos;ve chosen to always allow. Entries here are
-                      silently suppressed across every future scan.
-                    </p>
-                  </div>
-                  <AllowlistManager />
                 </>
               )}
             </Section>
             )}
 
+            {activeTab === 'security' && settings.securityScanEnabled && (
+            <Section title="Allowlist">
+              <div className="px-3 pt-2.5 pb-1">
+                <p className="text-[10px] text-[#8E8E93] leading-snug mb-2">
+                  Matches you&apos;ve chosen to always allow. Added by clicking
+                  <span className="font-semibold"> Always allow</span> on a finding
+                  in the Security tab.
+                </p>
+              </div>
+              <button
+                onClick={() => onManageAllowlist?.()}
+                className="w-full text-left px-3 py-2.5 text-[13px] font-medium text-ios-blue hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors"
+              >
+                Manage allowlist…
+              </button>
+            </Section>
+            )}
+
+            {activeTab === 'security' && settings.securityScanEnabled && (
+            <Section title="Oversized request scanning">
+              <TuneForSystemSubsection bench={settings.lastScanBenchmark} />
+              <div id="oversized-threshold-slider" className="px-3 pt-2.5 pb-1">
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-[12px] font-medium text-black dark:text-white">
+                    Deferred-scan threshold
+                  </p>
+                  <span className="text-[11px] font-semibold tabular-nums text-ios-blue">
+                    {settings.securityOversizedThresholdMb} MB
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={16}
+                  step={1}
+                  value={settings.securityOversizedThresholdMb}
+                  onChange={(e) => setOversizedThresholdMb(Number(e.target.value))}
+                  className="w-full accent-ios-blue"
+                  aria-label="Deferred-scan threshold in megabytes"
+                />
+                <p className="text-[10px] text-[#8E8E93] leading-snug mt-1.5">
+                  Requests larger than this are scanned asynchronously off the
+                  proxy&apos;s hot path; detection still runs, but block-on-match
+                  doesn&apos;t. Raise it if you get noisy
+                  <code className="text-[9.5px] font-mono bg-[#8E8E93]/10 px-1 mx-0.5 rounded">
+                    Scan Deferred
+                  </code>
+                  alerts on normal-sized requests; lower it to push smaller
+                  payloads through the full synchronous gate.
+                </p>
+              </div>
+              <ToggleRow
+                label="Scan large requests synchronously"
+                description="Run the full block-decision gate on bodies above the threshold. Adds latency to large requests but catches block-mode violations inline. When off (default), oversized bodies are scanned async and you see a Scan Deferred telemetry event."
+                checked={settings.securityScanOversizedSync}
+                onChange={setScanOversizedSync}
+              />
+              <div className="px-3 pt-2.5 pb-1">
+                <p className="text-[11px] text-[#8E8E93] mb-1">Mute telemetry events</p>
+              </div>
+              <ToggleRow
+                label="Scan Deferred"
+                description="Hide informational alerts fired when a request exceeds the threshold above. Muting doesn't change scanning behaviour; it only suppresses the telemetry notice."
+                checked={settings.securityMuteScanDeferred}
+                onChange={setMuteScanDeferred}
+              />
+              <ToggleRow
+                label="Scan Truncated"
+                description="Hide alerts fired when an SSE response tap fills its 2 MB buffer. Detection still runs on the portion that fit."
+                checked={settings.securityMuteScanTruncated}
+                onChange={setMuteScanTruncated}
+              />
+              <ToggleRow
+                label="Scan Skipped"
+                description="Hide alerts fired when a body can't be parsed (e.g. non-UTF-8 encoding). Nothing to scan in that case; the alert is purely informational."
+                checked={settings.securityMuteScanSkipped}
+                onChange={setMuteScanSkipped}
+              />
+            </Section>
+            )}
+
             {activeTab === 'security' && (
             <Section title="Tool permissions">
-              <ToggleRow
-                label="Enforce tool permissions"
-                description="Block denied tool calls at the proxy layer. Works independently of Claude Code's own permission settings — a second enforcement layer you control."
-                checked={settings.toolPermissionsEnabled}
-                onChange={setToolPermissionsEnabled}
-              />
+              <div id="tool-permissions-toggle">
+                <ToggleRow
+                  label="Enforce tool permissions"
+                  description="Block denied tool calls at the proxy layer. Works independently of Claude Code's own permission settings; a second enforcement layer you control."
+                  checked={settings.toolPermissionsEnabled}
+                  onChange={setToolPermissionsEnabled}
+                />
+              </div>
               {settings.toolPermissionsEnabled && (
                 <>
                   <div className="px-3 pt-2.5 pb-1">
@@ -803,7 +1039,7 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
                     onChange={() => setToolPermissionDefaultAction('deny')}
                   />
                   <button
-                    onClick={() => setShowRulesEditor(true)}
+                    onClick={() => onManageRules?.()}
                     className="w-full text-left px-3 py-2.5 text-[13px] font-medium text-ios-blue hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors"
                   >
                     Manage rules…
@@ -819,7 +1055,7 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
                   />
                   <ToggleRow
                     label="Force auto-mode skip (manual override)"
-                    description="Treat every request as auto mode regardless of its headers. Use this only if automatic detection isn't picking up your session — normally you can leave it off."
+                    description="Treat every request as auto mode regardless of its headers. Use this only if automatic detection isn't picking up your session; normally you can leave it off."
                     checked={settings.toolPermissionAutoModeActive}
                     onChange={setToolPermissionAutoModeActive}
                   />
@@ -827,39 +1063,35 @@ export default function SettingsPanel({ onClose, measureRef, initialScrollTarget
               )}
             </Section>
             )}
+
+            {activeTab === 'security' && settings.toolPermissionsEnabled && (
+            <Section title="Permission bypasses">
+              <div className="px-3 pt-2 pb-1.5 text-[11px] text-[#8E8E93] leading-snug">
+                Per-rule allow-through, recorded when you tick{' '}
+                <span className="font-semibold">Always allow this exact input</span> on a
+                tool-use approval banner. Remove an entry to re-trigger the banner
+                next time that exact tool call appears.
+              </div>
+              <BypassesManager />
+            </Section>
+            )}
+
+            {activeTab === 'security' && (
+            <Section title="Claude Code sync">
+              <ClaudeCodeSyncSubsection
+                enabled={settings.claudeCodeSyncEnabled}
+                onToggle={setClaudeCodeSyncEnabled}
+              />
+            </Section>
+            )}
           </>
         )}
       </div>
-      {showRulesEditor && <PermissionsEditor onClose={() => setShowRulesEditor(false)} />}
     </OverlayPanel>
   );
 }
 
 // ─── Security-specific subcomponents ──────────────────────────────────────
-
-/** Two-click confirm for destructive buttons — Tauri webview doesn't
- *  reliably surface native confirm() dialogs, so we use an inline
- *  state instead. First click flips to a "Confirm?" button that reverts
- *  after 4s; second click within that window fires the action. */
-function useInlineConfirm(action: () => void | Promise<void>, timeoutMs = 4000): {
-  pending: boolean;
-  trigger: () => void;
-} {
-  const [pending, setPending] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
-  const trigger = (): void => {
-    if (!pending) {
-      setPending(true);
-      timerRef.current = setTimeout(() => setPending(false), timeoutMs);
-      return;
-    }
-    if (timerRef.current) clearTimeout(timerRef.current);
-    setPending(false);
-    void action();
-  };
-  return { pending, trigger };
-}
 
 function ClearAllSecurityEventsRow({ onConfirm }: { onConfirm: () => Promise<void> }): React.ReactElement {
   const { pending, trigger } = useInlineConfirm(onConfirm);
@@ -877,14 +1109,287 @@ function ClearAllSecurityEventsRow({ onConfirm }: { onConfirm: () => Promise<voi
   );
 }
 
-/** Lists every entry on the user's allowlist, with a per-row Remove button.
- *  Empty state when the list is empty so the section reads as intentional. */
-function AllowlistManager(): React.ReactElement {
-  const { entries, loading, error, remove } = useSecurityAllowlist();
+function ClaudeCodeSyncSubsection({
+  enabled,
+  onToggle,
+}: {
+  enabled: boolean;
+  onToggle: (v: boolean) => void;
+}): React.ReactElement {
+  const { status, pull, push } = useClaudeSyncStatus();
+  // First-enable flow: when the user toggles sync on for the very
+  // first time, show a three-way choice modal before the engine
+  // starts so the initial reconciliation doesn't silently clobber
+  // either side. Tracked via a local flag — the daemon's start()
+  // defaults to 'merge' if we never send a different mode, so
+  // dismissing the modal without picking keeps the safe default.
+  const [firstEnableOpen, setFirstEnableOpen] = useState(false);
+  // Status timestamps only change when the daemon broadcasts — which
+  // is on-transition, not periodically. Without a local tick, the
+  // "Last imported" / "Last exported" labels would freeze at their
+  // render-time value until the next sync event, making a fresh
+  // "1s ago" look indistinguishable from a minute-old state. Ticking
+  // once per second keeps the seconds column live; the label stops
+  // mattering past ~1 minute, so we don't need anything fancier.
+  const [, forceRender] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    const t = window.setInterval(() => forceRender((n) => n + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [enabled]);
+  const handleToggle = (v: boolean): void => {
+    if (v && !enabled) {
+      // Defer the actual settings write until the user picks a mode —
+      // the modal's buttons call onToggle(true) themselves after a
+      // priming pullNow() with the chosen mode.
+      setFirstEnableOpen(true);
+      return;
+    }
+    onToggle(v);
+  };
+  const ago = (ts: number | null): string => {
+    if (ts === null) return 'never';
+    const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    if (sec < 60) return `${sec}s ago`;
+    if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+    if (sec < 86400) return `${Math.round(sec / 3600)}h ago`;
+    return `${Math.round(sec / 86400)}d ago`;
+  };
+  return (
+    <>
+      <ToggleRow
+        label="Sync with ~/.claude/settings.json"
+        description="Mirror Sentinel's permission rules into Claude Code's own permissions.allow / deny / ask arrays. Changes on either side propagate within about a second."
+        checked={enabled}
+        onChange={handleToggle}
+      />
+      {enabled && (
+        <>
+          <div className="px-3 pt-2 pb-1 text-[11px] text-[#8E8E93] leading-snug">
+            Last imported{' '}
+            <span className="font-semibold text-black dark:text-white">
+              {ago(status?.lastPulledAt ?? null)}
+            </span>
+            {' · '}Last exported{' '}
+            <span className="font-semibold text-black dark:text-white">
+              {ago(status?.lastPushedAt ?? null)}
+            </span>
+          </div>
+          {status?.lastError && (
+            <div className="px-3 pb-2 text-[11px] text-ios-red">
+              Error: {status.lastError}
+            </div>
+          )}
+          <div className="flex items-center gap-2 px-3 pb-3 pt-1">
+            <button
+              onClick={() => void pull()}
+              className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-ios-blue/10 text-ios-blue hover:bg-ios-blue/20 active:scale-95 transition-all"
+              title="Read ~/.claude/settings.json and reconcile Sentinel's rules"
+            >
+              Import now
+            </button>
+            <button
+              onClick={() => void push()}
+              className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-ios-blue/10 text-ios-blue hover:bg-ios-blue/20 active:scale-95 transition-all"
+              title="Write Sentinel's rules out to ~/.claude/settings.json now"
+            >
+              Export now
+            </button>
+          </div>
+        </>
+      )}
+      {firstEnableOpen && (
+        <FirstEnableSyncModal
+          onClose={() => setFirstEnableOpen(false)}
+          onConfirm={(mode) => {
+            // Turn the setting on first so the engine starts with its
+            // watcher attached; then fire the initial reconciliation
+            // in the chosen mode. Engine's start() will itself call
+            // pullNow('merge') — our explicit pullNow overrides that
+            // for this first cycle.
+            onToggle(true);
+            setFirstEnableOpen(false);
+            void pull(mode);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function FirstEnableSyncModal({
+  onClose,
+  onConfirm,
+}: {
+  onClose: () => void;
+  onConfirm: (mode: 'merge' | 'import' | 'export') => void;
+}): React.ReactElement {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="glass-card max-w-[380px] w-[88vw] p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="text-[14px] font-semibold text-black dark:text-white mb-1">
+          Initial sync direction
+        </p>
+        <p className="text-[12px] text-[#8E8E93] leading-snug mb-4">
+          Sync will run in both directions continuously. For the first pass
+          only, choose whose rules win when both sides have the same entry.
+        </p>
+        <div className="space-y-2">
+          <button
+            onClick={() => onConfirm('merge')}
+            className="w-full text-left px-3 py-2 rounded-xl border border-black/10 dark:border-white/10 hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors"
+          >
+            <div className="text-[12px] font-semibold text-black dark:text-white">
+              Merge both (recommended)
+            </div>
+            <div className="text-[11px] text-[#8E8E93] leading-snug">
+              Keep every rule from both sides. Identical duplicates stay owned
+              by whichever side authored them.
+            </div>
+          </button>
+          <button
+            onClick={() => onConfirm('import')}
+            className="w-full text-left px-3 py-2 rounded-xl border border-black/10 dark:border-white/10 hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors"
+          >
+            <div className="text-[12px] font-semibold text-black dark:text-white">
+              Import from Claude Code
+            </div>
+            <div className="text-[11px] text-[#8E8E93] leading-snug">
+              Claude Code's file wins. Identical Sentinel rules get re-marked
+              as "from Claude Code" and follow that file's lifecycle.
+            </div>
+          </button>
+          <button
+            onClick={() => onConfirm('export')}
+            className="w-full text-left px-3 py-2 rounded-xl border border-black/10 dark:border-white/10 hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors"
+          >
+            <div className="text-[12px] font-semibold text-black dark:text-white">
+              Export from Sentinel
+            </div>
+            <div className="text-[11px] text-[#8E8E93] leading-snug">
+              Sentinel's rules win. Rules only in Claude Code's file are
+              dropped on this first pass (and the file is overwritten).
+            </div>
+          </button>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button
+            onClick={onClose}
+            className="text-[12px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white px-2 py-1 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Subsection inside Settings → Security → Oversized request scanning.
+ *  Exposes the user-initiated benchmark: a "Tune for this system"
+ *  button + inline results table. Separate component because it owns
+ *  local state (the most recent fresh result) distinct from the
+ *  persisted `lastScanBenchmark` on Settings. Both merge in the UI:
+ *  a just-run bench shows its results inline; once it's persisted
+ *  (via the settings_changed broadcast), those results stay visible
+ *  with a "last tuned: X ago" timestamp. */
+function TuneForSystemSubsection({
+  bench,
+}: {
+  bench: import('@claude-sentinel/shared').SecurityBenchmarkResult | null;
+}): React.ReactElement {
+  const { settings, update } = useSettings();
+  const { run, running, error } = useScanBenchmark();
+  const currentThreshold = settings?.securityOversizedThresholdMb ?? 4;
+  const applied = bench?.recommendedMb === currentThreshold;
+  const applyRecommendation = (): void => {
+    if (!bench) return;
+    void update({ securityOversizedThresholdMb: bench.recommendedMb }).catch(() => undefined);
+  };
+  return (
+    <div className="px-3 pt-2.5 pb-1">
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="flex-1 min-w-0">
+          <p className="text-[12px] font-medium text-black dark:text-white">
+            Tune for this system
+          </p>
+          <p className="text-[10px] text-[#8E8E93] leading-snug mt-0.5">
+            {bench
+              ? `Last tuned ${formatAgo(bench.ranAt)} on ${bench.platform}: recommended ${bench.recommendedMb} MB.`
+              : 'Not tuned yet. Run a quick benchmark to pick a threshold that suits this machine.'}
+          </p>
+        </div>
+        <button
+          onClick={() => void run()}
+          disabled={running}
+          className="flex-shrink-0 flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full bg-ios-blue/10 text-ios-blue hover:bg-ios-blue/20 active:scale-95 transition-all disabled:opacity-50"
+          title={running ? 'Running benchmark…' : 'Measure scan cost on this machine'}
+        >
+          {running && <Loader2 size={11} className="animate-spin" strokeWidth={2.5} />}
+          {running ? 'Benchmarking…' : bench ? 'Re-run' : 'Benchmark'}
+        </button>
+      </div>
+      {error && (
+        <p className="text-[10px] text-ios-red leading-snug mb-2">Error: {error}</p>
+      )}
+      {bench && (
+        <div className="rounded-lg bg-black/[0.03] dark:bg-white/[0.04] px-2.5 py-2 mb-1">
+          <div className="grid grid-cols-5 gap-1 text-[10px] mb-1">
+            {bench.results.map((r) => (
+              <div key={r.sizeMb} className="text-center">
+                <div className={`font-semibold tabular-nums ${
+                  r.sizeMb === bench.recommendedMb ? 'text-ios-blue' : 'text-black dark:text-white'
+                }`}>
+                  {r.sizeMb} MB
+                </div>
+                <div className="text-[#8E8E93] tabular-nums">{r.p99Ms.toFixed(1)}ms</div>
+              </div>
+            ))}
+          </div>
+          <p className="text-[10px] text-[#8E8E93] leading-snug">
+            p99 scan cost per body size. Recommendation picks the largest size under 50 ms.
+          </p>
+          {!applied && (
+            <button
+              onClick={applyRecommendation}
+              className="mt-1.5 text-[11px] font-semibold text-ios-blue hover:opacity-80 active:scale-95"
+            >
+              Apply recommendation → {bench.recommendedMb} MB
+            </button>
+          )}
+          {applied && (
+            <p className="mt-1.5 text-[10px] text-ios-green">
+              ✓ Recommendation already applied
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Short "Xs / Xm / Xh / Xd ago" formatter for timestamps. Simpler
+ *  than the sync-subsection equivalent because we don't need live
+ *  ticking — the Settings panel remounts on open and that's when
+ *  users look at this label. */
+function formatAgo(ts: number): string {
+  const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.round(sec / 3600)}h ago`;
+  return `${Math.round(sec / 86400)}d ago`;
+}
+
+function BypassesManager(): React.ReactElement {
+  const { entries, loading, error, remove } = usePermissionBypasses();
   if (loading) {
-    return (
-      <div className="px-3 py-3 text-[11px] text-[#8E8E93]">Loading…</div>
-    );
+    return <div className="px-3 py-3 text-[11px] text-[#8E8E93]">Loading…</div>;
   }
   if (error) {
     return <div className="px-3 py-3 text-[11px] text-ios-red">{error}</div>;
@@ -892,25 +1397,25 @@ function AllowlistManager(): React.ReactElement {
   if (entries.length === 0) {
     return (
       <div className="px-3 py-3 text-[11px] text-[#8E8E93]">
-        No entries yet. Click <span className="font-semibold">Always allow</span> on a Security-tab
-        event to add one.
+        No bypasses yet. Tick <span className="font-semibold">Always allow this exact input</span>
+        {' '}on a pending tool-use banner to add one.
       </div>
     );
   }
   return (
     <div className="divide-y divide-black/5 dark:divide-white/5">
       {entries.map((entry) => (
-        <AllowlistRow key={entry.id} entry={entry} onRemove={() => remove(entry.id)} />
+        <BypassesRow key={entry.id} entry={entry} onRemove={() => remove(entry.id)} />
       ))}
     </div>
   );
 }
 
-function AllowlistRow({
+function BypassesRow({
   entry,
   onRemove,
 }: {
-  entry: import('@claude-sentinel/shared').SecurityAllowlistEntry;
+  entry: import('@claude-sentinel/shared').PermissionBypassEntry;
   onRemove: () => Promise<void>;
 }): React.ReactElement {
   const { pending, trigger } = useInlineConfirm(onRemove);
@@ -921,14 +1426,12 @@ function AllowlistRow({
     <div className="flex items-start gap-2 px-3 py-2">
       <div className="flex-1 min-w-0">
         <p className="text-[12px] font-semibold text-black dark:text-white truncate">
-          {entry.title ?? entry.detectorId}
+          {entry.toolName}
         </p>
         <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-          {entry.matchMask && (
-            <code className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded truncate">
-              {entry.matchMask}
-            </code>
-          )}
+          <code className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded truncate max-w-[260px]">
+            {entry.mask}
+          </code>
           <span className="text-[10px] text-[#8E8E93]">added {when}</span>
         </div>
         {entry.note && (
@@ -942,7 +1445,7 @@ function AllowlistRow({
             ? 'bg-ios-red text-white'
             : 'bg-ios-red/10 text-ios-red hover:bg-ios-red/20'
         }`}
-        title={pending ? 'Click again to remove' : 'Remove from allowlist'}
+        title={pending ? 'Click again to remove' : 'Remove bypass'}
       >
         <Trash2 size={10} strokeWidth={2.5} />
         {pending ? 'Confirm?' : 'Remove'}
@@ -1117,7 +1620,7 @@ function ClaudeAiConnectionRow({
         {(state === 'disconnected' || state === 'expired') && (
           <div className="flex flex-col items-end gap-1 max-w-[260px]">
             <p className="text-[10px] text-[#8E8E93]/80 leading-snug text-right">
-              Use email, magic-link, or Apple login inside the window. "Continue with Google" doesn't work in embedded webviews — Google blocks them.
+              Use email, magic-link, or Apple login inside the window. "Continue with Google" doesn't work in embedded webviews; Google blocks them.
             </p>
             <button
               type="button"
@@ -1325,7 +1828,7 @@ function PoolMemberPreview({
                   ? 'bg-[#8E8E93]/10 text-[#8E8E93] line-through opacity-60'
                   : 'bg-black/[0.04] dark:bg-white/[0.05] text-black dark:text-white'
               }`}
-              title={excluded ? `${a.email} — excluded from pool` : a.email}
+              title={excluded ? `${a.email}: excluded from pool` : a.email}
             >
               <AccountColorDot color={accountColor(a)} size="xs" />
               <span className="max-w-[140px] truncate">{a.displayName || a.email}</span>

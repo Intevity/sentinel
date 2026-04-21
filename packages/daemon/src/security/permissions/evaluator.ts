@@ -13,6 +13,7 @@
  */
 
 import type { PermissionDecision, PermissionRule } from '@claude-sentinel/shared';
+import { createHash } from 'crypto';
 import {
   matchBash,
   matchPath,
@@ -47,7 +48,14 @@ export interface CompiledRuleSet {
 }
 
 /** Build a compiled rule set from raw rows. Stable sort by
- *  (priority ASC, createdAt ASC). Disabled rules are dropped. */
+ *  (priority ASC, createdAt ASC). Disabled rules are dropped.
+ *
+ *  'ask' rules are placed in the `denies` tier — their external
+ *  behaviour (block + prompt) is a superset of a plain 'deny'. The
+ *  evaluator preserves the rule's original `decision` on the result
+ *  so callers can distinguish: the SSE interceptor promotes 'ask'
+ *  matches to the pending flow even when the global hold setting
+ *  is off, matching Claude Code's own `permissions.ask` semantics. */
 export function compileRules(rules: PermissionRule[]): CompiledRuleSet {
   const sorted = rules
     .filter((r) => r.enabled)
@@ -56,7 +64,7 @@ export function compileRules(rules: PermissionRule[]): CompiledRuleSet {
       (a, b) => a.priority - b.priority || a.createdAt - b.createdAt,
     );
   return {
-    denies: sorted.filter((r) => r.decision === 'deny'),
+    denies: sorted.filter((r) => r.decision === 'deny' || r.decision === 'ask'),
     allows: sorted.filter((r) => r.decision === 'allow'),
   };
 }
@@ -103,12 +111,58 @@ function pickBashCommand(input: unknown): string {
 }
 
 /**
+ * Canonical SHA-256 of a tool-call's input. Keys are sorted recursively
+ * so whitespace / ordering differences don't produce divergent hashes
+ * for semantically-identical inputs. Used as the bypass lookup key
+ * (together with `rule.id`) and stored on the bypass row.
+ *
+ * Exported so the enforcer can compute the same hash at insertion
+ * time and the evaluator can compute it at check time without
+ * duplicating the canonicalisation logic.
+ */
+export function hashCanonicalToolInput(toolName: string, toolInput: unknown): string {
+  // Prefix with toolName so a bypass for `Bash("rm -rf *")` can't
+  // accidentally collide with `Write` input that happens to stringify
+  // to the same bytes after canonicalisation.
+  const canonical = `${toolName}|${canonicalStringify(toolInput)}`;
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+function canonicalStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalStringify).join(',')}]`;
+  }
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  const parts = keys.map((k) => {
+    const v = (value as Record<string, unknown>)[k];
+    return `${JSON.stringify(k)}:${canonicalStringify(v)}`;
+  });
+  return `{${parts.join(',')}}`;
+}
+
+/** Optional callbacks the evaluator consults when set. Kept separate
+ *  from `EvaluatorSettingsView` because settings are pure data from
+ *  the Settings object; these are live side-effect hooks owned by
+ *  the enforcer. Both are optional so call sites that don't care
+ *  about the bypass pathway (unit tests, one-off evaluations) can
+ *  pass undefined without adding a stub. */
+export interface EvaluatorHooks {
+  /** Synchronous check against the permission_bypass table. When it
+   *  returns true for a matched deny rule, the evaluator flips the
+   *  decision to 'allow' with `matchedRule` still set so the caller
+   *  can log the bypass separately if desired. */
+  isBypassed?: (ruleId: string, inputHash: string) => boolean;
+}
+
+/**
  * Evaluate a tool call. Returns allow/deny decision plus the matched rule (if any).
  *
  * Short-circuits:
  *   1. feature disabled → allow (the caller doesn't even install the proxy hook)
  *   2. auto-mode skip toggled on AND auto-mode active → allow
- *   3. deny tier → first matching deny rule wins
+ *   3. deny tier → first matching deny rule wins, BUT if an opt-in bypass
+ *      matches the (rule, input) pair, the decision flips to 'allow'
  *   4. allow tier → first matching allow rule wins
  *   5. fallback → settings.toolPermissionDefaultAction
  */
@@ -117,6 +171,7 @@ export function evaluateToolCall(
   toolInput: unknown,
   compiled: CompiledRuleSet,
   settings: EvaluatorSettingsView,
+  hooks?: EvaluatorHooks,
 ): EvaluationResult {
   if (!settings.toolPermissionsEnabled) {
     return { decision: 'allow', matchedRule: null, reason: 'tool permissions disabled' };
@@ -126,6 +181,20 @@ export function evaluateToolCall(
   }
   for (const rule of compiled.denies) {
     if (ruleMatches(rule, toolName, toolInput)) {
+      // Per-rule input bypass short-circuit. Computed lazily — a user
+      // without any bypass rows pays zero hash cost on every deny
+      // match. `hooks?.isBypassed` is the gate; only hash when it's
+      // present.
+      if (hooks?.isBypassed) {
+        const inputHash = hashCanonicalToolInput(toolName, toolInput);
+        if (hooks.isBypassed(rule.id, inputHash)) {
+          return {
+            decision: 'allow',
+            matchedRule: rule,
+            reason: `bypassed by per-input allowlist for ${rule.raw}`,
+          };
+        }
+      }
       return { decision: 'deny', matchedRule: rule, reason: `denied by ${rule.raw}` };
     }
   }

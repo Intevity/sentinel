@@ -27,6 +27,7 @@ import {
   compileRules,
   evaluateToolCall,
   type CompiledRuleSet,
+  type EvaluatorHooks,
   type EvaluatorSettingsView,
 } from './evaluator.js';
 
@@ -94,6 +95,26 @@ export type OnBlockedHook = (args: {
   accountId: string;
 }) => void;
 
+/** Async decision gate. When provided, the interceptor calls this after
+ *  a tool_use block finishes assembling and its rule evaluator returns
+ *  deny — *before* substituting the synthetic text block. The enforcer
+ *  wires this to its pending-block registry, so the caller can either
+ *  approve (flush the tool_use frames as-is) or deny/timeout (fall
+ *  through to substitution).
+ *
+ *  While the Promise is pending, any SSE chunks arriving on `push`
+ *  are appended to an internal hold buffer and re-processed after the
+ *  outcome is known. The 64 KB `MAX_BLOCK_BUFFER_BYTES` cap still
+ *  governs per-tool_use buffering; the hold buffer that collects
+ *  *other* frames during the await is separate and unbounded — the
+ *  user's own timeout settles the block in bounded time. */
+export type AwaitDecisionHook = (args: {
+  toolName: string;
+  toolInput: unknown;
+  matchedRule: PermissionRule;
+  accountId: string;
+}) => Promise<'approve' | 'deny' | 'timeout'>;
+
 interface BlockState {
   /** 'passthrough' for non-tool_use content blocks. */
   mode: 'passthrough' | 'buffering' | 'substituted';
@@ -118,6 +139,15 @@ export interface CreateInterceptorOptions {
   settings: EvaluatorSettingsView;
   accountId: string;
   onBlocked?: OnBlockedHook;
+  /** Optional async gate. Undefined → legacy synchronous behaviour
+   *  (substitute on deny immediately). Defined → the interceptor
+   *  routes every deny through this callback and acts on the outcome. */
+  awaitDecision?: AwaitDecisionHook;
+  /** Optional evaluator hooks. When `isBypassed` is provided, a
+   *  matched deny rule with an approved (rule, input) bypass flips
+   *  to 'allow' before the interceptor ever gates the pending flow —
+   *  so previously-approved inputs flush through with zero banner. */
+  evaluatorHooks?: EvaluatorHooks;
 }
 
 /**
@@ -140,17 +170,32 @@ export function createPermissionsSseInterceptor(
    *  a tool_use block that no longer exists. */
   let substitutedAny = false;
 
+  /** Hold mode is on while an async `awaitDecision` call is in flight.
+   *  All SSE chunks received during that window accumulate in
+   *  `holdBuffer` so they don't race past the block we're still
+   *  deciding about. When the decision settles we prepend the hold
+   *  buffer back onto `rawBuffer` and re-drain as if nothing happened. */
+  let holdBuffer = '';
+  let holdActive = false;
+
   const push = (chunk: Buffer | string): void => {
     if (killed) return;
     const str = typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+    if (holdActive) {
+      holdBuffer += str;
+      return;
+    }
     rawBuffer += str;
     drainFrames();
   };
 
   const drainFrames = (): void => {
     // SSE events are separated by a blank line (\n\n). Consume one event at a
-    // time; hold any trailing partial event for the next chunk.
-    while (true) {
+    // time; hold any trailing partial event for the next chunk. If an
+    // async decision starts mid-drain (content_block_stop → pending),
+    // `processFrame` flips `holdActive` and we bail out so subsequent
+    // frames can accumulate in `holdBuffer` until the decision settles.
+    while (!holdActive) {
       const sepIdx = rawBuffer.indexOf('\n\n');
       if (sepIdx === -1) break;
       const frame = rawBuffer.slice(0, sepIdx + 2);
@@ -248,7 +293,12 @@ export function createPermissionsSseInterceptor(
         return;
       }
       state.bufferedRaw.push(frame);
-      decideAndFlush(index, state);
+      // Fire-and-forget: `decideAndFlush` may await the user's
+      // decision, during which time `push()` diverts chunks into
+      // `holdBuffer`. We don't `await` here because routeEvent is
+      // called synchronously from the drainFrames loop — the loop
+      // exits via the hold-mode check below before the next iteration.
+      void decideAndFlush(index, state);
       return;
     }
 
@@ -272,7 +322,7 @@ export function createPermissionsSseInterceptor(
     sink.write(frame);
   };
 
-  const decideAndFlush = (index: number, state: BlockState): void => {
+  const decideAndFlush = async (index: number, state: BlockState): Promise<void> => {
     let toolInput: unknown = {};
     if (state.partialJson.length > 0) {
       try {
@@ -281,7 +331,7 @@ export function createPermissionsSseInterceptor(
         toolInput = {};
       }
     }
-    const decision = evaluateToolCall(state.toolName, toolInput, compiled, opts.settings);
+    const decision = evaluateToolCall(state.toolName, toolInput, compiled, opts.settings, opts.evaluatorHooks);
     if (decision.decision === 'allow' || !decision.matchedRule) {
       // Flush verbatim.
       for (const f of state.bufferedRaw) sink.write(f);
@@ -289,22 +339,111 @@ export function createPermissionsSseInterceptor(
       state.bufferedRaw = [];
       return;
     }
-    // Deny: drop buffered frames, emit synthetic text block.
-    const text = buildBlockText(decision.matchedRule);
-    sink.write(synthesizeTextBlock(index, text));
-    state.mode = 'substituted';
-    state.bufferedRaw = [];
-    substitutedAny = true;
-    opts.onBlocked?.({
-      toolName: state.toolName,
-      toolInput,
-      matchedRule: decision.matchedRule,
-      accountId: opts.accountId,
-    });
+
+    const matchedRule = decision.matchedRule;
+
+    // Sync path — no awaitDecision hook wired, fall back to the
+    // historical "block immediately" behaviour. Keeps the fast path
+    // fast and preserves compatibility with existing tests that don't
+    // opt in to the hold flow.
+    if (!opts.awaitDecision) {
+      const text = buildBlockText(matchedRule);
+      sink.write(synthesizeTextBlock(index, text));
+      state.mode = 'substituted';
+      state.bufferedRaw = [];
+      substitutedAny = true;
+      opts.onBlocked?.({
+        toolName: state.toolName,
+        toolInput,
+        matchedRule,
+        accountId: opts.accountId,
+      });
+      return;
+    }
+
+    // Async path — open hold, await the user's decision. During the
+    // await, `push()` diverts incoming SSE chunks into `holdBuffer`
+    // so frame ordering stays correct.
+    holdActive = true;
+    let outcome: 'approve' | 'deny' | 'timeout';
+    try {
+      outcome = await opts.awaitDecision({
+        toolName: state.toolName,
+        toolInput,
+        matchedRule,
+        accountId: opts.accountId,
+      });
+    } catch {
+      // If the hook itself throws, treat as deny — better to over-
+      // block than to accidentally leak a tool_use the evaluator said
+      // no to. The enforcer's pending registry doesn't throw, but the
+      // signature permits it.
+      outcome = 'deny';
+    }
+
+    if (killed) {
+      // Interceptor was torn down during the await (upstream error,
+      // client hang-up). Discard both buffers; nothing to do.
+      holdBuffer = '';
+      holdActive = false;
+      return;
+    }
+
+    if (outcome === 'approve') {
+      // User approved this one tool_use — flush the buffered frames
+      // verbatim so Claude Code sees the original tool_use content
+      // block and can dispatch it. No allowlist side effect: the
+      // permission rule stays intact and a subsequent identical call
+      // would re-prompt (matches the "one-shot approve" contract
+      // documented in pending.ts).
+      for (const f of state.bufferedRaw) sink.write(f);
+      state.mode = 'passthrough';
+      state.bufferedRaw = [];
+    } else {
+      // Deny or timeout — substitute as the sync path would, and
+      // emit the onBlocked side effect so the Security panel still
+      // records the block consistently with pre-refactor behaviour.
+      const text = buildBlockText(matchedRule);
+      sink.write(synthesizeTextBlock(index, text));
+      state.mode = 'substituted';
+      state.bufferedRaw = [];
+      substitutedAny = true;
+      // No onBlocked call here — the pending registry's onFinalized
+      // hook in the enforcer already persisted the block outcome
+      // when the pending resolved. Calling onBlocked again would
+      // double-insert the event.
+    }
+
+    // Release the hold: swap holdBuffer back into rawBuffer and
+    // resume normal frame processing. Any frames that arrived during
+    // the await get their normal drainFrames treatment now.
+    rawBuffer = holdBuffer + rawBuffer;
+    holdBuffer = '';
+    holdActive = false;
+    drainFrames();
   };
 
   const flush = (): void => {
     if (killed) return;
+    // If a hold is still active when the upstream signals 'end',
+    // there's no way to retroactively emit the right outcome — the
+    // user can't approve an already-closed stream. Flush the
+    // buffered tool_use frames verbatim (fail-open on abort), then
+    // drain whatever accumulated in holdBuffer so the client sees a
+    // complete stream. `destroy` is the right call if the caller
+    // wants a hard discard instead.
+    if (holdActive) {
+      for (const state of blocks.values()) {
+        if (state.mode === 'buffering' && state.bufferedRaw.length > 0) {
+          for (const f of state.bufferedRaw) sink.write(f);
+        }
+      }
+      if (holdBuffer.length > 0) {
+        sink.write(holdBuffer);
+        holdBuffer = '';
+      }
+      holdActive = false;
+    }
     // Emit any still-buffered partial frame that never terminated. Rare in
     // practice — the upstream either sends a proper content_block_stop or
     // an error. If we have tool_use frames in flight, flush them verbatim
@@ -324,6 +463,8 @@ export function createPermissionsSseInterceptor(
   const destroy = (): void => {
     killed = true;
     rawBuffer = '';
+    holdBuffer = '';
+    holdActive = false;
     blocks.clear();
   };
 

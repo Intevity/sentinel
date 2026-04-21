@@ -292,38 +292,96 @@ In dev mode the app will log a warning if the sidecar binary hasn't been built y
 
 ### Testing the security feature
 
-The security scanner has three layers that each need exercising:
+The security scanner has four layers that each need exercising:
 
 1. **Outbound detectors** — secrets, injection heuristics — run on the
    JSON body of every `POST /v1/messages` before the proxy forwards it
    upstream.
 2. **Tool-use detectors** — risky bash, write, webfetch — run on streamed
    model responses.
-3. **Block-hold flow** — the Approve / Deny banner that holds a blocked
+3. **Permission rules** — the tool-permission enforcer strips denied tools
+   from outbound `tools` arrays and substitutes synthetic block text into
+   response-side `tool_use` blocks.
+4. **Block-hold flow** — the Approve / Deny banner that holds a blocked
    request open while the user decides.
 
 `pnpm security:test <scenario>` fires synthetic events that exercise
-these layers end-to-end without any real malicious content. See the
-scenario list:
+these layers end-to-end without any real malicious content:
 
 ```sh
 pnpm security:test --list
+pnpm security:test <scenario>
 ```
 
-Outbound scenarios (`secret-observe`, `secret-block`, `secret-pending`,
-`injection`, `injection-unicode-tag`, `secret-ghp`) send a crafted
-payload to `localhost:47284/v1/messages` with a fake bearer token. The
-scanner runs on the body *before* any upstream call, so:
+Two delivery paths are used:
 
-- block-mode scenarios 403 immediately without touching Anthropic,
-- observe-mode scenarios may 401 upstream (expected: fake token) but
-  still fire the full persist + broadcast + UI-notification pipeline.
+- **Proxy delivery** — `secret-observe`, `secret-block`, `secret-pending`,
+  `injection`, `injection-unicode-tag`, `secret-ghp` — POST a crafted body
+  to `localhost:47284/v1/messages` with a fake bearer token. The scanner
+  runs on the body *before* any upstream call, so block-mode scenarios
+  return 403 without touching Anthropic; observe-mode scenarios may 401
+  upstream (expected — fake token) but still fire the full
+  persist + broadcast + UI-notification pipeline.
+- **IPC delivery** — everything else — goes through the daemon's
+  `dev_trigger_security_event` IPC, dispatching into the same
+  `persistAndBroadcast` / `createPending` / `recordBlockOutcome` paths the
+  real scanner and enforcer use.
 
-Tool-use and pending-block scenarios (`risky-bash`, `risky-write`,
-`risky-webfetch`, `tool-use-low-severity`, `pending-block`) go through
-the daemon's `dev_trigger_security_event` IPC, which dispatches through
-the same `persistAndBroadcast` / `createPending` paths the real scanner
-uses. No real model response is needed.
+Scenarios grouped by category:
+
+**Outbound secrets (proxy):**
+
+| Scenario | What it fires |
+| --- | --- |
+| `secret-observe` | AWS key in prompt; observe-mode finding persists. |
+| `secret-block` | AWS key; `block_high` mode, immediate 403. Requires `securityEnforcementMode: block_high`, `securityBlockHoldEnabled: false`. |
+| `secret-pending` | AWS key; block mode + hold ON, pending banner. Requires `securityEnforcementMode: block_*`, `securityBlockHoldEnabled: true`. |
+| `secret-ghp` | ghp_ token smoke-test for the `github-ghp` detector. |
+| `injection` | `<\|im_start\|>` role-impersonation marker. Requires `securityScanInjection: true`. |
+| `injection-unicode-tag` | Unicode tag characters (always-on detector). |
+
+**Additional secret types (IPC):**
+
+| Scenario | What it fires |
+| --- | --- |
+| `secret-anthropic` | Synthetic `anthropic-key` finding via dev IPC. |
+| `secret-openai` | Synthetic `openai-key` finding. |
+| `secret-github-pat` | Synthetic `github-pat` (fine-grained) finding. |
+| `secret-private-key` | Synthetic `private-key-block` finding. |
+
+**Tool-use detectors (IPC):**
+
+| Scenario | What it fires |
+| --- | --- |
+| `risky-bash` | HIGH-severity `curl\|sh` finding. |
+| `risky-write` | HIGH-severity `~/.ssh/authorized_keys` write. |
+| `risky-write-medium` | MEDIUM-severity `~/.npmrc` write. |
+| `risky-webfetch` | MEDIUM-severity `webhook.site` host. |
+| `tool-use-low-severity` | LOW-severity confidence/threshold test. |
+| `pending-block` | Pending-block banner + OS notification. |
+
+**Scanner telemetry (IPC):**
+
+The dev-trigger path bypasses the per-kind mute gates in Settings so these
+always fire on command.
+
+| Scenario | What it fires |
+| --- | --- |
+| `scan-truncated` | `scan_truncated` — response tap budget exceeded. |
+| `scan-skipped-encoding` | `scan_skipped_encoding` — non-UTF8 payload. |
+| `scan-deferred-oversized` | `scan_deferred_oversized` — oversized body deferred to background. |
+
+**Permission-rule blocks (IPC):**
+
+Dispatched to the permissions enforcer, not the scanner. Exercises the
+`tool_permission_blocked` persistence + broadcast path identical to a
+real deny rule.
+
+| Scenario | What it fires |
+| --- | --- |
+| `permissions-strip` | Whole-tool deny on a synthetic `Bash` rule (outbound strip). |
+| `permissions-tool-use-block` | Immediate tool_use deny on a synthetic `WebFetch(*.example.com)` rule. |
+| `permissions-tool-use-pending` | Held permissions pending block (banner + approve/deny). Requires `securityBlockHoldEnabled: true`. |
 
 Examples:
 
@@ -332,17 +390,14 @@ Examples:
 pnpm security:test risky-webfetch
 
 # Smoke-test the pending-block banner (approve/deny + countdown).
-# Works regardless of your live enforcement mode.
 pnpm security:test pending-block
 
 # Verify block-mode actually 403s. Set enforcement to "Block on HIGH"
 # and disable "Hold blocked requests for approval" in Settings first.
 pnpm security:test secret-block
 
-# Verify the pending-block flow against a real request path. Enforcement
-# in block_high, hold ON. A banner should appear; approve it and the
-# match gets added to the allowlist.
-pnpm security:test secret-pending
+# Exercise the permission enforcer's tool_use deny path.
+pnpm security:test permissions-tool-use-pending
 ```
 
 After each scenario, check:
@@ -353,12 +408,57 @@ After each scenario, check:
 - the OS **Notification Center** when severity clears the configured
   threshold (Settings → Security → Notify me about).
 
-The synthetic tokens used by the script are valid-shape garbage — they
-match the detector prefixes but are not real credentials. The literals
-are built by string concatenation inside the script (not stored as one
-contiguous string) so your own security scanner doesn't flag them when
-an agent reads the script as context. Each test run uses a unique
+The synthetic tokens used by the proxy scenarios are valid-shape garbage —
+they match the detector prefixes but are not real credentials. The
+literals are built by string concatenation inside the script (not stored
+as one contiguous string) so your own security scanner doesn't flag them
+when an agent reads the script as context. Each test run uses a unique
 `match_hash` so the dedup logic doesn't suppress repeated runs.
+
+### Testing alerts
+
+`pnpm alerts:test <scenario>` exercises every user-visible non-security
+notification — usage alerts, overage transitions, spend/budget alerts,
+and account-lifecycle events. Each scenario dispatches via the
+`dev_trigger_alert_event` IPC and synthesizes the same
+`insertNotification` + `ipcServer.broadcast` pair the real evaluators
+emit, so the Alerts tab and OS notifications render identically.
+
+**Synthetic triggers do NOT mutate real alert state.** No alert row's
+`last_triggered_reset_ts` is touched, and the SpendTracker's paused set
+stays untouched — safe to run repeatedly.
+
+```sh
+pnpm alerts:test --list
+pnpm alerts:test <scenario>
+```
+
+| Scenario | What it fires |
+| --- | --- |
+| `usage-account` | Per-account 85% usage alert (`alert_triggered` + `usage_alert` notification row). |
+| `usage-pool` | Round-robin pool-average 75% usage alert. |
+| `usage-budget` | Per-account weekly budget alert at 90% with `spendUsd`/`budgetUsd`. |
+| `overage-entered` | `overage_entered` broadcast + notification + OS notification. |
+| `overage-disabled` | `overage_disabled` broadcast + notification + OS notification. |
+| `account-switched` | `account_switched` broadcast + Alerts-tab row. |
+| `account-paused` | `account_paused` broadcast (SpendTracker-style) + `usage_alert` row. |
+| `account-unpaused` | `account_unpaused` broadcast only (no history row). |
+
+**Divergences from live behavior:**
+
+- `account-switched`: the live path is broadcast-only (no Alerts-tab row).
+  The synthetic scenario inserts a row so the event is verifiable from
+  the Alerts history.
+- `account-unpaused`: broadcast-only by design — mirrors live behavior,
+  where unpause is a silent state transition.
+
+After each scenario, check:
+
+- the **Alerts tab** for the synthetic notification (titles end with
+  `(synthetic)` or `TEST SCENARIO`),
+- the **Usage tab** / **Overage tab** for any live-state changes,
+- the OS **Notification Center** when the scenario's type is configured
+  to fire in Settings → Notifications.
 
 ### Project structure
 

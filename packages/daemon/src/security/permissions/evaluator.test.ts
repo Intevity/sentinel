@@ -19,6 +19,7 @@ function rule(overrides: Partial<PermissionRule>): PermissionRule {
     enabled: overrides.enabled ?? true,
     priority: overrides.priority ?? 100,
     createdAt: overrides.createdAt ?? 0,
+    source: overrides.source ?? 'local',
   };
 }
 
@@ -207,6 +208,63 @@ describe('evaluateToolCall — default action fallback', () => {
     const r = evaluateToolCall('Bash', { command: 'ls' }, compiled, settings({ toolPermissionDefaultAction: 'deny' }));
     expect(r.decision).toBe('deny');
     expect(r.matchedRule).toBeNull();
+  });
+});
+
+describe('evaluateToolCall — per-rule input bypass', () => {
+  it('flips a matched deny to allow when isBypassed returns true', () => {
+    const compiled = compileRules([
+      rule({ id: 'd', decision: 'deny', tool: 'Bash', pattern: 'rm *', raw: 'Bash(rm *)' }),
+    ]);
+    let checkedRuleId: string | null = null;
+    const r = evaluateToolCall(
+      'Bash',
+      { command: 'rm -rf /tmp/x' },
+      compiled,
+      settings(),
+      { isBypassed: (ruleId) => { checkedRuleId = ruleId; return true; } },
+    );
+    expect(r.decision).toBe('allow');
+    expect(r.matchedRule?.id).toBe('d');
+    expect(r.reason).toMatch(/bypassed/);
+    expect(checkedRuleId).toBe('d');
+  });
+
+  it('still denies when isBypassed returns false', () => {
+    const compiled = compileRules([
+      rule({ id: 'd', decision: 'deny', tool: 'Bash', pattern: 'rm *', raw: 'Bash(rm *)' }),
+    ]);
+    const r = evaluateToolCall(
+      'Bash',
+      { command: 'rm -rf /tmp/x' },
+      compiled,
+      settings(),
+      { isBypassed: () => false },
+    );
+    expect(r.decision).toBe('deny');
+  });
+
+  it('hashes identical inputs to the same digest regardless of key order', () => {
+    // Two tool inputs that differ only in key order must hash identically
+    // so a bypass registered with one ordering still catches the other.
+    const compiled = compileRules([
+      rule({ id: 'd', decision: 'deny', tool: 'Write', pattern: '*', raw: 'Write(*)' }),
+    ]);
+    const seen: string[] = [];
+    const hook = { isBypassed: (_: string, h: string) => { seen.push(h); return false; } };
+    evaluateToolCall('Write', { path: '/tmp/a', content: 'x' }, compiled, settings(), hook);
+    evaluateToolCall('Write', { content: 'x', path: '/tmp/a' }, compiled, settings(), hook);
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBe(seen[1]);
+  });
+
+  it('skips the hash + bypass check entirely when no hook is provided', () => {
+    const compiled = compileRules([
+      rule({ id: 'd', decision: 'deny', tool: 'Bash', pattern: 'rm *', raw: 'Bash(rm *)' }),
+    ]);
+    // Undefined hooks object — no hashCanonicalToolInput call at all.
+    const r = evaluateToolCall('Bash', { command: 'rm -rf /' }, compiled, settings());
+    expect(r.decision).toBe('deny');
   });
 });
 

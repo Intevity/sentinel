@@ -37,7 +37,23 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     toolPermissionDefaultAction: 'allow',
     toolPermissionSkipInAutoMode: true,
     toolPermissionAutoModeActive: false,
+    // Tests assume 1 MB threshold so the "oversized" fixtures (1.2 MB
+    // junk strings) reliably trip the defer path. The production
+    // default is 4 MB; tests override here to keep the assertions
+    // stable without inflating fixture sizes.
+    securityOversizedThresholdMb: 1,
+    securityScanOversizedSync: false,
+    securityMuteScanDeferred: false,
+    securityMuteScanTruncated: false,
+    securityMuteScanSkipped: false,
+    lastScanBenchmark: null,
+    claudeCodeSyncEnabled: false,
     logLevel: 'info',
+    requestLoggingEnabled: false,
+    requestLogRetentionDays: 7,
+    requestLogMaxBodyKb: 256,
+    requestLogCaptureResponse: true,
+    requestLogRedactAuthHeaders: true,
     securitySetupCompleted: false,
     tourCompleted: false,
     ...overrides,
@@ -249,6 +265,66 @@ describe('SecurityScanner — scanOutbound', () => {
     await tick();
     // Only the scan_deferred_oversized telemetry should land — no parsed findings.
     expect(listSecurityEvents(db).map((e) => e.kind)).toEqual(['scan_deferred_oversized']);
+  });
+
+  it('raises the oversized threshold when the user configures it', async () => {
+    // At 8 MB, a 2 MB body should NOT hit the deferred path.
+    const db = getDb(dbPath);
+    const ipc = ipcStub();
+    const scanner = createSecurityScanner({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () => defaultSettings({ securityOversizedThresholdMb: 8 }),
+    });
+    const body = Buffer.from(JSON.stringify({ messages: [{ role: 'user', content: 'x'.repeat(2 * 1024 * 1024) }] }));
+    const decision = scanner.scanOutbound(body, 'acc-a');
+    expect(decision.action).toBe('allow');
+    await tick();
+    const events = listSecurityEvents(db);
+    expect(events.find((e) => e.kind === 'scan_deferred_oversized')).toBeUndefined();
+  });
+
+  it('runs the synchronous scan on oversized bodies when securityScanOversizedSync is on', async () => {
+    // 1.2 MB body with a detectable secret. Default threshold is 1 MB,
+    // so without the sync-scan flag this would defer (async observe)
+    // and emit a scan_deferred_oversized event. With the flag, the
+    // scanner runs inline — no synthetic event, and the secret is
+    // detected synchronously so block-mode would have the option.
+    const db = getDb(dbPath);
+    const ipc = ipcStub();
+    const scanner = createSecurityScanner({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () => defaultSettings({ securityScanOversizedSync: true }),
+    });
+    const secret = 'ghp_' + 'F7K2mQ9xNp4R8tVj6LsW1Zyc3BdHYaGeMnRs';
+    const junk = 'x'.repeat(1.2 * 1024 * 1024);
+    const body = Buffer.from(JSON.stringify({ messages: [{ role: 'user', content: junk + ' ' + secret }] }));
+    scanner.scanOutbound(body, 'acc-a');
+    await tick();
+    const kinds = listSecurityEvents(db).map((e) => e.kind).sort();
+    expect(kinds).toContain('secret');
+    expect(kinds).not.toContain('scan_deferred_oversized');
+  });
+
+  it('drops scan_deferred_oversized when securityMuteScanDeferred is on', async () => {
+    // Async observe still runs, but no synthetic event is persisted
+    // or broadcast. Real findings from the async scan still land.
+    const db = getDb(dbPath);
+    const ipc = ipcStub();
+    const scanner = createSecurityScanner({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () => defaultSettings({ securityMuteScanDeferred: true }),
+    });
+    const secret = 'ghp_' + 'F7K2mQ9xNp4R8tVj6LsW1Zyc3BdHYaGeMnRs';
+    const junk = 'x'.repeat(1.2 * 1024 * 1024);
+    const body = Buffer.from(JSON.stringify({ messages: [{ role: 'user', content: junk + ' ' + secret }] }));
+    scanner.scanOutbound(body, 'acc-a');
+    await tick();
+    const kinds = listSecurityEvents(db).map((e) => e.kind);
+    expect(kinds).not.toContain('scan_deferred_oversized');
+    expect(kinds).toContain('secret');
   });
 
   it('ignores unparseable JSON bodies', () => {
@@ -798,6 +874,84 @@ describe('SecurityScanner — triggerTestScenario', () => {
     scanner.triggerTestScenario('risky-bash', 'acc-a');
     scanner.triggerTestScenario('risky-bash', 'acc-a');
     expect(listSecurityEvents(db)).toHaveLength(3);
+  });
+
+  it.each([
+    ['secret-anthropic', 'anthropic-key'],
+    ['secret-openai', 'openai-key'],
+    ['secret-github-pat', 'github-pat'],
+    ['secret-private-key', 'private-key-block'],
+  ] as const)('%s synthesizes a secret finding with detectorId=%s via outbound direction', (scenario, detectorId) => {
+    const db = getDb(dbPath);
+    const ipc = ipcStub();
+    const scanner = createSecurityScanner({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () => defaultSettings(),
+    });
+    scanner.triggerTestScenario(scenario, 'acc-a');
+    const ev = listSecurityEvents(db)[0]!;
+    expect(ev.kind).toBe('secret');
+    expect(ev.detectorId).toBe(detectorId);
+    expect(ev.direction).toBe('outbound');
+    expect(ev.severity).toBe('high');
+  });
+
+  it('risky-write-medium synthesizes a MEDIUM severity write finding', () => {
+    const db = getDb(dbPath);
+    const ipc = ipcStub();
+    const scanner = createSecurityScanner({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () => defaultSettings(),
+    });
+    scanner.triggerTestScenario('risky-write-medium', 'acc-a');
+    const ev = listSecurityEvents(db)[0]!;
+    expect(ev.kind).toBe('risky_write');
+    expect(ev.severity).toBe('medium');
+    expect(ev.direction).toBe('tool_use');
+  });
+
+  it.each([
+    ['scan-truncated', 'scan_truncated'],
+    ['scan-skipped-encoding', 'scan_skipped_encoding'],
+    ['scan-deferred-oversized', 'scan_deferred_oversized'],
+  ] as const)('%s synthesizes a telemetry event with kind=%s (bypasses mute gates)', (scenario, kind) => {
+    const db = getDb(dbPath);
+    const ipc = ipcStub();
+    // All three mute toggles ON — the dev path must still fire because it
+    // bypasses emitSynthetic's per-kind gates.
+    const scanner = createSecurityScanner({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () => defaultSettings({
+        securityMuteScanDeferred: true,
+        securityMuteScanTruncated: true,
+        securityMuteScanSkipped: true,
+      }),
+    });
+    scanner.triggerTestScenario(scenario, 'acc-a');
+    const ev = listSecurityEvents(db)[0]!;
+    expect(ev.kind).toBe(kind);
+    expect(ev.direction).toBe('outbound');
+    expect(ev.severity).toBe('low');
+  });
+
+  it.each([
+    'permissions-strip',
+    'permissions-tool-use-block',
+    'permissions-tool-use-pending',
+  ] as const)('%s throws when dispatched to the scanner (must go through enforcer)', (scenario) => {
+    const db = getDb(dbPath);
+    const ipc = ipcStub();
+    const scanner = createSecurityScanner({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () => defaultSettings(),
+    });
+    expect(() => scanner.triggerTestScenario(scenario, 'acc-a')).toThrow(
+      /permissions enforcer/,
+    );
   });
 });
 

@@ -44,7 +44,7 @@ fn get_autostart(app: AppHandle) -> Result<bool, String> {
 /// size is what keeps the app feeling like a compact tray menu. When
 /// DevTools opens we temporarily blow these constraints out so the
 /// inspector has room to dock; we restore on close.
-const TRAY_WIDTH: f64 = 540.0;
+const TRAY_WIDTH: f64 = 580.0;
 const TRAY_HEIGHT: f64 = 628.0;
 
 /// Size the window expands to when DevTools opens. Chosen to leave ~540×628
@@ -183,6 +183,15 @@ fn main() {
             }
         })
         .setup(|app| {
+            // Install the persistent NSUserNotificationCenter delegate
+            // and stash an AppHandle for it to reach back into Tauri.
+            // Must run before any daemon broadcast can trigger a
+            // notification. `init_notification_bundle` is retained as
+            // a no-op shim for symmetry with prior call sites.
+            #[cfg(target_os = "macos")]
+            notify::init_notification_bundle(&app.config().identifier);
+            notify::init(app.handle());
+
             // Build the tray icon and menu
             tray::setup_tray(app)?;
 

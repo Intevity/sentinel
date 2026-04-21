@@ -1,4 +1,4 @@
-import { getDb, closeDb, listAccounts, listRemovedAccounts, upsertAccount, deleteAccount, deleteStaleAccountRows, markAccountRemoved, purgeAccount, reactivateAccount, hasActiveAccount, getAccount, setAccountColor, getUsageByDayModel, acknowledgeNotification, acknowledgeAllNotifications, upsertRateLimit, loadRateLimits, getOverageEvents, clearOverageEvents, getLastOverageEventPerAccount, listNotifications, listAlerts, upsertAlert, deleteAlert, deleteRateLimitsForAccount, getTokensByDayModel, getCacheHitRate, getApiErrorsByDay, getToolStats, getActivityCounters, getEditAcceptRate, getToolDecisionBreakdown, getUserPromptStats, getTopSkills, getRecentPlugins,listSecurityEvents, acknowledgeSecurityEvent, acknowledgeAllSecurityEvents, clearSecurityEvents, purgeSecurityEventsOlderThan, purgeTelemetryOlderThan, addSecurityAllowlist, removeSecurityAllowlist, listSecurityAllowlist, upsertPermissionRule, deletePermissionRule } from './db.js';
+import { getDb, closeDb, listAccounts, listRemovedAccounts, upsertAccount, deleteAccount, deleteStaleAccountRows, markAccountRemoved, purgeAccount, reactivateAccount, hasActiveAccount, getAccount, setAccountColor, getUsageByDayModel, acknowledgeNotification, acknowledgeAllNotifications, upsertRateLimit, loadRateLimits, getOverageEvents, clearOverageEvents, getLastOverageEventPerAccount, listNotifications, listAlerts, upsertAlert, deleteAlert, deleteRateLimitsForAccount, getTokensByDayModel, getCacheHitRate, getApiErrorsByDay, getToolStats, getActivityCounters, getEditAcceptRate, getToolDecisionBreakdown, getUserPromptStats, getTopSkills, getRecentPlugins,listSecurityEvents, acknowledgeSecurityEvent, acknowledgeAllSecurityEvents, clearSecurityEvents, purgeSecurityEventsOlderThan, purgeTelemetryOlderThan, addSecurityAllowlist, removeSecurityAllowlist, listSecurityAllowlist, listPermissionBypasses, removePermissionBypass, upsertPermissionRule, deletePermissionRule, insertNotification } from './db.js';
 import { loadSettings, updateSettings as writeSettings } from './settings.js';
 import { IpcServer } from './ipc.js';
 import { OtelReceiver } from './otel-receiver.js';
@@ -20,6 +20,8 @@ import { fetchBootstrap } from './claude-ai-bootstrap.js';
 import { startAlertEvaluator, startPoolAlertEvaluator, evaluatePoolOnce, primeNewAlertAgainstCurrentWindow } from './alerts.js';
 import { createSecurityScanner } from './security/scanner.js';
 import { createPermissionsEnforcer } from './security/permissions/enforcer.js';
+import { createClaudeSyncEngine } from './security/permissions/claude-sync.js';
+import { runScanBenchmark } from './security/scanner-benchmark.js';
 import { parseRule as parsePermissionRule } from './security/permissions/parser.js';
 import type { Settings } from '@claude-sentinel/shared';
 import { getActiveAccount, setActiveAccount } from './claude-state.js';
@@ -33,6 +35,7 @@ import { startUsageProber, type UsageProberHandle } from './usage-probe.js';
 import type { OAuthAccount, PlanType, ClaudeCodeCredentials } from '@claude-sentinel/shared';
 import { request as httpRequest, type Server } from 'http';
 import { log } from './logger.js';
+import { getRequestLogStore, closeRequestLogStore } from './request-log-db.js';
 
 /**
  * Probe 127.0.0.1:DAEMON_PORT/health to see whether another daemon is
@@ -1150,6 +1153,19 @@ export async function startDaemon(): Promise<void> {
         ) {
           permissionsEnforcer.onSettingsChanged();
         }
+        // Claude Code sync toggle. Engine start/stop is async but we
+        // don't block the IPC response on it — the UI updates from
+        // the `claude_sync_status` broadcast the engine emits once
+        // its initial pull finishes.
+        if (prev.claudeCodeSyncEnabled !== next.claudeCodeSyncEnabled) {
+          if (next.claudeCodeSyncEnabled) {
+            void claudeSyncEngine.start().catch((err: unknown) => {
+              console.error('[ClaudeSync] start failed:', err);
+            });
+          } else {
+            claudeSyncEngine.stop();
+          }
+        }
         ipcServer.broadcast({ type: 'settings_changed', settings: next });
         respond({ requestType: 'update_settings', success: true, data: next });
         break;
@@ -1186,6 +1202,19 @@ export async function startDaemon(): Promise<void> {
         const { count } = log.clear();
         ipcServer.broadcast({ type: 'daemon_logs_cleared' });
         respond({ requestType: 'clear_daemon_logs', success: true, data: { count } });
+        break;
+      }
+
+      case 'get_request_detail': {
+        const detail = requestLogStore.get(msg.requestId);
+        respond({ requestType: 'get_request_detail', success: true, data: detail });
+        break;
+      }
+
+      case 'clear_request_logs': {
+        const deleted = requestLogStore.clearAll();
+        ipcServer.broadcast({ type: 'request_logs_cleared', deleted });
+        respond({ requestType: 'clear_request_logs', success: true, data: { deleted } });
         break;
       }
 
@@ -1271,46 +1300,309 @@ export async function startDaemon(): Promise<void> {
 
         const result = addSecurityAllowlist(db, args);
         respond({ requestType: 'add_to_security_allowlist', success: true, data: result });
+        ipcServer.broadcast({ type: 'security_allowlist_updated' });
         break;
       }
 
       case 'remove_from_security_allowlist': {
         const ok = removeSecurityAllowlist(db, msg.id);
         respond({ requestType: 'remove_from_security_allowlist', success: ok });
+        if (ok) ipcServer.broadcast({ type: 'security_allowlist_updated' });
+        break;
+      }
+
+      case 'get_permission_bypasses': {
+        const rows = listPermissionBypasses(db);
+        respond({ requestType: 'get_permission_bypasses', success: true, data: rows });
+        break;
+      }
+
+      case 'remove_permission_bypass': {
+        const ok = removePermissionBypass(db, msg.id);
+        respond({ requestType: 'remove_permission_bypass', success: ok });
+        if (ok) ipcServer.broadcast({ type: 'permission_bypasses_updated' });
+        break;
+      }
+
+      case 'claude_sync_pull': {
+        // Honour the caller's initial-merge preference for first-enable.
+        // Subsequent manual pulls default to 'merge' which leaves
+        // local rules alone. Fire-and-forget: the engine broadcasts
+        // `claude_sync_status` with success/error, and the UI uses
+        // that rather than the RPC response for end-state.
+        void claudeSyncEngine.pullNow(msg.mode ?? 'merge');
+        respond({ requestType: 'claude_sync_pull', success: true });
+        break;
+      }
+
+      case 'claude_sync_push': {
+        void claudeSyncEngine.pushNow();
+        respond({ requestType: 'claude_sync_push', success: true });
+        break;
+      }
+
+      case 'get_claude_sync_status': {
+        respond({
+          requestType: 'get_claude_sync_status',
+          success: true,
+          data: claudeSyncEngine.getStatus(),
+        });
+        break;
+      }
+
+      case 'run_scan_benchmark': {
+        // The bench is CPU-heavy (3-10 s on typical hardware).
+        // Defer via setImmediate so the current IPC message's ack
+        // flushes before the scan loop blocks the event loop, and
+        // any broadcasts queued behind us get a chance to drain.
+        // The response still comes back on the same requestId once
+        // the bench completes.
+        setImmediate(() => {
+          try {
+            const result = runScanBenchmark();
+            // Persist alongside other settings so the UI's
+            // "last tuned" display and the wizard's bench step see
+            // the same state after restart.
+            try {
+              writeSettings({ ...currentSettings, lastScanBenchmark: result });
+              currentSettings = { ...currentSettings, lastScanBenchmark: result };
+              ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+            } catch (err) {
+              console.error('[ScanBench] persist failed:', err);
+            }
+            respond({ requestType: 'run_scan_benchmark', success: true, data: result });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error('[ScanBench] run failed:', err);
+            respond({
+              requestType: 'run_scan_benchmark',
+              success: false,
+              error: `benchmark failed: ${message}`,
+            });
+          }
+        });
         break;
       }
 
       case 'approve_blocked_request': {
-        const ok = securityScanner.resolvePending(msg.pendingId, 'approve');
+        // Scanner + permissions each own a pending-block registry with
+        // disjoint UUID namespaces, so trying both is safe — at most
+        // one returns true. Accept success from either. The scanner
+        // doesn't take opts (it always adds to its own allowlist on
+        // approve); the permissions path forwards `addBypass` so the
+        // banner's "Always allow this exact input" checkbox can
+        // insert a permission_bypass row atomically with the approve.
+        const addBypass = msg.addBypass === true;
+        const ok =
+          securityScanner.resolvePending(msg.pendingId, 'approve') ||
+          (permissionsEnforcer?.resolvePending(msg.pendingId, 'approve', { addBypass }) ?? false);
         respond({ requestType: 'approve_blocked_request', success: ok });
         break;
       }
 
       case 'deny_blocked_request': {
-        const ok = securityScanner.resolvePending(msg.pendingId, 'deny');
+        const ok =
+          securityScanner.resolvePending(msg.pendingId, 'deny') ||
+          (permissionsEnforcer?.resolvePending(msg.pendingId, 'deny') ?? false);
         respond({ requestType: 'deny_blocked_request', success: ok });
         break;
       }
 
       case 'list_pending_blocks': {
-        const rows = securityScanner.listPending();
+        // Merge both registries so the app can re-render a full banner
+        // stack after an IPC reconnect. Scanner entries carry an
+        // implicit source of 'scanner' (default); permission entries
+        // set their source explicitly.
+        const scannerPending = securityScanner.listPending();
+        const permissionsPending = permissionsEnforcer?.listPending() ?? [];
+        const rows = [...scannerPending, ...permissionsPending];
         respond({ requestType: 'list_pending_blocks', success: true, data: rows });
         break;
       }
 
       case 'dev_trigger_security_event': {
-        // Fire a synthetic security event through the normal scanner
-        // plumbing. Exposed for `pnpm security:test`; see
-        // packages/daemon/src/security/scanner.ts for the scenario set.
+        // Fire a synthetic security event through the normal scanner or
+        // enforcer plumbing. Exposed for `pnpm security:test`; see
+        // packages/daemon/src/security/scanner.ts for the scanner scenario
+        // set and packages/daemon/src/security/permissions/enforcer.ts for
+        // the permissions-* scenario set.
         const targetAccountId = msg.accountId
           ?? activeAccountId.value
           ?? 'default';
         try {
-          securityScanner.triggerTestScenario(msg.scenario, targetAccountId);
+          if (msg.scenario.startsWith('permissions-')) {
+            permissionsEnforcer.triggerTestScenario(
+              msg.scenario as
+                | 'permissions-strip'
+                | 'permissions-tool-use-block'
+                | 'permissions-tool-use-pending',
+              targetAccountId,
+            );
+          } else {
+            securityScanner.triggerTestScenario(msg.scenario, targetAccountId);
+          }
           respond({ requestType: 'dev_trigger_security_event', success: true });
         } catch (err) {
           respond({
             requestType: 'dev_trigger_security_event',
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+
+      case 'dev_trigger_alert_event': {
+        // Synthesize a non-security alert (usage / overage / spend / account
+        // lifecycle) through the same insertNotification + broadcast path the
+        // real evaluators use. Safe to run repeatedly: does NOT mutate real
+        // alert-row `last_triggered_reset_ts` or the SpendTracker paused set.
+        const targetAccountId = msg.accountId
+          ?? activeAccountId.value
+          ?? 'default';
+        const now = Date.now();
+        try {
+          switch (msg.scenario) {
+            case 'usage-account': {
+              ipcServer.broadcast({
+                type: 'alert_triggered',
+                alertId: -1,
+                accountId: targetAccountId,
+                scope: 'account',
+                thresholdPct: 85,
+                utilization: 0.85,
+              });
+              insertNotification(db, {
+                ts: now,
+                accountId: targetAccountId,
+                type: 'usage_alert',
+                title: 'Sentinel: 85% usage reached (synthetic)',
+                body: `${targetAccountId} has used 85.0% of its 5-hour window. TEST SCENARIO — \`pnpm alerts:test usage-account\``,
+              });
+              break;
+            }
+            case 'usage-pool': {
+              ipcServer.broadcast({
+                type: 'alert_triggered',
+                alertId: -2,
+                accountId: null,
+                scope: 'pool',
+                thresholdPct: 75,
+                utilization: 0.75,
+              });
+              insertNotification(db, {
+                ts: now,
+                accountId: null,
+                type: 'usage_alert',
+                title: 'Sentinel: pool at 75% (synthetic)',
+                body: 'Round-robin pool has used 75.0% of its 5-hour window on average. TEST SCENARIO — `pnpm alerts:test usage-pool`',
+              });
+              break;
+            }
+            case 'usage-budget': {
+              ipcServer.broadcast({
+                type: 'alert_triggered',
+                alertId: -3,
+                accountId: targetAccountId,
+                scope: 'budget',
+                thresholdPct: 90,
+                utilization: 0.9,
+                spendUsd: 90,
+                budgetUsd: 100,
+                budgetScope: 'account',
+              });
+              insertNotification(db, {
+                ts: now,
+                accountId: targetAccountId,
+                type: 'usage_alert',
+                title: 'Sentinel: 90% of weekly budget (synthetic)',
+                body: '$90.00 of $100.00 weekly budget used. TEST SCENARIO — `pnpm alerts:test usage-budget`',
+              });
+              break;
+            }
+            case 'overage-entered': {
+              ipcServer.broadcast({
+                type: 'overage_entered',
+                accountId: targetAccountId,
+                resetsAt: Math.floor(now / 1000) + 3600,
+              });
+              insertNotification(db, {
+                ts: now,
+                accountId: targetAccountId,
+                type: 'overage_entered',
+                title: `Overage started — ${targetAccountId} (synthetic)`,
+                body: 'TEST SCENARIO — `pnpm alerts:test overage-entered`',
+              });
+              break;
+            }
+            case 'overage-disabled': {
+              ipcServer.broadcast({
+                type: 'overage_disabled',
+                accountId: targetAccountId,
+                reason: 'budget exhausted (synthetic)',
+              });
+              insertNotification(db, {
+                ts: now,
+                accountId: targetAccountId,
+                type: 'overage_disabled',
+                title: `Overage cap reached — ${targetAccountId} (synthetic)`,
+                body: 'TEST SCENARIO — `pnpm alerts:test overage-disabled`',
+              });
+              break;
+            }
+            case 'account-switched': {
+              // Live path broadcasts without writing a notification row —
+              // the synthetic scenario inserts one so the event is visible
+              // from the Alerts tab history (documented divergence).
+              const synthetic: OAuthAccount = {
+                accountUuid: targetAccountId,
+                emailAddress: `${targetAccountId}@test.local`,
+                organizationUuid: `${targetAccountId}-org`,
+                hasExtraUsageEnabled: false,
+                organizationRole: 'user',
+                workspaceRole: null,
+              } as OAuthAccount;
+              ipcServer.broadcast({ type: 'account_switched', to: synthetic });
+              insertNotification(db, {
+                ts: now,
+                accountId: targetAccountId,
+                type: 'account_switched',
+                title: `Switched to ${synthetic.emailAddress} (synthetic)`,
+                body: 'TEST SCENARIO — `pnpm alerts:test account-switched`',
+              });
+              break;
+            }
+            case 'account-paused': {
+              ipcServer.broadcast({
+                type: 'account_paused',
+                accountId: targetAccountId,
+                reason: 'sentinel_budget',
+                resetsAt: Math.floor(now / 1000) + 3600,
+              });
+              insertNotification(db, {
+                ts: now,
+                accountId: targetAccountId,
+                type: 'usage_alert',
+                title: `Account paused — ${targetAccountId} (synthetic)`,
+                body: 'Weekly budget cap reached. TEST SCENARIO — `pnpm alerts:test account-paused`',
+              });
+              break;
+            }
+            case 'account-unpaused': {
+              // Broadcast-only by design — mirrors the live path which fires
+              // no notification row on unpause (the Alerts tab treats pause
+              // clearance as a silent state transition).
+              ipcServer.broadcast({
+                type: 'account_unpaused',
+                accountId: targetAccountId,
+              });
+              break;
+            }
+          }
+          respond({ requestType: 'dev_trigger_alert_event', success: true });
+        } catch (err) {
+          respond({
+            requestType: 'dev_trigger_alert_event',
             success: false,
             error: err instanceof Error ? err.message : String(err),
           });
@@ -1392,11 +1684,11 @@ export async function startDaemon(): Promise<void> {
 
       case 'upsert_permission_rule': {
         const input = msg.rule;
-        if (input.decision !== 'allow' && input.decision !== 'deny') {
+        if (input.decision !== 'allow' && input.decision !== 'deny' && input.decision !== 'ask') {
           respond({
             requestType: 'upsert_permission_rule',
             success: false,
-            error: 'decision must be "allow" or "deny"',
+            error: 'decision must be "allow", "deny", or "ask"',
           });
           break;
         }
@@ -1421,6 +1713,14 @@ export async function startDaemon(): Promise<void> {
         permissionsEnforcer.invalidate();
         const rules = permissionsEnforcer.listRules();
         ipcServer.broadcast({ type: 'permission_rules_changed', rules });
+        // Mirror the new state out to Claude Code's settings.json if
+        // sync is live. Fire-and-forget — the engine debounces and
+        // handles errors by broadcasting a `claude_sync_status` with
+        // lastError set, so the UI surfaces failures without blocking
+        // the IPC response here.
+        if (currentSettings.claudeCodeSyncEnabled) {
+          void claudeSyncEngine.pushNow();
+        }
         respond({ requestType: 'upsert_permission_rule', success: true, data: saved });
         break;
       }
@@ -1431,6 +1731,9 @@ export async function startDaemon(): Promise<void> {
           permissionsEnforcer.invalidate();
           const rules = permissionsEnforcer.listRules();
           ipcServer.broadcast({ type: 'permission_rules_changed', rules });
+          if (currentSettings.claudeCodeSyncEnabled) {
+            void claudeSyncEngine.pushNow();
+          }
         }
         respond({ requestType: 'delete_permission_rule', success: removed });
         break;
@@ -1778,6 +2081,25 @@ export async function startDaemon(): Promise<void> {
   runTelemetryPurge();
   const telemetryPurgeTimer = setInterval(runTelemetryPurge, 24 * 60 * 60 * 1000);
 
+  // Request/response capture store — opened up-front so the Logs UI can
+  // always call get_request_detail / clear_request_logs even when capture
+  // is disabled (table just stays empty). Purge respects the user's
+  // configured retention window; runs at startup + every 24h like telemetry.
+  const requestLogStore = getRequestLogStore();
+  const runRequestLogPurge = (): void => {
+    try {
+      const cutoff = Date.now() - currentSettings.requestLogRetentionDays * 24 * 60 * 60 * 1000;
+      const purged = requestLogStore.purgeOlderThan(cutoff);
+      if (purged > 0) {
+        console.log(`[RequestLog] Purged ${purged} row(s) older than ${currentSettings.requestLogRetentionDays} days`);
+      }
+    } catch (err) {
+      console.error('[RequestLog] retention purge failed:', err);
+    }
+  };
+  runRequestLogPurge();
+  const requestLogPurgeTimer = setInterval(runRequestLogPurge, 24 * 60 * 60 * 1000);
+
   // Build the security scanner. Settings getter is passed as a thunk so the
   // scanner re-reads toggles and enforcement-mode on every request without
   // needing a restart.
@@ -1794,6 +2116,21 @@ export async function startDaemon(): Promise<void> {
     ipcServer,
     getSettings: () => currentSettings,
   });
+
+  // Claude Code auto-sync engine. Owns the file watcher lifecycle.
+  // Started when `claudeCodeSyncEnabled` is on; stopped when toggled
+  // off. A local rule mutation (upsert / delete) fires pushNow so
+  // the file reflects the new state within the next tick.
+  const claudeSyncEngine = createClaudeSyncEngine({
+    db,
+    ipcServer,
+    invalidateRuleCache: () => permissionsEnforcer.invalidate(),
+  });
+  if (currentSettings.claudeCodeSyncEnabled) {
+    void claudeSyncEngine.start().catch((err: unknown) => {
+      console.error('[ClaudeSync] initial start failed:', err);
+    });
+  }
 
   // Start IPC server
   ipcServer.start();
@@ -1821,6 +2158,7 @@ export async function startDaemon(): Promise<void> {
       },
       securityScanner,
       permissionsEnforcer,
+      requestLogStore,
     },
     (req, res) => {
       const url = req.url ?? '/';
@@ -1878,10 +2216,12 @@ export async function startDaemon(): Promise<void> {
     stopTokenRefresher();
     usageProber?.stop();
     clearInterval(telemetryPurgeTimer);
+    clearInterval(requestLogPurgeTimer);
     permissionsEnforcer.shutdown();
     ipcServer.close();
     server.close();
     closeDb();
+    closeRequestLogStore();
     process.exit(0);
   };
 

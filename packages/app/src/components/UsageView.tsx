@@ -15,13 +15,13 @@ import ResetCountdown from './ResetCountdown.js';
 /** Why the Usage percentages can differ from claude.ai by up to 1 point —
  *  shown in an InfoTooltip next to the "Usage" header. */
 const USAGE_VARIANCE_NOTE =
-  "Usage values may differ from claude.ai by up to 1%. Anthropic's rate-limit headers expose utilization truncated to two decimals, while claude.ai renders the higher-precision internal value — so rounding produces a small, expected gap.";
+  "Usage values may differ from claude.ai by up to 1%. Anthropic's rate-limit headers expose utilization truncated to two decimals, while claude.ai renders the higher-precision internal value; rounding produces a small, expected gap.";
 
 // Human-readable labels for known rate-limit window names
 const WINDOW_META: Record<string, { label: string; order: number }> = {
   'unified-5h':        { label: '5-Hour Window',        order: 0 },
-  'unified-7d':        { label: 'Weekly — All Models',  order: 1 },
-  'unified-7d_sonnet': { label: 'Weekly — Sonnet',      order: 2 },
+  'unified-7d':        { label: 'Weekly: All Models',   order: 1 },
+  'unified-7d_sonnet': { label: 'Weekly: Sonnet',       order: 2 },
   'unified-overage':   { label: 'Overage Budget',       order: 3 },
 };
 
@@ -788,7 +788,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
                       <ResetCountdown epochSec={resetAt} variant="pill" />
                     )}
                     <span className={`text-[11px] font-bold tabular-nums ${pctColor}`}>
-                      {pct == null ? '—' : `${pct}%`}
+                      {pct == null ? '–' : `${pct}%`}
                     </span>
                   </div>
                 </div>

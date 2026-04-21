@@ -103,7 +103,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
   low: {
     profile: 'low',
     label: 'Low',
-    description: 'Permissive — Sentinel only watches, never blocks.',
+    description: 'Permissive: Sentinel only watches, never blocks.',
     highlights: [
       'Scanner observes secrets only',
       'No OS notifications below HIGH severity',
@@ -127,7 +127,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
   medium: {
     profile: 'medium',
     label: 'Medium',
-    description: 'Balanced — catches dangerous things, lets everything else through.',
+    description: 'Balanced: catches dangerous things, lets everything else through.',
     highlights: [
       'Blocks HIGH-severity outbound findings (with approve-and-hold)',
       'Scanner covers secrets + risky tool use',
@@ -151,12 +151,12 @@ export const PRESETS: Record<RiskProfile, Preset> = {
   high: {
     profile: 'high',
     label: 'High',
-    description: 'Strict — default-deny for tools, aggressive scanning, blocks MEDIUM+.',
+    description: 'Strict: default-deny for tools, aggressive scanning, blocks MEDIUM+.',
     highlights: [
       'Blocks MEDIUM- and HIGH-severity outbound findings',
       'Prompt-injection scanner enabled',
       'Default-deny permissions with an explicit allow list',
-      'Auto-mode bypass disabled — Sentinel still enforces',
+      'Auto-mode bypass disabled; Sentinel still enforces',
     ],
     settings: {
       securityScanEnabled: true,

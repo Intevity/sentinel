@@ -101,7 +101,7 @@ export default function Footer({
           onClick={handleReportBug}
           className="relative flex items-center gap-1 rounded-md px-1 py-0.5 hover:text-[#3A3A3C] dark:hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ios-blue"
           aria-label={hasUnseenErrors ? 'Report a bug (new daemon errors detected)' : 'Report a bug'}
-          title={hasUnseenErrors ? 'Recent daemon errors detected — report a bug' : 'Report a bug'}
+          title={hasUnseenErrors ? 'Recent daemon errors detected; report a bug' : 'Report a bug'}
         >
           <Bug size={11} strokeWidth={2.2} />
           <span>Report</span>
@@ -117,7 +117,7 @@ export default function Footer({
         type="button"
         onClick={handleOpen}
         className="flex items-center gap-1.5 rounded-md px-1 py-0.5 hover:text-[#3A3A3C] dark:hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ios-blue"
-        aria-label="Built by Intevity — open intevity.com"
+        aria-label="Built by Intevity; open intevity.com"
       >
         <span>Built by</span>
         <img src={intevityLogo} alt="Intevity" className="h-3.5 w-auto" />

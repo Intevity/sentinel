@@ -137,7 +137,7 @@ function TooltipShell({
       onFocus={triggerProps.onFocus}
       onBlur={triggerProps.onBlur}
       tabIndex={triggerProps.tabIndex}
-      className={`inline-flex items-center cursor-help rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-ios-blue ${className ?? ''}`}
+      className={`inline-flex items-center rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-ios-blue ${className ?? ''}`}
     >
       <Info
         size={size}

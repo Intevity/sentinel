@@ -78,7 +78,7 @@ export function useNativeAlertNotifications(): void {
         if (overageOsNotify) {
           const short = msg.accountId.slice(0, 8);
           void fireNativeStandard(
-            'Claude Sentinel — Overage started',
+            'Claude Sentinel: Overage started',
             `${short}… is now using overage budget.`,
             soundName,
           );
@@ -88,29 +88,53 @@ export function useNativeAlertNotifications(): void {
           const short = msg.accountId.slice(0, 8);
           const reason = msg.reason && msg.reason !== 'unknown' ? ` (${msg.reason})` : '';
           void fireNativeStandard(
-            'Claude Sentinel — Overage cap reached',
+            'Claude Sentinel: Overage cap reached',
             `${short}… hit its overage limit${reason}.`,
             soundName,
           );
         }
+      } else if (msg.type === 'account_paused') {
+        // Account just transitioned into a paused state (hit weekly
+        // budget cap, or Anthropic disabled overage on it). Mirrors
+        // the overage_entered banner — same severity of state change
+        // from the user's perspective. Always fires; there is no
+        // per-signal toggle because an account going silent is rare
+        // and load-bearing enough to surface unconditionally.
+        const short = msg.accountId.slice(0, 8);
+        const reasonBlurb = msg.reason === 'sentinel_budget'
+          ? 'hit weekly budget cap'
+          : msg.reason === 'anthropic_overage_disabled'
+            ? 'Anthropic disabled overage'
+            : 'paused';
+        void fireNativeStandard(
+          'Claude Sentinel: Account paused',
+          `${short}… ${reasonBlurb}.`,
+          soundName,
+        );
       } else if (msg.type === 'security_event_detected') {
         if (shouldFireSecurityOsNotification(msg.severity, securityThreshold)) {
           const title = msg.blocked
             ? `Sentinel blocked: ${msg.title}`
             : `Sentinel security: ${msg.title}`;
           const body = `${msg.severity.toUpperCase()} severity · ${msg.kind}`;
-          void fireNativeSecurity(title, body, soundName);
+          // eventId is typically present — passing it enables the
+          // "Details" button and body-click routing on the banner.
+          // Older broadcasts without the id still render as a plain
+          // info-only notification.
+          void fireNativeSecurity(title, body, soundName, msg.eventId);
         }
       } else if (msg.type === 'security_block_pending') {
-        // Security-category notifications route through osascript so
-        // they fire even when Sentinel is frontmost (macOS suppresses
-        // the plugin path in that case). The notification itself
-        // doesn't carry buttons — click focuses the window, and the
-        // in-app PendingBlockBanner provides approve/deny.
+        // Held outbound block. The OS banner is a "Details" pointer —
+        // tapping it brings the app forward where the
+        // PendingBlockBanner (mounted at the App root) owns the
+        // actual Approve / Deny UI. We don't pass an eventId: the
+        // security-event row isn't persisted until the pending
+        // resolves, and the in-app banner is always visible while
+        // pending so per-row deep linking is redundant.
         const holdSec = Math.max(0, Math.ceil((msg.pending.expiresAt - Date.now()) / 1000));
         void fireNativeSecurity(
           `Sentinel blocked: ${msg.pending.title}`,
-          `Click to review — approval expires in ${holdSec}s.`,
+          `Open Sentinel to Approve or Deny. Expires in ${holdSec}s.`,
           soundName,
         );
       }
@@ -189,20 +213,36 @@ async function fireNativeStandard(title: string, body: string, sound: string | n
 }
 
 /**
- * Native notification for security events.
- *
- * Routes through the `display_os_notification` Tauri command, which
- * shells to macOS's `osascript` and bypasses the foreground-app
- * suppression that silently drops `sendNotification` banners when
- * Sentinel is visible — which is exactly when security events matter
- * most. The afplay-backed sound still plays through the existing
- * `play_system_sound` command so the user hears the alert too.
+ * Native notification for every security event — both informational
+ * detections and held pending blocks. The banner always carries a
+ * "Details" action button and a clickable body; both paths open the
+ * tray window. When `eventId` is provided, the Rust delegate also
+ * emits `security_notification_details` so the Security tab can scroll
+ * to the matching row. For pending blocks we omit `eventId` because
+ * the row isn't persisted until resolve, and rely on
+ * `PendingBlockBanner` (always mounted) to surface Approve / Deny on
+ * app focus. Fires via the native NSUserNotification bridge so the
+ * banner carries our app icon + bundle attribution — unlike the old
+ * osascript path which showed as "Script Editor". Sound plays through
+ * `play_system_sound` (afplay-backed) for the same reason security
+ * events bypass the Tauri plugin path historically.
  */
-async function fireNativeSecurity(title: string, body: string, sound: string | null): Promise<void> {
+async function fireNativeSecurity(
+  title: string,
+  body: string,
+  sound: string | null,
+  eventId?: number,
+): Promise<void> {
   try {
-    await invoke('display_os_notification', { title, body });
+    // Omit eventId when undefined so the Tauri invoke serialiser
+    // doesn't send `eventId: null` — the Rust side expects an Option
+    // and either shape works, but an omitted field is less brittle
+    // across IPC schema changes.
+    const args: Record<string, unknown> = { title, body };
+    if (eventId !== undefined) args.eventId = eventId;
+    await invoke('display_os_notification', args);
   } catch {
-    /* osascript unavailable (non-macOS or denied) — silently fall back. */
+    /* bridge unavailable (non-macOS or denied) — silent. */
   }
   if (sound) {
     try {

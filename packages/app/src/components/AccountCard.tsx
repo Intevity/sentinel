@@ -240,7 +240,7 @@ export default function AccountCard({
             </div>
           )}
           {paused ? (
-            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-ios-red/15 text-ios-red" title="Sentinel paused this account — weekly budget reached">
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-ios-red/15 text-ios-red" title="Sentinel paused this account; weekly budget reached">
               Paused
             </span>
           ) : hasRealUsage && weeklyCapUsd != null && weeklyCapUsd > 0 ? (

@@ -11,12 +11,17 @@ import type {
   SecurityKind,
   SecuritySeverity,
   SecurityAllowlistEntry,
+  PermissionBypassEntry,
+  ClaudeSyncStatus,
   PendingSecurityBlock,
+  PendingBlockSource,
   LogEntry,
   LogLevel,
   PermissionRule,
   PermissionRuleInput,
   AutoModeStatus,
+  RequestDetail,
+  SecurityBenchmarkResult,
 } from './types.js';
 
 // ─── Daemon → App messages ────────────────────────────────────────────────────
@@ -159,6 +164,13 @@ export interface SecurityEventDetectedMessage {
   title: string;
   /** True when the outbound request was refused. */
   blocked: boolean;
+  /** Primary-key row id of the security_events table entry this
+   *  broadcast corresponds to. Used by the OS-notification Details
+   *  action to deep-link the user into the Security panel with this
+   *  row pre-expanded. Optional for backwards compatibility — older
+   *  broadcasters that dedup to an existing row still set it to that
+   *  row's id, but historical consumers without the field keep working. */
+  eventId?: number;
 }
 
 /** Broadcast when a new outbound-block is being held open in the proxy
@@ -175,6 +187,34 @@ export interface SecurityBlockResolvedMessage {
   type: 'security_block_resolved';
   pendingId: string;
   outcome: 'approve' | 'deny' | 'timeout';
+}
+
+/** Broadcast whenever a row is added to or removed from the security
+ *  allowlist (the suppressed-matches table driven by "Always allow" on
+ *  security events). `useSecurityAllowlist` refetches on this so the
+ *  Allowlist section in Settings → Security reflects adds/removes live
+ *  regardless of whether the user is currently looking at the section. */
+export interface SecurityAllowlistUpdatedMessage {
+  type: 'security_allowlist_updated';
+}
+
+/** Broadcast when the per-rule input bypass list changes — a row
+ *  added by "Always allow this exact input" on a pending banner, or
+ *  removed from the Settings UI. Drives live refetch in
+ *  `usePermissionBypasses` the same way the allowlist broadcast
+ *  drives its hook. */
+export interface PermissionBypassesUpdatedMessage {
+  type: 'permission_bypasses_updated';
+}
+
+/** Broadcast whenever the Claude Code sync engine transitions
+ *  (start/stop), finishes a pull or push cycle, or records a new
+ *  error. Payload is the full current status so consumers don't have
+ *  to track deltas. Fired on every toggle so the UI reflects the
+ *  active state without polling. */
+export interface ClaudeSyncStatusMessage {
+  type: 'claude_sync_status';
+  status: ClaudeSyncStatus;
 }
 
 /** Broadcast once per OTEL HTTP batch (metrics or logs) after any events
@@ -303,6 +343,15 @@ export interface DaemonLogsClearedMessage {
   type: 'daemon_logs_cleared';
 }
 
+/** Broadcast after a successful `clear_request_logs` so every connected UI
+ *  invalidates its detail cache in lock-step. Carries the deleted row count
+ *  as feedback for the triggering client; other clients just use it as a
+ *  cache-bust signal. */
+export interface RequestLogsClearedMessage {
+  type: 'request_logs_cleared';
+  deleted: number;
+}
+
 /** Broadcast after the user adds an account and we discover (via
  *  `/api/bootstrap`) that the same claude.ai login carries memberships
  *  in additional chat-capable orgs that Sentinel doesn't yet know
@@ -365,6 +414,9 @@ export type DaemonToAppMessage =
   | SecurityEventDetectedMessage
   | SecurityBlockPendingMessage
   | SecurityBlockResolvedMessage
+  | SecurityAllowlistUpdatedMessage
+  | PermissionBypassesUpdatedMessage
+  | ClaudeSyncStatusMessage
   | MetricsUpdatedMessage
   | OverageGrantsUpdatedMessage
   | SpendUpdateMessage
@@ -373,6 +425,7 @@ export type DaemonToAppMessage =
   | ClaudeAiUsageUpdatedMessage
   | DaemonLogMessage
   | DaemonLogsClearedMessage
+  | RequestLogsClearedMessage
   | OauthAuthorizeUrlMessage
   | AdditionalOrgsAvailableMessage
   | PermissionRulesChangedMessage
@@ -681,14 +734,75 @@ export interface RemoveSecurityAllowlistMessage {
   id: number;
 }
 
+/** List all rows in the per-rule input bypass table for the
+ *  Settings → Tool Permissions UI. No filters — the table is small by
+ *  design (user-curated allow-through), so returning the full set
+ *  keeps the hook simple. */
+export interface GetPermissionBypassesMessage {
+  type: 'get_permission_bypasses';
+}
+
+/** Remove a single bypass row. The Settings list's per-row trash
+ *  icon is the only producer today — approval-time inserts happen
+ *  inside `approve_blocked_request` via the new `addBypass` flag. */
+export interface RemovePermissionBypassMessage {
+  type: 'remove_permission_bypass';
+  id: number;
+}
+
+/** Force a one-shot pull from Claude Code's settings.json into
+ *  Sentinel. Used by the Settings "Import now" button when the user
+ *  wants to reconcile without toggling the engine on/off. Applies
+ *  reconciliation identical to the watcher-driven pull. */
+export interface ClaudeSyncPullMessage {
+  type: 'claude_sync_pull';
+  /** Direction for the very first pull after enabling sync: 'merge'
+   *  keeps both sets, 'import' overwrites matching Sentinel rules
+   *  with Claude Code's, 'export' ignores the file this one time and
+   *  forces a push. Only honoured by first-enable; subsequent
+   *  manual pulls always merge. */
+  mode?: 'merge' | 'import' | 'export';
+}
+
+/** Force a one-shot push from Sentinel's rules DB out to Claude
+ *  Code's settings.json. Used by the Settings "Export now" button. */
+export interface ClaudeSyncPushMessage {
+  type: 'claude_sync_push';
+}
+
+/** Trigger the scanner's in-process microbenchmark. The daemon
+ *  spins up a throwaway scanner, runs synthetic bodies at
+ *  `[1, 2, 4, 8, 16]` MB through the synchronous path, and returns
+ *  per-size timings plus a recommended threshold. Blocking in terms
+ *  of the IPC response — takes several seconds on typical hardware.
+ *  Also persists the result to `Settings.lastScanBenchmark` so other
+ *  UI surfaces can read it without re-running. */
+export interface RunScanBenchmarkMessage {
+  type: 'run_scan_benchmark';
+}
+
+/** Read the current sync status without waiting for the next
+ *  broadcast. Useful on UI mount so the subsection doesn't render a
+ *  flash of "(unknown)". */
+export interface GetClaudeSyncStatusMessage {
+  type: 'get_claude_sync_status';
+}
+
 /** Approve a held outbound block. The daemon adds the block's match to
  *  the allowlist (so subsequent identical matches are silently allowed),
  *  releases the request to flow upstream, and broadcasts
  *  `security_block_resolved`. No-op if the pending block has already
- *  timed out or been denied. */
+ *  timed out or been denied.
+ *
+ *  When `addBypass: true` on a `permissions_tool_use` pending entry,
+ *  the daemon also inserts a `permission_bypass` row so future
+ *  identical calls to the same tool + input short-circuit the rule.
+ *  Ignored for scanner pending blocks and for `permissions_strip`
+ *  (which doesn't have a tool input to key on). */
 export interface ApproveBlockedRequestMessage {
   type: 'approve_blocked_request';
   pendingId: string;
+  addBypass?: boolean;
 }
 
 /** Deny a held outbound block. The daemon synthesizes the 403 and
@@ -719,6 +833,20 @@ export interface ClearDaemonLogsMessage {
   type: 'clear_daemon_logs';
 }
 
+/** Fetch the full captured request/response detail for a single proxied
+ *  call. Response payload is `RequestDetail | null` — null when the id is
+ *  unknown (e.g. the row was purged by retention, or the user cleared logs). */
+export interface GetRequestDetailMessage {
+  type: 'get_request_detail';
+  requestId: string;
+}
+
+/** Delete every row in the request-logs DB and broadcast
+ *  `request_logs_cleared`. Response payload is `{ deleted: number }`. */
+export interface ClearRequestLogsMessage {
+  type: 'clear_request_logs';
+}
+
 /** Synthesize a security finding through the normal persist + broadcast
  *  path. Used by `scripts/security-test.mjs` to exercise the UI without
  *  having to actually elicit a model response or leak a real secret.
@@ -729,15 +857,50 @@ export interface ClearDaemonLogsMessage {
 export type SecurityTestScenario =
   | 'risky-bash'
   | 'risky-write'
+  | 'risky-write-medium'
   | 'risky-webfetch'
   | 'tool-use-low-severity'
-  | 'pending-block';
+  | 'pending-block'
+  | 'secret-anthropic'
+  | 'secret-openai'
+  | 'secret-github-pat'
+  | 'secret-private-key'
+  | 'scan-truncated'
+  | 'scan-skipped-encoding'
+  | 'scan-deferred-oversized'
+  | 'permissions-strip'
+  | 'permissions-tool-use-block'
+  | 'permissions-tool-use-pending';
 
 export interface DevTriggerSecurityEventMessage {
   type: 'dev_trigger_security_event';
   scenario: SecurityTestScenario;
   /** Account to attribute the synthetic event to. Defaults to 'default'
    *  when omitted so the script works without knowing the active key. */
+  accountId?: string;
+}
+
+/** Synthesize a non-security alert (usage / overage / spend / account lifecycle)
+ *  through the normal persist + broadcast path. Used by
+ *  `scripts/alerts-test.mjs` to exercise the Alerts tab and OS notifications
+ *  without needing to move real usage/spend across thresholds. Synthetic
+ *  triggers do NOT mutate real alert-row `last_triggered_reset_ts` or the
+ *  SpendTracker's paused set — safe to run repeatedly. */
+export type AlertTestScenario =
+  | 'usage-account'
+  | 'usage-pool'
+  | 'usage-budget'
+  | 'overage-entered'
+  | 'overage-disabled'
+  | 'account-switched'
+  | 'account-paused'
+  | 'account-unpaused';
+
+export interface DevTriggerAlertEventMessage {
+  type: 'dev_trigger_alert_event';
+  scenario: AlertTestScenario;
+  /** Account to attribute the synthetic event to. Defaults to the active
+   *  account or 'default' when omitted. Ignored for pool-scope scenarios. */
   accountId?: string;
 }
 
@@ -883,11 +1046,19 @@ export type AppToDaemonMessage =
   | GetSecurityAllowlistMessage
   | AddSecurityAllowlistMessage
   | RemoveSecurityAllowlistMessage
+  | GetPermissionBypassesMessage
+  | RemovePermissionBypassMessage
+  | RunScanBenchmarkMessage
+  | ClaudeSyncPullMessage
+  | ClaudeSyncPushMessage
+  | GetClaudeSyncStatusMessage
   | ApproveBlockedRequestMessage
   | DenyBlockedRequestMessage
   | ListPendingBlocksMessage
   | GetDaemonLogsMessage
   | ClearDaemonLogsMessage
+  | GetRequestDetailMessage
+  | ClearRequestLogsMessage
   | GetOverageGrantsMessage
   | RefreshOverageGrantsMessage
   | GetSpendSummaryMessage
@@ -897,13 +1068,14 @@ export type AppToDaemonMessage =
   | GetClaudeAiUsageMessage
   | RefreshClaudeAiUsageMessage
   | DevTriggerSecurityEventMessage
+  | DevTriggerAlertEventMessage
   | ListPermissionRulesMessage
   | UpsertPermissionRuleMessage
   | DeletePermissionRuleMessage
   | GetPermissionsStatusMessage;
 
 /** Response payload alias re-exports for convenience in consumers. */
-export type { Settings, Alert, NotificationRecord, MetricsSummary, OverageCreditGrant, SecurityEvent, SecurityAllowlistEntry, PendingSecurityBlock, LogEntry, LogLevel, PermissionRule, PermissionRuleInput, AutoModeStatus };
+export type { Settings, Alert, NotificationRecord, MetricsSummary, OverageCreditGrant, SecurityEvent, SecurityAllowlistEntry, PermissionBypassEntry, ClaudeSyncStatus, PendingSecurityBlock, PendingBlockSource, LogEntry, LogLevel, PermissionRule, PermissionRuleInput, AutoModeStatus, RequestDetail, SecurityBenchmarkResult };
 
 // ─── All IPC messages ─────────────────────────────────────────────────────────
 

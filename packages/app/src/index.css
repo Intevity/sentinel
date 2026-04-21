@@ -83,6 +83,16 @@
   .highlight-flash {
     animation: sentinel-flash 1.5s ease-out;
   }
+
+  /* Glow ring used by Security-tab rows when the user lands on them
+     via the Details button on an OS notification. Two bright pulses
+     that fade to transparent so the ring vanishes even if the JS
+     that toggles the class somehow fails to remove it on time. Uses
+     `box-shadow` rather than `ring-*` utilities so the glow bleeds
+     outside the card's rounded corners for a softer effect. */
+  .security-row-flash {
+    animation: security-row-flash 2s ease-out forwards;
+  }
 }
 
 @keyframes sentinel-flash {
@@ -91,4 +101,22 @@
   50%  { background-color: rgba(10, 132, 255, 0.05); }
   70%  { background-color: rgba(10, 132, 255, 0.18); }
   100% { background-color: rgba(10, 132, 255, 0); }
+}
+
+@keyframes security-row-flash {
+  0%   { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0); }
+  10%  { box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.55), 0 0 18px 4px rgba(10, 132, 255, 0.35); }
+  45%  { box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.2),  0 0 10px 3px rgba(10, 132, 255, 0.12); }
+  65%  { box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.45), 0 0 14px 4px rgba(10, 132, 255, 0.28); }
+  100% { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0); }
+}
+
+@keyframes sentinel-shield-pulse {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 1; }
+}
+.sentinel-shield-pulse { animation: sentinel-shield-pulse 2.2s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sentinel-shield-pulse { animation: none; opacity: 1; }
 }

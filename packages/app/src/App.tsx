@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Users, Activity, BarChart3, AlertTriangle, Bell, Shield, ScrollText, Loader2, Settings as SettingsIcon, Repeat, HelpCircle } from 'lucide-react';
+import SecurityShield from './components/SecurityShield.js';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import AccountSwitcher from './components/AccountSwitcher.js';
 import AccountColorDot from './components/AccountColorDot.js';
@@ -13,6 +14,7 @@ import ActivationBanner from './components/ActivationBanner.js';
 import HeaderMenu from './components/HeaderMenu.js';
 import PersistenceBanner from './components/PersistenceBanner.js';
 import SettingsPanel from './components/SettingsPanel.js';
+import SecurityRulesOverlay, { type SecurityOverlayTab } from './components/SecurityRulesOverlay.js';
 import SecurityPanel from './components/SecurityPanel.js';
 import SecurityEnforcementModal from './components/SecurityEnforcementModal.js';
 import SecuritySetupWizard from './components/SecuritySetupWizard.js';
@@ -30,6 +32,7 @@ import { usePendingSiblings } from './hooks/usePendingSiblings.js';
 import { planLabel, planColor } from './lib/plan.js';
 import { DUR, EASE_STD } from './lib/motion.js';
 import { sendToSentinel } from './lib/ipc.js';
+import { listen } from '@tauri-apps/api/event';
 
 type Tab = 'accounts' | 'usage' | 'metrics' | 'overage' | 'notifications' | 'security' | 'logs';
 
@@ -45,7 +48,18 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
 
 export default function App(): React.ReactElement {
   const [activeTab, setActiveTab] = useState<Tab>('accounts');
+  // Deep-link target for the Security tab, set by the "Details"
+  // action on an OS security notification. SecurityPanel reads this
+  // prop, expands the matching row on mount/change, and calls
+  // `onSecurityExpandHandled` to clear it. Gets set alongside
+  // activeTab='security' in the notify-event listener below.
+  const [securityExpandEventId, setSecurityExpandEventId] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Tool-permission rules editor. Lifted to App level so the overlay has its
+  // own positioning context (inside SettingsPanel it pinned to the top of the
+  // Settings scroll area and appeared off-screen when the user was scrolled
+  // down). Also reachable directly via the Shield icon in the header.
+  const [rulesOpen, setRulesOpen] = useState(false);
   // Deep-link target inside the Settings panel. When set before opening,
   // SettingsPanel scrolls to the matching element id and flashes it.
   const [settingsScrollTarget, setSettingsScrollTarget] = useState<string | null>(null);
@@ -55,11 +69,35 @@ export default function App(): React.ReactElement {
   };
   const { connected, activeAccount, accounts, rateLimitsVersion, overageVersion, probingAccountId, initializing, refetch } = useDaemon();
   const { recentErrors, hasUnseenErrors, markErrorsSeen } = useDaemonErrors();
-  const { settings } = useSettings();
+  const { settings, update: updateSettings } = useSettings();
+  // Which tab the SecurityRulesOverlay opens on. Header-shield click opens
+  // 'rules' by default; Settings' "Manage allowlist…" button flips this to
+  // 'allowlist' before opening the overlay.
+  const [securityOverlayTab, setSecurityOverlayTab] = useState<SecurityOverlayTab>('rules');
   // Mount the app-global native-notification listener. Must live here (not
   // in a per-tab component) so banners fire on any tab and while the
   // window is hidden in the tray.
   useNativeAlertNotifications();
+
+  // Listen for the Details-action event fired by
+  // `display_os_notification` when the user taps the Details button
+  // or the notification body (and an eventId was present on the
+  // broadcast).
+  // Rust-side shows+focuses the main window before emitting; here we
+  // just flip the active tab to Security and pass the eventId through
+  // to SecurityPanel so it auto-expands the right row. Lives in App
+  // for the same reason the native-notification listener does —
+  // needs to react regardless of which tab the user was last on.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<{ eventId: number }>('security_notification_details', (event) => {
+      setActiveTab('security');
+      setSecurityExpandEventId(event.payload.eventId);
+    })
+      .then((fn) => { unlisten = fn; })
+      .catch(() => undefined);
+    return () => { unlisten?.(); };
+  }, []);
   const isRoundRobin = settings?.switchingMode === 'round-robin';
   // Picker status props — pulled once here so every tab's AccountViewPicker
   // renders identical status pills (Active / Excluded) driven by the same
@@ -109,7 +147,7 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     if (!settings) return;
     if (tourOpen) return;
-    if (settingsOpen || enforcementModalOpen) return;
+    if (settingsOpen || rulesOpen || enforcementModalOpen) return;
     if (tourForceOpen) {
       tourClosedThisSession.current = false;
       setTourOpen(true);
@@ -125,6 +163,7 @@ export default function App(): React.ReactElement {
     tourOpen,
     connected,
     settingsOpen,
+    rulesOpen,
     enforcementModalOpen,
     settings,
   ]);
@@ -278,12 +317,25 @@ export default function App(): React.ReactElement {
           {isRoundRobin && (
             <span
               className="inline-flex items-center gap-1 text-[9px] font-semibold text-ios-blue bg-ios-blue/10 px-1.5 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0 whitespace-nowrap"
-              title={`Round-robin is on — rotating requests using the "${rrStrategyLabel}" strategy`}
+              title={`Round-robin is on; rotating requests using the "${rrStrategyLabel}" strategy`}
             >
               <Repeat size={9} strokeWidth={2.5} />
               Round-Robin · {rrStrategyLabel}
             </span>
           )}
+          <button
+            onClick={() => {
+              setSecurityOverlayTab('rules');
+              setRulesOpen(true);
+            }}
+            className="inline-flex items-center justify-center hover:opacity-80 transition-opacity p-0.5 -m-0.5 flex-shrink-0 leading-none"
+            aria-label="Security"
+          >
+            <SecurityShield
+              scanOn={settings?.securityScanEnabled ?? false}
+              permsOn={settings?.toolPermissionsEnabled ?? false}
+            />
+          </button>
           <button
             onClick={() => setSettingsOpen(true)}
             className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5 flex-shrink-0"
@@ -310,6 +362,31 @@ export default function App(): React.ReactElement {
             onRunSetupWizard={() => {
               setSettingsOpen(false);
               setSettingsScrollTarget(null);
+              setWizardForceOpen(true);
+            }}
+            onManageRules={() => {
+              setSettingsOpen(false);
+              setSettingsScrollTarget(null);
+              setSecurityOverlayTab('rules');
+              setRulesOpen(true);
+            }}
+            onManageAllowlist={() => {
+              setSettingsOpen(false);
+              setSettingsScrollTarget(null);
+              setSecurityOverlayTab('allowlist');
+              setRulesOpen(true);
+            }}
+          />
+        )}
+        {rulesOpen && !settingsOpen && (
+          <SecurityRulesOverlay
+            onClose={() => setRulesOpen(false)}
+            measureRef={overlayRef}
+            initialTab={securityOverlayTab}
+            settings={settings}
+            updateSettings={updateSettings}
+            onRunSetupWizard={() => {
+              setRulesOpen(false);
               setWizardForceOpen(true);
             }}
           />
@@ -373,7 +450,7 @@ export default function App(): React.ReactElement {
                     key={id}
                     onClick={() => setActiveTab(id)}
                     data-tour-id={`tab-${id}`}
-                    className={`relative flex-1 flex items-center justify-center gap-1 py-1.5 rounded-[9px] text-[11px] font-medium transition-colors duration-150 ${
+                    className={`relative flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-[9px] text-[11px] font-medium transition-colors duration-150 ${
                       active
                         ? 'text-black dark:text-white'
                         : 'text-[#8E8E93] hover:text-black dark:hover:text-white'
@@ -386,7 +463,7 @@ export default function App(): React.ReactElement {
                         transition={{ type: 'spring', stiffness: 500, damping: 40 }}
                       />
                     )}
-                    <span className="relative z-10 flex items-center gap-1">
+                    <span className="relative z-10 flex items-center gap-1 transform-gpu">
                       <Icon size={11} strokeWidth={2.2} />
                       {label}
                     </span>
@@ -507,7 +584,12 @@ export default function App(): React.ReactElement {
                           onChange={(v) => setSecurityView(v === POOL_VIEW ? undefined : v)}
                         />
                       );
-                      return <>{picker}<SecurityPanel viewAccountId={securityView} onRequestOpenSettings={openSettingsAt} /></>;
+                      return <>{picker}<SecurityPanel
+                        viewAccountId={securityView}
+                        onRequestOpenSettings={openSettingsAt}
+                        autoExpandEventId={securityExpandEventId}
+                        onAutoExpandHandled={() => setSecurityExpandEventId(null)}
+                      /></>;
                     }
                     return null;
                   })()}

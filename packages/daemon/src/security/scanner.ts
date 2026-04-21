@@ -7,6 +7,7 @@ import type {
   SecurityOsNotifyThreshold,
   NotificationType,
   PendingSecurityBlock,
+  SecurityTestScenario,
 } from '@claude-sentinel/shared';
 import type { IpcServer } from '../ipc.js';
 import {
@@ -129,13 +130,6 @@ export interface SecurityScanner {
   triggerTestScenario(scenario: SecurityTestScenario, accountId: string): void;
 }
 
-export type SecurityTestScenario =
-  | 'risky-bash'
-  | 'risky-write'
-  | 'risky-webfetch'
-  | 'tool-use-low-severity'
-  | 'pending-block';
-
 /** In-memory record for a held outbound block. Keyed by `pendingId` in
  *  the scanner's `pendingBlocks` map; resolved by the UI or by the
  *  timeout timer, whichever fires first. */
@@ -244,6 +238,9 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
         kind: finding.kind,
         title: finding.title,
         blocked,
+        // Row id lets the OS-notification Details action deep-link
+        // straight into this exact event in the Security panel.
+        eventId: result.id,
       });
     } catch (err) {
       console.error('[Security] broadcast failed:', err);
@@ -257,6 +254,16 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     title: string,
     reason: string,
   ): void => {
+    // Per-kind mute gate. When the user has muted a synthetic kind
+    // via Settings, we drop the event entirely — no DB row, no
+    // broadcast, no OS notification. The actual scan still runs (for
+    // the deferred path, `runOutboundObserve` fires regardless); only
+    // the informational telemetry is silenced.
+    const s = deps.getSettings();
+    if (kind === 'scan_deferred_oversized' && s.securityMuteScanDeferred) return;
+    if (kind === 'scan_truncated' && s.securityMuteScanTruncated) return;
+    if (kind === 'scan_skipped_encoding' && s.securityMuteScanSkipped) return;
+
     const finding: Finding = {
       detectorId,
       kind,
@@ -349,11 +356,17 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
       scanToolUse: settings.securityScanToolUse,
     };
 
-    // Oversized bodies bypass synchronous scanning to avoid blowing the
-    // proxy latency budget — we defer to setImmediate and treat them as
-    // observe-only for that one request.
-    const OVERSIZE_THRESHOLD = 1 * 1024 * 1024;
-    if (body.length > OVERSIZE_THRESHOLD) {
+    // Oversized bodies normally bypass synchronous scanning to avoid
+    // blowing the proxy latency budget — we defer to setImmediate and
+    // treat them as observe-only for that one request. The threshold
+    // is user-configurable (securityOversizedThresholdMb, 1–16 MB).
+    // When the user opts in via `securityScanOversizedSync`, we skip
+    // the defer branch entirely and fall through to the synchronous
+    // block-gate below — paying the latency cost but gaining the
+    // ability to block on oversized payloads.
+    const thresholdMb = settings.securityOversizedThresholdMb ?? 1;
+    const thresholdBytes = thresholdMb * 1024 * 1024;
+    if (body.length > thresholdBytes && !settings.securityScanOversizedSync) {
       emitSynthetic(
         accountId,
         'scan_deferred_oversized',
@@ -644,6 +657,119 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
           // provenance" gate — same path as a real Read-tool_result leak.
           provenance: 'file-read',
         };
+      case 'risky-write-medium':
+        return {
+          ...base,
+          detectorId: 'risky-write-medium',
+          kind: 'risky_write',
+          severity: 'medium',
+          confidence: 0.75,
+          title: 'Credential-adjacent file write (synthetic)',
+          reason: 'TEST SCENARIO — `pnpm security:test risky-write-medium`',
+          matchMask: '~/.np[... test ...]rc',
+          snippet: 'TEST: Write → ~/.npmrc',
+          provenance: 'tool-use',
+        };
+      case 'secret-anthropic':
+        return {
+          ...base,
+          detectorId: 'anthropic-key',
+          kind: 'secret',
+          severity: 'high',
+          confidence: 0.95,
+          title: 'Anthropic API key (synthetic)',
+          reason: 'TEST SCENARIO — `pnpm security:test secret-anthropic`',
+          matchMask: 'sk-ant-[... synthetic ...]TEST',
+          snippet: 'TEST: sk-ant-api03-… in request body',
+          provenance: 'conversation',
+        };
+      case 'secret-openai':
+        return {
+          ...base,
+          detectorId: 'openai-key',
+          kind: 'secret',
+          severity: 'high',
+          confidence: 0.95,
+          title: 'OpenAI API key (synthetic)',
+          reason: 'TEST SCENARIO — `pnpm security:test secret-openai`',
+          matchMask: 'sk-proj[... synthetic ...]TEST',
+          snippet: 'TEST: sk-… in request body',
+          provenance: 'conversation',
+        };
+      case 'secret-github-pat':
+        return {
+          ...base,
+          detectorId: 'github-pat',
+          kind: 'secret',
+          severity: 'high',
+          confidence: 0.95,
+          title: 'GitHub fine-grained PAT (synthetic)',
+          reason: 'TEST SCENARIO — `pnpm security:test secret-github-pat`',
+          matchMask: 'github_pat_[... synthetic ...]TEST',
+          snippet: 'TEST: github_pat_… in request body',
+          provenance: 'conversation',
+        };
+      case 'secret-private-key':
+        return {
+          ...base,
+          detectorId: 'private-key-block',
+          kind: 'secret',
+          severity: 'high',
+          confidence: 0.95,
+          title: 'Private key block (synthetic)',
+          reason: 'TEST SCENARIO — `pnpm security:test secret-private-key`',
+          matchMask: '-----BEGIN [... synthetic ...] KEY-----',
+          snippet: 'TEST: -----BEGIN PRIVATE KEY-----',
+          provenance: 'conversation',
+        };
+      case 'scan-truncated':
+        return {
+          ...base,
+          detectorId: 'scan_truncated',
+          kind: 'scan_truncated',
+          severity: 'low',
+          confidence: 0.99,
+          title: 'Scan truncated (synthetic)',
+          reason: 'TEST SCENARIO — response exceeded tap budget',
+          matchMask: '',
+          snippet: '',
+          provenance: 'telemetry',
+        };
+      case 'scan-skipped-encoding':
+        return {
+          ...base,
+          detectorId: 'scan_skipped_encoding',
+          kind: 'scan_skipped_encoding',
+          severity: 'low',
+          confidence: 0.99,
+          title: 'Scan skipped — non-UTF8 payload (synthetic)',
+          reason: 'TEST SCENARIO — encoding error during scan',
+          matchMask: '',
+          snippet: '',
+          provenance: 'telemetry',
+        };
+      case 'scan-deferred-oversized':
+        return {
+          ...base,
+          detectorId: 'scan_deferred_oversized',
+          kind: 'scan_deferred_oversized',
+          severity: 'low',
+          confidence: 0.99,
+          title: 'Scan deferred — oversized payload (synthetic)',
+          reason: 'TEST SCENARIO — oversized body deferred to background',
+          matchMask: '',
+          snippet: '',
+          provenance: 'telemetry',
+        };
+      case 'permissions-strip':
+      case 'permissions-tool-use-block':
+      case 'permissions-tool-use-pending':
+        // Permissions scenarios are dispatched to the enforcer, not the
+        // scanner. The IPC handler in index.ts routes these before calling
+        // scanner.triggerTestScenario, so they should never reach here.
+        throw new Error(
+          `Scenario ${scenario} must be dispatched to the permissions enforcer, not the scanner`,
+        );
     }
   };
 
@@ -669,11 +795,14 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
       return;
     }
 
-    // All other scenarios are observe-path findings. Tool_use scenarios
-    // go in as direction='tool_use'; a synthetic low-severity scenario
-    // we treat as tool_use too since it's emulating a response-side
-    // tap finding.
-    const direction: 'outbound' | 'tool_use' = 'tool_use';
+    // Route direction by provenance:
+    //   tool-use → response-side tap ('tool_use')
+    //   telemetry / conversation / file-read / system-prompt → outbound
+    // This mirrors how real findings flow into persistAndBroadcast: the
+    // scanner passes 'tool_use' only for response-tap findings; everything
+    // else comes in as 'outbound'.
+    const direction: 'outbound' | 'tool_use' =
+      finding.provenance === 'tool-use' ? 'tool_use' : 'outbound';
     persistAndBroadcast(accountId, finding, direction);
   };
 

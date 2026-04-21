@@ -1,11 +1,13 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { Shield, ShieldAlert, ShieldX, Check, CheckCheck, Trash2, ShieldOff, FolderOpen, Terminal, MessageSquare, Settings2, Info, ChevronDown, ChevronRight, Zap } from 'lucide-react';
+import { Shield, ShieldAlert, ShieldX, Check, CheckCheck, Trash2, ShieldOff, FolderOpen, Terminal, MessageSquare, Settings2, Info, ChevronDown, ChevronRight, Zap, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import type { SecurityEvent, SecuritySeverity, SecurityKind, AutoModeStatus } from '@claude-sentinel/shared';
 import { useSecurityEvents } from '../hooks/useSecurityEvents.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { useAutoModeStatus } from '../hooks/useAutoModeStatus.js';
+import { usePermissionRules } from '../hooks/usePermissionRules.js';
 import { QuickToggle, QuickSegmented, QuickChipToggle } from './settings/primitives.js';
+import InfoTooltip from './InfoTooltip.js';
 
 /** Inline two-click confirm: first click transitions into `pending`
  *  state which reverts after `timeoutMs`. Second click while pending
@@ -43,6 +45,14 @@ interface SecurityPanelProps {
   /** Opens the Settings panel and smooth-scrolls to the given anchor id.
    *  Invoked from the "Enable in Settings" button when scanning is off. */
   onRequestOpenSettings?: (target: string) => void;
+  /** Row id to auto-expand (and flash) when this panel mounts or this
+   *  prop changes. Used when the user clicks the "Details" action on
+   *  an OS security notification — the Rust side switches the active
+   *  tab to Security and passes the security_events row id here. */
+  autoExpandEventId?: number | null;
+  /** Called once the auto-expand has been applied so the parent can
+   *  clear its state and not re-expand on subsequent renders. */
+  onAutoExpandHandled?: () => void;
 }
 
 const SEVERITY_META: Record<SecuritySeverity, { Icon: typeof Shield; color: string; bg: string; label: string }> = {
@@ -109,7 +119,12 @@ function ProvenanceBadge({ provenance }: { provenance: SecurityEvent['provenance
 type SeverityFilter = 'all' | SecuritySeverity;
 type KindFilter = 'all' | SecurityKind;
 
-export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: SecurityPanelProps): React.ReactElement {
+export default function SecurityPanel({
+  viewAccountId,
+  onRequestOpenSettings,
+  autoExpandEventId,
+  onAutoExpandHandled,
+}: SecurityPanelProps): React.ReactElement {
   const { settings, update } = useSettings();
   const autoMode = useAutoModeStatus();
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
@@ -118,13 +133,104 @@ export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: 
   const [search, setSearch] = useState('');
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  /** Row id currently flashing after an auto-expand from an OS
+   *  notification. Used to add a brief ring highlight so the user can
+   *  spot where they landed in a long event list. Cleared by a
+   *  self-timeout 2 s after the flash starts. */
+  const [flashEventId, setFlashEventId] = useState<number | null>(null);
 
   const { events, loading, error, acknowledge, acknowledgeAll, clearAll, addToAllowlist } = useSecurityEvents({
     ...(viewAccountId !== undefined ? { accountId: viewAccountId } : {}),
     includeWeakSignals,
   });
 
+  // Auto-expand + scroll + flash when the parent hands us a target id
+  // from a notification click. Runs once per change of
+  // `autoExpandEventId` (guarded by the effect deps) so re-clicking
+  // Details on a subsequent notification re-fires the flash. If the
+  // row isn't in the current event list (likely because filters are
+  // hiding it), still expand + clear filters so the user lands on
+  // something visible rather than an empty list.
+  //
+  // We intentionally do NOT start the flash-clear timer in this
+  // effect: calling `onAutoExpandHandled` synchronously flips
+  // `autoExpandEventId` back to null, which triggers a re-run of
+  // this effect whose cleanup would immediately kill the timer — so
+  // the flash would stick forever. The separate effect below owns
+  // the flash lifecycle, keyed on `flashEventId` which only changes
+  // when a new flash starts or the timer clears it.
+  useEffect(() => {
+    if (autoExpandEventId == null) return;
+    // Clear filters that might hide the target row.
+    setSeverityFilter('all');
+    setKindFilter('all');
+    setSearch('');
+    setExpandedId(autoExpandEventId);
+    setFlashEventId(autoExpandEventId);
+    // Scroll the matching DOM node into view on the next tick so the
+    // expand-triggered height change lands first.
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`security-event-${autoExpandEventId}`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    onAutoExpandHandled?.();
+  }, [autoExpandEventId, onAutoExpandHandled]);
+
+  // Flash auto-clear. Separate effect so the timer isn't tied to the
+  // prop-consumption cycle above. The 2200 ms matches the CSS
+  // `security-flash` animation duration (2 s) + a small buffer so
+  // the ring finishes its fade-out before the class is removed.
+  useEffect(() => {
+    if (flashEventId == null) return;
+    const t = window.setTimeout(() => setFlashEventId(null), 2200);
+    return () => window.clearTimeout(t);
+  }, [flashEventId]);
+
   const clearConfirm = useConfirmButton(clearAll);
+
+  // Transient hint shown after a successful "Always allow" so the user
+  // knows where the new entry lives — the Allowlist section in Settings.
+  // Auto-clears after 5s. Needed because the allowlisted finding also
+  // disappears from the list (dedup by match_hash), leaving the user
+  // with no signal that anything happened otherwise.
+  const [allowlistHintShown, setAllowlistHintShown] = useState(false);
+  const allowlistHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (allowlistHintTimerRef.current) clearTimeout(allowlistHintTimerRef.current);
+  }, []);
+  const handleAllowlist = (eventId: number): void => {
+    void addToAllowlist(eventId);
+    setAllowlistHintShown(true);
+    if (allowlistHintTimerRef.current) clearTimeout(allowlistHintTimerRef.current);
+    allowlistHintTimerRef.current = setTimeout(() => setAllowlistHintShown(false), 5000);
+  };
+
+  // Transient hint shown after a synthetic-kind "Mute these" click.
+  // Separate from the allowlist hint because the copy + deep-link
+  // target differ; reusing the same state would let a stale toast
+  // flicker between the two actions.
+  const [muteHintShown, setMuteHintShown] = useState(false);
+  const muteHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (muteHintTimerRef.current) clearTimeout(muteHintTimerRef.current);
+  }, []);
+  const handleMute = (event: SecurityEvent): void => {
+    // Map the synthetic kind to its matching Settings flag. The three
+    // `scan_*` kinds are exhaustive — any future synthetic would fall
+    // through this switch and silently do nothing (safe default).
+    let patch: Partial<import('@claude-sentinel/shared').Settings> | null = null;
+    if (event.kind === 'scan_deferred_oversized') patch = { securityMuteScanDeferred: true };
+    else if (event.kind === 'scan_truncated') patch = { securityMuteScanTruncated: true };
+    else if (event.kind === 'scan_skipped_encoding') patch = { securityMuteScanSkipped: true };
+    if (!patch) return;
+    void update(patch).catch(() => undefined);
+    // Acknowledge the current row too so it fades alongside the mute
+    // — keeps the user's hands on one action per decision.
+    void acknowledge(event.id);
+    setMuteHintShown(true);
+    if (muteHintTimerRef.current) clearTimeout(muteHintTimerRef.current);
+    muteHintTimerRef.current = setTimeout(() => setMuteHintShown(false), 5000);
+  };
 
   // NOTE: all hooks must run unconditionally before any early return below.
   // React error #300 ("Rendered fewer hooks than expected") fires if a
@@ -161,29 +267,74 @@ export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: 
     return parts.join(' · ');
   }, [severityFilter, kindFilter, search, includeWeakSignals]);
 
-  // Disabled-state early return. If the user has turned scanning off (or
-  // flipped the master toggle during a session), give them a clear cue
-  // plus a one-click path back to Settings. `settings` is undefined while
-  // loading; fall through to the normal list in that case so the panel
-  // doesn't flash a disabled banner on mount.
-  if (settings && !settings.securityScanEnabled) {
+  // Independent feature flags. Scanning and tool permissions are two
+  // separate subsystems; the tab is useful whenever either is on.
+  // Settings is undefined during the initial load — fall through to
+  // the normal render in that window so we don't flash a disabled
+  // banner before the real state arrives.
+  const scanEnabled = settings?.securityScanEnabled ?? true;
+  const permissionsEnabled = settings?.toolPermissionsEnabled ?? false;
+  const bothOff = settings != null && !scanEnabled && !permissionsEnabled;
+  // When exactly one feature is on, the other has nothing to surface —
+  // narrow the visible list to that feature's kind set so the user
+  // isn't looking at a spurious "no events" message while events of
+  // the OTHER kind are stacking up invisibly.
+  const scannerOnly = scanEnabled && !permissionsEnabled;
+  const permissionsOnly = !scanEnabled && permissionsEnabled;
+  const SCANNER_KINDS = new Set<SecurityKind>([
+    'secret',
+    'pii',
+    'prompt_injection',
+    'risky_bash',
+    'risky_write',
+    'risky_webfetch',
+    'scan_truncated',
+    'scan_skipped_encoding',
+    'scan_deferred_oversized',
+  ]);
+  const modeFilteredEvents = useMemo(() => {
+    if (scannerOnly) return filtered.filter((e) => SCANNER_KINDS.has(e.kind));
+    if (permissionsOnly) return filtered.filter((e) => e.kind === 'tool_permission_blocked');
+    return filtered;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, scannerOnly, permissionsOnly]);
+
+  // Pull permission rules for the status strip's rule count. Hook
+  // always runs (mustn't be gated on bothOff) to keep hook order
+  // stable across renders.
+  const { rules: permissionRules } = usePermissionRules();
+  const enabledRuleCount = permissionRules.filter((r) => r.enabled).length;
+
+  // Fully-disabled short circuit: if the user has turned BOTH features
+  // off, the panel has nothing useful to show — render a single card
+  // with both enable-actions and a deep link to the relevant settings
+  // anchors. Anything less than both-off falls through to the normal
+  // render path below.
+  if (bothOff) {
     return (
       <div className="space-y-2 pt-1">
         <div className="glass-card px-4 py-8 text-center">
           <ShieldOff size={28} className="mx-auto text-[#8E8E93] mb-2" strokeWidth={2} />
           <p className="text-[13px] font-semibold text-black dark:text-white">
-            Security scanning is off
+            Security is off
           </p>
-          <p className="text-[11px] text-[#8E8E93] mt-1 leading-snug max-w-[320px] mx-auto">
-            Outbound secrets, risky tool calls, and injection heuristics
-            are not being checked. Enable scanning to start catching issues.
+          <p className="text-[11px] text-[#8E8E93] mt-1 leading-snug max-w-[340px] mx-auto">
+            Both security scanning and tool permissions are disabled. Enable
+            one (or both) to start catching secrets, injection, risky tool
+            calls, or blocking specific tools.
           </p>
-          <div className="mt-3 flex items-center justify-center gap-2">
+          <div className="mt-3 flex items-center justify-center gap-2 flex-wrap">
             <button
               onClick={() => void update({ securityScanEnabled: true }).catch(() => undefined)}
               className="text-[12px] font-semibold px-3 py-1.5 rounded-full bg-ios-blue text-white hover:bg-ios-blue/90 active:scale-95 transition-all"
             >
               Turn on scanning
+            </button>
+            <button
+              onClick={() => void update({ toolPermissionsEnabled: true }).catch(() => undefined)}
+              className="text-[12px] font-semibold px-3 py-1.5 rounded-full bg-ios-blue text-white hover:bg-ios-blue/90 active:scale-95 transition-all"
+            >
+              Turn on tool permissions
             </button>
             <button
               onClick={() => onRequestOpenSettings?.('security-enable-toggle')}
@@ -198,7 +349,7 @@ export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: 
     );
   }
 
-  const unreadCount = filtered.filter((e) => !e.acknowledged).length;
+  const unreadCount = modeFilteredEvents.filter((e) => !e.acknowledged).length;
 
   return (
     <div className="space-y-2 pt-1">
@@ -212,12 +363,7 @@ export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: 
               {unreadCount}
             </span>
           )}
-          <span
-            className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors cursor-help"
-            title="Sentinel stores redacted fingerprints of findings, never the original secret text."
-          >
-            <Info size={11} strokeWidth={2.2} />
-          </span>
+          <InfoTooltip text="Sentinel stores redacted fingerprints of findings, never the original secret text." />
         </div>
         <div className="flex items-center gap-2">
           {unreadCount > 0 && (
@@ -258,6 +404,20 @@ export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: 
             checked={settings.securityScanEnabled}
             onChange={(v) => void update({ securityScanEnabled: v }).catch(() => undefined)}
             title={settings.securityScanEnabled ? 'Security scanning is on' : 'Security scanning is off'}
+          />
+          <QuickToggle
+            label={
+              settings.toolPermissionsEnabled && enabledRuleCount > 0
+                ? `Permissions · ${enabledRuleCount}`
+                : 'Permissions'
+            }
+            checked={settings.toolPermissionsEnabled}
+            onChange={(v) => void update({ toolPermissionsEnabled: v }).catch(() => undefined)}
+            title={
+              settings.toolPermissionsEnabled
+                ? `Tool permissions are on (${enabledRuleCount} enabled rule${enabledRuleCount === 1 ? '' : 's'})`
+                : 'Tool permissions are off'
+            }
           />
           {settings.securityScanEnabled && (
             <>
@@ -384,23 +544,104 @@ export default function SecurityPanel({ viewAccountId, onRequestOpenSettings }: 
         <div className="glass-card px-3 py-2 text-[11px] text-ios-red">{error}</div>
       )}
 
-      {!loading && filtered.length === 0 && !error ? (
+      {allowlistHintShown && (
+        <div className="glass-card px-3 py-2 text-[11px] text-[#8E8E93] flex items-start gap-2">
+          <Check size={12} className="text-ios-green flex-shrink-0 mt-0.5" strokeWidth={2.5} />
+          <span className="flex-1 leading-snug">
+            Added to allowlist. Manage entries in{' '}
+            <span className="font-semibold text-black dark:text-white">
+              Settings → Security → Allowlist
+            </span>.
+          </span>
+          <button
+            onClick={() => setAllowlistHintShown(false)}
+            className="text-[#8E8E93] hover:text-black dark:hover:text-white p-0.5 -m-0.5 flex-shrink-0"
+            aria-label="Dismiss"
+          >
+            <X size={10} strokeWidth={2.5} />
+          </button>
+        </div>
+      )}
+
+      {muteHintShown && (
+        <div className="glass-card px-3 py-2 text-[11px] text-[#8E8E93] flex items-start gap-2">
+          <Check size={12} className="text-ios-green flex-shrink-0 mt-0.5" strokeWidth={2.5} />
+          <span className="flex-1 leading-snug">
+            Muted. Un-mute from{' '}
+            <button
+              onClick={() => onRequestOpenSettings?.('oversized-threshold-slider')}
+              disabled={!onRequestOpenSettings}
+              className="font-semibold text-ios-blue hover:opacity-80 disabled:opacity-40"
+            >
+              Settings → Security → Oversized request scanning
+            </button>.
+          </span>
+          <button
+            onClick={() => setMuteHintShown(false)}
+            className="text-[#8E8E93] hover:text-black dark:hover:text-white p-0.5 -m-0.5 flex-shrink-0"
+            aria-label="Dismiss"
+          >
+            <X size={10} strokeWidth={2.5} />
+          </button>
+        </div>
+      )}
+
+      {/* Single-feature hint: when only one subsystem is on, tell the
+          user the list is filtered accordingly and offer a link to the
+          OTHER system's toggle. Silent when both are on (the common
+          case) or when neither is on (short-circuited above). */}
+      {settings && (scannerOnly || permissionsOnly) && (
+        <div className="glass-card px-3 py-2 text-[11px] text-[#8E8E93] flex items-start gap-2">
+          <Info size={12} className="text-ios-blue flex-shrink-0 mt-0.5" strokeWidth={2.5} />
+          <span className="flex-1 leading-snug">
+            {scannerOnly ? (
+              <>
+                Tool permissions are off — only showing scanner findings.{' '}
+                <button
+                  onClick={() => void update({ toolPermissionsEnabled: true }).catch(() => undefined)}
+                  className="font-semibold text-ios-blue hover:opacity-80"
+                >
+                  Turn on tool permissions
+                </button>
+              </>
+            ) : (
+              <>
+                Scanning is off — only showing tool-permission blocks.{' '}
+                <button
+                  onClick={() => void update({ securityScanEnabled: true }).catch(() => undefined)}
+                  className="font-semibold text-ios-blue hover:opacity-80"
+                >
+                  Turn on scanning
+                </button>
+              </>
+            )}
+          </span>
+        </div>
+      )}
+
+      {!loading && modeFilteredEvents.length === 0 && !error ? (
         <div className="glass-card px-4 py-10 text-center">
           <p className="text-[13px] font-medium text-black dark:text-white">No security events</p>
           <p className="text-[11px] text-[#8E8E93] mt-1">
-            Outbound secrets and risky tool calls will appear here when detected.
+            {scannerOnly
+              ? 'Scanner findings will appear here when detected.'
+              : permissionsOnly
+                ? 'Tool-permission blocks will appear here when they fire.'
+                : 'Outbound secrets, risky tool calls, and tool-permission blocks will appear here when detected.'}
           </p>
         </div>
       ) : (
         <div className="space-y-2">
-          {filtered.map((event) => (
+          {modeFilteredEvents.map((event) => (
             <SecurityRow
               key={event.id}
               event={event}
               expanded={expandedId === event.id}
+              flashing={flashEventId === event.id}
               onToggle={() => setExpandedId(expandedId === event.id ? null : event.id)}
               onAcknowledge={() => void acknowledge(event.id)}
-              onAllowlist={() => void addToAllowlist(event.id)}
+              onAllowlist={() => handleAllowlist(event.id)}
+              onMute={() => handleMute(event)}
             />
           ))}
         </div>
@@ -452,7 +693,7 @@ function buildBannerCopy(
     }
     return {
       headline: 'Auto mode active',
-      meta: 'Rules still enforced — toggle "Skip enforcement in auto mode" in Settings to bypass',
+      meta: 'Rules still enforced; toggle "Skip enforcement in auto mode" in Settings to bypass',
     };
   }
 
@@ -606,17 +847,38 @@ function AutoModeBanner({
 interface SecurityRowProps {
   event: SecurityEvent;
   expanded: boolean;
+  /** Temporary attention cue — when true, the row renders a blue
+   *  ring for ~2 s so the user can spot where the notification click
+   *  landed in a long list. Parent clears it via a timer. */
+  flashing?: boolean;
   onToggle: () => void;
   onAcknowledge: () => void;
   onAllowlist: () => void;
+  /** Only meaningful on synthetic `scan_*` rows. Flips the matching
+   *  Settings mute flag so future alerts of this kind are dropped.
+   *  Ignored (and hidden) for real finding rows, which use the
+   *  allowlist path instead. */
+  onMute: () => void;
 }
 
-function SecurityRow({ event, expanded, onToggle, onAcknowledge, onAllowlist }: SecurityRowProps): React.ReactElement {
+function SecurityRow({ event, expanded, flashing, onToggle, onAcknowledge, onAllowlist, onMute }: SecurityRowProps): React.ReactElement {
   const allowConfirm = useConfirmButton(onAllowlist);
+  // Synthetic `scan_*` events are telemetry, not detections. They
+  // don't have a "match" to allowlist — the allowlist key is
+  // `${kind}:${accountId}`, so a single click would silence every
+  // alert of that kind on the account. Offer "Mute these" (a
+  // settings-level per-kind switch) instead, which is the semantically
+  // correct control and is reversible from Settings.
+  const isSynthetic = event.kind.startsWith('scan_');
   const meta = SEVERITY_META[event.severity];
   const { Icon, color, bg, label } = meta;
   return (
-    <div className={`glass-card transition-opacity duration-300 ${event.acknowledged ? 'opacity-45' : ''}`}>
+    <div
+      id={`security-event-${event.id}`}
+      className={`glass-card transition-opacity duration-300 ${
+        event.acknowledged ? 'opacity-45' : ''
+      } ${flashing ? 'security-row-flash' : ''}`}
+    >
       <button
         type="button"
         onClick={onToggle}
@@ -682,6 +944,8 @@ function SecurityRow({ event, expanded, onToggle, onAcknowledge, onAllowlist }: 
               </code>
             </div>
           )}
+          <DetailsList details={event.details} />
+
           <div className="flex items-center gap-1.5 min-w-0">
             <span className="text-[#8E8E93] flex-shrink-0">Origin:</span>
             <ProvenanceBadge provenance={event.provenance} />
@@ -722,25 +986,85 @@ function SecurityRow({ event, expanded, onToggle, onAcknowledge, onAllowlist }: 
             <span className="text-[#8E8E93]">(conf {event.confidence.toFixed(2)})</span>
           </div>
           <div className="pt-1.5 flex items-center justify-between gap-2">
-            <p className="text-[10px] text-[#8E8E93] leading-snug flex-1 min-w-0">
-              "Always allow" adds this exact match to your allowlist so future
-              detections of the same value are silently suppressed.
-            </p>
-            <button
-              onClick={(e) => { e.stopPropagation(); allowConfirm.trigger(); }}
-              className={`flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 ${
-                allowConfirm.pending
-                  ? 'bg-ios-orange text-white'
-                  : 'bg-ios-orange/10 text-ios-orange hover:bg-ios-orange/20'
-              }`}
-              title={allowConfirm.pending ? 'Click again to allow' : 'Suppress all future matches of this exact value'}
-            >
-              <ShieldOff size={10} strokeWidth={2.5} />
-              {allowConfirm.pending ? 'Confirm?' : 'Always allow'}
-            </button>
+            {isSynthetic ? (
+              <>
+                <p className="text-[10px] text-[#8E8E93] leading-snug flex-1 min-w-0">
+                  This is informational telemetry, not a detection.
+                  "Mute these" hides future alerts of this kind until you re-enable them in Settings.
+                </p>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onMute(); }}
+                  className="flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 bg-[#8E8E93]/15 text-[#8E8E93] hover:bg-[#8E8E93]/25"
+                  title="Stop showing alerts of this kind. Reversible from Settings → Security."
+                >
+                  <ShieldOff size={10} strokeWidth={2.5} />
+                  Mute these
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="text-[10px] text-[#8E8E93] leading-snug flex-1 min-w-0">
+                  "Always allow" adds this exact match to your allowlist so future
+                  detections of the same value are silently suppressed.
+                </p>
+                <button
+                  onClick={(e) => { e.stopPropagation(); allowConfirm.trigger(); }}
+                  className={`flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 ${
+                    allowConfirm.pending
+                      ? 'bg-ios-orange text-white'
+                      : 'bg-ios-orange/10 text-ios-orange hover:bg-ios-orange/20'
+                  }`}
+                  title={allowConfirm.pending ? 'Click again to allow' : 'Suppress all future matches of this exact value'}
+                >
+                  <ShieldOff size={10} strokeWidth={2.5} />
+                  {allowConfirm.pending ? 'Confirm?' : 'Always allow'}
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Renders structured tool-call details (url / command / file_path / prompt …)
+ *  below the "Context" row so users can see what was blocked without having to
+ *  parse the snippet string. Internal/reference ids (matchedRuleId, etc.) are
+ *  filtered out — they're already surfaced elsewhere in the expand panel. */
+const DETAILS_INTERNAL_KEYS = new Set([
+  'matchedRuleId',
+  'matchedRuleRaw',
+  'direction',
+  'toolName',
+]);
+const DETAILS_LABEL: Record<string, string> = {
+  url: 'URL',
+  command: 'Command',
+  file_path: 'File',
+  path: 'Path',
+  pattern: 'Pattern',
+  query: 'Query',
+  prompt: 'Prompt',
+  description: 'Description',
+};
+
+function DetailsList({ details }: { details: Record<string, unknown> | null }): React.ReactElement | null {
+  if (!details) return null;
+  const entries = Object.entries(details).filter(
+    ([k, v]) => !DETAILS_INTERNAL_KEYS.has(k) && typeof v === 'string' && v.length > 0,
+  );
+  if (entries.length === 0) return null;
+  return (
+    <div className="space-y-0.5">
+      {entries.map(([k, v]) => (
+        <div key={k} className="flex items-start gap-1.5 min-w-0">
+          <span className="text-[#8E8E93] flex-shrink-0">{DETAILS_LABEL[k] ?? k}:</span>
+          <code className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded break-all min-w-0">
+            {String(v)}
+          </code>
+        </div>
+      ))}
     </div>
   );
 }

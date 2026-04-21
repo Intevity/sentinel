@@ -32,7 +32,7 @@ import type {
 export const SENTINEL_DIR = join(homedir(), '.claude-sentinel');
 export const DB_PATH = join(SENTINEL_DIR, 'sentinel.db');
 
-const SCHEMA = `
+export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
   id            TEXT PRIMARY KEY,
   account_uuid  TEXT,
@@ -246,6 +246,27 @@ CREATE TABLE IF NOT EXISTS security_allowlist (
 
 CREATE INDEX IF NOT EXISTS idx_sec_allow_lookup ON security_allowlist(match_hash, detector_id);
 
+-- Per-rule input bypass. When the user approves a pending tool_use
+-- permission block AND ticks "Always allow this exact input" on the
+-- banner, we record a (rule_id, input_hash) row so the evaluator can
+-- short-circuit the matching deny on future identical calls. Differs
+-- from security_allowlist in that the key is scoped to a specific
+-- permission_rules row rather than a scanner match_hash — disabling
+-- the rule or removing this bypass restores the original prompt flow.
+CREATE TABLE IF NOT EXISTS permission_bypass (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_id     TEXT    NOT NULL,
+  tool_name   TEXT    NOT NULL,
+  input_hash  TEXT    NOT NULL,
+  mask        TEXT    NOT NULL,
+  note        TEXT,
+  created_at  INTEGER NOT NULL,
+  UNIQUE (rule_id, input_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_permission_bypass_rule ON permission_bypass(rule_id);
+CREATE INDEX IF NOT EXISTS idx_permission_bypass_lookup ON permission_bypass(rule_id, input_hash);
+
 -- User-configured tool permission rules evaluated by the proxy against
 -- every outbound /v1/messages request (whole-tool denies) and every
 -- inbound tool_use block (sub-command enforcement). Independent of
@@ -254,17 +275,30 @@ CREATE INDEX IF NOT EXISTS idx_sec_allow_lookup ON security_allowlist(match_hash
 -- packages/daemon/src/security/permissions/ for the evaluator + matchers.
 CREATE TABLE IF NOT EXISTS permission_rules (
   id          TEXT    PRIMARY KEY,
-  decision    TEXT    NOT NULL CHECK(decision IN ('allow','deny')),
+  -- decision is one of 'allow' | 'deny' | 'ask'. We don't use a CHECK
+  -- constraint because 'ask' was added later and SQLite can't relax
+  -- CHECKs without a full table rebuild; the TS layer validates input.
+  decision    TEXT    NOT NULL,
   tool        TEXT    NOT NULL,
   pattern     TEXT,
   raw         TEXT    NOT NULL,
   note        TEXT,
   enabled     INTEGER NOT NULL DEFAULT 1,
   priority    INTEGER NOT NULL,
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  -- Origin of the rule. 'local' for rules authored in Sentinel's UI;
+  -- 'claude-code' for rules imported from ~/.claude/settings.json by
+  -- the sync engine. Drives reconciliation: claude-code rules are
+  -- deleted when they vanish from the file, local rules are not.
+  source      TEXT    NOT NULL DEFAULT 'local'
 );
 
 CREATE INDEX IF NOT EXISTS idx_perm_rules_priority ON permission_rules(priority);
+-- The idx_perm_rules_source index is NOT created here because
+-- existing installs predate the source column. CREATE INDEX ... ON
+-- permission_rules(source) would fail against a legacy table that
+-- still lacks the column. The migration block in getDb() adds the
+-- column first (or rebuilds the table) and creates the index there.
 `;
 
 let _db: Database.Database | null = null;
@@ -365,6 +399,51 @@ export function getDb(dbPath: string = DB_PATH): Database.Database {
   // Index on the newly-added column. Done here (not in SCHEMA) so legacy
   // databases whose alerts table predates the column aren't tripped up.
   _db.exec('CREATE INDEX IF NOT EXISTS idx_alerts_scope ON alerts(scope)');
+
+  // Migrate permission_rules for the `source` column (added for
+  // bi-directional Claude Code sync). Existing rows default to 'local'
+  // so they survive the sync engine's delete-orphans pass. Older DBs
+  // also have a CHECK(decision IN ('allow','deny')) constraint that
+  // would reject 'ask' on import — detected by inspecting sqlite_master
+  // for the literal CHECK text. When present, rebuild the table
+  // (sqlite's only way to relax a CHECK constraint) preserving every
+  // row. The rebuild also adds `source` so we skip the ALTER in that
+  // branch.
+  const prCols = _db.pragma('table_info(permission_rules)') as Array<{ name: string }>;
+  if (prCols.length > 0) {
+    const prSql = _db
+      .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='permission_rules'`)
+      .get() as { sql: string } | undefined;
+    const hasLegacyCheck = prSql?.sql.includes("CHECK(decision IN ('allow','deny'))") === true;
+    const hasSource = prCols.some((c) => c.name === 'source');
+    if (hasLegacyCheck) {
+      _db.exec(`
+        BEGIN;
+        CREATE TABLE permission_rules_new (
+          id          TEXT    PRIMARY KEY,
+          decision    TEXT    NOT NULL,
+          tool        TEXT    NOT NULL,
+          pattern     TEXT,
+          raw         TEXT    NOT NULL,
+          note        TEXT,
+          enabled     INTEGER NOT NULL DEFAULT 1,
+          priority    INTEGER NOT NULL,
+          created_at  INTEGER NOT NULL,
+          source      TEXT    NOT NULL DEFAULT 'local'
+        );
+        INSERT INTO permission_rules_new
+          (id, decision, tool, pattern, raw, note, enabled, priority, created_at, source)
+          SELECT id, decision, tool, pattern, raw, note, enabled, priority, created_at, 'local'
+          FROM permission_rules;
+        DROP TABLE permission_rules;
+        ALTER TABLE permission_rules_new RENAME TO permission_rules;
+        COMMIT;
+      `);
+    } else if (!hasSource) {
+      _db.exec("ALTER TABLE permission_rules ADD COLUMN source TEXT NOT NULL DEFAULT 'local'");
+    }
+  }
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_perm_rules_source ON permission_rules(source)');
 
   // One-time cleanup of double-counted usage_events. A prior version of the
   // OTEL receiver wrote two rows per request: one from the `api_request` log
@@ -1182,6 +1261,105 @@ export function listSecurityAllowlist(db: Database.Database): SecurityAllowlistE
     detectorId: r.detector_id,
     matchMask: r.match_mask,
     title: r.title,
+    note: r.note,
+    createdAt: r.created_at,
+  }));
+}
+
+// ─── Permission-bypass queries ───────────────────────────────────────────────
+
+/**
+ * True when (rule_id, input_hash) is registered as a user-approved bypass.
+ * Called on the hot evaluator path when a deny rule matches — if bypassed,
+ * the evaluator flips the decision to 'allow' without emitting a block.
+ *
+ * Mirrors `isSecurityAllowlisted` in shape (and use site) — the caller owns
+ * any caching that's needed on top.
+ */
+export function isPermissionBypassed(
+  db: Database.Database,
+  ruleId: string,
+  inputHash: string,
+): boolean {
+  const row = db
+    .prepare(
+      'SELECT 1 FROM permission_bypass WHERE rule_id = ? AND input_hash = ? LIMIT 1',
+    )
+    .get(ruleId, inputHash);
+  return row !== undefined;
+}
+
+export interface AddPermissionBypassArgs {
+  ruleId: string;
+  toolName: string;
+  inputHash: string;
+  mask: string;
+  note?: string | null;
+}
+
+/**
+ * Add a (rule_id, input_hash) pair to the bypass table. Idempotent — the
+ * UNIQUE constraint drops duplicate inserts silently. Returns the row id
+ * of the (possibly-existing) bypass.
+ */
+export function addPermissionBypass(
+  db: Database.Database,
+  args: AddPermissionBypassArgs,
+): { id: number } {
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO permission_bypass (rule_id, tool_name, input_hash, mask, note, created_at)
+     VALUES (@ruleId, @toolName, @inputHash, @mask, @note, @createdAt)
+     ON CONFLICT(rule_id, input_hash) DO NOTHING`,
+  ).run({
+    ruleId: args.ruleId,
+    toolName: args.toolName,
+    inputHash: args.inputHash,
+    mask: args.mask,
+    note: args.note ?? null,
+    createdAt: now,
+  });
+  const row = db
+    .prepare(
+      'SELECT id FROM permission_bypass WHERE rule_id = ? AND input_hash = ?',
+    )
+    .get(args.ruleId, args.inputHash) as { id: number };
+  return { id: row.id };
+}
+
+export function removePermissionBypass(db: Database.Database, id: number): boolean {
+  const res = db.prepare('DELETE FROM permission_bypass WHERE id = ?').run(id);
+  return res.changes > 0;
+}
+
+export interface PermissionBypassRow {
+  id: number;
+  ruleId: string;
+  toolName: string;
+  inputHash: string;
+  mask: string;
+  note: string | null;
+  createdAt: number;
+}
+
+export function listPermissionBypasses(db: Database.Database): PermissionBypassRow[] {
+  const rows = db
+    .prepare('SELECT * FROM permission_bypass ORDER BY created_at DESC')
+    .all() as Array<{
+      id: number;
+      rule_id: string;
+      tool_name: string;
+      input_hash: string;
+      mask: string;
+      note: string | null;
+      created_at: number;
+    }>;
+  return rows.map((r) => ({
+    id: r.id,
+    ruleId: r.rule_id,
+    toolName: r.tool_name,
+    inputHash: r.input_hash,
+    mask: r.mask,
     note: r.note,
     createdAt: r.created_at,
   }));
@@ -2081,7 +2259,7 @@ export function getRecentPlugins(
 
 interface DbPermissionRuleRow {
   id: string;
-  decision: 'allow' | 'deny';
+  decision: 'allow' | 'deny' | 'ask';
   tool: string;
   pattern: string | null;
   raw: string;
@@ -2089,6 +2267,10 @@ interface DbPermissionRuleRow {
   enabled: number;
   priority: number;
   created_at: number;
+  // May be missing on rows inserted before the source column was
+  // added. `rowToPermissionRule` coerces the undefined / null to
+  // 'local' so consumers always see a concrete value.
+  source: 'local' | 'claude-code' | null;
 }
 
 function rowToPermissionRule(row: DbPermissionRuleRow): PermissionRule {
@@ -2102,6 +2284,7 @@ function rowToPermissionRule(row: DbPermissionRuleRow): PermissionRule {
     enabled: row.enabled === 1,
     priority: row.priority,
     createdAt: row.created_at,
+    source: row.source ?? 'local',
   };
 }
 
@@ -2131,9 +2314,15 @@ export function upsertPermissionRule(
     if (existing) {
       const enabled = input.enabled ?? existing.enabled === 1 ? 1 : 0;
       const priority = input.priority ?? existing.priority;
+      // `source` is sticky once set — updates from the UI never change
+      // it (a user editing the raw text of an imported rule should
+      // still see it as claude-code so the sync engine keeps managing
+      // it). The sync engine itself overrides via explicit `source`
+      // on the input.
+      const source = input.source ?? (existing.source ?? 'local');
       db.prepare(
         `UPDATE permission_rules
-         SET decision = ?, tool = ?, pattern = ?, raw = ?, note = ?, enabled = ?, priority = ?
+         SET decision = ?, tool = ?, pattern = ?, raw = ?, note = ?, enabled = ?, priority = ?, source = ?
          WHERE id = ?`,
       ).run(
         input.decision,
@@ -2143,6 +2332,7 @@ export function upsertPermissionRule(
         input.note ?? null,
         enabled,
         priority,
+        source,
         input.id,
       );
       const row = db
@@ -2158,9 +2348,10 @@ export function upsertPermissionRule(
     .get() as { p: number }).p;
   const priority = input.priority ?? maxPriority + 10;
   const enabled = (input.enabled ?? true) ? 1 : 0;
+  const source = input.source ?? 'local';
   db.prepare(
-    `INSERT INTO permission_rules (id, decision, tool, pattern, raw, note, enabled, priority, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO permission_rules (id, decision, tool, pattern, raw, note, enabled, priority, created_at, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.decision,
@@ -2171,6 +2362,7 @@ export function upsertPermissionRule(
     enabled,
     priority,
     now,
+    source,
   );
   const row = db
     .prepare('SELECT * FROM permission_rules WHERE id = ?')

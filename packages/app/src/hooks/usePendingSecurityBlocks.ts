@@ -7,8 +7,12 @@ interface UsePendingBlocksResult {
   loading: boolean;
   error: string | null;
   /** Approve a held block. Adds the match to the allowlist, releases
-   *  the held request upstream, and clears the banner. */
-  approve: (pendingId: string) => Promise<void>;
+   *  the held request upstream, and clears the banner.
+   *  `opts.addBypass` — only meaningful for `permissions_tool_use`
+   *  blocks — writes a `permission_bypass` row so subsequent
+   *  identical calls short-circuit the rule. Ignored for scanner
+   *  blocks and for permission strip blocks (no tool input to hash). */
+  approve: (pendingId: string, opts?: { addBypass?: boolean }) => Promise<void>;
   /** Deny a held block. Triggers the 403 immediately and clears the banner. */
   deny: (pendingId: string) => Promise<void>;
   /** Seconds remaining before the approve window expires. Ticks every
@@ -50,8 +54,13 @@ export function usePendingSecurityBlocks(): UsePendingBlocksResult {
     }
   }, []);
 
-  const approve = useCallback(async (pendingId: string) => {
-    await sendToSentinel({ type: 'approve_blocked_request', pendingId }).catch(() => undefined);
+  const approve = useCallback(async (pendingId: string, opts?: { addBypass?: boolean }) => {
+    const payload: { type: 'approve_blocked_request'; pendingId: string; addBypass?: boolean } = {
+      type: 'approve_blocked_request',
+      pendingId,
+    };
+    if (opts?.addBypass) payload.addBypass = true;
+    await sendToSentinel(payload).catch(() => undefined);
     // The daemon broadcasts `security_block_resolved` on success; the
     // subscription below will remove it from state. No optimistic update
     // needed.

@@ -147,7 +147,7 @@ export default function OverageTimeline({ overageVersion, viewAccountId }: Overa
             const color = pe.kind === 'paused' ? 'text-ios-red' : 'text-ios-green';
             const bg = pe.kind === 'paused' ? 'bg-ios-red/10' : 'bg-ios-green/10';
             const label = pe.kind === 'paused'
-              ? (pe.reason === 'sentinel_budget' ? 'Paused by Sentinel budget' : 'Paused — overage disabled')
+              ? (pe.reason === 'sentinel_budget' ? 'Paused by Sentinel budget' : 'Paused: overage disabled')
               : 'Resumed';
             return (
               <div key={pe.id} className="glass-card p-3">

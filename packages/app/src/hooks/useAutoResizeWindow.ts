@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { LogicalSize, getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
-const WIDTH = 500;
+const WIDTH = 540;
 // Footer (~28px) is a sibling of <main>, so the window gets that much taller
 // without stealing from page content.
 const MIN_HEIGHT = 288;

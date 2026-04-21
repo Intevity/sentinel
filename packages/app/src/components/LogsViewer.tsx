@@ -1,8 +1,9 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ChevronDown, ChevronRight, FileJson, FileText, Trash2 } from 'lucide-react';
-import type { LogEntry, LogLevel } from '@claude-sentinel/shared';
+import { ArrowDown, ChevronDown, ChevronRight, Copy, FileJson, FileText, Trash2 } from 'lucide-react';
+import type { LogEntry, LogLevel, RequestDetail } from '@claude-sentinel/shared';
 import { useDaemonLogs } from '../hooks/useDaemonLogs.js';
 import { useSettings } from '../hooks/useSettings.js';
+import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 /** Initial visible window. Rendering 5000 raw DOM rows is laggy; we cap at
  *  500 and offer a "Show all" escape hatch for power users. */
@@ -93,6 +94,63 @@ export default function LogsViewer(): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const isProgrammaticScroll = useRef(false);
   const [stickToBottom, setStickToBottom] = useState(true);
+
+  // Request-detail expansion state for proxy-origin log rows (i.e. rows whose
+  // LogEntry carries a `requestId`). Expanding any row pauses auto-tail via
+  // the existing stickToBottom mechanism — the resume arrow already handles
+  // the user's path back to live-tailing.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [detailCache, setDetailCache] = useState<
+    Record<string, RequestDetail | 'loading' | 'error'>
+  >({});
+
+  const fetchDetail = async (requestId: string): Promise<void> => {
+    setDetailCache((prev) => ({ ...prev, [requestId]: 'loading' }));
+    try {
+      const res = await sendToSentinel<RequestDetail | null>({
+        type: 'get_request_detail',
+        requestId,
+      });
+      if (res.success && res.data) {
+        setDetailCache((prev) => ({ ...prev, [requestId]: res.data as RequestDetail }));
+      } else {
+        setDetailCache((prev) => ({ ...prev, [requestId]: 'error' }));
+      }
+    } catch {
+      setDetailCache((prev) => ({ ...prev, [requestId]: 'error' }));
+    }
+  };
+
+  const toggleExpand = (requestId: string): void => {
+    setStickToBottom(false);
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(requestId)) {
+        next.delete(requestId);
+      } else {
+        next.add(requestId);
+        if (!detailCache[requestId]) void fetchDetail(requestId);
+      }
+      return next;
+    });
+  };
+
+  // If the user clears all request logs, drop any cached details and
+  // collapse any open rows so the UI stays consistent with the new state.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    onDaemonMessage((msg) => {
+      if (msg.type === 'request_logs_cleared') {
+        setDetailCache({});
+        setExpandedIds(new Set());
+      }
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => unlisten?.();
+  }, []);
 
   const handleScroll = (): void => {
     if (isProgrammaticScroll.current) {
@@ -409,17 +467,38 @@ export default function LogsViewer(): React.ReactElement {
                   </button>
                 </div>
               )}
-              {visible.map((e) => (
-                <div
-                  key={e.seq}
-                  className={`whitespace-pre-wrap break-words ${LEVEL_STYLE[e.level]}`}
-                >
-                  <span className="text-[#8E8E93]">{formatTime(e.timestamp)}</span>{' '}
-                  <span className="font-semibold">{e.level.toUpperCase().padEnd(5)}</span>{' '}
-                  {e.tag && <span className="text-ios-blue">[{e.tag}]</span>}{' '}
-                  {e.tag && e.message.startsWith(`[${e.tag}]`) ? e.message.slice(e.tag.length + 2).trimStart() : e.message}
-                </div>
-              ))}
+              {visible.map((e) => {
+                const hasDetail = Boolean(e.requestId);
+                const isOpen = hasDetail && expandedIds.has(e.requestId!);
+                const detail = hasDetail ? detailCache[e.requestId!] : undefined;
+                const displayMessage =
+                  e.tag && e.message.startsWith(`[${e.tag}]`)
+                    ? e.message.slice(e.tag.length + 2).trimStart()
+                    : e.message;
+                return (
+                  <React.Fragment key={e.seq}>
+                    <div
+                      onClick={hasDetail ? () => toggleExpand(e.requestId!) : undefined}
+                      className={`whitespace-pre-wrap break-words ${LEVEL_STYLE[e.level]} ${
+                        hasDetail ? 'cursor-pointer hover:bg-[#8E8E93]/10 rounded px-0.5' : ''
+                      }`}
+                    >
+                      {hasDetail ? (
+                        isOpen
+                          ? <ChevronDown size={10} strokeWidth={2.5} className="inline text-ios-blue" />
+                          : <ChevronRight size={10} strokeWidth={2.5} className="inline text-ios-blue" />
+                      ) : (
+                        <span className="inline-block w-[10px]" />
+                      )}{' '}
+                      <span className="text-[#8E8E93]">{formatTime(e.timestamp)}</span>{' '}
+                      <span className="font-semibold">{e.level.toUpperCase().padEnd(5)}</span>{' '}
+                      {e.tag && <span className="text-ios-blue">[{e.tag}]</span>}{' '}
+                      {displayMessage}
+                    </div>
+                    {isOpen && <RequestDetailPanel state={detail} />}
+                  </React.Fragment>
+                );
+              })}
             </div>
             {!stickToBottom && (
               <button
@@ -434,6 +513,209 @@ export default function LogsViewer(): React.ReactElement {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function prettyPrintBody(body: string, isSse: boolean): string {
+  if (!body) return '';
+  if (isSse) {
+    // SSE events are blank-line-separated. For each block, try to prettify the
+    // JSON payload on any `data:` line; leave everything else verbatim.
+    return body
+      .split(/\n\n+/)
+      .map((block) => {
+        if (!block.trim()) return block;
+        return block
+          .split('\n')
+          .map((line) => {
+            if (!line.startsWith('data:')) return line;
+            const payload = line.slice(5).trimStart();
+            if (!payload || payload === '[DONE]') return line;
+            try {
+              const parsed = JSON.parse(payload);
+              return `data: ${JSON.stringify(parsed, null, 2)}`;
+            } catch {
+              return line;
+            }
+          })
+          .join('\n');
+      })
+      .join('\n\n');
+  }
+  try {
+    return JSON.stringify(JSON.parse(body), null, 2);
+  } catch {
+    return body;
+  }
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function RequestDetailPanel({
+  state,
+}: {
+  state: RequestDetail | 'loading' | 'error' | undefined;
+}): React.ReactElement {
+  if (state === 'loading' || state === undefined) {
+    return <div className="mx-4 my-1 px-3 py-2 text-[10px] text-[#8E8E93]">Loading request detail…</div>;
+  }
+  if (state === 'error') {
+    return (
+      <div className="mx-4 my-1 px-3 py-2 text-[10px] text-ios-red">
+        Failed to load request detail. It may have been purged.
+      </div>
+    );
+  }
+  return (
+    <div className="mx-4 my-1 border border-[#8E8E93]/20 rounded-lg bg-[#8E8E93]/5 overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#8E8E93]/20 text-[10px]">
+        <span className="font-semibold">{state.method}</span>
+        <span className="font-mono text-[#8E8E93]">{state.urlPath}</span>
+        {state.statusCode !== null && (
+          <span
+            className={`font-semibold ${
+              state.statusCode >= 400 ? 'text-ios-red' : 'text-ios-green'
+            }`}
+          >
+            {state.statusCode}
+          </span>
+        )}
+        {state.durationMs !== null && (
+          <span className="text-[#8E8E93]">{(state.durationMs / 1000).toFixed(2)}s</span>
+        )}
+        {state.isSse && (
+          <span className="bg-ios-blue/15 text-ios-blue px-1.5 py-0.5 rounded-full text-[9px] font-semibold">
+            SSE
+          </span>
+        )}
+      </div>
+      {state.errorMessage && (
+        <div className="px-3 py-1.5 text-[10px] text-ios-red border-b border-[#8E8E93]/20">
+          {state.errorMessage}
+        </div>
+      )}
+      <RequestResponseCard
+        label="Request"
+        headers={state.request.headers}
+        body={state.request.body}
+        bodyTruncated={state.request.bodyTruncated}
+        bodySize={state.request.bodySize}
+        isSse={false}
+      />
+      {state.response ? (
+        <RequestResponseCard
+          label="Response"
+          headers={state.response.headers}
+          body={state.response.body}
+          bodyTruncated={state.response.bodyTruncated}
+          bodySize={state.response.bodySize}
+          isSse={state.isSse}
+        />
+      ) : (
+        <div className="px-3 py-2 text-[10px] text-[#8E8E93] border-t border-[#8E8E93]/20">
+          No response captured.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RequestResponseCard({
+  label,
+  headers,
+  body,
+  bodyTruncated,
+  bodySize,
+  isSse,
+}: {
+  label: string;
+  headers: Record<string, string>;
+  body: string;
+  bodyTruncated: boolean;
+  bodySize: number;
+  isSse: boolean;
+}): React.ReactElement {
+  const [open, setOpen] = useState(true);
+  const [showRaw, setShowRaw] = useState(false);
+  const displayBody = showRaw ? body : prettyPrintBody(body, isSse);
+  const copyBody = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(body);
+    } catch {
+      /* ignore clipboard failures */
+    }
+  };
+  return (
+    <div className="border-t border-[#8E8E93]/20 first:border-t-0">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] font-semibold hover:bg-[#8E8E93]/10"
+      >
+        <span className="flex items-center gap-1.5">
+          {open
+            ? <ChevronDown size={10} strokeWidth={2.5} />
+            : <ChevronRight size={10} strokeWidth={2.5} />}
+          {label}
+        </span>
+        <span className="text-[#8E8E93] font-normal">{formatBytes(bodySize)}{bodyTruncated ? ' · truncated' : ''}</span>
+      </button>
+      {open && (
+        <div className="px-3 pb-2 space-y-2">
+          {Object.keys(headers).length > 0 && (
+            <div className="text-[10px] font-mono">
+              {Object.entries(headers).map(([k, v]) => (
+                <div key={k} className="flex gap-2">
+                  <span className="text-[#8E8E93] shrink-0">{k}:</span>
+                  <span
+                    className="truncate break-all"
+                    title={v}
+                  >
+                    {v}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {body && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] text-[#8E8E93]">Body</span>
+                <div className="flex items-center gap-2">
+                  {bodyTruncated && (
+                    <button
+                      onClick={() => setShowRaw((v) => !v)}
+                      className="text-[10px] text-ios-blue font-semibold hover:opacity-80"
+                    >
+                      {showRaw ? 'Pretty' : 'Show raw'}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => void copyBody()}
+                    className="flex items-center gap-0.5 text-[10px] text-ios-blue font-semibold hover:opacity-80"
+                    title="Copy body to clipboard"
+                  >
+                    <Copy size={10} strokeWidth={2.5} />
+                    Copy
+                  </button>
+                </div>
+              </div>
+              {bodyTruncated && !showRaw && (
+                <div className="text-[9.5px] text-ios-orange mb-1">
+                  Truncated at daemon capture. Pretty-print may fail; use “Show raw”.
+                </div>
+              )}
+              <pre className="bg-[#000000]/5 dark:bg-[#ffffff]/5 rounded px-2 py-1.5 text-[10px] font-mono whitespace-pre-wrap break-words max-h-[300px] overflow-auto">
+{displayBody}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

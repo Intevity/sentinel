@@ -292,11 +292,84 @@ export interface Settings {
    *  flips it off when they're done. */
   toolPermissionAutoModeActive: boolean;
 
+  /** Size threshold (MB) above which the scanner takes its deferred
+   *  path — the body is scanned off the proxy's hot path so the
+   *  request isn't stalled by multi-MB JSON parsing. Raising this
+   *  lets larger bodies through the synchronous gate; lowering it
+   *  catches smaller payloads too. Clamped 1–16 MB. Default 4 MB
+   *  (chosen from request-size telemetry — see `scanner.bench.ts`
+   *  and the comment on the default in `settings.ts`). */
+  securityOversizedThresholdMb: number;
+
+  /** When true, the scanner runs its full synchronous block-decision
+   *  gate even on bodies over the threshold — accepting the per-
+   *  request latency cost to gain block-on-oversized coverage. When
+   *  false (default), oversized bodies fall through to the deferred
+   *  observe-only path and a `scan_deferred_oversized` synthetic
+   *  event is recorded. */
+  securityScanOversizedSync: boolean;
+
+  /** Suppress the `scan_deferred_oversized` synthetic event entirely
+   *  — no DB row, no broadcast, no OS notification. The async scan
+   *  still runs; only the informational telemetry is silenced. */
+  securityMuteScanDeferred: boolean;
+
+  /** Suppress `scan_truncated` — fires when a response-tap buffer
+   *  exceeds its byte budget (response-tap.ts:25). Muting is
+   *  informational-only: detection still runs on whatever made it
+   *  into the buffer before truncation. */
+  securityMuteScanTruncated: boolean;
+
+  /** Suppress `scan_skipped_encoding` — fires when a body arrives in
+   *  an unsupported encoding and can't be parsed (detectors.ts:43). */
+  securityMuteScanSkipped: boolean;
+
+  /** Most recent scan-benchmark result captured on this machine.
+   *  `null` when the user has never run the benchmark — the UI shows
+   *  "not tuned yet" and the threshold uses the static default. Once
+   *  populated, the UI can surface "last tuned: X ago" and the
+   *  recommended threshold from the captured measurements. */
+  lastScanBenchmark: SecurityBenchmarkResult | null;
+
+  /** Bi-directional sync between Sentinel's permission_rules table and
+   *  Claude Code's `~/.claude/settings.json#/permissions`. When on,
+   *  the daemon watches the file for changes and mirrors updates in
+   *  both directions within a ~1 s debounce. Rules imported from
+   *  Claude Code carry `source: 'claude-code'`; rules authored in
+   *  Sentinel keep `source: 'local'` and are pushed to the file. Off
+   *  by default — the first enable prompts the user to choose a
+   *  merge direction via a modal to avoid data loss. */
+  claudeCodeSyncEnabled: boolean;
+
   /** Minimum severity written to daemon.log and streamed to the in-app Logs
    *  tab. `debug` is opt-in; noisy subsystems emit DEBUG only for deep
    *  troubleshooting. Default `info`. Applied live via `update_settings` —
    *  no daemon restart required. */
   logLevel: LogLevel;
+
+  // ─── Request/response capture (Logs tab) ───────────────────────────
+  /** Master on/off for capturing raw Claude API request/response bodies to
+   *  the dedicated request-logs SQLite DB. Off by default — captured bodies
+   *  include prompts and model output, so users must opt in. Read per-request
+   *  by the proxy so the toggle takes effect immediately with no restart. */
+  requestLoggingEnabled: boolean;
+  /** Days to retain rows in `request_logs`. Purge runs at startup + once/day.
+   *  Clamped to `[1, 90]`. Default 7 — bodies are large so a shorter default
+   *  than telemetry retention keeps disk usage bounded. */
+  requestLogRetentionDays: number;
+  /** Per-body cap in KiB. Applied independently to request body and response
+   *  body — a 256 KB cap means each side is truncated at 256 KB. Protects
+   *  against multi-MB SSE responses filling the DB. Clamped to `[1, 5000]`.
+   *  Default 256. */
+  requestLogMaxBodyKb: number;
+  /** When false, only request bodies are captured; response bodies are skipped.
+   *  Useful for users debugging their own prompts without wanting to persist
+   *  large model outputs. Default true. */
+  requestLogCaptureResponse: boolean;
+  /** When true (the default), the `authorization` header is replaced with
+   *  `[REDACTED]` before persistence. Static keys (`x-api-key`), proxy
+   *  credentials, and cookies are always redacted regardless of this flag. */
+  requestLogRedactAuthHeaders: boolean;
 
   // ─── Onboarding state ──────────────────────────────────────────────
   /** True once the user has either applied a risk-profile preset in the
@@ -330,6 +403,45 @@ export interface LogEntry {
    *  when the message doesn't start with a bracketed tag. Bounded to 32
    *  chars so spammy content can't explode the UI's filter chip set. */
   tag: string | null;
+  /** Present only on proxy-origin entries that have a captured request/response
+   *  pair stored in the request-logs DB. Clicking such a row in the Logs UI
+   *  expands an inline detail panel that lazy-fetches the full record via
+   *  `get_request_detail`. Null/undefined for every other log line. */
+  requestId?: string;
+}
+
+/** Full captured detail for a single proxied request/response pair, backed by
+ *  the dedicated request-logs SQLite DB. Fetched on-demand when the user
+ *  expands a row in the Logs UI. Bodies are already truncated (per
+ *  `requestLogMaxBodyKb`) by the time they land here. */
+export interface RequestDetail {
+  requestId: string;
+  /** Unix ms — request start. */
+  timestamp: number;
+  /** Wall-clock duration between upstream connect and response end. Null when
+   *  the request errored before a response arrived. */
+  durationMs: number | null;
+  method: string;
+  /** URL path only (query string included). No host — the proxy only talks to
+   *  api.anthropic.com. */
+  urlPath: string;
+  statusCode: number | null;
+  isSse: boolean;
+  request: {
+    headers: Record<string, string>;
+    /** UTF-8 decoded body with replacement chars for invalid sequences. */
+    body: string;
+    bodyTruncated: boolean;
+    /** Original body size in bytes before any truncation. */
+    bodySize: number;
+  };
+  response: {
+    headers: Record<string, string>;
+    body: string;
+    bodyTruncated: boolean;
+    bodySize: number;
+  } | null;
+  errorMessage: string | null;
 }
 
 /** How the outbound scanner reacts to findings.
@@ -406,22 +518,43 @@ export type FindingProvenance =
   | 'system-prompt'
   | 'telemetry';
 
-/** Snapshot of a blocked outbound request held by the proxy pending the
+/** What subsystem produced this pending block.
+ *  - `scanner` — the secrets/prompt-injection scanner caught content in an
+ *    outbound request body. Approve forwards the held request; Deny synthesizes a 403.
+ *  - `permissions_strip` — a whole-tool deny rule matched a tool in the
+ *    outbound `tools` array. Approve forwards the body with the tool intact
+ *    (and allowlists the rule); Deny strips the tool.
+ *  - `permissions_tool_use` — a tool_use block mid-SSE-stream matched a deny
+ *    rule. Approve flushes the tool_use through (and allowlists the rule);
+ *    Deny substitutes a synthetic block-reason text block. */
+export type PendingBlockSource = 'scanner' | 'permissions_strip' | 'permissions_tool_use';
+
+/** Snapshot of a blocked outbound request (or held tool_use) pending the
  *  user's approve decision. Surfaced to the frontend via broadcast so the
  *  in-app banner can render a live countdown. */
 export interface PendingSecurityBlock {
   pendingId: string;
   accountId: string;
   severity: SecuritySeverity;
-  /** Short human-readable title — e.g. "GitHub personal token". */
+  /** Short human-readable title — e.g. "GitHub personal token" or
+   *  "Tool blocked: Bash(rm -rf *)". */
   title: string;
-  /** Human-readable reason string the proxy would embed in the 403. */
+  /** Human-readable reason string the proxy would embed in the 403 / synthetic
+   *  text block. */
   blockReason: string;
-  /** Masked form of the matched string for display (never the raw value). */
+  /** Masked form of the matched string for display (never the raw value).
+   *  For permission blocks this is typically the rule's raw text, e.g.
+   *  "Bash(rm -rf *)". */
   matchMask: string | null;
   detectorId: string;
   /** Unix ms at which the hold expires; drives client-side countdowns. */
   expiresAt: number;
+  /** Which subsystem produced this pending entry. Defaults to `scanner` for
+   *  backwards compatibility when older clients miss this field. */
+  source?: PendingBlockSource;
+  /** Present only for permission-block sources. The tool name that was
+   *  blocked (e.g. "Bash"); the banner surfaces this alongside the rule raw. */
+  toolName?: string;
 }
 
 export type SecuritySeverity = 'low' | 'medium' | 'high';
@@ -437,6 +570,83 @@ export interface SecurityAllowlistEntry {
   /** Detector title, e.g. "AWS access key". */
   title: string | null;
   /** Optional user note captured at add-time. */
+  note: string | null;
+  createdAt: number;
+}
+
+/** Single-size measurement from the in-process scan benchmark. The
+ *  benchmark runs the scanner's synchronous path against synthetic
+ *  bodies at each size in the Settings slider's range and records
+ *  mean + p99 ms so the UI can pick an appropriate threshold from
+ *  evidence instead of a baked-in default. */
+export interface ScanBenchmarkSample {
+  /** Body size in megabytes — always one of the slider values
+   *  `[1, 2, 4, 8, 16]`. */
+  sizeMb: number;
+  /** Arithmetic mean of measured scan durations, in milliseconds. */
+  meanMs: number;
+  /** 99th-percentile scan duration, in milliseconds. Drives the
+   *  recommendation (p99 ≤ budget → this size is safe to scan
+   *  synchronously). */
+  p99Ms: number;
+}
+
+/** The full result of a user-initiated scan benchmark. Persisted on
+ *  Settings so the UI can display "last tuned: X ago" and drive the
+ *  threshold slider label. */
+export interface SecurityBenchmarkResult {
+  /** Unix ms the bench finished. */
+  ranAt: number;
+  /** `${platform}-${arch}` captured via `os.platform()` + `os.arch()`.
+   *  Shown in the UI so users with multiple machines can tell which
+   *  one the tuning applies to. */
+  platform: string;
+  /** One row per measured size. Ordered by sizeMb ascending. */
+  results: ScanBenchmarkSample[];
+  /** Largest size whose p99 ≤ 50 ms, clamped to `[1, 16]`. Used by
+   *  the "Apply recommendation" button to set
+   *  `securityOversizedThresholdMb` in one click. */
+  recommendedMb: number;
+}
+
+/** Runtime status of the Claude Code auto-sync engine. Broadcast to
+ *  the UI via `claude_sync_status` so the Settings subsection can
+ *  render a live "last imported / last exported / error" summary
+ *  without polling. All fields are null before the engine has had a
+ *  chance to run the first sync cycle. */
+export interface ClaudeSyncStatus {
+  /** True when `claudeCodeSyncEnabled` is on AND the watcher is
+   *  actually attached to `~/.claude/settings.json`. False during
+   *  startup, after a disable, or if watcher attach failed. */
+  active: boolean;
+  /** Unix ms of the last successful pull (file → Sentinel). */
+  lastPulledAt: number | null;
+  /** Unix ms of the last successful push (Sentinel → file). */
+  lastPushedAt: number | null;
+  /** Most recent error message from either direction, or null if the
+   *  last run of either direction succeeded. The UI surfaces this as
+   *  a red status row so sync failures aren't silent. */
+  lastError: string | null;
+}
+
+/** A user-approved per-rule input bypass. When the permissions
+ *  evaluator encounters a matching deny rule, it checks the bypass
+ *  table and returns 'allow' if (ruleId, inputHash) is present —
+ *  letting that one specific input through while the rule stays
+ *  active for everything else. Populated via the "Always allow this
+ *  exact input" checkbox on a pending tool_use banner. */
+export interface PermissionBypassEntry {
+  id: number;
+  /** FK to `PermissionRule.id` — the deny rule this bypass cancels. */
+  ruleId: string;
+  /** Denormalised for UI display so the Settings list doesn't need to
+   *  join back to permission_rules on every render. */
+  toolName: string;
+  /** SHA-256 hex digest of the canonicalised tool_input JSON. */
+  inputHash: string;
+  /** Short human-readable label, e.g. "rm -rf /tmp/demo". */
+  mask: string;
+  /** Optional user note — unused for now, reserved for future UI. */
   note: string | null;
   createdAt: number;
 }
@@ -460,8 +670,20 @@ export type SecurityKind =
  *   deny  — the tool call is blocked; the proxy either strips the tool
  *           from the outbound request (whole-tool denies) or substitutes
  *           a synthetic text block into the SSE stream (sub-command denies).
+ *   ask   — the tool call triggers the pending-block flow unconditionally,
+ *           regardless of the global block-hold setting. Mirrors Claude
+ *           Code's `permissions.ask` array so imported-from-settings.json
+ *           rules round-trip with fidelity. Without a hold hook wired
+ *           (e.g. legacy sync call sites), 'ask' degrades to 'deny'.
  */
-export type PermissionDecision = 'allow' | 'deny';
+export type PermissionDecision = 'allow' | 'deny' | 'ask';
+
+/** Where a PermissionRule came from. Drives the bi-directional sync
+ *  reconciliation: rules with `source: 'claude-code'` are deleted
+ *  from Sentinel when they vanish from Claude Code's settings.json;
+ *  `source: 'local'` rules are authoritative on the Sentinel side.
+ *  Older rows without the column migrate to 'local' by default. */
+export type PermissionRuleSource = 'local' | 'claude-code';
 
 /**
  * A user-configured permission rule evaluated by the daemon proxy against
@@ -499,6 +721,9 @@ export interface PermissionRule {
    *  on `createdAt`. */
   priority: number;
   createdAt: number;
+  /** Origin. Drives the bi-directional Claude Code sync reconciliation.
+   *  Defaults to 'local' for hand-authored rules. */
+  source: PermissionRuleSource;
 }
 
 /** Input shape for upsert_permission_rule. Omit `id` to create a new rule. */
@@ -511,6 +736,9 @@ export interface PermissionRuleInput {
   note?: string | null;
   enabled?: boolean;
   priority?: number;
+  /** Defaults to 'local' when omitted. The sync engine passes
+   *  'claude-code' when importing from settings.json. */
+  source?: PermissionRuleSource;
 }
 
 /**

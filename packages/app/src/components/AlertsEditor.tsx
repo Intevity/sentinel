@@ -68,8 +68,8 @@ export default function AlertsEditor({ activeAccount, accounts, viewAccountId }:
             onClick={toggleOverageNotify}
             aria-pressed={!overageOsNotify}
             title={overageOsNotify
-              ? 'Overage notifications are ON — click to mute'
-              : 'Overage notifications are muted — click to re-enable'}
+              ? 'Overage notifications are ON; click to mute'
+              : 'Overage notifications are muted; click to re-enable'}
             className={`flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-full transition-colors active:scale-95 ${
               overageOsNotify
                 ? 'text-[#8E8E93] hover:text-black dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'

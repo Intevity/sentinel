@@ -670,7 +670,7 @@ function sourceDescription(source: string): string {
   switch (source) {
     case 'config': return 'Pre-approved by settings';
     case 'hook': return 'Allowed by a hook';
-    case 'user_permanent': return '"Always allow" — you approved permanently';
+    case 'user_permanent': return '"Always allow": you approved permanently';
     case 'user_temporary': return 'You approved for this session';
     case 'user_abort': return 'You cancelled (abort)';
     case 'user_reject': return 'You explicitly rejected';

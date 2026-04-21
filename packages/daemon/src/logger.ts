@@ -19,11 +19,28 @@ export interface LoggerOptions {
   now?: () => number;
 }
 
+/** Input for the specialized `log.request()` helper. Carries the metadata
+ *  needed both to format a concise one-liner (`POST /v1/messages → 200 (1.2s)`)
+ *  and to tag the resulting `LogEntry` with `requestId` so the Logs UI knows
+ *  the row is expandable into the captured request/response detail. */
+export interface RequestLogInput {
+  requestId: string;
+  method: string;
+  path: string;
+  status: number | null;
+  durationMs: number | null;
+  errored?: boolean;
+}
+
 export interface Logger {
   debug(...args: unknown[]): void;
   info(...args: unknown[]): void;
   warn(...args: unknown[]): void;
   error(...args: unknown[]): void;
+  /** Emit a proxy-origin log entry with an attached `requestId`. Entries with
+   *  `requestId` render as clickable rows in the Logs UI; clicking fetches
+   *  the full detail via the `get_request_detail` IPC. */
+  request(input: RequestLogInput): void;
   setLevel(level: LogLevel): void;
   getLevel(): LogLevel;
   getHistory(limit?: number): LogEntry[];
@@ -156,7 +173,7 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
     }
   }
 
-  function emit(entryLevel: LogLevel, args: unknown[]): void {
+  function emit(entryLevel: LogLevel, args: unknown[], requestId?: string): void {
     const entryRank = LEVELS[entryLevel];
     const curRank = LEVELS[level];
     if (entryRank < curRank) return;
@@ -168,6 +185,7 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
       message,
       tag: extractTag(message),
     };
+    if (requestId) entry.requestId = requestId;
     // Ring buffer.
     ring[writeIdx] = entry;
     writeIdx = (writeIdx + 1) % ringBufferSize;
@@ -176,6 +194,21 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
     writeLine(formatFileLine(entry));
     // Broadcast.
     scheduleBroadcast(entry);
+  }
+
+  function formatRequestMessage(input: RequestLogInput): string {
+    const parts = [`[proxy] ${input.method} ${input.path}`];
+    if (input.errored) {
+      parts.push('→ ERROR');
+    } else if (input.status !== null) {
+      parts.push(`→ ${input.status}`);
+    } else {
+      parts.push('→ no response');
+    }
+    if (input.durationMs !== null) {
+      parts.push(`(${(input.durationMs / 1000).toFixed(2)}s)`);
+    }
+    return parts.join(' ');
   }
 
   function getHistory(limit?: number): LogEntry[] {
@@ -244,6 +277,9 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
     info(...args)  { emit('info', args); },
     warn(...args)  { emit('warn', args); },
     error(...args) { emit('error', args); },
+    request(input) {
+      emit(input.errored ? 'error' : 'info', [formatRequestMessage(input)], input.requestId);
+    },
     setLevel(l) { level = l; },
     getLevel() { return level; },
     getHistory,

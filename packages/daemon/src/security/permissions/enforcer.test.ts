@@ -10,6 +10,8 @@ import {
   createPermissionsEnforcer,
   detectAutoModeFromHeaders,
   extractSessionInfo,
+  summarizeToolInput,
+  extractToolInputFields,
   AUTO_MODE_FRESHNESS_MS,
   SESSION_HARD_TIMEOUT_MS,
 } from './enforcer.js';
@@ -47,7 +49,19 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     toolPermissionDefaultAction: 'allow',
     toolPermissionSkipInAutoMode: true,
     toolPermissionAutoModeActive: false,
+    securityOversizedThresholdMb: 1,
+    securityScanOversizedSync: false,
+    securityMuteScanDeferred: false,
+    securityMuteScanTruncated: false,
+    securityMuteScanSkipped: false,
+    lastScanBenchmark: null,
+    claudeCodeSyncEnabled: false,
     logLevel: 'info',
+    requestLoggingEnabled: false,
+    requestLogRetentionDays: 7,
+    requestLogMaxBodyKb: 256,
+    requestLogCaptureResponse: true,
+    requestLogRedactAuthHeaders: true,
     securitySetupCompleted: false,
     tourCompleted: false,
     ...overrides,
@@ -84,6 +98,75 @@ function makeQuietResponse(): ServerResponse {
   return res;
 }
 
+describe('summarizeToolInput', () => {
+  it('returns the "stripped" sentence for outbound direction (no input available)', () => {
+    const s = summarizeToolInput('WebFetch', null, 'outbound', 'WebFetch(domain:x)');
+    expect(s).toBe(
+      'WebFetch stripped from the tool list before Claude saw it. Matched rule: WebFetch(domain:x)',
+    );
+  });
+
+  it('uses the "stripped" sentence for tool_use with null input too', () => {
+    const s = summarizeToolInput('WebFetch', null, 'tool_use', 'WebFetch');
+    expect(s).toContain('stripped from the tool list');
+  });
+
+  it('formats WebFetch tool_use with url + prompt', () => {
+    const s = summarizeToolInput(
+      'WebFetch',
+      { url: 'https://bad.example/x', prompt: 'tell me' },
+      'tool_use',
+      'WebFetch',
+    );
+    expect(s).toBe('WebFetch(url=https://bad.example/x, prompt=tell me)');
+  });
+
+  it('formats Bash tool_use with command', () => {
+    const s = summarizeToolInput('Bash', { command: 'rm -rf /tmp/foo' }, 'tool_use', 'Bash');
+    expect(s).toBe('Bash(command=rm -rf /tmp/foo)');
+  });
+
+  it('formats Write/Edit tool_use with file_path', () => {
+    const s = summarizeToolInput('Write', { file_path: '/etc/hosts' }, 'tool_use', 'Write');
+    expect(s).toBe('Write(file_path=/etc/hosts)');
+  });
+
+  it('truncates long fields to 80 chars', () => {
+    const long = 'x'.repeat(200);
+    const s = summarizeToolInput('WebFetch', { url: long }, 'tool_use', 'WebFetch');
+    expect(s.length).toBeLessThan(120);
+    expect(s).toMatch(/…\)$/);
+  });
+
+  it('falls back to JSON when no recognised fields are present', () => {
+    const s = summarizeToolInput('Custom', { foo: 'bar' }, 'tool_use', 'Custom');
+    expect(s).toContain('Custom');
+    expect(s).toContain('foo');
+  });
+
+  it('never produces a bare "{}"', () => {
+    const s = summarizeToolInput('Foo', {}, 'tool_use', 'Foo');
+    expect(s).toBe('Foo');
+  });
+});
+
+describe('extractToolInputFields', () => {
+  it('returns empty object for null/non-object input', () => {
+    expect(extractToolInputFields('WebFetch', null)).toEqual({});
+    expect(extractToolInputFields('WebFetch', 'string')).toEqual({});
+  });
+
+  it('extracts only recognised string keys, dropping nested objects and unknown keys', () => {
+    const out = extractToolInputFields('WebFetch', {
+      url: 'https://a.com',
+      prompt: 'hi',
+      extra: { nested: true },
+      count: 3,
+    });
+    expect(out).toEqual({ url: 'https://a.com', prompt: 'hi' });
+  });
+});
+
 describe('PermissionsEnforcer', () => {
   const path = TEST_DB();
   let db: Database;
@@ -117,7 +200,7 @@ describe('PermissionsEnforcer', () => {
     expect(enforcer.isSkippedForAutoMode()).toBe(false);
   });
 
-  it('stripDeniedTools removes whole-tool denies and broadcasts a security event', () => {
+  it('stripDeniedTools removes whole-tool denies and broadcasts a security event', async () => {
     upsertPermissionRule(db, { decision: 'deny', tool: 'WebFetch', pattern: null, raw: 'WebFetch' });
     const ipc = ipcStub();
     const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
@@ -129,57 +212,75 @@ describe('PermissionsEnforcer', () => {
       ],
       messages: [],
     }));
-    const out = enforcer.stripDeniedTools(body, 'acc-1');
+    const out = await enforcer.stripDeniedTools(body, 'acc-1');
     expect(out).not.toBe(body);
     const parsed = JSON.parse(out.toString('utf-8'));
     expect(parsed.tools).toHaveLength(1);
     expect(parsed.tools[0].name).toBe('Bash');
     expect(ipc.broadcasts.length).toBe(1);
     expect((ipc.broadcasts[0] as { type: string }).type).toBe('security_event_detected');
+    const events = listSecurityEvents(db);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.snippet).toMatch(/WebFetch stripped from the tool list/);
+    expect(events[0]!.snippet).not.toBe('{}');
+    expect(events[0]!.details).toMatchObject({ direction: 'outbound', toolName: 'WebFetch' });
   });
 
-  it('stripDeniedTools passes body through when feature disabled', () => {
+  it('outbound strip snippet names the matched rule so the user can correlate', async () => {
+    upsertPermissionRule(db, {
+      decision: 'deny', tool: 'WebFetch', pattern: null, raw: 'WebFetch',
+    });
+    const ipc = ipcStub();
+    const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
+    const body = Buffer.from(JSON.stringify({ tools: [{ name: 'WebFetch' }], messages: [] }));
+    await enforcer.stripDeniedTools(body, 'acc-1');
+    const events = listSecurityEvents(db);
+    expect(events[0]!.snippet).toContain('Matched rule: WebFetch');
+  });
+
+
+  it('stripDeniedTools passes body through when feature disabled', async () => {
     upsertPermissionRule(db, { decision: 'deny', tool: 'WebFetch', pattern: null, raw: 'WebFetch' });
     settings = defaultSettings({ toolPermissionsEnabled: false });
     const ipc = ipcStub();
     const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
     const body = Buffer.from(JSON.stringify({ tools: [{ name: 'WebFetch' }] }));
-    expect(enforcer.stripDeniedTools(body, 'acc')).toBe(body);
+    expect(await enforcer.stripDeniedTools(body, 'acc')).toBe(body);
   });
 
-  it('stripDeniedTools passes body through in auto-mode skip', () => {
+  it('stripDeniedTools passes body through in auto-mode skip', async () => {
     upsertPermissionRule(db, { decision: 'deny', tool: 'WebFetch', pattern: null, raw: 'WebFetch' });
     settings = defaultSettings({ toolPermissionAutoModeActive: true });
     const ipc = ipcStub();
     const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
     const body = Buffer.from(JSON.stringify({ tools: [{ name: 'WebFetch' }] }));
-    expect(enforcer.stripDeniedTools(body, 'acc')).toBe(body);
+    expect(await enforcer.stripDeniedTools(body, 'acc')).toBe(body);
   });
 
-  it('stripDeniedTools returns original on parse failure', () => {
+  it('stripDeniedTools returns original on parse failure', async () => {
     upsertPermissionRule(db, { decision: 'deny', tool: 'WebFetch', pattern: null, raw: 'WebFetch' });
     const ipc = ipcStub();
     const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
     const body = Buffer.from('not json');
-    expect(enforcer.stripDeniedTools(body, 'acc')).toBe(body);
+    expect(await enforcer.stripDeniedTools(body, 'acc')).toBe(body);
   });
 
-  it('stripDeniedTools returns original when tools missing', () => {
+  it('stripDeniedTools returns original when tools missing', async () => {
     upsertPermissionRule(db, { decision: 'deny', tool: 'WebFetch', pattern: null, raw: 'WebFetch' });
     const ipc = ipcStub();
     const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
     const body = Buffer.from(JSON.stringify({ model: 'x', messages: [] }));
-    expect(enforcer.stripDeniedTools(body, 'acc')).toBe(body);
+    expect(await enforcer.stripDeniedTools(body, 'acc')).toBe(body);
   });
 
-  it('stripDeniedTools returns original when empty body', () => {
+  it('stripDeniedTools returns original when empty body', async () => {
     const ipc = ipcStub();
     const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
     const body = Buffer.alloc(0);
-    expect(enforcer.stripDeniedTools(body, 'acc')).toBe(body);
+    expect(await enforcer.stripDeniedTools(body, 'acc')).toBe(body);
   });
 
-  it('stripDeniedTools skips tools with non-string name', () => {
+  it('stripDeniedTools skips tools with non-string name', async () => {
     upsertPermissionRule(db, { decision: 'deny', tool: '*', pattern: null, raw: '*' });
     const ipc = ipcStub();
     const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
@@ -190,7 +291,7 @@ describe('PermissionsEnforcer', () => {
         { name: 'Bash' },
       ],
     }));
-    const out = enforcer.stripDeniedTools(body, 'acc');
+    const out = await enforcer.stripDeniedTools(body, 'acc');
     // The * whole-tool deny strips "Bash"; the malformed entries pass through.
     const parsed = JSON.parse(out.toString('utf-8'));
     expect(parsed.tools.find((t: { name: string }) => t?.name === 'Bash')).toBeUndefined();
@@ -287,12 +388,12 @@ describe('PermissionsEnforcer', () => {
     ).toBe(false);
   });
 
-  it('stripDeniedTools skips when request has auto-mode beta header', () => {
+  it('stripDeniedTools skips when request has auto-mode beta header', async () => {
     upsertPermissionRule(db, { decision: 'deny', tool: 'WebFetch', pattern: null, raw: 'WebFetch' });
     const ipc = ipcStub();
     const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
     const body = Buffer.from(JSON.stringify({ tools: [{ name: 'WebFetch' }] }));
-    const out = enforcer.stripDeniedTools(body, 'acc', {
+    const out = await enforcer.stripDeniedTools(body, 'acc', {
       'anthropic-beta': 'afk-mode-2026-01-31',
     });
     expect(out).toBe(body);
@@ -309,14 +410,14 @@ describe('PermissionsEnforcer', () => {
     ).toBeNull();
   });
 
-  it('records a block event even when the IPC broadcast throws', () => {
+  it('records a block event even when the IPC broadcast throws', async () => {
     upsertPermissionRule(db, { decision: 'deny', tool: 'WebFetch', pattern: null, raw: 'WebFetch' });
     const ipc = ipcStub();
     const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     ipc.broadcast = (() => { throw new Error('boom'); }) as never;
     const body = Buffer.from(JSON.stringify({ tools: [{ name: 'WebFetch' }] }));
-    enforcer.stripDeniedTools(body, 'acc-1');
+    await enforcer.stripDeniedTools(body, 'acc-1');
     expect(errorSpy).toHaveBeenCalled();
     // Row still persisted despite the broadcast failure.
     const events = listSecurityEvents(db, { limit: 10 });
@@ -656,5 +757,63 @@ describe('per-session auto-mode tracking', () => {
     vi.advanceTimersByTime(AUTO_MODE_FRESHNESS_MS + 100);
     expect(enforcer.getAutoModeStatus().active).toBe(false);
     enforcer.shutdown();
+  });
+});
+
+describe('PermissionsEnforcer — triggerTestScenario', () => {
+  const path = TEST_DB();
+  let db: Database;
+  let settings: Settings;
+
+  beforeEach(() => {
+    db = getDb(path);
+    settings = defaultSettings();
+  });
+
+  afterEach(() => {
+    closeDb();
+    if (existsSync(path)) unlinkSync(path);
+  });
+
+  it('permissions-strip records an outbound tool_permission_blocked event', () => {
+    const ipc = ipcStub();
+    const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
+    enforcer.triggerTestScenario('permissions-strip', 'acc-a');
+    const events = listSecurityEvents(db);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('tool_permission_blocked');
+    expect(events[0]!.direction).toBe('outbound');
+    expect(events[0]!.blocked).toBe(true);
+    expect(
+      ipc.broadcasts.some(
+        (m) => (m as { type: string; kind?: string }).type === 'security_event_detected'
+          && (m as { kind?: string }).kind === 'tool_permission_blocked',
+      ),
+    ).toBe(true);
+  });
+
+  it('permissions-tool-use-block records a tool_use tool_permission_blocked event', () => {
+    const ipc = ipcStub();
+    const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
+    enforcer.triggerTestScenario('permissions-tool-use-block', 'acc-a');
+    const events = listSecurityEvents(db);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('tool_permission_blocked');
+    expect(events[0]!.direction).toBe('tool_use');
+    expect(events[0]!.blocked).toBe(true);
+  });
+
+  it('permissions-tool-use-pending registers a pending block instead of recording immediately', () => {
+    const ipc = ipcStub();
+    const enforcer = createPermissionsEnforcer({ db, ipcServer: ipc as never, getSettings: () => settings });
+    enforcer.triggerTestScenario('permissions-tool-use-pending', 'acc-a');
+    // No event yet — the pending entry fires one on resolution.
+    expect(listSecurityEvents(db)).toHaveLength(0);
+    const pending = enforcer.listPending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.source).toBe('permissions_tool_use');
+    // Resolve (deny) → event now recorded.
+    expect(enforcer.resolvePending(pending[0]!.pendingId, 'deny')).toBe(true);
+    expect(listSecurityEvents(db).length).toBeGreaterThanOrEqual(1);
   });
 });
