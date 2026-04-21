@@ -3,6 +3,7 @@ dist/
 *.js.map
 *.d.ts
 *.d.ts.map
+!packages/app/src/vite-env.d.ts
 .pnpm-store/
 coverage/
 *.db
