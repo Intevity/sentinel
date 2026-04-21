@@ -579,8 +579,23 @@ export async function startDaemon(): Promise<void> {
   // Spend source of truth is now Anthropic's usage endpoint via
   // ClaudeAiUsageStore. Every successful or failed fetch triggers a
   // tracker recompute so the paused set reflects the freshest numbers.
-  claudeAiUsageStore.onUpdate(() => {
+  //
+  // Also bootstrap rateLimitStore from the snapshot for accounts that can't
+  // be probed via api.anthropic.com. Silent-sibling team enrollments share
+  // the parent's claude.ai sessionKey but have NO OAuth token, so
+  // probeRateLimits() can't run for them. Claude.ai's usage endpoint
+  // returns 5h/7d/sonnet utilization + reset times alongside the overage
+  // numbers, so syncing those into rateLimitStore closes the "empty usage
+  // until first proxied request" gap.
+  claudeAiUsageStore.onUpdate((accountId) => {
     spendTracker.recompute();
+    const snap = claudeAiUsageStore.getSnapshot(accountId);
+    if (!snap) return;
+    const synced = rateLimitStore.syncFromClaudeAiSnapshot(accountId, snap);
+    if (synced > 0) {
+      console.log(`[RateLimit] Synced ${synced} window(s) from claude.ai for ${accountId}`);
+      ipcServer.broadcast({ type: 'rate_limits_updated', accountId });
+    }
   });
 
   /**
@@ -608,6 +623,13 @@ export async function startDaemon(): Promise<void> {
     const wasReauth = hasActiveAccount(db, credKey);
 
     writeSentinelCredentials(credKey, credentials);
+
+    // Immediately probe rate-limit headers so the Usage tab shows the 5h
+    // quota bar on first render after add, rather than waiting for the
+    // first proxied Claude Code request (or the 300s background poller)
+    // to populate rateLimitStore. Mirrors what performSwitch does at the
+    // switch path.
+    probeRateLimits(credKey, ipcServer, credentials.accessToken);
 
     const newAccount: OAuthAccount = {
       accountUuid: accountUuid || email,

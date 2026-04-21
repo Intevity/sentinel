@@ -572,11 +572,17 @@ function SingleAccountUsageView({
 
   // Show windows that have meaningful data, sorted by priority, excluding noise.
   // For accounts that carry a separate Sonnet quota (Max / Team / Enterprise),
-  // always ensure the `unified-7d_sonnet` row is present — Anthropic omits it
-  // from response headers until the user actually consumes Sonnet, but the user
-  // has asked to see the 0% state rather than have the row silently disappear.
+  // ensure the `unified-7d_sonnet` row is present alongside real data —
+  // Anthropic omits it from response headers until the user actually consumes
+  // Sonnet, but when we have other windows the user still wants to see the 0%
+  // row rather than have it silently disappear.
   //
-  // Signal priority:
+  // Important: only synthesize the Sonnet placeholder when `windows` already
+  // has real data. If the list is empty (fresh account, no calls yet) a lone
+  // "Weekly: Sonnet 0%" row reads as misleading "sole usage" instead of the
+  // truthful "no data" empty state.
+  //
+  // Signal priority for whether a Sonnet quota exists at all:
   //   1. Observed `unified-7d` header (definitive: the account has weekly quotas).
   //   2. Plan type (falls back when no API calls have been made yet — Max's
   //      `hasExtraUsageEnabled` flag, or a team/enterprise billingType).
@@ -589,7 +595,14 @@ function SingleAccountUsageView({
     billing === 'team' ||
     billing === 'enterprise' ||
     billing === 'max';
-  if (hasSonnetQuota && !synthesized.some((w) => w.name === 'unified-7d_sonnet')) {
+  const hasRealData = windows.some(
+    (w) => !HIDDEN_WINDOWS.has(w.name) && (w.utilization != null || w.limit != null),
+  );
+  if (
+    hasRealData &&
+    hasSonnetQuota &&
+    !synthesized.some((w) => w.name === 'unified-7d_sonnet')
+  ) {
     synthesized.push({
       name: 'unified-7d_sonnet',
       status: 'allowed',
@@ -642,8 +655,20 @@ function SingleAccountUsageView({
         <div className="glass-card px-4 py-10 text-center">
           <p className="text-[13px] font-medium text-black dark:text-white">No data yet</p>
           <p className="text-[11px] text-[#8E8E93] mt-1 leading-relaxed">
-            Rate limit data appears after your first API call through Sentinel.
+            Rate limit data appears after your first API call through Sentinel,
+            <br />
+            or tap Refresh to probe claude.ai now.
           </p>
+          <button
+            onClick={() => void handleRefreshClick()}
+            disabled={busy}
+            className="mt-4 inline-flex items-center gap-1.5 text-[11px] font-semibold text-white
+                       bg-ios-blue hover:opacity-90 active:scale-95 disabled:opacity-40
+                       px-3 py-1.5 rounded-full transition-all duration-150"
+          >
+            <RefreshCw size={11} strokeWidth={2.5} className={busy ? 'animate-spin' : ''} />
+            Refresh
+          </button>
         </div>
       )}
 

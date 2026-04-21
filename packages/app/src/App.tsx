@@ -30,7 +30,6 @@ import SecurityRulesOverlay, {
   type SecurityOverlayTab,
 } from './components/SecurityRulesOverlay.js';
 import SecurityPanel from './components/SecurityPanel.js';
-import SecurityEnforcementModal from './components/SecurityEnforcementModal.js';
 import SecuritySetupWizard from './components/SecuritySetupWizard.js';
 import Tour from './components/Tour.js';
 import type { TourStep } from './lib/tourSteps.js';
@@ -144,21 +143,6 @@ export default function App(): React.ReactElement {
   const [alertsView, setAlertsView] = useState<string | undefined>(undefined);
   const [securityView, setSecurityView] = useState<string | undefined>(undefined);
 
-  // First-run enforcement-mode picker. Shown once per install when scanning
-  // is enabled but the user hasn't picked a posture. Dismissing without
-  // choosing leaves the mode at null and the modal will re-appear on next
-  // launch until the user picks.
-  const [enforcementModalOpen, setEnforcementModalOpen] = useState(false);
-  useEffect(() => {
-    if (!settings) return;
-    if (settings.securityScanEnabled && settings.securityEnforcementMode === null) {
-      setEnforcementModalOpen(true);
-    }
-    // Deps intentionally scoped to the two scalar fields: a whole-object
-    // `settings` dep would re-fire every time any unrelated setting flips.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings?.securityScanEnabled, settings?.securityEnforcementMode]);
-
   // First-run tour. Opens when the user has never completed a tour
   // (settings.tourCompleted === false) and no other modal is up. The user
   // can replay the tour any time via the help icon in the header; replay
@@ -177,7 +161,7 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     if (!settings) return;
     if (tourOpen) return;
-    if (settingsOpen || rulesOpen || enforcementModalOpen) return;
+    if (settingsOpen || rulesOpen) return;
     if (tourForceOpen) {
       tourClosedThisSession.current = false;
       setTourOpen(true);
@@ -194,21 +178,16 @@ export default function App(): React.ReactElement {
     connected,
     settingsOpen,
     rulesOpen,
-    enforcementModalOpen,
     settings,
   ]);
 
   // First-run security setup wizard. Opens once per install (tracked via
   // settings.securitySetupCompleted) after the user has added at least one
-  // account and any sibling-enrollment walk has finished. The wizard
-  // supersedes the enforcement modal — when the user applies a preset we
-  // write a non-null `securityEnforcementMode`, which prevents the
-  // enforcement modal's trigger effect above from firing.
+  // account and any sibling-enrollment walk has finished.
   //
   // Gated behind tour completion: a user seeing the app for the first
   // time should finish the tour before being asked to pick a risk
-  // profile — otherwise both modals fight for the screen and the wizard
-  // wins the race, hiding the tour.
+  // profile; otherwise the wizard hides the tour.
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardForceOpen, setWizardForceOpen] = useState(false);
   const { pending: siblingsPending } = usePendingSiblings();
@@ -432,13 +411,6 @@ export default function App(): React.ReactElement {
           )}
         </AnimatePresence>
 
-        {enforcementModalOpen && settings && !wizardOpen && (
-          <SecurityEnforcementModal
-            initial={settings.securityEnforcementMode}
-            onClose={() => setEnforcementModalOpen(false)}
-          />
-        )}
-
         {wizardOpen && (
           <SecuritySetupWizard
             measureRef={overlayRef}
@@ -446,9 +418,6 @@ export default function App(): React.ReactElement {
             onClose={() => {
               wizardClosedThisSession.current = true;
               setWizardOpen(false);
-              // Applying a preset also writes a real enforcement mode, so
-              // dismiss the older enforcement modal once the wizard closes.
-              setEnforcementModalOpen(false);
             }}
           />
         )}

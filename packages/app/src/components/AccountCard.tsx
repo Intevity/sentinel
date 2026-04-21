@@ -71,13 +71,28 @@ export default function AccountCard({
   fiveHourResetAt,
 }: AccountCardProps): React.ReactElement {
   // Live Anthropic usage snapshot for this account. The spend chip is only
-  // rendered when `extraUsage` is real — a connected account with overage
-  // enabled. If the user hasn't completed claude.ai login we have no
-  // honest numbers to show, so no chip appears (the 5h util chip and plan
-  // label still render).
+  // rendered when real numbers are available. If the user hasn't completed
+  // claude.ai login we have no honest numbers to show, so no chip appears
+  // (the 5h util chip and plan label still render).
+  //
+  // Team plans need special handling: claude.ai's `extra_usage` returns a
+  // team-wide aggregate where `limit_usd` is 0 for non-admin members, so
+  // the individual-plan check below would suppress the pill even though
+  // the member has a real personal budget. For teams we read the
+  // admin-configured `per_user_budget` instead, matching UsageView's
+  // teamPerUserValid path.
   const { snapshot } = useClaudeAiUsage(account.id);
   const extraUsage = snapshot?.extraUsage ?? null;
-  const hasRealUsage = !!extraUsage && extraUsage.isEnabled;
+  const perUserBudget = snapshot?.perUserBudget ?? null;
+  const isTeam = account.planType === 'team';
+  const teamPerUserValid =
+    isTeam &&
+    perUserBudget != null &&
+    perUserBudget.limitUsd != null &&
+    perUserBudget.limitUsd > 0 &&
+    perUserBudget.usedUsd != null;
+  const individualAnthropicValid =
+    !isTeam && !!extraUsage && extraUsage.isEnabled && extraUsage.limitUsd > 0;
   // Shared status derivation with the AccountViewPicker dropdown so the two
   // stay in lock-step (round-robin pool members → "Active", excluded → muted).
   const status = getAccountStatus({
@@ -264,9 +279,15 @@ export default function AccountCard({
                 </div>
               </div>
             </div>
-          ) : hasRealUsage && weeklyCapUsd != null && weeklyCapUsd > 0 ? (
+          ) : teamPerUserValid ? (
+            <SpendChip
+              spend={perUserBudget!.usedUsd!}
+              cap={perUserBudget!.limitUsd!}
+              label="Personal"
+            />
+          ) : individualAnthropicValid && weeklyCapUsd != null && weeklyCapUsd > 0 ? (
             <SpendChip spend={extraUsage!.usedUsd} cap={weeklyCapUsd} label="Sentinel" />
-          ) : hasRealUsage && extraUsage!.limitUsd > 0 ? (
+          ) : individualAnthropicValid ? (
             <SpendChip spend={extraUsage!.usedUsd} cap={extraUsage!.limitUsd} label="Overage" />
           ) : null}
           <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${plan.color}`}>

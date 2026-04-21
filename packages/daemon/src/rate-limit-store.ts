@@ -1,4 +1,4 @@
-import type { RateLimitWindow } from '@claude-sentinel/shared';
+import type { RateLimitWindow, ClaudeAiUsageSnapshot } from '@claude-sentinel/shared';
 
 /**
  * In-memory store for rate limit windows parsed from anthropic-ratelimit-* response headers.
@@ -132,5 +132,89 @@ export class RateLimitStore {
    */
   clearAccount(accountId: string): void {
     this.data.delete(accountId);
+  }
+
+  /**
+   * Populate rate-limit windows from a ClaudeAiUsageSnapshot. Used to bootstrap
+   * data for accounts that have no OAuth token and can't be probed via the
+   * api.anthropic.com path (notably silent-sibling team enrollments: they
+   * carry a shared sessionKey for claude.ai but no OAuth access token).
+   *
+   * Freshness rule: the snapshot's `fetchedAt` is compared against each
+   * existing window's `lastUpdated`. Claude.ai data is only applied when it
+   * is newer than the existing window — so live header updates (captured on
+   * every proxy request, typically seconds old) beat the 5-minute-polled
+   * claude.ai snapshot when both sources are available. Missing windows are
+   * always populated.
+   *
+   * Fires `onUpdate` callbacks for each window actually written so the DB
+   * persistence + spend tracker + overage cache reload stay in sync.
+   *
+   * Returns the number of windows that were added or refreshed.
+   */
+  syncFromClaudeAiSnapshot(accountId: string, snapshot: ClaudeAiUsageSnapshot): number {
+    const capturedAt = snapshot.fetchedAt || Date.now();
+
+    const toUnixSeconds = (iso: string | null): number | null => {
+      if (!iso) return null;
+      const ms = Date.parse(iso);
+      return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+    };
+
+    // claude.ai doesn't expose the status enum, infer from utilization.
+    const statusFor = (util: number | null): string => {
+      if (util == null) return 'allowed';
+      if (util >= 1) return 'blocked';
+      if (util >= 0.9) return 'allowed_warning';
+      return 'allowed';
+    };
+
+    if (!this.data.has(accountId)) this.data.set(accountId, new Map());
+    const accountMap = this.data.get(accountId)!;
+    const upserts: RateLimitWindow[] = [];
+
+    const maybeSync = (
+      name: string,
+      util: number | null,
+      resetIso: string | null,
+      inUse: boolean | null,
+    ): void => {
+      if (util == null && resetIso == null) return;
+      const existing = accountMap.get(name);
+      const existingAt = existing?.lastUpdated ?? 0;
+      if (existing && existingAt >= capturedAt) return;
+      const w: RateLimitWindow = {
+        name,
+        status: statusFor(util),
+        utilization: util,
+        limit: null,
+        remaining: null,
+        reset: toUnixSeconds(resetIso),
+        inUse,
+        lastUpdated: capturedAt,
+      };
+      accountMap.set(name, w);
+      upserts.push(w);
+    };
+
+    maybeSync('unified-5h', snapshot.fiveHourUtilization, snapshot.fiveHourResetsAt, null);
+    maybeSync('unified-7d', snapshot.sevenDayUtilization, snapshot.sevenDayResetsAt, null);
+    maybeSync(
+      'unified-7d_sonnet',
+      snapshot.sevenDaySonnetUtilization,
+      snapshot.sevenDaySonnetResetsAt,
+      null,
+    );
+    if (snapshot.extraUsage?.isEnabled) {
+      const util = snapshot.extraUsage.utilizationPct / 100;
+      maybeSync('unified-overage', util, null, false);
+    }
+
+    if (upserts.length > 0) {
+      for (const cb of this.updateCallbacks) {
+        cb(accountId, upserts);
+      }
+    }
+    return upserts.length;
   }
 }

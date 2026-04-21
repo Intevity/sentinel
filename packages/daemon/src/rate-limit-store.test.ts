@@ -343,4 +343,183 @@ describe('RateLimitStore', () => {
     const store = new RateLimitStore();
     expect(store.getAllByAccount()).toEqual({});
   });
+
+  // ── syncFromClaudeAiSnapshot ────────────────────────────────────────────────
+
+  describe('syncFromClaudeAiSnapshot', () => {
+    const baseSnapshot = (): import('@claude-sentinel/shared').ClaudeAiUsageSnapshot => ({
+      fiveHourUtilization: 0.2,
+      fiveHourResetsAt: '2026-04-22T03:00:00Z',
+      sevenDayUtilization: 0.65,
+      sevenDayResetsAt: '2026-04-28T00:00:00Z',
+      sevenDaySonnetUtilization: 0.1,
+      sevenDaySonnetResetsAt: '2026-04-28T00:00:00Z',
+      extraUsage: null,
+      perUserBudget: null,
+      fetchedAt: 2000,
+    });
+
+    it('populates 5h / 7d / sonnet windows when store is empty', () => {
+      const store = new RateLimitStore();
+      const synced = store.syncFromClaudeAiSnapshot('acc-1', baseSnapshot());
+      expect(synced).toBe(3);
+      const windows = store.getAll('acc-1');
+      const fiveHour = windows.find((w) => w.name === 'unified-5h');
+      const weekly = windows.find((w) => w.name === 'unified-7d');
+      const sonnet = windows.find((w) => w.name === 'unified-7d_sonnet');
+      expect(fiveHour?.utilization).toBeCloseTo(0.2);
+      expect(fiveHour?.status).toBe('allowed');
+      expect(fiveHour?.reset).toBe(Math.floor(Date.parse('2026-04-22T03:00:00Z') / 1000));
+      expect(weekly?.utilization).toBeCloseTo(0.65);
+      expect(sonnet?.utilization).toBeCloseTo(0.1);
+    });
+
+    it('infers status from utilization', () => {
+      const store = new RateLimitStore();
+      store.syncFromClaudeAiSnapshot('acc-1', {
+        ...baseSnapshot(),
+        fiveHourUtilization: 0.95,
+        sevenDayUtilization: 1,
+        sevenDaySonnetUtilization: null,
+        sevenDaySonnetResetsAt: null,
+      });
+      const windows = store.getAll('acc-1');
+      expect(windows.find((w) => w.name === 'unified-5h')?.status).toBe('allowed_warning');
+      expect(windows.find((w) => w.name === 'unified-7d')?.status).toBe('blocked');
+      // sonnet row with both util + reset null → skipped
+      expect(windows.find((w) => w.name === 'unified-7d_sonnet')).toBeUndefined();
+    });
+
+    it('writes an overage window when extraUsage is enabled', () => {
+      const store = new RateLimitStore();
+      const synced = store.syncFromClaudeAiSnapshot('acc-1', {
+        ...baseSnapshot(),
+        extraUsage: {
+          isEnabled: true,
+          limitUsd: 100,
+          usedUsd: 50,
+          utilizationPct: 50,
+          currency: 'USD',
+        },
+      });
+      expect(synced).toBe(4);
+      const overage = store.getAll('acc-1').find((w) => w.name === 'unified-overage');
+      expect(overage?.utilization).toBeCloseTo(0.5);
+      expect(overage?.inUse).toBe(false);
+    });
+
+    it('skips overage window when extraUsage is disabled', () => {
+      const store = new RateLimitStore();
+      store.syncFromClaudeAiSnapshot('acc-1', {
+        ...baseSnapshot(),
+        extraUsage: {
+          isEnabled: false,
+          limitUsd: 0,
+          usedUsd: 0,
+          utilizationPct: 0,
+          currency: 'USD',
+        },
+      });
+      expect(store.getAll('acc-1').find((w) => w.name === 'unified-overage')).toBeUndefined();
+    });
+
+    it('does not overwrite fresher header-sourced data', () => {
+      const store = new RateLimitStore();
+      // First: live headers arrive with lastUpdated = Date.now() (fresh).
+      store.update('acc-1', {
+        'anthropic-ratelimit-unified-5h-status': 'allowed',
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-5h-reset': '9999',
+      });
+      const before = store.getAll('acc-1').find((w) => w.name === 'unified-5h')!;
+      // Then: a claude.ai snapshot captured BEFORE those headers (older fetchedAt).
+      const synced = store.syncFromClaudeAiSnapshot('acc-1', {
+        ...baseSnapshot(),
+        fiveHourUtilization: 0.9, // stale, should be ignored
+        fetchedAt: before.lastUpdated! - 10_000,
+      });
+      // Only 7d + sonnet are new; 5h stays at 0.5 from fresh headers.
+      expect(synced).toBe(2);
+      expect(store.getAll('acc-1').find((w) => w.name === 'unified-5h')?.utilization).toBe(0.5);
+    });
+
+    it('overwrites existing windows when the snapshot is newer', () => {
+      const store = new RateLimitStore();
+      // Older header-sourced data.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(1000));
+      store.update('acc-1', { 'anthropic-ratelimit-unified-5h-utilization': '0.1' });
+      vi.useRealTimers();
+      // Newer claude.ai snapshot (fetchedAt = 2000 > lastUpdated = 1000).
+      const synced = store.syncFromClaudeAiSnapshot('acc-1', {
+        ...baseSnapshot(),
+        fiveHourUtilization: 0.42,
+        fetchedAt: 2000,
+      });
+      expect(synced).toBe(3);
+      expect(store.getAll('acc-1').find((w) => w.name === 'unified-5h')?.utilization).toBeCloseTo(
+        0.42,
+      );
+    });
+
+    it('skips fields that have no data on the snapshot', () => {
+      const store = new RateLimitStore();
+      const synced = store.syncFromClaudeAiSnapshot('acc-1', {
+        fiveHourUtilization: null,
+        fiveHourResetsAt: null,
+        sevenDayUtilization: 0.4,
+        sevenDayResetsAt: null,
+        sevenDaySonnetUtilization: null,
+        sevenDaySonnetResetsAt: null,
+        extraUsage: null,
+        perUserBudget: null,
+        fetchedAt: 1000,
+      });
+      expect(synced).toBe(1);
+      const windows = store.getAll('acc-1');
+      expect(windows.map((w) => w.name)).toEqual(['unified-7d']);
+    });
+
+    it('fires onUpdate callbacks with the synced windows', () => {
+      const store = new RateLimitStore();
+      const cb = vi.fn();
+      store.onUpdate(cb);
+      store.syncFromClaudeAiSnapshot('acc-1', baseSnapshot());
+      expect(cb).toHaveBeenCalledTimes(1);
+      const [accountId, windows] = cb.mock.calls[0]!;
+      expect(accountId).toBe('acc-1');
+      expect(windows).toHaveLength(3);
+    });
+
+    it('does not fire onUpdate when nothing was written', () => {
+      const store = new RateLimitStore();
+      // Pre-seed all three windows with a newer timestamp so the sync is a
+      // no-op — no upserts.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(3000));
+      store.update('acc-1', {
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-7d-utilization': '0.5',
+        'anthropic-ratelimit-unified-7d_sonnet-utilization': '0.5',
+      });
+      vi.useRealTimers();
+      const cb = vi.fn();
+      store.onUpdate(cb);
+      const synced = store.syncFromClaudeAiSnapshot('acc-1', {
+        ...baseSnapshot(),
+        fetchedAt: 1000, // older than the existing windows
+      });
+      expect(synced).toBe(0);
+      expect(cb).not.toHaveBeenCalled();
+    });
+
+    it('tolerates a malformed reset ISO string', () => {
+      const store = new RateLimitStore();
+      store.syncFromClaudeAiSnapshot('acc-1', {
+        ...baseSnapshot(),
+        fiveHourResetsAt: 'not-a-date',
+      });
+      expect(store.getAll('acc-1').find((w) => w.name === 'unified-5h')?.reset).toBeNull();
+    });
+  });
 });
