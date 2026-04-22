@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Loader2, Check, X } from 'lucide-react';
 import type { AccountInfo } from '@claude-sentinel/shared';
 import { planLabel, planColor } from '../lib/plan.js';
 import { getAccountStatus } from '../lib/account-status.js';
@@ -6,6 +7,8 @@ import { avatarStyle } from '../lib/accountColor.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import AccountColorPicker from './AccountColorPicker.js';
 import ResetCountdown from './ResetCountdown.js';
+
+export type RefreshUsageStatus = 'loading' | 'ok' | 'err';
 
 interface AccountCardProps {
   account: AccountInfo;
@@ -50,6 +53,12 @@ interface AccountCardProps {
   canExclude?: boolean;
   /** Pool-membership flip — called with the new `inPool` value. */
   onTogglePool?: (id: string, nextInPool: boolean) => void;
+  /** Per-card status for the page-level "refresh usage" fan-out, rendered
+   *  as a spinner / green check / red X near the 5h pill. `undefined`
+   *  means the card is in its resting state (no recent refresh). */
+  refreshUsageStatus?: RefreshUsageStatus;
+  /** Error text shown on hover when `refreshUsageStatus === 'err'`. */
+  refreshUsageError?: string | null;
 }
 
 export default function AccountCard({
@@ -69,6 +78,8 @@ export default function AccountCard({
   weeklyCapUsd,
   paused,
   fiveHourResetAt,
+  refreshUsageStatus,
+  refreshUsageError,
 }: AccountCardProps): React.ReactElement {
   // Live Anthropic usage snapshot for this account. The spend chip is only
   // rendered when real numbers are available. If the user hasn't completed
@@ -250,23 +261,75 @@ export default function AccountCard({
         </div>
 
         <div className="flex-shrink-0 flex flex-col items-end gap-1">
-          {fiveHourPct != null && (
-            <div className="flex items-center gap-1.5">
-              <div className="relative group">
-                <span
-                  className={`text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-full ${utilChipStyle}`}
-                >
-                  5h · {fiveHourPct}%
-                </span>
-                <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
-                  <div className="bg-black/85 dark:bg-white/90 text-white dark:text-black text-[10px] font-medium px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
-                    5-hour usage window
+          {refreshUsageStatus === 'loading' ? (
+            // Replace the pill + countdown with a compact spinner in the
+            // same vertical slot so the card's height doesn't jump while
+            // the /api/oauth/usage fetch is in flight.
+            <div
+              className="flex items-center justify-center h-[18px] px-2"
+              title="Refreshing usage…"
+              aria-label="Refreshing usage"
+            >
+              <Loader2 size={12} className="animate-spin text-ios-blue" />
+            </div>
+          ) : (
+            fiveHourPct != null && (
+              <div className="flex items-center gap-1.5">
+                <div className="relative group">
+                  <span
+                    className={`text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-full ${utilChipStyle}`}
+                  >
+                    5h · {fiveHourPct}%
+                  </span>
+                  <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
+                    <div className="bg-black/85 dark:bg-white/90 text-white dark:text-black text-[10px] font-medium px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
+                      5-hour usage window
+                    </div>
                   </div>
                 </div>
+                {fiveHourResetAt != null && fiveHourResetAt > 0 && (
+                  <ResetCountdown epochSec={fiveHourResetAt} variant="pill" />
+                )}
+                {refreshUsageStatus === 'ok' && (
+                  <Check
+                    size={12}
+                    strokeWidth={3}
+                    className="text-ios-green"
+                    aria-label="Usage refreshed"
+                  />
+                )}
+                {refreshUsageStatus === 'err' && (
+                  <div className="relative group">
+                    <X
+                      size={12}
+                      strokeWidth={3}
+                      className="text-ios-red"
+                      aria-label="Refresh failed"
+                    />
+                    <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
+                      <div className="bg-black/85 dark:bg-white/90 text-white dark:text-black text-[10px] font-medium px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
+                        {refreshUsageError || 'Refresh failed'}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
-              {fiveHourResetAt != null && fiveHourResetAt > 0 && (
-                <ResetCountdown epochSec={fiveHourResetAt} variant="pill" />
-              )}
+            )
+          )}
+          {/* err with no prior pill data — still surface the failure. */}
+          {refreshUsageStatus === 'err' && fiveHourPct == null && (
+            <div className="relative group">
+              <X
+                size={12}
+                strokeWidth={3}
+                className="text-ios-red"
+                aria-label="Refresh failed"
+              />
+              <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
+                <div className="bg-black/85 dark:bg-white/90 text-white dark:text-black text-[10px] font-medium px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
+                  {refreshUsageError || 'Refresh failed'}
+                </div>
+              </div>
             </div>
           )}
           {paused ? (

@@ -67,6 +67,7 @@ export const DEFAULT_SETTINGS: Settings = {
   requestLogMaxBodyKb: 256,
   requestLogCaptureResponse: true,
   requestLogRedactAuthHeaders: true,
+  cacheTtlForceOneHour: false,
   securitySetupCompleted: false,
   tourCompleted: false,
 };
@@ -310,6 +311,9 @@ function coerce(raw: unknown): Settings {
   }
   if (typeof obj['requestLogRedactAuthHeaders'] === 'boolean') {
     next.requestLogRedactAuthHeaders = obj['requestLogRedactAuthHeaders'];
+  }
+  if (typeof obj['cacheTtlForceOneHour'] === 'boolean') {
+    next.cacheTtlForceOneHour = obj['cacheTtlForceOneHour'];
   }
   if (typeof obj['securitySetupCompleted'] === 'boolean') {
     next.securitySetupCompleted = obj['securitySetupCompleted'];

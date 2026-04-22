@@ -115,6 +115,7 @@ function benchSettings(): Settings {
     requestLogMaxBodyKb: 256,
     requestLogCaptureResponse: true,
     requestLogRedactAuthHeaders: true,
+    cacheTtlForceOneHour: false,
     securitySetupCompleted: true,
     tourCompleted: true,
   };

@@ -19,6 +19,7 @@ import {
   SseUsageExtractor,
 } from './cache-ttl/parser.js';
 import { computeCacheCosts } from './cache-ttl/pricing.js';
+import { rewriteCacheControlTtl } from './cache-ttl/rewriter.js';
 
 export const DAEMON_PORT = 47284;
 export const ANTHROPIC_HOST = 'api.anthropic.com';
@@ -648,6 +649,35 @@ async function proxyToAnthropic(
     // The SSE interceptor can't decompress gzip, so force identity encoding
     // from upstream when enforcement is live.
     delete req.headers['accept-encoding'];
+  }
+
+  // Cache TTL override — when the user has opted in, rewrite every existing
+  // `cache_control` block on outbound /v1/messages (including subpath
+  // /v1/messages/count_tokens) requests to `{type: 'ephemeral', ttl: '1h'}`.
+  // Only mutates breakpoints the client already placed, so we stay under the
+  // 4-breakpoint API cap automatically. The beta header was required when
+  // 1h TTL was gated; it's GA now but harmless to include as insurance.
+  if (
+    settings.cacheTtlForceOneHour &&
+    req.method === 'POST' &&
+    req.url?.startsWith('/v1/messages')
+  ) {
+    const rewritten = rewriteCacheControlTtl(body, '1h');
+    if (rewritten !== body) {
+      body = rewritten;
+      req.headers['content-length'] = String(body.length);
+    }
+    const existingBeta = req.headers['anthropic-beta'];
+    const betaToken = 'extended-cache-ttl-2025-04-11';
+    if (typeof existingBeta === 'string') {
+      if (!existingBeta.split(',').map((s) => s.trim()).includes(betaToken)) {
+        req.headers['anthropic-beta'] = `${existingBeta}, ${betaToken}`;
+      }
+    } else if (Array.isArray(existingBeta)) {
+      req.headers['anthropic-beta'] = [...existingBeta, betaToken];
+    } else {
+      req.headers['anthropic-beta'] = betaToken;
+    }
   }
 
   // Security scan — runs against the outbound JSON before we forward. In

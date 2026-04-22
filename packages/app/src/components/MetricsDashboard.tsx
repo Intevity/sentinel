@@ -6,6 +6,7 @@ import type {
   CacheTtlSessionRow,
 } from '@claude-sentinel/shared';
 import { useMetricsSummary } from '../hooks/useMetricsSummary.js';
+import { useSettings } from '../hooks/useSettings.js';
 import InfoTooltip from './InfoTooltip.js';
 
 const MODEL_COLORS: Record<string, string> = {
@@ -142,6 +143,7 @@ function MetricsContent({
   summary: MetricsSummary;
   days: number;
 }): React.ReactElement {
+  const { settings } = useSettings();
   // Aggregate totals across the period for the summary tiles.
   let totalCost = 0;
   let totalInput = 0;
@@ -251,7 +253,12 @@ function MetricsContent({
       )}
 
       {/* ── Cache TTL (proxy-sourced, 5m vs 1h split) ─────────────────── */}
-      {hasCacheTtlData(summary.cacheTtl) && <CacheTtlSection ttl={summary.cacheTtl} />}
+      {hasCacheTtlData(summary.cacheTtl) && (
+        <CacheTtlSection
+          ttl={summary.cacheTtl}
+          overrideForceOneHour={settings?.cacheTtlForceOneHour ?? false}
+        />
+      )}
 
       {/* ── Errors timeline ──────────────────────────────────────────── */}
       {errorCount > 0 && (
@@ -897,10 +904,32 @@ function hasCacheTtlData(ttl: MetricsSummary['cacheTtl']): boolean {
 
 type CacheTtlView = 'tokens' | 'cost';
 
-export function CacheTtlSection({ ttl }: { ttl: MetricsSummary['cacheTtl'] }): React.ReactElement {
+export function CacheTtlSection({
+  ttl,
+  overrideForceOneHour = false,
+}: {
+  ttl: MetricsSummary['cacheTtl'];
+  overrideForceOneHour?: boolean;
+}): React.ReactElement {
   const [view, setView] = useState<CacheTtlView>('tokens');
 
   const allDays = Object.keys(ttl.byDayModel).sort();
+
+  // When the override is active, compute the 1h share of cache writes across
+  // the current window. If it stays low despite the toggle being on, it's a
+  // strong signal that Anthropic's server is enforcing a TTL downgrade on
+  // this account tier (see research note in the plan / settings description).
+  let totalCreate5m = 0;
+  let totalCreate1h = 0;
+  for (const models of Object.values(ttl.byDayModel)) {
+    for (const row of Object.values(models)) {
+      totalCreate5m += row.create5m;
+      totalCreate1h += row.create1h;
+    }
+  }
+  const totalWrites = totalCreate5m + totalCreate1h;
+  const share1h = totalWrites > 0 ? totalCreate1h / totalWrites : null;
+  const showDowngradeHint = overrideForceOneHour && share1h !== null && share1h < 0.1;
   const dailyData = allDays.map((date) => {
     let create5m = 0,
       create1h = 0,
@@ -949,6 +978,15 @@ export function CacheTtlSection({ ttl }: { ttl: MetricsSummary['cacheTtl'] }): R
           ))}
         </div>
       </div>
+
+      {overrideForceOneHour && share1h !== null && (
+        <p
+          className={`text-[10px] mb-2 ${showDowngradeHint ? 'text-ios-orange' : 'text-[#8E8E93]'}`}
+        >
+          Override active: {(share1h * 100).toFixed(0)}% of cache writes landed at 1h
+          {showDowngradeHint ? ' (server may be enforcing a downgrade on this account)' : ''}
+        </p>
+      )}
 
       <ResponsiveContainer width="100%" height={160}>
         <BarChart data={dailyData} barSize={18} margin={{ top: 0, right: 0, bottom: 0, left: -12 }}>

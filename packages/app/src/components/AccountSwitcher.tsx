@@ -69,19 +69,90 @@ export default function AccountSwitcher({
     text: string;
     kind: 'success' | 'error' | 'info';
   } | null>(null);
-  const [refreshStatus, setRefreshStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(
-    null,
-  );
-  const refreshStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Per-account status for the page-level Refresh fan-out: spinner while the
+  // /api/oauth/usage fetch is in flight, then a brief green check or red X.
+  // Auto-clears after a short delay so the card settles back to its normal
+  // 5h pill. Keyed by accountId; absence means the card is resting.
+  type CardRefreshStatus = { status: 'loading' } | { status: 'ok' } | { status: 'err'; error: string };
+  const [cardRefreshStatus, setCardRefreshStatus] = useState<Record<string, CardRefreshStatus>>({});
+  const cardRefreshTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  useEffect(() => {
+    return () => {
+      for (const t of cardRefreshTimersRef.current.values()) clearTimeout(t);
+      cardRefreshTimersRef.current.clear();
+    };
+  }, []);
+
+  const refreshInFlight = Object.values(cardRefreshStatus).some((s) => s.status === 'loading');
 
   const handleRefreshClick = useCallback(async (): Promise<void> => {
-    const result = await refreshAccounts();
-    if (refreshStatusTimerRef.current) clearTimeout(refreshStatusTimerRef.current);
-    setRefreshStatus(
-      result.ok ? { kind: 'ok', text: 'Updated' } : { kind: 'err', text: result.error ?? 'Failed' },
+    // Cancel any lingering auto-clear timers so a quick second click doesn't
+    // prematurely erase the status of the new refresh.
+    for (const t of cardRefreshTimersRef.current.values()) clearTimeout(t);
+    cardRefreshTimersRef.current.clear();
+
+    const targetIds = accounts.map((a) => a.id);
+
+    // Fire the DB sync regardless of whether there are accounts yet — a new
+    // one may have just been added on the claude-code side and we still
+    // want to pick it up.
+    const syncPromise = refreshAccounts();
+
+    if (targetIds.length === 0) {
+      await syncPromise;
+      return;
+    }
+
+    setCardRefreshStatus(() => {
+      const next: Record<string, CardRefreshStatus> = {};
+      for (const id of targetIds) next[id] = { status: 'loading' };
+      return next;
+    });
+
+    const usageResults = await Promise.all(
+      targetIds.map((id) =>
+        sendToSentinel({ type: 'refresh_claude_ai_usage', accountId: id })
+          .then((res) => ({
+            id,
+            ok: !!res.success,
+            error: res.error ?? null,
+          }))
+          .catch((err: unknown) => ({
+            id,
+            ok: false,
+            error: err instanceof Error ? err.message : 'Refresh failed',
+          })),
+      ),
     );
-    refreshStatusTimerRef.current = setTimeout(() => setRefreshStatus(null), 3000);
-  }, [refreshAccounts]);
+    await syncPromise;
+
+    setCardRefreshStatus((prev) => {
+      const next = { ...prev };
+      for (const r of usageResults) {
+        next[r.id] = r.ok
+          ? { status: 'ok' }
+          : { status: 'err', error: r.error ?? 'Refresh failed' };
+      }
+      return next;
+    });
+
+    // Auto-clear: success chips settle quickly, errors linger so the user
+    // has time to hover the tooltip and read the reason.
+    for (const r of usageResults) {
+      const ms = r.ok ? 1500 : 3000;
+      const t = setTimeout(() => {
+        setCardRefreshStatus((prev) => {
+          if (!prev[r.id]) return prev;
+          const next = { ...prev };
+          delete next[r.id];
+          return next;
+        });
+        cardRefreshTimersRef.current.delete(r.id);
+      }, ms);
+      cardRefreshTimersRef.current.set(r.id, t);
+    }
+  }, [accounts, refreshAccounts]);
   const [loggingIn, setLoggingIn] = useState(false);
   const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null);
   const [purgingId, setPurgingId] = useState<string | null>(null);
@@ -344,20 +415,17 @@ export default function AccountSwitcher({
           )}
         </div>
         <div className="flex items-center gap-2">
-          {refreshStatus && (
-            <span
-              className={`text-[10px] font-medium ${refreshStatus.kind === 'ok' ? 'text-ios-green' : 'text-ios-red'}`}
-            >
-              {refreshStatus.text}
-            </span>
-          )}
           <button
             onClick={() => void handleRefreshClick()}
-            disabled={loading}
+            disabled={loading || refreshInFlight}
             className="text-[#8E8E93] hover:text-ios-blue disabled:opacity-40 transition-colors active:scale-90"
-            title="Sync with Claude Code"
+            title="Refresh accounts and usage"
           >
-            <RefreshCw size={13} strokeWidth={2.5} className={loading ? 'animate-spin' : ''} />
+            <RefreshCw
+              size={13}
+              strokeWidth={2.5}
+              className={loading || refreshInFlight ? 'animate-spin' : ''}
+            />
           </button>
           <button
             onClick={() => void handleAddAccount()}
@@ -534,6 +602,7 @@ export default function AccountSwitcher({
         const weeklyCap =
           settings?.budgetWeeklyUsdByAccount[account.id] ?? settings?.budgetWeeklyUsdGlobal ?? null;
         const paused = !!pausedMap[account.id];
+        const cardStatus = cardRefreshStatus[account.id];
         return (
           <AccountCard
             key={account.id}
@@ -556,6 +625,8 @@ export default function AccountSwitcher({
             fiveHourResetAt={resetAt}
             weeklyCapUsd={weeklyCap}
             paused={paused}
+            {...(cardStatus ? { refreshUsageStatus: cardStatus.status } : {})}
+            refreshUsageError={cardStatus?.status === 'err' ? cardStatus.error : null}
           />
         );
       })}

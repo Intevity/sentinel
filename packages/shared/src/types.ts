@@ -385,6 +385,19 @@ export interface Settings {
    *  credentials, and cookies are always redacted regardless of this flag. */
   requestLogRedactAuthHeaders: boolean;
 
+  // ─── Prompt caching ────────────────────────────────────────────────
+  /** When true, the proxy rewrites every existing `cache_control` block on
+   *  outbound `/v1/messages` (and `/v1/messages/count_tokens`) requests to
+   *  `{type: 'ephemeral', ttl: '1h'}`. Also appends
+   *  `anthropic-beta: extended-cache-ttl-2025-04-11` to the request. Never
+   *  inserts new cache breakpoints where the client didn't place one, so we
+   *  stay within the 4-breakpoint-per-request API cap automatically. Intended
+   *  to give Pro accounts the same 1h prompt-cache behavior as Max/Team.
+   *  Note: Anthropic's server may enforce a tier-based TTL downgrade on
+   *  subscription OAuth logins; the Cache TTL section of the Usage tab shows
+   *  the effective result. Default false. */
+  cacheTtlForceOneHour: boolean;
+
   // ─── Onboarding state ──────────────────────────────────────────────
   /** True once the user has either applied a risk-profile preset in the
    *  Security Setup Wizard or explicitly dismissed it. The wizard fires

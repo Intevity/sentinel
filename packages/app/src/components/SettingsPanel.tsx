@@ -145,6 +145,10 @@ export default function SettingsPanel({
     void update({ autoUpdate: enabled }).catch(() => undefined);
   };
 
+  const setCacheTtlForceOneHour = (enabled: boolean): void => {
+    void update({ cacheTtlForceOneHour: enabled }).catch(() => undefined);
+  };
+
   const setBackgroundProbeIntervalSec = (secs: number): void => {
     void update({ backgroundProbeIntervalSec: secs }).catch(() => undefined);
   };
@@ -376,6 +380,17 @@ export default function SettingsPanel({
                 >
                   Check for updates now…
                 </button>
+              </Section>
+            )}
+
+            {activeTab === 'general' && (
+              <Section title="Prompt caching">
+                <ToggleRow
+                  label="Force 1h cache TTL"
+                  description="Rewrites outbound cache_control blocks to request 1 hour retention so Pro accounts match Max/Team behavior. Effectiveness is visible in Usage: Cache TTL; Anthropic may still enforce a shorter TTL server-side on some tiers."
+                  checked={settings.cacheTtlForceOneHour}
+                  onChange={setCacheTtlForceOneHour}
+                />
               </Section>
             )}
 

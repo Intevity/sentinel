@@ -55,6 +55,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     requestLogMaxBodyKb: 256,
     requestLogCaptureResponse: true,
     requestLogRedactAuthHeaders: true,
+    cacheTtlForceOneHour: false,
     securitySetupCompleted: false,
     tourCompleted: false,
     ...overrides,
