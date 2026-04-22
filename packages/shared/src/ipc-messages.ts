@@ -43,6 +43,27 @@ export interface OverageDisabledMessage {
   reason: string;
 }
 
+/** Broadcast when an account's Sonnet 7-day utilization crosses the
+ *  overage-buffer threshold (default 95%). The next Sonnet request on the
+ *  account will draw from the monthly overage budget unless the account is
+ *  opted in via `overageEnabledIds`. Fired at most once per Sonnet window
+ *  (deduped by reset timestamp). */
+export interface SonnetSaturationEnteredMessage {
+  type: 'sonnet_saturation_entered';
+  accountId: string;
+  /** Unix seconds when the Sonnet 7-day window resets. */
+  resetsAt: number | null;
+  /** Utilization fraction 0-1 at the time the threshold was crossed. */
+  utilization: number;
+}
+
+/** Counterpart to `sonnet_saturation_entered`. Fires once the Sonnet
+ *  window rolls over and utilization falls back below the threshold. */
+export interface SonnetSaturationExitedMessage {
+  type: 'sonnet_saturation_exited';
+  accountId: string;
+}
+
 export interface UsageUpdateMessage {
   type: 'usage_update';
   accountId: string;
@@ -99,6 +120,21 @@ export interface RateLimitsProbingMessage {
 export interface RateLimitsProbeEndedMessage {
   type: 'rate_limits_probe_ended';
   accountId: string;
+}
+
+/** Fired when a probe gets a 403 with `error.type === 'permission_error'`
+ *  whose message signals that the account's organization has OAuth API
+ *  access disabled by admin/billing policy. Distinct from auth-expired:
+ *  refreshing or re-authenticating produces the same restricted token, so
+ *  the UI must render a non-Reconnect panel ("OAuth access disabled").
+ *  Fires alongside `rate_limits_probe_ended` so existing loading-indicator
+ *  listeners keep working. */
+export interface RateLimitsOauthForbiddenMessage {
+  type: 'rate_limits_oauth_forbidden';
+  accountId: string;
+  /** Verbatim `error.message` from Anthropic's response, surfaced for
+   *  logging and potential UI detail rows. */
+  message: string;
 }
 
 /** Broadcast when settings are written (by any process) so other daemon
@@ -326,7 +362,7 @@ export interface ClaudeAiUsageUpdatedMessage {
   type: 'claude_ai_usage_updated';
   accountId: string;
   snapshot: ClaudeAiUsageSnapshot | null;
-  error: 'missing_key' | 'auth_expired' | 'network' | 'parse' | null;
+  error: 'missing_key' | 'auth_expired' | 'oauth_forbidden' | 'network' | 'parse' | null;
 }
 
 /** Batch of new daemon log entries pushed to any connected client. Coalesced
@@ -356,6 +392,8 @@ export type DaemonToAppMessage =
   | OverageEnteredMessage
   | OverageExitedMessage
   | OverageDisabledMessage
+  | SonnetSaturationEnteredMessage
+  | SonnetSaturationExitedMessage
   | UsageUpdateMessage
   | AccountSwitchedMessage
   | AccountUpdatedMessage
@@ -363,6 +401,7 @@ export type DaemonToAppMessage =
   | RateLimitsUpdatedMessage
   | RateLimitsProbingMessage
   | RateLimitsProbeEndedMessage
+  | RateLimitsOauthForbiddenMessage
   | SettingsChangedMessage
   | AlertTriggeredMessage
   | TokenRefreshFailedMessage

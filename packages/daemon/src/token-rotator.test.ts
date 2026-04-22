@@ -817,4 +817,156 @@ describe('TokenRotator overage gate', () => {
     );
     expect(rotator.pick()?.accountId).toBe('capped');
   });
+
+  // ── Sonnet saturation gate ────────────────────────────────────────
+  // When a Sonnet request is being routed, the rotator folds accounts
+  // whose unified-7d_sonnet utilization is at or above the buffer
+  // threshold into the overage tier, subject to the same opt-in. Opus
+  // requests and ctx-less picks are unaffected.
+
+  function setSonnet(store: RateLimitStore, id: string, util: number, reset = 9_000): void {
+    store.update(id, {
+      'anthropic-ratelimit-unified-7d_sonnet-status': 'allowed',
+      'anthropic-ratelimit-unified-7d_sonnet-utilization': String(util),
+      'anthropic-ratelimit-unified-7d_sonnet-reset': String(reset),
+    });
+  }
+
+  it('routes Sonnet requests away from Sonnet-saturated accounts', () => {
+    const db = getDb(dbPath);
+    seed(db, 'saturated', 's@x');
+    seed(db, 'fresh', 'f@x');
+    const store = new RateLimitStore();
+    // 5h has plenty of room on both, but Sonnet 7d is exhausted on one.
+    setSession(store, 'saturated', 0.3);
+    setSonnet(store, 'saturated', 1.0);
+    setSession(store, 'fresh', 0.3);
+    setSonnet(store, 'fresh', 0.2);
+
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'saturated' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(), // nobody opted into overage
+      () => new Set(),
+      () => 5,
+    );
+    // Sonnet request should never land on `saturated` — not opted in.
+    for (let i = 0; i < 4; i++) {
+      expect(rotator.pick({ isSonnet: true })?.accountId).toBe('fresh');
+    }
+  });
+
+  it('allows Opus requests to route to a Sonnet-saturated account', () => {
+    const db = getDb(dbPath);
+    seed(db, 'hotSonnet', 'h@x');
+    const store = new RateLimitStore();
+    setSession(store, 'hotSonnet', 0.3);
+    setSonnet(store, 'hotSonnet', 1.0);
+
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'hotSonnet' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(),
+      () => new Set(),
+      () => 5,
+    );
+    // Opus / ctx-less / {isSonnet:false} — all three must land on the account.
+    expect(rotator.pick({ isSonnet: false })?.accountId).toBe('hotSonnet');
+    expect(rotator.pick()?.accountId).toBe('hotSonnet');
+  });
+
+  it('treats missing Sonnet window as not saturated', () => {
+    const db = getDb(dbPath);
+    seed(db, 'unprobed', 'u@x');
+    const store = new RateLimitStore();
+    setSession(store, 'unprobed', 0.2);
+    // Deliberately do NOT call setSonnet — mirrors an account that hasn't
+    // served a Sonnet request yet so Anthropic hasn't reported the window.
+
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'unprobed' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(),
+      () => new Set(),
+      () => 5,
+    );
+    expect(rotator.pick({ isSonnet: true })?.accountId).toBe('unprobed');
+  });
+
+  it('returns null when every pool member is Sonnet-saturated and none opted in', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setSession(store, 'a', 0.3);
+    setSonnet(store, 'a', 1.0);
+    setSession(store, 'b', 0.3);
+    setSonnet(store, 'b', 1.0);
+
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'a' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(), // nobody opted in
+      () => new Set(),
+      () => 5,
+    );
+    expect(rotator.pick({ isSonnet: true })).toBeNull();
+  });
+
+  it('routes a Sonnet request to an opted-in Sonnet-saturated account when no fresh member remains', () => {
+    const db = getDb(dbPath);
+    seed(db, 'saturated', 's@x');
+    const store = new RateLimitStore();
+    setSession(store, 'saturated', 0.3);
+    setSonnet(store, 'saturated', 1.0);
+
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'saturated' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(['saturated']), // opted into overage
+      () => new Set(),
+      () => 5,
+    );
+    expect(rotator.pick({ isSonnet: true })?.accountId).toBe('saturated');
+  });
+
+  it('prefers a fresh account over a Sonnet-saturated opted-in one', () => {
+    const db = getDb(dbPath);
+    seed(db, 'saturated', 's@x');
+    seed(db, 'fresh', 'f@x');
+    const store = new RateLimitStore();
+    setSession(store, 'saturated', 0.3);
+    setSonnet(store, 'saturated', 1.0);
+    setSession(store, 'fresh', 0.3);
+    setSonnet(store, 'fresh', 0.2);
+
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'saturated' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(['saturated']), // opted in, but shouldn't matter while `fresh` exists
+      () => new Set(),
+      () => 5,
+    );
+    for (let i = 0; i < 4; i++) {
+      expect(rotator.pick({ isSonnet: true })?.accountId).toBe('fresh');
+    }
+  });
 });

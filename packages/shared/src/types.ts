@@ -75,6 +75,20 @@ export interface UsageEvent {
 export type OverageTransition = 'entered' | 'exited' | 'disabled';
 
 /**
+ * Sonnet-specific saturation transitions.
+ *
+ *   entered — utilization on `unified-7d_sonnet` crossed the overage-buffer
+ *             threshold (default 95%). The next Sonnet request on this
+ *             account will draw from the monthly overage budget unless the
+ *             account is opted into overage via `overageEnabledIds`.
+ *   exited  — utilization fell back below the threshold (window rollover).
+ *
+ * Dedup is per reset timestamp on the Sonnet window, so a single
+ * saturation episode produces at most one entered + one exited.
+ */
+export type SonnetSaturationTransition = 'entered' | 'exited';
+
+/**
  * A recorded transition in the overage state machine
  */
 export interface OverageEvent {
@@ -818,17 +832,24 @@ export const ALERT_SOUNDS: ReadonlyArray<{ label: string; value: string | null }
 
 /**
  * Scope for a user-configured usage alert.
- *   account — bound to a single Sentinel account key; fires on that account's
- *             unified-5h utilization.
- *   pool    — round-robin only; fires on the mean unified-5h utilization
- *             across every pool member (accounts not in `poolExcludedIds`).
- *   budget  — fires on rolling 7-day spend vs. the user-configured Sentinel
- *             budget. `budgetScope: 'account'` compares against
- *             `Settings.budgetWeeklyUsdByAccount[accountId]`; `'global'`
- *             compares summed spend against `budgetWeeklyUsdGlobal`.
- *             Re-arms on ISO-week rollover rather than 5h-window reset.
+ *   account        — bound to a single Sentinel account key; fires on that
+ *                    account's unified-5h utilization.
+ *   account-sonnet — bound to a single Sentinel account key; fires on that
+ *                    account's unified-7d_sonnet utilization (Sonnet's
+ *                    weekly pool on Max plans). Distinct from `account` so
+ *                    a user can configure 5-hour and Sonnet 7-day
+ *                    thresholds independently on the same account.
+ *   pool           — round-robin only; fires on the mean unified-5h
+ *                    utilization across every pool member (accounts not
+ *                    in `poolExcludedIds`).
+ *   budget         — fires on rolling 7-day spend vs. the user-configured
+ *                    Sentinel budget. `budgetScope: 'account'` compares
+ *                    against `Settings.budgetWeeklyUsdByAccount[accountId]`;
+ *                    `'global'` compares summed spend against
+ *                    `budgetWeeklyUsdGlobal`. Re-arms on ISO-week rollover
+ *                    rather than 5h-window reset.
  */
-export type AlertScope = 'account' | 'pool' | 'budget';
+export type AlertScope = 'account' | 'account-sonnet' | 'pool' | 'budget';
 
 /**
  * Sub-scope for `scope: 'budget'` alerts. `'account'` binds the alert to a

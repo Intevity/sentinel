@@ -15,6 +15,7 @@ import {
 import { RateLimitStore } from './rate-limit-store.js';
 import {
   startAlertEvaluator,
+  startSonnetAlertEvaluator,
   startPoolAlertEvaluator,
   evaluatePoolOnce,
   primeNewAlertAgainstCurrentWindow,
@@ -379,6 +380,45 @@ describe('startAlertEvaluator (per-account)', () => {
 
     updateSessionWindow(store, 'acc-a', 0.95);
     expect(ipc.broadcasts).toHaveLength(0);
+  });
+
+  it('stays silent for accounts excluded from the round-robin pool', () => {
+    const db = getDb(dbPath);
+    upsertAlert(db, { scope: 'account', accountId: 'acc-a', thresholdPct: 75, enabled: true });
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    startAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => rrSettings({ poolExcludedIds: ['acc-a'] }),
+    });
+
+    updateSessionWindow(store, 'acc-a', 0.95);
+    expect(ipc.broadcasts).toHaveLength(0);
+  });
+
+  it('still fires for excluded accounts outside round-robin mode', () => {
+    // poolExcludedIds is defined as round-robin-only: in `off` mode the
+    // field is ignored, so a stale exclusion entry must not accidentally
+    // silence legitimate alerts.
+    const db = getDb(dbPath);
+    upsertAlert(db, { scope: 'account', accountId: 'acc-a', thresholdPct: 75, enabled: true });
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    startAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => ({
+        ...DEFAULT_SETTINGS,
+        switchingMode: 'off',
+        poolExcludedIds: ['acc-a'],
+      }),
+    });
+
+    updateSessionWindow(store, 'acc-a', 0.95);
+    expect(ipc.broadcasts).toHaveLength(1);
   });
 });
 
@@ -886,5 +926,215 @@ describe('primeNewAlertAgainstCurrentWindow', () => {
     // the defensive guard (not reachable via normal upsert).
     const alert = { id: -1, scope: 'account' as const, accountId: null, thresholdPct: 10 };
     expect(() => primeNewAlertAgainstCurrentWindow(db, store, alert)).not.toThrow();
+  });
+});
+
+// ── account-sonnet scope ───────────────────────────────────────────────────
+
+function updateSonnetWindow(
+  store: RateLimitStore,
+  accountId: string,
+  utilization: number,
+  reset = 500,
+): void {
+  store.update(accountId, {
+    'anthropic-ratelimit-unified-7d_sonnet-status': 'allowed',
+    'anthropic-ratelimit-unified-7d_sonnet-utilization': String(utilization),
+    'anthropic-ratelimit-unified-7d_sonnet-reset': String(reset),
+  });
+}
+
+describe('account-sonnet alerts', () => {
+  let dbPath: string;
+
+  beforeEach(() => {
+    dbPath = TEST_DB();
+  });
+  afterEach(() => {
+    closeDb();
+    if (existsSync(dbPath)) unlinkSync(dbPath);
+  });
+
+  it('fires on the Sonnet 7-day window, not the 5-hour window', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, { scope: 'account-sonnet', accountId: 'acc-a', thresholdPct: 80, enabled: true });
+    startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    // 5-hour usage is high but irrelevant — we only care about Sonnet 7d.
+    updateSessionWindow(store, 'acc-a', 0.95);
+    // Sonnet at 90% — above 80% threshold → fire.
+    updateSonnetWindow(store, 'acc-a', 0.9, 500);
+
+    const fires = ipc.broadcasts.filter(
+      (m): m is { type: string; scope: string } =>
+        typeof m === 'object' && m !== null && (m as { type?: string }).type === 'alert_triggered',
+    );
+    expect(fires.some((m) => (m as { scope?: string }).scope === 'account-sonnet')).toBe(true);
+  });
+
+  it('does not re-fire within the same Sonnet window', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, { scope: 'account-sonnet', accountId: 'acc-a', thresholdPct: 80, enabled: true });
+    startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateSonnetWindow(store, 'acc-a', 0.85, 500);
+    updateSonnetWindow(store, 'acc-a', 0.95, 500);
+    updateSonnetWindow(store, 'acc-a', 0.99, 500);
+
+    const fires = ipc.broadcasts.filter(
+      (m): m is { scope: string } =>
+        typeof m === 'object' &&
+        m !== null &&
+        (m as { type?: string }).type === 'alert_triggered' &&
+        (m as { scope?: string }).scope === 'account-sonnet',
+    );
+    expect(fires).toHaveLength(1);
+  });
+
+  it('re-arms after the Sonnet window rolls over', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, { scope: 'account-sonnet', accountId: 'acc-a', thresholdPct: 80, enabled: true });
+    startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateSonnetWindow(store, 'acc-a', 0.9, 500);
+    // Window rolls over — new reset timestamp.
+    updateSonnetWindow(store, 'acc-a', 0.9, 9_999);
+
+    const fires = ipc.broadcasts.filter(
+      (m): m is { scope: string } =>
+        typeof m === 'object' &&
+        m !== null &&
+        (m as { type?: string }).type === 'alert_triggered' &&
+        (m as { scope?: string }).scope === 'account-sonnet',
+    );
+    expect(fires).toHaveLength(2);
+  });
+
+  it('does not fire when Sonnet util is below the threshold', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, { scope: 'account-sonnet', accountId: 'acc-a', thresholdPct: 80, enabled: true });
+    startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateSonnetWindow(store, 'acc-a', 0.6, 500);
+
+    const fires = ipc.broadcasts.filter(
+      (m): m is { scope: string } =>
+        typeof m === 'object' &&
+        m !== null &&
+        (m as { type?: string }).type === 'alert_triggered' &&
+        (m as { scope?: string }).scope === 'account-sonnet',
+    );
+    expect(fires).toHaveLength(0);
+  });
+
+  it('sonnet-scope priming suppresses first-fire when already above threshold', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    updateSonnetWindow(store, 'acc-a', 0.95, 500);
+
+    const alert = upsertAlert(db, {
+      scope: 'account-sonnet',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    primeNewAlertAgainstCurrentWindow(db, store, alert);
+
+    const [row] = listAlerts(db, { scope: 'account-sonnet', accountId: 'acc-a' });
+    expect(row?.lastTriggeredResetTs).toBe(500);
+
+    // Now verify a subsequent rate-limit update does NOT re-fire for this window.
+    const ipc = ipcStub();
+    startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+    updateSonnetWindow(store, 'acc-a', 0.97, 500);
+    const fires = ipc.broadcasts.filter(
+      (m): m is { scope: string } =>
+        typeof m === 'object' &&
+        m !== null &&
+        (m as { type?: string }).type === 'alert_triggered' &&
+        (m as { scope?: string }).scope === 'account-sonnet',
+    );
+    expect(fires).toHaveLength(0);
+  });
+
+  it('stays silent for accounts excluded from the round-robin pool', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, {
+      scope: 'account-sonnet',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    startSonnetAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => rrSettings({ poolExcludedIds: ['acc-a'] }),
+    });
+
+    updateSonnetWindow(store, 'acc-a', 0.95, 500);
+    const fires = ipc.broadcasts.filter(
+      (m): m is { scope: string } =>
+        typeof m === 'object' &&
+        m !== null &&
+        (m as { type?: string }).type === 'alert_triggered' &&
+        (m as { scope?: string }).scope === 'account-sonnet',
+    );
+    expect(fires).toHaveLength(0);
+  });
+
+  it('still fires for excluded accounts outside round-robin mode', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, {
+      scope: 'account-sonnet',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    startSonnetAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => ({
+        ...DEFAULT_SETTINGS,
+        switchingMode: 'off',
+        poolExcludedIds: ['acc-a'],
+      }),
+    });
+
+    updateSonnetWindow(store, 'acc-a', 0.95, 500);
+    const fires = ipc.broadcasts.filter(
+      (m): m is { scope: string } =>
+        typeof m === 'object' &&
+        m !== null &&
+        (m as { type?: string }).type === 'alert_triggered' &&
+        (m as { scope?: string }).scope === 'account-sonnet',
+    );
+    expect(fires).toHaveLength(1);
   });
 });

@@ -71,12 +71,26 @@ export function useNativeAlertNotifications(): void {
         const headline =
           msg.scope === 'pool'
             ? `Sentinel: pool at ${msg.thresholdPct}%`
-            : `Sentinel: ${msg.thresholdPct}% usage reached`;
+            : msg.scope === 'account-sonnet'
+              ? `Sentinel: ${msg.thresholdPct}% Sonnet usage reached`
+              : `Sentinel: ${msg.thresholdPct}% usage reached`;
         const body =
           msg.scope === 'pool'
             ? `Round-robin pool has used ${pct}% on average across its 5-hour window.`
-            : `Active account has used ${pct}% of its 5-hour window.`;
+            : msg.scope === 'account-sonnet'
+              ? `Active account has used ${pct}% of its Sonnet 7-day window.`
+              : `Active account has used ${pct}% of its 5-hour window.`;
         void fireNativeStandard(headline, body, soundName);
+      } else if (msg.type === 'sonnet_saturation_entered') {
+        if (overageOsNotify) {
+          const short = msg.accountId.slice(0, 8);
+          const pct = (msg.utilization * 100).toFixed(1);
+          void fireNativeStandard(
+            'Claude Sentinel: Sonnet 7-day saturated',
+            `${short}… at ${pct}% of Sonnet weekly quota. Further Sonnet requests will draw from overage.`,
+            soundName,
+          );
+        }
       } else if (msg.type === 'overage_entered') {
         if (overageOsNotify) {
           const short = msg.accountId.slice(0, 8);
@@ -190,6 +204,7 @@ export function useNotifications(): UseNotificationsResult {
         msg.type === 'alert_triggered' ||
         msg.type === 'overage_entered' ||
         msg.type === 'overage_disabled' ||
+        msg.type === 'sonnet_saturation_entered' ||
         msg.type === 'account_switched' ||
         msg.type === 'security_event_detected'
       ) {

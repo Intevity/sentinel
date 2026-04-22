@@ -23,8 +23,21 @@ interface RawUsageResponse {
 }
 
 /** Discriminator returned alongside a null snapshot so the UI can distinguish
- *  "this account has no valid OAuth token" from "the fetch failed in flight." */
-export type UsageFetchError = 'missing_key' | 'auth_expired' | 'network' | 'parse';
+ *  "this account has no valid OAuth token" from "the fetch failed in flight."
+ *
+ *  `oauth_forbidden` is a distinct failure from `auth_expired`: the token is
+ *  accepted by auth, but the organization has OAuth API access disabled by
+ *  admin/billing policy (seen as HTTP 403 with
+ *  `error.type === 'permission_error'` and a message like "OAuth authentication
+ *  is currently not allowed for this organization"). Neither refreshing the
+ *  token nor re-authenticating helps until the org flips the policy; the UI
+ *  must render a non-Reconnect panel. */
+export type UsageFetchError =
+  | 'missing_key'
+  | 'auth_expired'
+  | 'oauth_forbidden'
+  | 'network'
+  | 'parse';
 
 export interface UsageFetchResult {
   snapshot: ClaudeAiUsageSnapshot | null;
@@ -33,6 +46,55 @@ export interface UsageFetchResult {
 
 const BASE_URL = 'https://api.anthropic.com';
 const USAGE_PATH = '/api/oauth/usage';
+
+/** Pattern identifying Anthropic's "org has OAuth disabled" 403 message.
+ *  The exact text surfaced today is "OAuth authentication is currently not
+ *  allowed for this organization"; we match case-insensitively with a
+ *  tolerant leading fragment so minor wording tweaks don't silently drop
+ *  us back into the auth_expired bucket. Shared with rate-limit-probe. */
+export const OAUTH_FORBIDDEN_MESSAGE_RE = /oauth authentication is currently not allowed/i;
+
+/** Inspect a 403 response body to decide whether it is the org-level
+ *  "OAuth disabled" error. Returns `{ forbidden: true, message }` on match
+ *  (with the verbatim error.message for logs / broadcasts), or
+ *  `{ forbidden: false }` otherwise. Exported for tests + shared with the
+ *  rate-limit-probe path. The passed JSON text is consumed — callers must
+ *  provide either a pre-read string or a clone of the body. */
+export function isOAuthForbiddenBodyString(
+  body: string,
+): { forbidden: true; message: string } | { forbidden: false } {
+  try {
+    const parsed = JSON.parse(body) as {
+      error?: { type?: string; message?: string };
+    };
+    const errorType = parsed?.error?.type;
+    const errorMessage = parsed?.error?.message;
+    if (
+      errorType === 'permission_error' &&
+      typeof errorMessage === 'string' &&
+      OAUTH_FORBIDDEN_MESSAGE_RE.test(errorMessage)
+    ) {
+      return { forbidden: true, message: errorMessage };
+    }
+  } catch {
+    // Unparseable body — can't prove OAuth-forbidden; caller falls through.
+  }
+  return { forbidden: false };
+}
+
+/** Read + parse a Response body to check for the OAuth-forbidden signal.
+ *  Returns only the boolean verdict; `fetchOrgUsage` doesn't need the
+ *  message. The rate-limit-probe path uses {@link isOAuthForbiddenBodyString}
+ *  directly because it has the body string already. */
+async function isOAuthForbiddenBody(resp: Response): Promise<boolean> {
+  let body: string;
+  try {
+    body = await resp.text();
+  } catch {
+    return false;
+  }
+  return isOAuthForbiddenBodyString(body).forbidden;
+}
 /** Beta header required by the OAuth usage endpoint. Matches the value
  *  the Claude Code CLI sends today (GitHub issue anthropics/claude-code#31021). */
 const OAUTH_BETA = 'oauth-2025-04-20';
@@ -74,7 +136,18 @@ export async function fetchOrgUsage(
     return { snapshot: null, error: 'network' };
   }
 
-  if (resp.status === 401 || resp.status === 403) {
+  if (resp.status === 403) {
+    // Org-level OAuth-disabled policy emits HTTP 403 with
+    // `error.type === 'permission_error'` and the "OAuth authentication is
+    // currently not allowed for this organization" message. Surface it as a
+    // distinct error so the UI doesn't offer a Reconnect button that would
+    // just reissue a token with the same restriction.
+    if (await isOAuthForbiddenBody(resp)) {
+      return { snapshot: null, error: 'oauth_forbidden' };
+    }
+    return { snapshot: null, error: 'auth_expired' };
+  }
+  if (resp.status === 401) {
     return { snapshot: null, error: 'auth_expired' };
   }
   if (!resp.ok) {
@@ -170,9 +243,30 @@ function toUsd(minorUnits: number | null | undefined): number {
  *  5 minutes is a conservative middle ground: fresh enough for a
  *  background budget display, well below the 1h the CLI uses. */
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
-/** Back-off after auth_expired — the token refresher will pick it up
- *  soon, but don't re-hammer the endpoint in the meantime. */
+/** Back-off after auth_expired — the refresh + retry happens inline in
+ *  fetchOne, so by the time we land here we've already tried to recover.
+ *  The long cooldown is for persistently-dead tokens where the refresher
+ *  broadcast has fired `token_refresh_failed` and the UI is already
+ *  prompting for re-authentication. */
 const AUTH_EXPIRED_BACKOFF_MS = 30 * 60 * 1000;
+/** Back-off after oauth_forbidden. Org policy changes on a human timescale
+ *  (admins enabling OAuth API access), not a request timescale — polling
+ *  every 5 min against the same 403 just burns quota. 24h means the user
+ *  will still see the policy flip picked up within a day of the admin
+ *  enabling it; manual refresh is instant so this doesn't trap the user. */
+const OAUTH_FORBIDDEN_BACKOFF_MS = 24 * 60 * 60 * 1000;
+
+/** Outcome of a forced-refresh attempt, surfaced from the store's injected
+ *  `refreshCredential` dep. Mirrors the `RefreshResult` shape used by
+ *  token-refresher.ts without pulling in its full dependency graph — the
+ *  store only needs the discriminators. */
+export interface UsageStoreRefreshOutcome {
+  success: boolean;
+  /** True when the refresh_token itself was rejected and the caller must
+   *  prompt re-authentication. `token-refresh-failed` is already broadcast
+   *  by the refresher in this case, so the store just records the failure. */
+  needsReauth?: boolean;
+}
 
 export interface ClaudeAiUsageStoreDeps {
   ipcServer: IpcServer;
@@ -183,6 +277,14 @@ export interface ClaudeAiUsageStoreDeps {
   /** List of Sentinel ids we should poll for. Typically every enrolled
    *  account; the store skips accounts with no stored credential. */
   getAccountIds: () => string[];
+  /** Force a token refresh for the given account. Called inline when
+   *  fetchOrgUsage returns `auth_expired` so a silently-revoked refresh
+   *  token surfaces as `token_refresh_failed` within one poll cycle (the
+   *  refresher's background timer alone can't detect this because it keys
+   *  on local `expiresAt`, which a revoked-but-not-yet-expired token
+   *  still satisfies). Optional for tests / legacy callers — without it,
+   *  `auth_expired` keeps the pre-refresh-retry behavior. */
+  refreshCredential?: (accountId: string) => Promise<UsageStoreRefreshOutcome>;
   /** Test seam: swap fetch for a stub. */
   fetch?: typeof fetchOrgUsage;
   /** Test seam: deterministic clock. */
@@ -280,6 +382,39 @@ export class ClaudeAiUsageStore {
       return;
     }
     const result = await this.fetchImpl(orgUuid, creds.accessToken);
+
+    // Auto-recover on 401-class failures: force a refresh and retry once.
+    // This catches the silently-revoked-refresh-token case that the
+    // background refresher misses (it keys on local `expiresAt`, which
+    // a server-side-revoked but not-yet-expired token still satisfies).
+    // The refresher's own `token_refresh_failed` broadcast fires on a dead
+    // refresh token, so the UI's `expiredAccountIds` state picks up the
+    // reauth signal within seconds instead of never.
+    if (result.error === 'auth_expired' && this.deps.refreshCredential) {
+      const refreshResult = await this.deps.refreshCredential(accountId);
+      if (refreshResult.success) {
+        const freshCreds = readSentinelCredentials(accountId);
+        if (freshCreds?.accessToken) {
+          const retry = await this.fetchImpl(orgUuid, freshCreds.accessToken);
+          if (!retry.error && retry.snapshot) {
+            this.storeSnapshot(accountId, retry.snapshot);
+            return;
+          }
+          // Retry failed — fall through to recordFailure with the retry
+          // result's error, so a still-auth_expired state records once
+          // (no recursion) and other errors reflect the current failure.
+          this.recordFailure(accountId, retry.error ?? 'parse', force);
+          return;
+        }
+      }
+      // Refresh failed. If it was REFRESH_TOKEN_EXPIRED, the refresher
+      // already broadcast `token_refresh_failed` so the UI shows the
+      // reauth banner. We still record auth_expired here so the Usage
+      // tab's own indicator lights up as a second path to Reconnect.
+      this.recordFailure(accountId, 'auth_expired', force);
+      return;
+    }
+
     if (result.error) {
       this.recordFailure(accountId, result.error, force);
       return;
@@ -288,22 +423,37 @@ export class ClaudeAiUsageStore {
       this.recordFailure(accountId, 'parse', force);
       return;
     }
-    this.snapshots.set(accountId, result.snapshot);
+    this.storeSnapshot(accountId, result.snapshot);
+  }
+
+  private storeSnapshot(accountId: string, snapshot: ClaudeAiUsageSnapshot): void {
+    this.snapshots.set(accountId, snapshot);
     this.lastError.delete(accountId);
     this.nextPollAt.set(accountId, this.clock() + POLL_INTERVAL_MS);
     this.deps.ipcServer.broadcast({
       type: 'claude_ai_usage_updated',
       accountId,
-      snapshot: result.snapshot,
+      snapshot,
       error: null,
     });
     this.fireSubscribers(accountId);
   }
 
   private recordFailure(accountId: string, error: UsageFetchError, force: boolean): void {
-    // Longer backoff for auth expiry — the refresher handles recovery.
-    // `force` (on-demand refresh) bypasses the cooldown.
-    const backoff = error === 'auth_expired' && !force ? AUTH_EXPIRED_BACKOFF_MS : POLL_INTERVAL_MS;
+    // Per-error backoff. `force` (on-demand refresh) bypasses all cooldowns.
+    //   oauth_forbidden → 24h (policy change is manual; polling burns quota)
+    //   auth_expired    → 30min (refresh + retry already happened inline)
+    //   other           → 5min (normal poll cadence)
+    let backoff: number;
+    if (force) {
+      backoff = POLL_INTERVAL_MS;
+    } else if (error === 'oauth_forbidden') {
+      backoff = OAUTH_FORBIDDEN_BACKOFF_MS;
+    } else if (error === 'auth_expired') {
+      backoff = AUTH_EXPIRED_BACKOFF_MS;
+    } else {
+      backoff = POLL_INTERVAL_MS;
+    }
     this.nextPollAt.set(accountId, this.clock() + backoff);
     this.lastError.set(accountId, error);
     // Don't zero out the snapshot on transient failures — the UI keeps

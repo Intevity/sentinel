@@ -93,6 +93,7 @@ export default function AccountCard({
     perUserBudget.usedUsd != null;
   const individualAnthropicValid =
     !isTeam && !!extraUsage && extraUsage.isEnabled && extraUsage.limitUsd > 0;
+  const individualOverageDisabled = !isTeam && !!extraUsage && !extraUsage.isEnabled;
   // Shared status derivation with the AccountViewPicker dropdown so the two
   // stay in lock-step (round-robin pool members → "Active", excluded → muted).
   const status = getAccountStatus({
@@ -289,6 +290,17 @@ export default function AccountCard({
             <SpendChip spend={extraUsage!.usedUsd} cap={weeklyCapUsd} label="Sentinel" />
           ) : individualAnthropicValid ? (
             <SpendChip spend={extraUsage!.usedUsd} cap={extraUsage!.limitUsd} label="Overage" />
+          ) : individualOverageDisabled ? (
+            <div className="relative group">
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#8E8E93]/15 text-[#8E8E93]">
+                Overage off
+              </span>
+              <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
+                <div className="bg-black/85 dark:bg-white/90 text-white dark:text-black text-[10px] font-medium px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
+                  Extra usage is disabled on claude.ai
+                </div>
+              </div>
+            </div>
           ) : null}
           <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${plan.color}`}>
             {plan.label}

@@ -13,6 +13,10 @@ import {
   useAllRateLimits,
   fiveHourUtilization,
   fiveHourResetAt,
+  weeklyUtilization,
+  weeklyResetAt,
+  weeklySonnetUtilization,
+  weeklySonnetResetAt,
 } from '../hooks/useAllRateLimits.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { usePausedAccounts, type PausedState } from '../hooks/usePausedAccounts.js';
@@ -124,11 +128,10 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
         </div>
       </div>
 
-      {/* Progress bar — suppressed at 0% to avoid rendering an empty track
-          that reads as an orphan pill (most noticeable on the synthesized
-          Sonnet row at the bottom of the card). Blocked rows still render
-          the full-width red bar since that's intentional visual feedback. */}
-      {(blocked || (pct != null && pct > 0)) && (
+      {/* Progress bar — always render when we have a percent (including 0%)
+          so the track is visually consistent across every window. Blocked
+          rows render a full-width red bar as intentional visual feedback. */}
+      {(blocked || pct != null) && (
         <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
           <motion.div
             className={`h-full rounded-full ${barColor}`}
@@ -171,7 +174,13 @@ interface OverageMeterRowProps {
   usage: ClaudeAiUsageSnapshot | null;
   /** Error discriminator from the latest fetch, or null on success. Drives
    *  the "Reconnect" CTA copy when the token's gone bad. */
-  usageError: 'missing_key' | 'auth_expired' | 'network' | 'parse' | null;
+  usageError:
+    | 'missing_key'
+    | 'auth_expired'
+    | 'oauth_forbidden'
+    | 'network'
+    | 'parse'
+    | null;
   /** User-configured Sentinel cap for the viewed account, or null if none
    *  is set. When null, the Sentinel sub-bar is suppressed. */
   sentinelCapUsd: number | null;
@@ -238,6 +247,7 @@ function OverageMeterRow({
     perUser.limitUsd > 0 &&
     perUser.usedUsd != null;
   const individualAnthropicValid = !isTeam && !!extra && extra.isEnabled && extra.limitUsd > 0;
+  const individualOverageDisabled = !isTeam && !!extra && !extra.isEnabled;
   const teamNeedsAdmin = isTeam && !teamPerUserValid && !!extra && extra.isEnabled;
 
   const anthUsedPrimary = teamPerUserValid ? (perUser!.usedUsd ?? 0) : (extra?.usedUsd ?? 0);
@@ -246,20 +256,41 @@ function OverageMeterRow({
   const showAnthropic = teamPerUserValid || individualAnthropicValid;
   const showSentinel = sentinelCapUsd != null && sentinelCapUsd > 0 && !!extra && !isTeam;
 
-  // No overage data yet → two render paths:
+  // No overage data yet → three render paths:
   //
-  // (a) `missing_key` / `auth_expired`: the account's OAuth token is
+  // (a) `oauth_forbidden`: the account's organization has OAuth API
+  //     access disabled by admin/billing policy. Re-authentication
+  //     produces the same restricted token, so there's no Reconnect
+  //     button. Copy explains the state and tells the user to ask
+  //     their admin. (Surfaces a distinct 403 `permission_error`
+  //     response the daemon routes out of the generic auth_expired
+  //     bucket.)
+  //
+  // (b) `missing_key` / `auth_expired`: the account's OAuth token is
   //     missing or rejected. Auto-refresh usually fixes auth_expired
   //     within seconds; persistent failures mean the refresh token
   //     itself is dead. Surface a Reconnect CTA that reruns OAuth so
   //     the user ends up with a fresh credential without hunting
   //     through Settings.
   //
-  // (b) Any other state (network error, snapshot still loading, or
+  // (c) Any other state (network error, snapshot still loading, or
   //     connected but without overage enabled): fall back to the plain
   //     ProgressRow so at least the rate-limit util% the proxy sees
   //     still shows something. The dollar overlay is skipped.
   if (!showAnthropic && !showSentinel) {
+    if (usageError === 'oauth_forbidden') {
+      return (
+        <div className="rounded-xl bg-ios-orange/[0.08] dark:bg-ios-orange/[0.12] border border-ios-orange/20 p-3">
+          <p className="text-[12px] font-semibold text-black dark:text-white leading-tight">
+            OAuth access disabled
+          </p>
+          <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+            Your organization&apos;s admin has disabled OAuth API access for this account. Sentinel
+            can&apos;t read usage until it&apos;s re-enabled; re-authenticating won&apos;t help.
+          </p>
+        </div>
+      );
+    }
     if ((usageError === 'missing_key' || usageError === 'auth_expired') && accountId) {
       return (
         <div className="rounded-xl bg-ios-blue/[0.08] dark:bg-ios-blue/[0.12] border border-ios-blue/20 p-3 flex items-center gap-3">
@@ -293,6 +324,22 @@ function OverageMeterRow({
               personal spend to non-admins. Ask your org admin to enable per-user budgets in
               claude.ai → Settings → Usage to unlock dollar tracking and Sentinel caps for your
               seat.
+            </p>
+          </div>
+        </div>
+      );
+    }
+    if (individualOverageDisabled) {
+      return (
+        <div className="space-y-2">
+          <ProgressRow window={w} />
+          <div className="rounded-xl bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.08] p-3">
+            <p className="text-[12px] font-semibold text-black dark:text-white leading-tight">
+              Extra usage is disabled
+            </p>
+            <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+              Requests will be blocked once you hit your subscription&apos;s rate limit. Enable on
+              claude.ai &rarr; Settings &rarr; Usage to add a monthly overage budget.
             </p>
           </div>
         </div>
@@ -648,7 +695,24 @@ function SingleAccountUsageView({
         </div>
       )}
 
-      {!busy && displayWindows.length === 0 && !error && (
+      {/* Org-level OAuth-disabled policy: rate-limit probe returns 403 so
+          `displayWindows` stays empty. The normal "No data yet" empty state
+          misleads here (it invites the user to click Refresh, which will
+          keep failing), so render a distinct explanatory panel instead. */}
+      {!busy && displayWindows.length === 0 && !error && claudeAiUsageError === 'oauth_forbidden' && (
+        <div className="glass-card px-4 py-5">
+          <p className="text-[13px] font-semibold text-black dark:text-white leading-tight">
+            OAuth access disabled
+          </p>
+          <p className="text-[11px] text-[#8E8E93] mt-1.5 leading-relaxed">
+            Your organization&apos;s admin has disabled OAuth API access for this account. Sentinel
+            can&apos;t read usage or rate limits until it&apos;s re-enabled. Re-authenticating
+            won&apos;t help; ask your admin to enable OAuth API access for the organization.
+          </p>
+        </div>
+      )}
+
+      {!busy && displayWindows.length === 0 && !error && claudeAiUsageError !== 'oauth_forbidden' && (
         <div className="glass-card px-4 py-10 text-center">
           <p className="text-[13px] font-medium text-black dark:text-white">No data yet</p>
           <p className="text-[11px] text-[#8E8E93] mt-1 leading-relaxed">
@@ -710,14 +774,135 @@ function SingleAccountUsageView({
   );
 }
 
+// Utilization (0..1) → display percent. null passes through as null.
+function utilToPct(util: number | null): number | null {
+  if (util == null) return null;
+  if (util <= 0) return 0;
+  if (util >= 1) return 100;
+  return Math.min(100, Math.round(util * 100));
+}
+
+// Threshold ladder shared by every round-robin meter (bar + pct text color).
+function meterColors(pct: number | null): { bar: string; text: string } {
+  if (pct == null) return { bar: 'bg-[#8E8E93]', text: 'text-[#8E8E93]' };
+  if (pct >= 90) return { bar: 'bg-ios-red', text: 'text-ios-red' };
+  if (pct >= 70) return { bar: 'bg-ios-orange', text: 'text-ios-orange' };
+  return { bar: 'bg-ios-blue', text: 'text-ios-blue' };
+}
+
+/** One meter inside the Pool Usage card: label, right-aligned "NN% avg" +
+ *  "N of M" counter, and a progress bar for the average. `utils` is the list
+ *  of pool-member utilizations with unknowns already filtered out;
+ *  `totalAccounts` is the denominator (pool size, excluding out-of-pool
+ *  accounts) so the counter reflects "how many of the rotating accounts
+ *  reported data for this window." */
+function PoolMeterBlock({
+  label,
+  utils,
+  totalAccounts,
+}: {
+  label: string;
+  utils: number[];
+  totalAccounts: number;
+}): React.ReactElement {
+  const avg =
+    utils.length === 0
+      ? null
+      : Math.min(100, Math.round((utils.reduce((a, b) => a + b, 0) / utils.length) * 100));
+  const colors = meterColors(avg);
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[12px] font-semibold text-black dark:text-white">{label}</span>
+        <div className="flex items-center gap-2 shrink-0">
+          {avg != null && (
+            <span className={`text-[11px] font-bold tabular-nums ${colors.text}`}>{avg}% avg</span>
+          )}
+          <span className="text-[10px] text-[#8E8E93]">
+            {utils.length} of {totalAccounts}
+          </span>
+        </div>
+      </div>
+      {avg != null && (
+        <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
+          <motion.div
+            className={`h-full rounded-full ${colors.bar}`}
+            initial={{ width: 0 }}
+            animate={{ width: `${avg}%` }}
+            transition={{ duration: DUR.bar, ease: EASE_OUT }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One row in a per-account round-robin card: account label, reset pill,
+ *  percent, and a bar. Null `util` renders "–" + no bar + no pill. Excluded
+ *  accounts are dimmed and tagged with an "Excluded" pill. */
+function PoolAccountRow({
+  account,
+  util,
+  resetAt,
+  inPool,
+}: {
+  account: AccountInfo;
+  util: number | null;
+  resetAt: number | null;
+  inPool: boolean;
+}): React.ReactElement {
+  const pct = utilToPct(util);
+  const colors = meterColors(pct);
+  const label = account.displayName || account.email;
+  const sub = account.orgName || (account.displayName ? account.email : null);
+  const hasReset = resetAt != null && resetAt > 0;
+  return (
+    <div className={`space-y-1.5 ${inPool ? '' : 'opacity-50'}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <p className="text-[12px] font-semibold text-black dark:text-white truncate leading-snug">
+              {label}
+            </p>
+            {!inPool && (
+              <span className="text-[9px] font-semibold text-[#8E8E93] bg-[#8E8E93]/15 px-1.5 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0">
+                Excluded
+              </span>
+            )}
+          </div>
+          {sub && <p className="text-[10px] text-[#8E8E93] truncate leading-snug">{sub}</p>}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {hasReset && <ResetCountdown epochSec={resetAt} variant="pill" />}
+          <span className={`text-[11px] font-bold tabular-nums ${colors.text}`}>
+            {pct == null ? '–' : `${pct}%`}
+          </span>
+        </div>
+      </div>
+      {pct != null && (
+        <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
+          <motion.div
+            className={`h-full rounded-full ${colors.bar}`}
+            initial={{ width: 0 }}
+            animate={{ width: `${pct}%` }}
+            transition={{ duration: DUR.bar, ease: EASE_OUT }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * Round-robin mode pool view.
  *
  * When the proxy rotates tokens per-request, the "active account" concept
  * loses meaning for Usage — every request's response headers belong to a
  * different account, so the single-account view thrashes. Instead we render:
- *   1. A "Pool 5h" average meter across every known account
- *   2. A list of every account with its own 5h bar
+ *   1. A "Pool Usage" card with three pool-average meters (5h, weekly, sonnet)
+ *   2. Per-account card for 5-Hour Window
+ *   3. Per-account card for Weekly: All Models
+ *   4. Per-account card for Weekly: Sonnet
  *
  * Data flows through useAllRateLimits (which listens to rate_limits_updated /
  * account_switched / login_complete broadcasts) and useAccounts (for labels).
@@ -742,44 +927,35 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
     poolRefreshTimerRef.current = setTimeout(() => setPoolRefreshStatus(null), 3000);
   }, [refetch]);
   // Excluded accounts are sitting out of rotation, so they shouldn't
-  // contribute to the pool average — the meter should reflect what's
+  // contribute to the pool averages — the meters should reflect what's
   // actually rotating. Per-account rows still render them (dimmed) so
   // the user can still see their usage.
   const excludedIds = new Set(settings?.poolExcludedIds ?? []);
 
-  const rows = accounts.map((acct) => ({
-    account: acct,
-    util: fiveHourUtilization(byAccount[acct.id]),
-    resetAt: fiveHourResetAt(byAccount[acct.id]),
-    inPool: !excludedIds.has(acct.id),
-  }));
+  // Precompute every window we render per account in a single pass so the
+  // three per-account cards share the same row identities for React keys.
+  const rows = accounts.map((acct) => {
+    const w = byAccount[acct.id];
+    return {
+      account: acct,
+      inPool: !excludedIds.has(acct.id),
+      fiveH: { util: fiveHourUtilization(w), resetAt: fiveHourResetAt(w) },
+      weekly: { util: weeklyUtilization(w), resetAt: weeklyResetAt(w) },
+      sonnet: { util: weeklySonnetUtilization(w), resetAt: weeklySonnetResetAt(w) },
+    };
+  });
 
   const poolRows = rows.filter((r) => r.inPool);
-  const knownUtils = poolRows.map((r) => r.util).filter((u): u is number => u != null);
-  const poolPct =
-    knownUtils.length === 0
-      ? null
-      : Math.min(
-          100,
-          Math.round((knownUtils.reduce((a, b) => a + b, 0) / knownUtils.length) * 100),
-        );
-
-  const poolColor =
-    poolPct == null
-      ? 'bg-[#8E8E93]'
-      : poolPct >= 90
-        ? 'bg-ios-red'
-        : poolPct >= 70
-          ? 'bg-ios-orange'
-          : /* default */ 'bg-ios-blue';
-  const poolPctColor =
-    poolPct == null
-      ? 'text-[#8E8E93]'
-      : poolPct >= 90
-        ? 'text-ios-red'
-        : poolPct >= 70
-          ? 'text-ios-orange'
-          : /* default */ 'text-ios-blue';
+  const poolSize = poolRows.length;
+  const fiveHUtils = poolRows
+    .map((r) => r.fiveH.util)
+    .filter((u): u is number => u != null);
+  const weeklyUtils = poolRows
+    .map((r) => r.weekly.util)
+    .filter((u): u is number => u != null);
+  const sonnetUtils = poolRows
+    .map((r) => r.sonnet.util)
+    .filter((u): u is number => u != null);
 
   return (
     <div className="space-y-3 pt-1">
@@ -810,111 +986,86 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
         </div>
       </div>
 
-      {/* Pool meter */}
-      <div className="glass-card px-4 py-4 space-y-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[12px] font-semibold text-black dark:text-white">Pool 5h</span>
-          <div className="flex items-center gap-2 shrink-0">
-            {poolPct != null && (
-              <span className={`text-[11px] font-bold tabular-nums ${poolPctColor}`}>
-                {poolPct}% avg
-              </span>
-            )}
-            <span className="text-[10px] text-[#8E8E93]">
-              {knownUtils.length} of {poolRows.length}
-            </span>
-          </div>
-        </div>
-        {poolPct != null && poolPct > 0 && (
-          <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
-            <motion.div
-              className={`h-full rounded-full ${poolColor}`}
-              initial={{ width: 0 }}
-              animate={{ width: `${poolPct}%` }}
-              transition={{ duration: DUR.bar, ease: EASE_OUT }}
-            />
-          </div>
-        )}
-        <p className="text-[10px] text-[#8E8E93] leading-snug">
-          Average 5-hour utilization across every account in the round-robin pool. Accounts with no
-          data yet are excluded from the average.
-        </p>
-      </div>
-
-      {/* Per-account rows */}
       {accounts.length === 0 ? (
         <div className="glass-card px-4 py-10 text-center">
           <p className="text-[12px] text-[#8E8E93]">No accounts configured.</p>
         </div>
       ) : (
-        <div className="glass-card px-4 py-4 space-y-4">
-          {rows.map(({ account, util, resetAt, inPool }) => {
-            const pct =
-              util == null
-                ? null
-                : util <= 0
-                  ? 0
-                  : util >= 1
-                    ? 100
-                    : Math.min(100, Math.round(util * 100));
-            const barColor =
-              pct == null
-                ? 'bg-[#8E8E93]'
-                : pct >= 90
-                  ? 'bg-ios-red'
-                  : pct >= 70
-                    ? 'bg-ios-orange'
-                    : /* default */ 'bg-ios-blue';
-            const pctColor =
-              pct == null
-                ? 'text-[#8E8E93]'
-                : pct >= 90
-                  ? 'text-ios-red'
-                  : pct >= 70
-                    ? 'text-ios-orange'
-                    : /* default */ 'text-ios-blue';
-            const label = account.displayName || account.email;
-            const sub = account.orgName || (account.displayName ? account.email : null);
-            const hasReset = resetAt != null && resetAt > 0;
-            return (
-              <div key={account.id} className={`space-y-1.5 ${inPool ? '' : 'opacity-50'}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <p className="text-[12px] font-semibold text-black dark:text-white truncate leading-snug">
-                        {label}
-                      </p>
-                      {!inPool && (
-                        <span className="text-[9px] font-semibold text-[#8E8E93] bg-[#8E8E93]/15 px-1.5 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0">
-                          Excluded
-                        </span>
-                      )}
-                    </div>
-                    {sub && (
-                      <p className="text-[10px] text-[#8E8E93] truncate leading-snug">{sub}</p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {hasReset && <ResetCountdown epochSec={resetAt} variant="pill" />}
-                    <span className={`text-[11px] font-bold tabular-nums ${pctColor}`}>
-                      {pct == null ? '–' : `${pct}%`}
-                    </span>
-                  </div>
-                </div>
-                {pct != null && pct > 0 && (
-                  <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
-                    <motion.div
-                      className={`h-full rounded-full ${barColor}`}
-                      initial={{ width: 0 }}
-                      animate={{ width: `${pct}%` }}
-                      transition={{ duration: DUR.bar, ease: EASE_OUT }}
-                    />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+        <>
+          {/* Pool averages */}
+          <div className="glass-card px-4 py-4 space-y-3">
+            <span className="text-[12px] font-semibold text-black dark:text-white">
+              Pool Usage
+            </span>
+            <PoolMeterBlock
+              label={windowLabel('unified-5h')}
+              utils={fiveHUtils}
+              totalAccounts={poolSize}
+            />
+            <PoolMeterBlock
+              label={windowLabel('unified-7d')}
+              utils={weeklyUtils}
+              totalAccounts={poolSize}
+            />
+            <PoolMeterBlock
+              label={windowLabel('unified-7d_sonnet')}
+              utils={sonnetUtils}
+              totalAccounts={poolSize}
+            />
+            <p className="text-[10px] text-[#8E8E93] leading-snug">
+              Averages across every account in the round-robin pool. Accounts with no data yet
+              for a given window are excluded from that window&apos;s average.
+            </p>
+          </div>
+
+          {/* Per-account: 5-Hour Window */}
+          <div className="glass-card px-4 py-4 space-y-4">
+            <span className="text-[12px] font-semibold text-black dark:text-white">
+              {windowLabel('unified-5h')}
+            </span>
+            {rows.map(({ account, inPool, fiveH }) => (
+              <PoolAccountRow
+                key={`${account.id}:5h`}
+                account={account}
+                util={fiveH.util}
+                resetAt={fiveH.resetAt}
+                inPool={inPool}
+              />
+            ))}
+          </div>
+
+          {/* Per-account: Weekly: All Models */}
+          <div className="glass-card px-4 py-4 space-y-4">
+            <span className="text-[12px] font-semibold text-black dark:text-white">
+              {windowLabel('unified-7d')}
+            </span>
+            {rows.map(({ account, inPool, weekly }) => (
+              <PoolAccountRow
+                key={`${account.id}:weekly`}
+                account={account}
+                util={weekly.util}
+                resetAt={weekly.resetAt}
+                inPool={inPool}
+              />
+            ))}
+          </div>
+
+          {/* Per-account: Weekly: Sonnet */}
+          <div className="glass-card px-4 py-4 space-y-4">
+            <span className="text-[12px] font-semibold text-black dark:text-white">
+              {windowLabel('unified-7d_sonnet')}
+            </span>
+            {rows.map(({ account, inPool, sonnet }) => (
+              <PoolAccountRow
+                key={`${account.id}:sonnet`}
+                account={account}
+                util={sonnet.util}
+                resetAt={sonnet.resetAt}
+                inPool={inPool}
+              />
+            ))}
+          </div>
+        </>
       )}
     </div>
   );

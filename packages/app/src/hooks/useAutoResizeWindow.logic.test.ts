@@ -13,6 +13,7 @@ const base = {
   contentOffsetHeight: 300,
   mainPaddingBottomPx: 8,
   popoverBottomRelativeToRoot: null as number | null,
+  contentExpandMax: false,
 };
 
 describe('computeTargetInner', () => {
@@ -87,6 +88,55 @@ describe('computeTargetInner', () => {
           overlayScrollHeight: 400,
           chromeAndFooter: 9999, // should be ignored
           contentOffsetHeight: 9999, // should be ignored
+        }),
+      ).toBe(400);
+    });
+  });
+
+  describe('content expandMax (main-path opt-in)', () => {
+    it('pegs to TRAY_MAX_HEIGHT when contentExpandMax is on, ignoring measured content', () => {
+      // Regression: Logs tab. Its internal scroll container is bounded
+      // by the window so contentOffsetHeight matches the current window
+      // size; without this opt-in the window can never grow on entry.
+      expect(
+        computeTargetInner({
+          ...base,
+          contentOffsetHeight: 200,
+          contentExpandMax: true,
+        }),
+      ).toBe(TRAY_MAX_HEIGHT);
+    });
+
+    it('ignores chromeAndFooter / padding when contentExpandMax is on', () => {
+      expect(
+        computeTargetInner({
+          ...base,
+          chromeAndFooter: 9999,
+          contentOffsetHeight: 9999,
+          mainPaddingBottomPx: 9999,
+          contentExpandMax: true,
+        }),
+      ).toBe(TRAY_MAX_HEIGHT);
+    });
+
+    it('still clamps within bounds when popover extends past MAX', () => {
+      expect(
+        computeTargetInner({
+          ...base,
+          contentExpandMax: true,
+          popoverBottomRelativeToRoot: 900,
+        }),
+      ).toBe(TRAY_MAX_HEIGHT);
+    });
+
+    it('defers to overlay when both overlay and contentExpandMax are present', () => {
+      // Overlay takes priority: if Settings is open on the Logs tab, the
+      // overlay's own scrollHeight governs, not the tab's expand-max.
+      expect(
+        computeTargetInner({
+          ...base,
+          overlayScrollHeight: 400,
+          contentExpandMax: true,
         }),
       ).toBe(400);
     });

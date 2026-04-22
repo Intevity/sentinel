@@ -56,6 +56,7 @@ import { loadSettings, updateSettings as writeSettings } from './settings.js';
 import { IpcServer } from './ipc.js';
 import { OtelReceiver } from './otel-receiver.js';
 import { OverageStateMachine } from './overage.js';
+import { SonnetSaturationMachine } from './sonnet-saturation.js';
 import { createProxyServer, DAEMON_PORT } from './proxy.js';
 import type { ActiveToken, ActiveAccountId } from './proxy.js';
 import { RateLimitStore } from './rate-limit-store.js';
@@ -65,6 +66,7 @@ import { SpendTracker } from './spend-tracker.js';
 import { ClaudeAiUsageStore } from './claude-ai-usage.js';
 import {
   startAlertEvaluator,
+  startSonnetAlertEvaluator,
   startPoolAlertEvaluator,
   evaluatePoolOnce,
   primeNewAlertAgainstCurrentWindow,
@@ -84,7 +86,7 @@ import {
   deleteSentinelCredentials,
   readSentinelCredentials,
 } from './accounts.js';
-import { startOAuthLogin, OAUTH_ABORTED } from './oauth.js';
+import { startOAuthLogin, OAUTH_ABORTED, fetchProfile } from './oauth.js';
 import type { OAuthResult } from './oauth.js';
 import { verifyStartupActiveAccount, healDriftedRows } from './credential-verifier.js';
 import {
@@ -352,6 +354,7 @@ export async function startDaemon(): Promise<void> {
   });
 
   const overageMachine = new OverageStateMachine();
+  const sonnetMachine = new SonnetSaturationMachine();
 
   // Rehydrate the state machine from the DB so a daemon restart mid-overage-
   // window does not re-fire an `entered` transition on the very next request.
@@ -445,6 +448,24 @@ export async function startDaemon(): Promise<void> {
       return acc?.orgUuid || null;
     },
     getAccountIds: () => listAccounts(db).map((a) => a.id),
+    // Force a token refresh on auth_expired so a silently-revoked refresh
+    // token surfaces as `token_refresh_failed` within one poll cycle. The
+    // background refresher alone can't catch this — it keys on local
+    // `expiresAt`, which a server-side-revoked but not-yet-expired token
+    // still satisfies. On successful refresh the store retries the fetch
+    // once with the new access token before recording failure.
+    refreshCredential: async (accountId) => {
+      const acc = listAccounts(db).find((a) => a.id === accountId);
+      const result = await refreshIfNeeded(
+        { db, activeToken, activeAccountId, ipcServer, tokenRotator },
+        accountId,
+        acc?.email ?? '',
+        /* force */ true,
+      );
+      return result.needsReauth
+        ? { success: result.success, needsReauth: true }
+        : { success: result.success };
+    },
   });
   claudeAiUsageStore.start();
 
@@ -1612,7 +1633,10 @@ export async function startDaemon(): Promise<void> {
       }
 
       case 'list_alerts': {
-        const opts: { scope?: 'account' | 'pool' | 'budget'; accountId?: string } = {};
+        const opts: {
+          scope?: 'account' | 'account-sonnet' | 'pool' | 'budget';
+          accountId?: string;
+        } = {};
         if (msg.scope && msg.scope !== 'all') opts.scope = msg.scope;
         if (msg.accountId) opts.accountId = msg.accountId;
         const rows = listAlerts(db, opts);
@@ -1643,6 +1667,14 @@ export async function startDaemon(): Promise<void> {
             requestType: 'upsert_alert',
             success: false,
             error: 'account alerts require an accountId',
+          });
+          break;
+        }
+        if (scope === 'account-sonnet' && !msg.accountId) {
+          respond({
+            requestType: 'upsert_alert',
+            success: false,
+            error: 'account-sonnet alerts require an accountId',
           });
           break;
         }
@@ -1856,10 +1888,17 @@ export async function startDaemon(): Promise<void> {
   });
 
   // Evaluate user-created per-account alerts on every rate-limit update.
+  // `getSettings` enables the round-robin exclusion guard inside the
+  // per-account + Sonnet evaluators: rate-limit headers can still arrive for
+  // excluded accounts (via background probes that run immediately post-reset,
+  // or via claude.ai usage-store sync) and without this guard the evaluator
+  // would fire alerts for accounts the user has explicitly taken out of
+  // rotation — noisy and misleading.
   const alertEvaluatorDeps = {
     db,
     rateLimitStore,
     ipcServer,
+    getSettings,
     getEmailForAccount: (accountId: string): string | null => {
       const acct = listAccounts(db).find((a) => a.id === accountId);
       return acct?.email ?? null;
@@ -1867,12 +1906,65 @@ export async function startDaemon(): Promise<void> {
   };
   startAlertEvaluator(alertEvaluatorDeps);
 
+  // Evaluate user-created `account-sonnet`-scoped alerts on every
+  // rate-limit update. Reads the unified-7d_sonnet window rather than
+  // unified-5h; re-fire gated per Sonnet window reset.
+  startSonnetAlertEvaluator(alertEvaluatorDeps);
+
   // Pool-wide alerts (round-robin only). No-ops outside round-robin mode.
   // Also called eagerly from the update_settings handler when the user
   // changes pool membership or switches into round-robin, so the new pool's
   // utilization is checked without waiting for the next rate-limit update.
   const poolAlertDeps = { ...alertEvaluatorDeps, getSettings };
   startPoolAlertEvaluator(poolAlertDeps);
+
+  // Sonnet saturation transitions — fire native notifications + persist a
+  // timeline entry when an account's unified-7d_sonnet utilization crosses
+  // the overage-buffer threshold (default 95%). Uses the same overageOsNotify
+  // toggle as the regular overage transitions: the user's mental model is
+  // "a spillover just became likely" in both cases, so a single mute switch
+  // is sufficient.
+  sonnetMachine.onTransition((event) => {
+    const { accountId, transition, utilization, resetsAt } = event;
+    if (transition === 'entered') {
+      const pct = (utilization * 100).toFixed(1);
+      const acct = listAccounts(db).find((a) => a.id === accountId);
+      const who = acct?.email ?? accountId;
+      insertNotification(db, {
+        ts: Date.now(),
+        accountId,
+        type: 'overage_entered',
+        title: 'Sentinel: Sonnet 7-day saturated',
+        body: `${who} has used ${pct}% of its Sonnet 7-day window. Further Sonnet requests will draw from overage.`,
+      });
+      ipcServer.broadcast({
+        type: 'sonnet_saturation_entered',
+        accountId,
+        resetsAt,
+        utilization,
+      });
+    } else {
+      ipcServer.broadcast({ type: 'sonnet_saturation_exited', accountId });
+    }
+  });
+
+  // Feed rate-limit updates into the Sonnet machine. Uses the live
+  // overageBufferPct so the threshold stays in lockstep with the rotator
+  // and proxy short-circuit.
+  rateLimitStore.onUpdate((accountId) => {
+    const sonnetWindow = rateLimitStore
+      .getAll(accountId)
+      .find((w) => w.name === 'unified-7d_sonnet');
+    if (!sonnetWindow) return;
+    const clampedBuffer = Math.max(0, Math.min(50, currentSettings.overageBufferPct ?? 5));
+    const thresholdPct = 100 - clampedBuffer;
+    sonnetMachine.update(
+      accountId,
+      sonnetWindow.utilization ?? null,
+      sonnetWindow.reset ?? null,
+      thresholdPct,
+    );
+  });
 
   // Purge stale security events per the retention window. Runs once at
   // startup; rows continue to accumulate between restarts.
@@ -1976,15 +2068,17 @@ export async function startDaemon(): Promise<void> {
       activeToken,
       activeAccountId,
       rateLimitStore,
-      tokenProvider: () => {
+      tokenProvider: (ctx) => {
         if (currentSettings.switchingMode !== 'round-robin') return null;
-        return tokenRotator.pick();
+        return tokenRotator.pick(ctx);
       },
       getPausedAccountIds: () => spendTracker.getPausedIds(),
       getSessionResetAt: (accountId) => {
         const w = rateLimitStore.getAll(accountId).find((x) => x.name === 'unified-5h');
         return w?.reset ?? null;
       },
+      getOverageAllowedIds: () => new Set(currentSettings.overageEnabledIds),
+      getOverageBufferPct: () => currentSettings.overageBufferPct ?? 5,
       securityScanner,
       permissionsEnforcer,
       requestLogStore,
@@ -2036,13 +2130,88 @@ export async function startDaemon(): Promise<void> {
     tokenRotator,
   });
 
+  // One-shot forced refresh + profile resync across every enrolled account.
+  // Two goals:
+  //   1. Catch silently-revoked refresh tokens at startup. The background
+  //      refresher's timestamp-gated pass skips any token whose local
+  //      `expiresAt` is >30 min out, so a refresh_token the server has
+  //      revoked (but whose access_token hasn't yet expired) produces zero
+  //      `token_refresh_failed` broadcasts and no reauth prompt. A forced
+  //      refresh on boot tries them all and fires the broadcast when the
+  //      refresh endpoint rejects the token.
+  //   2. Populate `subscriptionType` on imported-from-Claude-Code creds so
+  //      the next boot's heal loop (see the healed-planType block earlier in
+  //      this function) can correct any stale `plan_type='max'` rows left
+  //      behind by the pre-fix `has_claude_max` bug. CC's keychain slot
+  //      doesn't carry this field; the OAuth profile endpoint does.
+  // Runs on queueMicrotask so we don't gate the rest of daemon startup.
+  queueMicrotask(() => {
+    void (async () => {
+      for (const acct of listAccounts(db)) {
+        const refreshResult = await refreshIfNeeded(
+          { db, activeToken, activeAccountId, ipcServer, tokenRotator },
+          acct.id,
+          acct.email,
+          /* force */ true,
+        );
+        if (!refreshResult.success) continue;
+        // Refresh succeeded — use the fresh token to fetch profile and write
+        // `subscriptionType` back into the credential so heal can correct
+        // plan type on the next boot. No-op on accounts already carrying
+        // subscriptionType (merged on top of existing fields).
+        const freshCreds = readSentinelCredentials(acct.id);
+        if (!freshCreds?.accessToken) continue;
+        try {
+          const profile = await fetchProfile(freshCreds.accessToken);
+          if (profile.subscriptionType && !freshCreds.subscriptionType) {
+            writeSentinelCredentials(acct.id, {
+              ...freshCreds,
+              subscriptionType: profile.subscriptionType,
+              ...(profile.rateLimitTier && !freshCreds.rateLimitTier
+                ? { rateLimitTier: profile.rateLimitTier }
+                : {}),
+            });
+            console.log(
+              `[Startup] Populated subscriptionType='${profile.subscriptionType}' for ${acct.email} — next boot's heal will correct plan_type if stale`,
+            );
+          }
+        } catch (err) {
+          console.warn(
+            `[Startup] fetchProfile failed for ${acct.email}:`,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
+    })();
+  });
+
   // Keep rate-limit / usage state fresh for all non-active accounts so the
   // Usage tab reflects consumption from other Anthropic surfaces (claude.ai,
   // Claude Desktop, direct API) even when Claude Code isn't driving them.
+  //
+  // `shouldSkipProbe` pauses probing on accounts the user has excluded from
+  // the round-robin pool. Each probe is a real `POST /v1/messages` that
+  // consumes ~1 output token on the target account — probing an excluded
+  // account keeps its 5h utilization climbing from Sentinel traffic, which
+  // is exactly the signal the user wanted to stop. The exception: once the
+  // stored `unified-5h.reset` is in the past, the window has rolled over on
+  // Anthropic's side, so one probe runs to capture fresh numbers (util ≈ 0,
+  // new reset ~5h ahead) for the dashboard. The next tick sees a future
+  // reset again and skips — net effect: one probe per excluded account per
+  // 5h window. Outside round-robin mode the predicate never short-circuits.
   usageProber = startUsageProber({
     db,
     ipcServer,
     getIntervalSec: () => currentSettings.backgroundProbeIntervalSec,
+    shouldSkipProbe: (accountId: string): boolean => {
+      if (currentSettings.switchingMode !== 'round-robin') return false;
+      if (!currentSettings.poolExcludedIds.includes(accountId)) return false;
+      const w = rateLimitStore.getAll(accountId).find((x) => x.name === 'unified-5h');
+      // No stored reset → let the first probe happen so we have a baseline.
+      if (!w || w.reset == null) return false;
+      // Reset is still in the future → window hasn't rolled over yet → skip.
+      return Date.now() / 1000 < w.reset;
+    },
   });
 
   // Graceful shutdown

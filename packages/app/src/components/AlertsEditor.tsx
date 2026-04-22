@@ -56,8 +56,10 @@ export default function AlertsEditor({
   const hasAccountContext = Boolean(viewedInfo || activeAccount);
 
   const accountTarget: UseAlertsTarget = { scope: 'account', accountId };
+  const sonnetTarget: UseAlertsTarget = { scope: 'account-sonnet', accountId };
   const poolTarget: UseAlertsTarget = { scope: 'pool' };
   const perAccount = useAlerts(accountTarget);
+  const perAccountSonnet = useAlerts(sonnetTarget);
   const pool = useAlerts(poolTarget);
   const { notifications, refetch: refetchNotifications } = useNotifications();
 
@@ -126,6 +128,23 @@ export default function AlertsEditor({
         update={perAccount.update}
         toggle={perAccount.toggle}
         remove={perAccount.remove}
+      />
+
+      {/* ── Per-account Sonnet 7-day alerts ─────────────────────── */}
+      <AlertList
+        title="Sonnet 7-day alerts"
+        emptyCopy="No Sonnet alerts yet. Add one to get notified before this account's Sonnet weekly quota spills into overage."
+        rowSuffix="of Sonnet 7-day usage"
+        unavailableCopy="Switch to an account to configure Sonnet alerts."
+        alerts={perAccountSonnet.alerts}
+        loading={perAccountSonnet.loading}
+        error={perAccountSonnet.error}
+        available={hasAccountContext}
+        rowColor={rowInfo ? accountColor(rowInfo) : null}
+        create={perAccountSonnet.create}
+        update={perAccountSonnet.update}
+        toggle={perAccountSonnet.toggle}
+        remove={perAccountSonnet.remove}
       />
 
       {/* ── History ─────────────────────────────────────────── */}

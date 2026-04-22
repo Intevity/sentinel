@@ -58,8 +58,12 @@ interface ProxyOptions {
   rateLimitStore?: RateLimitStore;
   /** When set, overrides the activeToken/activeAccountId pair on a per-request
    *  basis — used for round-robin mode. Returning null falls back to the
-   *  activeToken/activeAccountId refs. */
-  tokenProvider?: () => TokenSelection | null;
+   *  activeToken/activeAccountId refs. `ctx.isSonnet` lets the rotator fold
+   *  Sonnet-saturated accounts into the overage tier on Sonnet requests so
+   *  the pool doesn't silently spill into overage when `unified-7d_sonnet`
+   *  exhausts. Callers without model context pass undefined and the rotator
+   *  falls back to the 5h-only gate (Opus-safe default). */
+  tokenProvider?: (ctx?: { isSonnet: boolean }) => TokenSelection | null;
   /** Live accessor for the Sentinel-side paused-account set. When the
    *  account that a request is about to be attributed to is paused, the
    *  proxy short-circuits the request with 503 + Retry-After pointing at
@@ -72,6 +76,16 @@ interface ProxyOptions {
    *  Returning null means "no reset info available"; the proxy picks a
    *  conservative default. */
   getSessionResetAt?: (accountId: string) => number | null;
+  /** Live accessor for the user's overage opt-in allow-list (Sentinel ids).
+   *  Consulted by the Sonnet short-circuit: a Sonnet request whose selected
+   *  account has `unified-7d_sonnet` saturated is refused with 503 unless
+   *  the account is on this list. Defaults to an empty set (opt-in model),
+   *  matching the rotator's default. */
+  getOverageAllowedIds?: () => ReadonlySet<string>;
+  /** Live accessor for the user's overage safety buffer (percent in
+   *  [0, 50]). Same threshold the rotator uses — the short-circuit treats
+   *  an account as saturated at `(1 − bufferPct/100)`. Defaults to 5. */
+  getOverageBufferPct?: () => number;
   /** When set, every outbound /v1/messages POST is scanned (and optionally
    *  blocked) before upstream forwarding, and every response is tapped to
    *  surface risky tool_use proposals. No-op when settings disable it. */
@@ -240,6 +254,8 @@ export function createProxyServer(
   const { ipcServer, securityScanner, permissionsEnforcer, requestLogStore } = opts;
   const getPausedAccountIds = opts.getPausedAccountIds ?? (() => new Set<string>());
   const getSessionResetAt = opts.getSessionResetAt ?? (() => null);
+  const getOverageAllowedIds = opts.getOverageAllowedIds ?? (() => new Set<string>());
+  const getOverageBufferPct = opts.getOverageBufferPct ?? (() => 5);
 
   // Tracks the last broadcast time per account to debounce rapid-fire requests
   const lastBroadcast = new Map<string, number>();
@@ -250,10 +266,15 @@ export function createProxyServer(
    *      — used by the background usage-probe to probe a non-active account
    *      without mutating the active-token refs. Headers are stripped before
    *      upstream forwarding so they never leak to Anthropic.
-   *   2. `tokenProvider` (round-robin mode).
+   *   2. `tokenProvider` (round-robin mode). `ctx.isSonnet` is threaded
+   *      through so the rotator can fold Sonnet-saturated accounts into
+   *      the overage tier on Sonnet requests.
    *   3. Shared `activeToken` / `activeAccountId` refs (default flow).
    */
-  const selectCredential = (req: IncomingMessage): TokenSelection | null => {
+  const selectCredential = (
+    req: IncomingMessage,
+    ctx?: { isSonnet: boolean },
+  ): TokenSelection | null => {
     const probeToken = req.headers['x-sentinel-probe-token'];
     const probeAccount = req.headers['x-sentinel-probe-account'];
     if (
@@ -266,12 +287,119 @@ export function createProxyServer(
       delete req.headers['x-sentinel-probe-account'];
       return { token: probeToken, accountId: probeAccount };
     }
-    const fromProvider = tokenProvider?.();
+    const fromProvider = tokenProvider?.(ctx);
     if (fromProvider) return fromProvider;
     if (activeToken.value) {
       return { token: activeToken.value, accountId: activeAccountId?.value ?? 'default' };
     }
     return null;
+  };
+
+  /**
+   * Emit a Retry-After 503 to pause further client retries until the named
+   * reset window rolls over. Shared between the Sentinel-budget pause and
+   * the Sonnet-saturation gate so both surfaces render identical shape and
+   * drop the client into the same exponential-backoff state machine.
+   */
+  const respond503 = (
+    res: ServerResponse,
+    resetSec: number | null,
+    errorType: string,
+    message: string,
+  ): void => {
+    const retryAfter =
+      resetSec != null ? Math.max(1, resetSec - Math.floor(Date.now() / 1000)) : 300;
+    res.writeHead(503, {
+      'Content-Type': 'application/json',
+      'Retry-After': String(retryAfter),
+    });
+    res.end(JSON.stringify({ error: { type: errorType, message } }));
+  };
+
+  /**
+   * Async path for `/v1/messages*` POSTs. Buffers the request body so we
+   * can inspect the `model` field before credential selection — this is
+   * what lets the rotator route Sonnet-saturated accounts into the
+   * overage tier without ever touching an Opus request. The buffered body
+   * is forwarded into `proxyToAnthropic` via the final arg so it isn't
+   * re-read downstream.
+   */
+  const handleMessagesPost = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> => {
+    const body = await readBody(req);
+    const model = extractRequestModel(body);
+    const isSonnet = isSonnetModel(model);
+
+    const credential = selectCredential(req, { isSonnet });
+    if (credential) {
+      req.headers['authorization'] = `Bearer ${credential.token}`;
+    }
+    const perRequestAccountId = credential?.accountId ?? activeAccountId?.value;
+
+    // Sentinel-side pause short-circuit. The rotator already skips paused
+    // accounts in round-robin, so this only fires in `off` mode or when
+    // a probe header landed on a paused account. Retry-After points at
+    // the 5h rollover so Claude Code backs off until Sentinel re-evaluates.
+    if (perRequestAccountId && getPausedAccountIds().has(perRequestAccountId)) {
+      respond503(
+        res,
+        getSessionResetAt(perRequestAccountId),
+        'sentinel_budget_paused',
+        'Sentinel has paused this account because its weekly budget was reached. ' +
+          'It will resume automatically when the 5-hour window resets. ' +
+          'Switch accounts or raise the Sentinel budget in Settings to unblock sooner.',
+      );
+      return;
+    }
+
+    // Sonnet saturation short-circuit. Fires when the request is a Sonnet
+    // model AND the selected account's `unified-7d_sonnet` utilization is
+    // at or above the overage-buffer threshold AND the account is NOT
+    // opted into overage. Without this, the request would silently spill
+    // into the user's monthly overage budget even when `unified-5h` still
+    // has room. The rotator applies the same gate for round-robin picks;
+    // this catches single-account mode and the RR edge case where every
+    // candidate is Sonnet-saturated (rotator returns null → fallback to
+    // activeToken → this fires).
+    if (isSonnet && perRequestAccountId && rateLimitStore) {
+      if (!getOverageAllowedIds().has(perRequestAccountId)) {
+        const sonnet = rateLimitStore
+          .getAll(perRequestAccountId)
+          .find((w) => w.name === 'unified-7d_sonnet');
+        const rawBuffer = getOverageBufferPct();
+        const clampedBuffer = Math.max(0, Math.min(50, rawBuffer));
+        const threshold = 1 - clampedBuffer / 100;
+        if (sonnet?.utilization != null && sonnet.utilization >= threshold) {
+          respond503(
+            res,
+            sonnet.reset ?? null,
+            'sentinel_sonnet_saturated',
+            "Sentinel refused this Sonnet request because this account's " +
+              'Sonnet 7-day quota is exhausted and the account is not opted ' +
+              'into overage. Switch accounts, use a non-Sonnet model, or ' +
+              'enable overage for this account in Settings.',
+          );
+          return;
+        }
+      }
+    }
+
+    await proxyToAnthropic(
+      req,
+      res,
+      machine,
+      rateLimitStore,
+      perRequestAccountId,
+      ipcServer,
+      lastBroadcast,
+      securityScanner,
+      permissionsEnforcer,
+      requestLogStore,
+      opts.db,
+      body,
+    );
   };
 
   const server = createServer((req, res) => {
@@ -285,11 +413,6 @@ export function createProxyServer(
       return;
     }
 
-    const credential = selectCredential(req);
-    if (credential) {
-      req.headers['authorization'] = `Bearer ${credential.token}`;
-    }
-
     if (OTEL_PATHS.some((p) => url.startsWith(p)) && req.method === 'POST') {
       otelHandler(req, res).catch((err) => {
         console.error('[Proxy] OTEL handler error:', err);
@@ -299,38 +422,42 @@ export function createProxyServer(
       return;
     }
 
+    // `/v1/messages*` POSTs need the body buffered BEFORE credential
+    // selection so the rotator can see the model. Every other path (GETs,
+    // non-messages endpoints, probes with overrides) uses the sync fast
+    // path — they don't depend on model identity for routing.
+    if (req.method === 'POST' && url.startsWith('/v1/messages')) {
+      handleMessagesPost(req, res).catch((err) => {
+        console.error('[Proxy] Messages POST handler error:', err);
+        if (!res.headersSent) {
+          res.writeHead(502);
+          res.end();
+        }
+      });
+      return;
+    }
+
+    const credential = selectCredential(req);
+    if (credential) {
+      req.headers['authorization'] = `Bearer ${credential.token}`;
+    }
+
     // Proxy Anthropic API calls — attribute rate-limit headers to the
     // specific account whose token was used for this request (matters for
     // round-robin where that may differ from the primary active account).
     const perRequestAccountId = credential?.accountId ?? activeAccountId?.value;
 
-    // Sentinel-side pause short-circuit. The rotator already skips paused
-    // accounts in round-robin, so this only matters when the credential came
-    // from the active-token fallback (typical `off` mode) or the per-request
-    // probe headers landed on a paused account. Respond 503 with Retry-After
-    // pointing at the 5h rollover so Claude Code backs off until Sentinel
-    // re-evaluates.
+    // Sentinel-side pause short-circuit for non-messages paths (probes,
+    // /v1/models GETs, etc.). The messages path runs the same check inside
+    // handleMessagesPost after the body is buffered.
     if (perRequestAccountId && getPausedAccountIds().has(perRequestAccountId)) {
-      const resetSec = getSessionResetAt(perRequestAccountId);
-      // Retry-After accepts delta-seconds; fall back to 5 minutes when the
-      // reset is missing (unlikely in practice — rate-limit headers arrive
-      // on the first response for a new account).
-      const retryAfter =
-        resetSec != null ? Math.max(1, resetSec - Math.floor(Date.now() / 1000)) : 300;
-      res.writeHead(503, {
-        'Content-Type': 'application/json',
-        'Retry-After': String(retryAfter),
-      });
-      res.end(
-        JSON.stringify({
-          error: {
-            type: 'sentinel_budget_paused',
-            message:
-              'Sentinel has paused this account because its weekly budget was reached. ' +
-              'It will resume automatically when the 5-hour window resets. ' +
-              'Switch accounts or raise the Sentinel budget in Settings to unblock sooner.',
-          },
-        }),
+      respond503(
+        res,
+        getSessionResetAt(perRequestAccountId),
+        'sentinel_budget_paused',
+        'Sentinel has paused this account because its weekly budget was reached. ' +
+          'It will resume automatically when the 5-hour window resets. ' +
+          'Switch accounts or raise the Sentinel budget in Settings to unblock sooner.',
       );
       return;
     }
@@ -381,6 +508,11 @@ export function createProxyServer(
 
 /**
  * Forward a request to api.anthropic.com and inspect the response headers.
+ *
+ * `preReadBody` lets a caller that has already consumed the request body
+ * (e.g. `handleMessagesPost`, which buffers the body to read the model
+ * before picking a credential) pass it in so it isn't re-read from the
+ * now-drained `req` stream.
  */
 async function proxyToAnthropic(
   req: IncomingMessage,
@@ -396,8 +528,9 @@ async function proxyToAnthropic(
   permissionsEnforcer?: PermissionsEnforcer,
   requestLogStore?: RequestLogStore,
   db?: Database,
+  preReadBody?: Buffer,
 ): Promise<void> {
-  let body = await readBody(req);
+  let body = preReadBody ?? (await readBody(req));
 
   // Build a capture context when request logging is enabled. Read settings
   // per-request so the toggle takes effect without a daemon restart. Probe
@@ -887,4 +1020,34 @@ function extractAccountFromAuth(auth: string | undefined): string | null {
   // In practice, the account UUID comes from API response headers or OTEL.
   // This is just a fallback identifier.
   return null;
+}
+
+/**
+ * Parse the `model` field from an Anthropic `/v1/messages` request body.
+ * The Anthropic SDK always places `model` at the JSON root for both
+ * streaming and non-streaming requests, so a single `JSON.parse` suffices.
+ *
+ * Returns null on malformed JSON, an empty body, or a missing/non-string
+ * `model`. Callers must treat null as "unknown model" and skip any
+ * model-aware gating — never as "route as Sonnet by default."
+ */
+export function extractRequestModel(body: Buffer): string | null {
+  if (body.length === 0) return null;
+  try {
+    const parsed = JSON.parse(body.toString('utf8')) as { model?: unknown };
+    return typeof parsed.model === 'string' && parsed.model.length > 0 ? parsed.model : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when the model identifier names a Sonnet variant. Case-insensitive
+ * substring match rather than a prefix list so the check keeps working
+ * across Anthropic release cadence (`claude-3-5-sonnet-*`,
+ * `claude-sonnet-4-*`, future Sonnet releases). Null/empty input returns
+ * false — unknown model never routes through the Sonnet gate.
+ */
+export function isSonnetModel(model: string | null): boolean {
+  return model != null && model.toLowerCase().includes('sonnet');
 }

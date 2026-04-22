@@ -11,6 +11,12 @@ const SESSION_WINDOW = 'unified-5h';
 /** Name of the overage RateLimitWindow as reported by Anthropic headers. */
 const OVERAGE_WINDOW = 'unified-overage';
 
+/** Sonnet's weekly quota on Max plans. When this saturates, subsequent
+ *  Sonnet requests spill into overage even if `unified-5h` has room. The
+ *  rotator consults it only for Sonnet-model requests so Opus traffic
+ *  stays unaffected. */
+const SONNET_WINDOW = 'unified-7d_sonnet';
+
 /** Candidates within this much of the minimum utilization are treated as
  *  equals and cycled through via the round-robin cursor. Prevents
  *  oscillation once accounts have converged. */
@@ -132,22 +138,32 @@ export class TokenRotator {
    * the live strategy getter — see the class docstring for the two modes.
    * Returns null when every account is unavailable or the pool is empty.
    *
+   * `ctx.isSonnet` routes through the same overage gate with the Sonnet
+   * 7-day window folded in: an account whose Sonnet 7d utilization is at
+   * or above the threshold is treated as "will draw overage for this
+   * request" and subject to the same opt-in. Non-Sonnet requests
+   * (undefined or `isSonnet: false`) bypass this branch so Opus traffic
+   * is unaffected. Missing `unified-7d_sonnet` on an account is treated
+   * as "not saturated" (the account has no observed Sonnet usage yet).
+   *
    * Account eligibility (in order):
    *   1. Pool membership (not in `poolExcludedIds`, has a token) — handled in
    *      refresh(), not here.
    *   2. Not blocked (`status === 'blocked'` on any window).
    *   3. Not paused by SpendTracker (Sentinel-side weekly cap hit).
    *   4. Two-tier overage gate: candidates whose next request would draw
-   *      Anthropic overage (5h saturated with overage status 'allowed', or
-   *      overage-inUse=true) are set aside. The rotator prefers candidates
-   *      that will NOT spend overage so pool-wide 5h quota drains first.
-   *      Only when no "fresh" candidates remain do we fall through to the
-   *      overage tier — and even then, only accounts the user has explicitly
-   *      opted in via `overageEnabledIds` are eligible.
+   *      Anthropic overage (5h saturated with overage status 'allowed',
+   *      overage-inUse=true, OR — for Sonnet requests — 7d_sonnet
+   *      saturated) are set aside. The rotator prefers candidates that
+   *      will NOT spend overage so pool-wide quota drains first. Only
+   *      when no "fresh" candidates remain do we fall through to the
+   *      overage tier — and even then, only accounts the user has
+   *      explicitly opted in via `overageEnabledIds` are eligible.
    */
-  pick(): RotatedCredential | null {
+  pick(ctx?: { isSonnet: boolean }): RotatedCredential | null {
     if (this.pool.length === 0) return null;
 
+    const isSonnet = ctx?.isSonnet === true;
     const overageAllowed = this.getOverageAllowedIds();
     const paused = this.getPausedAccountIds();
     // Buffer is read once per pick(). Clamp here so malformed settings
@@ -175,15 +191,21 @@ export class TokenRotator {
       if (windows.some((w) => w.status === 'blocked')) continue;
       const sessionWindow = windows.find((w) => w.name === SESSION_WINDOW);
       const overageWindow = windows.find((w) => w.name === OVERAGE_WINDOW);
+      const sonnetWindow = windows.find((w) => w.name === SONNET_WINDOW);
       const util = sessionWindow?.utilization ?? 0;
       const reset = sessionWindow?.reset ?? Number.POSITIVE_INFINITY;
-      // "Will this request draw overage?" — either Anthropic has flagged the
-      // overage window as actively consuming, OR the 5h is within the
-      // configured safety buffer of saturation and overage is allowed so
-      // the next request could spill into overage territory.
+      // "Will this request draw overage?" — the 5h signals apply to every
+      // model, and for Sonnet requests we additionally check the Sonnet
+      // 7-day window. Sonnet saturation draws overage even when 5h has
+      // room, so this is the gap the explicit context closes.
+      const sonnetWouldDrawOverage =
+        isSonnet &&
+        sonnetWindow?.utilization != null &&
+        sonnetWindow.utilization >= overageThreshold;
       const willUseOverage =
         overageWindow?.inUse === true ||
-        (util >= overageThreshold && overageWindow?.status === 'allowed');
+        (util >= overageThreshold && overageWindow?.status === 'allowed') ||
+        sonnetWouldDrawOverage;
 
       if (willUseOverage) {
         if (!overageAllowed.has(entry.accountId)) continue;

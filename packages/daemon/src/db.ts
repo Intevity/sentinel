@@ -1538,10 +1538,19 @@ interface DbAlertRow {
 }
 
 function rowToAlert(row: DbAlertRow): Alert {
-  const scope: 'account' | 'pool' | 'budget' =
-    row.scope === 'pool' ? 'pool' : row.scope === 'budget' ? 'budget' : 'account';
+  const scope: 'account' | 'account-sonnet' | 'pool' | 'budget' =
+    row.scope === 'pool'
+      ? 'pool'
+      : row.scope === 'budget'
+        ? 'budget'
+        : row.scope === 'account-sonnet'
+          ? 'account-sonnet'
+          : 'account';
   // Budget-scope rows may be global (account_id = '') or per-account.
-  const hasAccountId = scope === 'account' || (scope === 'budget' && row.budget_scope !== 'global');
+  const hasAccountId =
+    scope === 'account' ||
+    scope === 'account-sonnet' ||
+    (scope === 'budget' && row.budget_scope !== 'global');
   const alert: Alert = {
     id: row.id,
     scope,
@@ -1561,7 +1570,7 @@ function rowToAlert(row: DbAlertRow): Alert {
 
 export function listAlerts(
   db: Database.Database,
-  opts: { scope?: 'account' | 'pool' | 'budget'; accountId?: string } = {},
+  opts: { scope?: 'account' | 'account-sonnet' | 'pool' | 'budget'; accountId?: string } = {},
 ): Alert[] {
   const { scope, accountId } = opts;
   // accountId filter implies account scope; honour scope when explicitly set.
@@ -1577,6 +1586,14 @@ export function listAlerts(
   } else if (scope === 'budget') {
     sql =
       "SELECT * FROM alerts WHERE scope = 'budget' ORDER BY budget_scope, account_id, threshold_pct ASC";
+    params = [];
+  } else if (scope === 'account-sonnet' && accountId) {
+    sql =
+      "SELECT * FROM alerts WHERE scope = 'account-sonnet' AND account_id = ? ORDER BY threshold_pct ASC";
+    params = [accountId];
+  } else if (scope === 'account-sonnet') {
+    sql =
+      "SELECT * FROM alerts WHERE scope = 'account-sonnet' ORDER BY account_id, threshold_pct ASC";
     params = [];
   } else if (scope === 'account' && accountId) {
     sql =
@@ -1600,7 +1617,7 @@ export function upsertAlert(
   db: Database.Database,
   input: {
     id?: number;
-    scope?: 'account' | 'pool' | 'budget';
+    scope?: 'account' | 'account-sonnet' | 'pool' | 'budget';
     accountId: string | null;
     thresholdPct: number;
     enabled: boolean;
@@ -1613,6 +1630,9 @@ export function upsertAlert(
   }
   if (scope === 'account' && !input.accountId) {
     throw new Error('account-scoped alerts require a non-empty accountId');
+  }
+  if (scope === 'account-sonnet' && !input.accountId) {
+    throw new Error('account-sonnet-scoped alerts require a non-empty accountId');
   }
   const budgetScope: 'account' | 'global' | null =
     scope === 'budget' ? (input.budgetScope ?? 'account') : null;

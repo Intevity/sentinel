@@ -82,3 +82,51 @@ export function fiveHourResetAt(windows: RateLimitWindow[] | undefined): number 
   const w = windows?.find((x) => x.name === 'unified-5h');
   return w?.reset ?? null;
 }
+
+/**
+ * Extract the 7-day (weekly, all-models) utilization (0..1), or null when the
+ * daemon has no weekly window for this account yet.
+ */
+export function weeklyUtilization(windows: RateLimitWindow[] | undefined): number | null {
+  const w = windows?.find((x) => x.name === 'unified-7d');
+  if (!w) return null;
+  if (w.utilization != null) return w.utilization;
+  if (w.limit != null && w.remaining != null && w.limit > 0) {
+    return (w.limit - w.remaining) / w.limit;
+  }
+  return null;
+}
+
+/**
+ * Extract the Unix-seconds reset timestamp for the 7-day (weekly) window,
+ * or null when we haven't observed a reset header yet.
+ */
+export function weeklyResetAt(windows: RateLimitWindow[] | undefined): number | null {
+  const w = windows?.find((x) => x.name === 'unified-7d');
+  return w?.reset ?? null;
+}
+
+/**
+ * Extract the 7-day Sonnet-specific utilization (0..1), or null when absent.
+ * Anthropic omits this header until the user consumes Sonnet, so `null`
+ * means "unknown" rather than "zero" — callers should not treat them the same.
+ */
+export function weeklySonnetUtilization(windows: RateLimitWindow[] | undefined): number | null {
+  const w = windows?.find((x) => x.name === 'unified-7d_sonnet');
+  if (!w) return null;
+  if (w.utilization != null) return w.utilization;
+  if (w.limit != null && w.remaining != null && w.limit > 0) {
+    return (w.limit - w.remaining) / w.limit;
+  }
+  return null;
+}
+
+/**
+ * Extract the Unix-seconds reset timestamp for the 7-day Sonnet window, or
+ * null when absent. See {@link weeklySonnetUtilization} for the "unknown vs
+ * zero" distinction.
+ */
+export function weeklySonnetResetAt(windows: RateLimitWindow[] | undefined): number | null {
+  const w = windows?.find((x) => x.name === 'unified-7d_sonnet');
+  return w?.reset ?? null;
+}

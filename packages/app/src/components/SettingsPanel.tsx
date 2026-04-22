@@ -424,10 +424,10 @@ export default function SettingsPanel({
                       </span>
                     </div>
                     <p className="text-[10px] text-[#8E8E93]/80 leading-snug mb-2">
-                      Round-robin stops picking an account once its 5-hour utilization reaches{' '}
-                      {100 - settings.overageBufferPct}%. A larger buffer protects against a single
-                      large request pushing you into overage; a smaller one squeezes more pool
-                      throughput.
+                      Round-robin stops picking an account once its 5-hour (or Sonnet 7-day)
+                      utilization reaches {100 - settings.overageBufferPct}%. A larger buffer
+                      protects against a single large request pushing you into overage; a smaller
+                      one squeezes more pool throughput.
                     </p>
                     <input
                       type="range"
@@ -1519,7 +1519,9 @@ function ClaudeAiConnectionRow({
               Allow spending overage
             </p>
             <p className="text-[10px] text-[#8E8E93] leading-snug">
-              Round-robin picks this account for new requests after its 5-hour quota is exhausted.
+              Round-robin picks this account for new requests after its 5-hour quota is exhausted,
+              and lets Sonnet requests through once the Sonnet 7-day quota is spent. Off: Sentinel
+              refuses either spillover with a 503.
             </p>
           </div>
           <input

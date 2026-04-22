@@ -10,6 +10,13 @@ export interface UsageProberDeps {
   /** Returns the cadence (seconds). Read fresh each tick so settings changes
    *  take effect on restart() without a daemon restart. */
   getIntervalSec: () => number;
+  /** Optional per-account gate consulted at fire time. When it returns true
+   *  the probe is skipped this tick (no API call, no rate-limit-store
+   *  update). Used to avoid consuming quota on accounts the user has
+   *  excluded from the round-robin pool — see the index.ts wiring for the
+   *  "resume once the 5h window has rolled over" policy. Missing → legacy
+   *  "always probe every account" behaviour. */
+  shouldSkipProbe?: (accountId: string) => boolean;
 }
 
 export interface UsageProberHandle {
@@ -49,6 +56,12 @@ export function startUsageProber(deps: UsageProberDeps): UsageProberHandle {
 
     accounts.forEach((acct, i) => {
       const fire = (): void => {
+        if (deps.shouldSkipProbe?.(acct.id)) {
+          console.log(
+            `[UsageProbe] Skipping ${acct.email} [${acct.planType}] (${acct.id}) — excluded from pool (window not yet reset)`,
+          );
+          return;
+        }
         const creds = readSentinelCredentials(acct.id);
         if (!creds?.accessToken) {
           console.log(

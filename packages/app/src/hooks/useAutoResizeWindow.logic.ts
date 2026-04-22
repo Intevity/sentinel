@@ -28,6 +28,13 @@ export interface ComputeTargetInputs {
   /** Popover bottom edge in page coordinates, minus the root's top edge.
    *  null when no popover is mounted. Includes the 8px breathing room. */
   popoverBottomRelativeToRoot: number | null;
+  /** True when the main-content wrapper opts into a fixed max-height
+   *  window (via `data-expand-max` on the contentRef element). The Logs
+   *  tab uses this because its internal scroll container is bounded by
+   *  the window — measured `contentOffsetHeight` always matches the
+   *  current window size, so a natural-height calculation can't grow
+   *  the window on tab entry. */
+  contentExpandMax: boolean;
 }
 
 /**
@@ -45,6 +52,8 @@ export function computeTargetInner(inputs: ComputeTargetInputs): number {
   let needed: number;
   if (inputs.overlayScrollHeight !== null) {
     needed = inputs.overlayExpandMax ? TRAY_MAX_HEIGHT : inputs.overlayScrollHeight;
+  } else if (inputs.contentExpandMax) {
+    needed = TRAY_MAX_HEIGHT;
   } else {
     needed = inputs.chromeAndFooter + inputs.contentOffsetHeight + inputs.mainPaddingBottomPx;
   }

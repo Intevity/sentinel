@@ -200,6 +200,7 @@ export function useAutoResizeWindow(): AutoResizeRefs {
       const overlayAttached = overlay != null && overlay.isConnected;
       const overlayExpandMax = overlayAttached && overlay.dataset.expandMax != null;
       const overlayScrollHeight = overlayAttached ? overlay.scrollHeight : null;
+      const contentExpandMax = content.dataset.expandMax != null;
       const chromeAndFooter = root.offsetHeight - main.offsetHeight;
       const mainPadBottom = parseFloat(getComputedStyle(main).paddingBottom) || 0;
       const popoverBottomRelativeToRoot = popover
@@ -212,6 +213,7 @@ export function useAutoResizeWindow(): AutoResizeRefs {
         contentOffsetHeight: content.offsetHeight,
         mainPaddingBottomPx: mainPadBottom,
         popoverBottomRelativeToRoot,
+        contentExpandMax,
       });
       if (AUTO_RESIZE_DEBUG) {
         console.info(
@@ -221,6 +223,7 @@ export function useAutoResizeWindow(): AutoResizeRefs {
             overlayAttached,
             overlayExpandMax,
             overlayScrollHeight,
+            contentExpandMax,
             chromeAndFooter,
             contentOffsetHeight: content.offsetHeight,
             mainPadBottom,
@@ -379,6 +382,14 @@ export function useAutoResizeWindow(): AutoResizeRefs {
     if (overlay) ro.observe(overlay);
     if (popover) ro.observe(popover);
 
+    // Attribute-only observer on `content` for the `data-expand-max`
+    // opt-in. Flipping the attribute doesn't change `content.offsetHeight`
+    // (the wrapper stays flex-1-bounded in both states on the Logs tab),
+    // so ResizeObserver wouldn't fire on tab enter/exit. MutationObserver
+    // catches the attribute flip directly and schedules a recompute.
+    const mo = new MutationObserver(schedule);
+    mo.observe(content, { attributes: true, attributeFilter: ['data-expand-max'] });
+
     // When DevTools closes (recalibVersion bumps), force a fresh
     // measurement so the tray window snaps back to its content size
     // — otherwise a stale chromeOverhead from the expanded state would
@@ -392,6 +403,7 @@ export function useAutoResizeWindow(): AutoResizeRefs {
 
     return () => {
       ro.disconnect();
+      mo.disconnect();
       if (rafId !== null) cancelAnimationFrame(rafId);
     };
   }, [root, content, overlay, popover, recalibVersion]);

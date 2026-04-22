@@ -2,7 +2,13 @@ import { useEffect, useState } from 'react';
 import type { ClaudeAiUsageSnapshot } from '@claude-sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
-type UsageError = 'missing_key' | 'auth_expired' | 'network' | 'parse' | null;
+type UsageError =
+  | 'missing_key'
+  | 'auth_expired'
+  | 'oauth_forbidden'
+  | 'network'
+  | 'parse'
+  | null;
 
 interface UseClaudeAiUsageResult {
   snapshot: ClaudeAiUsageSnapshot | null;
@@ -19,6 +25,8 @@ interface UseClaudeAiUsageResult {
  * can pick the right recovery copy:
  *   - missing_key → "Connect claude.ai"
  *   - auth_expired → "Your cookie expired, reconnect"
+ *   - oauth_forbidden → "OAuth access disabled by organization admin"
+ *                       (refresh + re-auth both no-op; waits for policy change)
  *   - network/parse → "Couldn't reach claude.ai" (transient)
  */
 export function useClaudeAiUsage(accountId: string | undefined): UseClaudeAiUsageResult {

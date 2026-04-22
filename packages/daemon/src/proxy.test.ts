@@ -18,6 +18,8 @@ import {
   DAEMON_PORT,
   ANTHROPIC_HOST,
   summarizeOverageHeaders,
+  extractRequestModel,
+  isSonnetModel,
 } from './proxy.js';
 import type { IpcServer } from './ipc.js';
 import { RateLimitStore } from './rate-limit-store.js';
@@ -1141,6 +1143,9 @@ describe('createProxyServer', () => {
     } as unknown as ServerResponse;
 
     handler?.(req, res);
+    // /v1/messages POSTs buffer the body before gating so the Sonnet
+    // check can see the model — yield for the readBody microtask.
+    await new Promise((r) => setTimeout(r, 30));
     // Upstream must NOT be called.
     expect(httpsRequestMock).not.toHaveBeenCalled();
     expect(code).toBe(503);
@@ -1183,6 +1188,8 @@ describe('createProxyServer', () => {
     } as unknown as ServerResponse;
 
     handler?.(req, res);
+    // Async path — wait for readBody to resolve before asserting.
+    await new Promise((r) => setTimeout(r, 30));
     expect(Number(capturedHeaders['Retry-After'])).toBe(300);
     server.close();
   });
@@ -1523,6 +1530,275 @@ describe('createProxyServer cache TTL capture', () => {
       realDb.prepare('SELECT COUNT(*) AS n FROM cache_ttl_events').get() as { n: number }
     ).n;
     expect(rowCount).toBe(2);
+    server.close();
+  });
+});
+
+// ── Sonnet-aware request-model helpers ───────────────────────────────────────
+
+describe('extractRequestModel', () => {
+  it('returns the model string for a well-formed body', () => {
+    const body = Buffer.from(JSON.stringify({ model: 'claude-sonnet-4-6', messages: [] }));
+    expect(extractRequestModel(body)).toBe('claude-sonnet-4-6');
+  });
+
+  it('returns null for an empty body', () => {
+    expect(extractRequestModel(Buffer.alloc(0))).toBeNull();
+  });
+
+  it('returns null for malformed JSON', () => {
+    expect(extractRequestModel(Buffer.from('{ not json'))).toBeNull();
+  });
+
+  it('returns null when the model field is missing', () => {
+    expect(extractRequestModel(Buffer.from(JSON.stringify({ messages: [] })))).toBeNull();
+  });
+
+  it('returns null when the model field is not a string', () => {
+    expect(extractRequestModel(Buffer.from(JSON.stringify({ model: 42 })))).toBeNull();
+  });
+
+  it('returns null for an empty-string model', () => {
+    expect(extractRequestModel(Buffer.from(JSON.stringify({ model: '' })))).toBeNull();
+  });
+});
+
+describe('isSonnetModel', () => {
+  it.each([
+    ['claude-sonnet-4-6', true],
+    ['claude-3-5-sonnet-20241022', true],
+    ['CLAUDE-SONNET-5-x', true],
+    ['claude-opus-4-7', false],
+    ['claude-haiku-4-5', false],
+    [null, false],
+    ['', false],
+  ])('isSonnetModel(%j) === %s', (input, expected) => {
+    expect(isSonnetModel(input)).toBe(expected);
+  });
+});
+
+// ── Sonnet 7-day saturation short-circuit ────────────────────────────────────
+
+describe('createProxyServer Sonnet 7-day gate', () => {
+  let db: Database.Database;
+  let ipcServer: IpcServer;
+
+  beforeEach(() => {
+    db = makeMockDb();
+    ipcServer = makeMockIpc();
+    httpsRequestMock.mockReset();
+  });
+
+  // Reuse the same mock-response/request shape as the paused-account tests.
+  function setupMockUpstream(): void {
+    const mockProxyRes = {
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' } as IncomingHttpHeaders,
+      on: vi.fn().mockReturnThis(),
+      pipe: vi.fn().mockReturnThis(),
+    } as unknown as IncomingMessage;
+    const mockProxyReq = {
+      on: vi.fn().mockReturnThis(),
+      write: vi.fn(),
+      end: vi.fn(),
+    } as unknown as ClientRequest;
+    httpsRequestMock.mockImplementation(
+      (_opts: RequestOptions, cb?: (res: IncomingMessage) => void) => {
+        if (cb) cb(mockProxyRes);
+        return mockProxyReq;
+      },
+    );
+  }
+
+  function setSonnet(store: RateLimitStore, id: string, util: number, reset = 9_000): void {
+    store.update(id, {
+      'anthropic-ratelimit-unified-7d_sonnet-status': 'allowed',
+      'anthropic-ratelimit-unified-7d_sonnet-utilization': String(util),
+      'anthropic-ratelimit-unified-7d_sonnet-reset': String(reset),
+    });
+  }
+
+  function invokeHandler(
+    server: ReturnType<typeof createProxyServer>,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): void {
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+    handler?.(req, res);
+  }
+
+  it('returns 503 sentinel_sonnet_saturated on a Sonnet request when not opted in', async () => {
+    const rateLimitStore = new RateLimitStore();
+    setSonnet(rateLimitStore, 'hot', 1.0, Math.floor(Date.now() / 1000) + 900);
+
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'tok' },
+        activeAccountId: { value: 'hot' },
+        rateLimitStore,
+        getOverageAllowedIds: () => new Set(), // not opted in
+        getOverageBufferPct: () => 5,
+      },
+      vi.fn(),
+    );
+
+    const req = makeReq(
+      '/v1/messages',
+      'POST',
+      JSON.stringify({ model: 'claude-sonnet-4-6', messages: [] }),
+    );
+    let code = 0;
+    let bodyStr = '';
+    let hdrs: Record<string, unknown> = {};
+    const res = {
+      writeHead: (c: number, h?: unknown) => {
+        code = c;
+        if (h && typeof h === 'object') hdrs = h as Record<string, unknown>;
+      },
+      end: (d?: string) => {
+        bodyStr = d ?? '';
+      },
+      write: vi.fn(),
+    } as unknown as ServerResponse;
+
+    invokeHandler(server, req, res);
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(httpsRequestMock).not.toHaveBeenCalled();
+    expect(code).toBe(503);
+    expect(hdrs['Retry-After']).toBeDefined();
+    const parsed = JSON.parse(bodyStr);
+    expect(parsed.error?.type).toBe('sentinel_sonnet_saturated');
+    server.close();
+  });
+
+  it('lets the Sonnet request through when the account is opted into overage', async () => {
+    setupMockUpstream();
+    const rateLimitStore = new RateLimitStore();
+    setSonnet(rateLimitStore, 'hot', 1.0);
+
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'tok' },
+        activeAccountId: { value: 'hot' },
+        rateLimitStore,
+        getOverageAllowedIds: () => new Set(['hot']), // opted in
+        getOverageBufferPct: () => 5,
+      },
+      vi.fn(),
+    );
+
+    const req = makeReq(
+      '/v1/messages',
+      'POST',
+      JSON.stringify({ model: 'claude-sonnet-4-6', messages: [] }),
+    );
+    const { res } = makeRes();
+    invokeHandler(server, req, res);
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(httpsRequestMock).toHaveBeenCalled();
+    server.close();
+  });
+
+  it('does not short-circuit Opus requests on a Sonnet-saturated account', async () => {
+    setupMockUpstream();
+    const rateLimitStore = new RateLimitStore();
+    setSonnet(rateLimitStore, 'hot', 1.0);
+
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'tok' },
+        activeAccountId: { value: 'hot' },
+        rateLimitStore,
+        getOverageAllowedIds: () => new Set(),
+        getOverageBufferPct: () => 5,
+      },
+      vi.fn(),
+    );
+
+    const req = makeReq(
+      '/v1/messages',
+      'POST',
+      JSON.stringify({ model: 'claude-opus-4-7', messages: [] }),
+    );
+    const { res } = makeRes();
+    invokeHandler(server, req, res);
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(httpsRequestMock).toHaveBeenCalled();
+    server.close();
+  });
+
+  it('does not short-circuit when Sonnet 7d util is below the threshold', async () => {
+    setupMockUpstream();
+    const rateLimitStore = new RateLimitStore();
+    setSonnet(rateLimitStore, 'warm', 0.6);
+
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'tok' },
+        activeAccountId: { value: 'warm' },
+        rateLimitStore,
+        getOverageAllowedIds: () => new Set(),
+        getOverageBufferPct: () => 5,
+      },
+      vi.fn(),
+    );
+
+    const req = makeReq(
+      '/v1/messages',
+      'POST',
+      JSON.stringify({ model: 'claude-sonnet-4-6', messages: [] }),
+    );
+    const { res } = makeRes();
+    invokeHandler(server, req, res);
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(httpsRequestMock).toHaveBeenCalled();
+    server.close();
+  });
+
+  it('does not short-circuit when the Sonnet window is missing from the store', async () => {
+    setupMockUpstream();
+    // Empty store — this account has never served a Sonnet request.
+    const rateLimitStore = new RateLimitStore();
+
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'tok' },
+        activeAccountId: { value: 'unprobed' },
+        rateLimitStore,
+        getOverageAllowedIds: () => new Set(),
+        getOverageBufferPct: () => 5,
+      },
+      vi.fn(),
+    );
+
+    const req = makeReq(
+      '/v1/messages',
+      'POST',
+      JSON.stringify({ model: 'claude-sonnet-4-6', messages: [] }),
+    );
+    const { res } = makeRes();
+    invokeHandler(server, req, res);
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(httpsRequestMock).toHaveBeenCalled();
     server.close();
   });
 });

@@ -499,6 +499,7 @@ export default function App(): React.ReactElement {
               <div
                 ref={contentRef}
                 className={activeTab === 'logs' ? 'flex-1 min-h-0 flex flex-col' : undefined}
+                data-expand-max={activeTab === 'logs' ? '' : undefined}
               >
                 <AnimatePresence mode="wait" initial={false}>
                   <motion.div

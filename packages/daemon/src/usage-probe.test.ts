@@ -203,4 +203,58 @@ describe('startUsageProber', () => {
     vi.advanceTimersByTime(60_000);
     expect(probeRateLimitsMock).toHaveBeenCalledTimes(1);
   });
+
+  it('skips accounts when shouldSkipProbe returns true; others still probe', () => {
+    listAccountsMock.mockReturnValue([
+      makeAccount('excluded'),
+      makeAccount('included-1'),
+      makeAccount('included-2'),
+    ]);
+    readSentinelCredentialsMock.mockImplementation((k) => makeCreds(`tok-${k}`));
+
+    const { deps } = makeDeps(300);
+    const handle = startUsageProber({
+      ...deps,
+      shouldSkipProbe: (id) => id === 'excluded',
+    });
+
+    // Immediate slot went to the excluded account — credentials are never
+    // read (skip happens before readSentinelCredentials) and no probe fires.
+    expect(probeRateLimitsMock).toHaveBeenCalledTimes(0);
+    expect(readSentinelCredentialsMock).not.toHaveBeenCalledWith('excluded');
+
+    // Stride = 100_000 ms. included-1 fires at t=100s.
+    vi.advanceTimersByTime(100_000);
+    expect(probeRateLimitsMock).toHaveBeenCalledTimes(1);
+    expect(probeRateLimitsMock).toHaveBeenCalledWith(
+      'included-1',
+      deps.ipcServer,
+      'tok-included-1',
+    );
+
+    // included-2 fires at t=200s.
+    vi.advanceTimersByTime(100_000);
+    expect(probeRateLimitsMock).toHaveBeenCalledTimes(2);
+    expect(probeRateLimitsMock).toHaveBeenCalledWith(
+      'included-2',
+      deps.ipcServer,
+      'tok-included-2',
+    );
+
+    handle.stop();
+  });
+
+  it('probes every account when shouldSkipProbe is absent (regression guard)', () => {
+    listAccountsMock.mockReturnValue([makeAccount('a1'), makeAccount('a2')]);
+    readSentinelCredentialsMock.mockImplementation((k) => makeCreds(`t-${k}`));
+
+    const { deps } = makeDeps(300);
+    const handle = startUsageProber(deps); // no shouldSkipProbe
+
+    expect(probeRateLimitsMock).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(150_000);
+    expect(probeRateLimitsMock).toHaveBeenCalledTimes(2);
+
+    handle.stop();
+  });
 });

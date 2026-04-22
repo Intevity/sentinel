@@ -1,6 +1,7 @@
 import { request as httpRequest } from 'http';
 import { DAEMON_PORT } from './proxy.js';
 import type { IpcServer } from './ipc.js';
+import { isOAuthForbiddenBodyString } from './claude-ai-usage.js';
 
 /**
  * Probe POST /v1/messages through the local proxy to obtain fresh
@@ -73,8 +74,26 @@ export function probeRateLimits(accountId: string, ipcServer?: IpcServer, token?
           // so we signal probe-end here for the UI. Successful probes are
           // already covered by the proxy's rate_limits_updated broadcast.
         } else {
-          const bodyStr = Buffer.concat(chunks).toString('utf-8').slice(0, 300);
+          const fullBody = Buffer.concat(chunks).toString('utf-8');
+          const bodyStr = fullBody.slice(0, 300);
           console.warn(`[RateLimit] Probe HTTP ${res.statusCode} for ${accountId}: ${bodyStr}`);
+          // Surface the org-level OAuth-disabled 403 as a distinct broadcast
+          // so the UI renders "OAuth access disabled" instead of the generic
+          // "Sign-in expired" state. `rate_limits_probe_ended` still fires so
+          // existing loading-indicator listeners keep working.
+          if (res.statusCode === 403) {
+            const verdict = isOAuthForbiddenBodyString(fullBody);
+            if (verdict.forbidden) {
+              console.warn(
+                `[RateLimit] OAuth-disabled org for ${accountId}: ${verdict.message}`,
+              );
+              ipcServer?.broadcast({
+                type: 'rate_limits_oauth_forbidden',
+                accountId,
+                message: verdict.message,
+              });
+            }
+          }
           ipcServer?.broadcast({ type: 'rate_limits_probe_ended', accountId });
         }
       });
