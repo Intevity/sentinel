@@ -145,6 +145,33 @@ const INIT_SCRIPT: &str = r#"
   const INTERVAL_MS = 500;
   let sent = false;
 
+  // Wrap window.open so the tick() cookie-capture path can close the
+  // Google OAuth popup after login. Google's GSI SDK calls window.open
+  // when the user clicks "Continue with Google"; we stash the native
+  // popup handle the call returns so we can call `popup.close()` on
+  // ourselves once sessionKey lands — Google's own storagerelay
+  // postMessage flow expects the popup to self-close but wry's
+  // NewWindowResponse::Allow path doesn't honor JS-side window.close
+  // reliably on macOS WKWebView, leaving the user staring at a stuck
+  // "One moment please" page.
+  //
+  // Timing: this IIFE runs via post-build eval in Rust, which lands in
+  // the claude.ai/login document well before the user can click the
+  // Google button (popup opens on user interaction, many seconds after
+  // page load). The wrapper is installed in time even on the very first
+  // Connect click. A prior attempt to install this at document-start
+  // via initialization_script re-introduced the cold-WKWebView blank-
+  // first-paint bug, so we accept the small theoretical race and stay
+  // post-build.
+  try {
+    var origOpen = window.open;
+    window.open = function() {
+      var popup = origOpen.apply(window, arguments);
+      try { window.__sentinelPopup = popup; } catch(e) {}
+      return popup;
+    };
+  } catch(e) {}
+
   // We talk to Rust via Tauri *events*, not invoke(). App-defined
   // `#[tauri::command]` functions are only auto-granted to local
   // webviews; our login webview is marked remote (loads claude.ai), so
@@ -242,6 +269,21 @@ const INIT_SCRIPT: &str = r#"
     const found = extractSessionKey();
     if (!found) return;
     sent = true;
+    // Close any Google OAuth popup the user opened via the "Continue with
+    // Google" button. Google's GSI SDK usually self-closes the popup via
+    // storagerelay postMessage, but native WKWebView popups created via
+    // wry's NewWindowResponse::Allow don't honor that reliably — the user
+    // ends up staring at a "One moment please" page long after login has
+    // succeeded. The POPUP_TRACKER_SCRIPT installed at document-start saved
+    // the popup handle on window.__sentinelPopup; use it here before we
+    // tear down this webview.
+    try {
+      const p = window.__sentinelPopup;
+      if (p && !p.closed) {
+        console.log('[Sentinel login] closing tracked Google popup');
+        p.close();
+      }
+    } catch(e) {}
     console.log('[Sentinel login] sessionKey captured (cookie=' + found.name + '), emitting to Rust');
     emitToRust('sentinel-login-session-key', { sessionKey: found.value });
   };
@@ -412,11 +454,15 @@ pub async fn start_claude_ai_login(app: AppHandle, account_id: String) -> Result
     // `devtools` feature is enabled on tauri in Cargo.toml so this works
     // in release builds too.
     let app_for_popup = app.clone();
+    // No `.initialization_script(...)` — a document-start injection (even a
+    // minimal one) races with claude.ai's SPA hydration on a cold WKWebView
+    // and produces a blank first-paint regression. INIT_SCRIPT is installed
+    // via post-build `window.eval(...)` below instead, mirroring what
+    // `open_oauth_webview` does for the Add-Account flow.
     let mut builder = WebviewWindowBuilder::new(&app, LOGIN_WINDOW_LABEL, WebviewUrl::External(url))
         .title("Connect claude.ai")
         .inner_size(500.0, 860.0)
         .resizable(true)
-        .initialization_script(INIT_SCRIPT)
         .devtools(true)
         // Every top-level navigation in the login webview is logged from
         // the Rust side. Returning true approves the nav (we don't block
@@ -471,6 +517,20 @@ pub async fn start_claude_ai_login(app: AppHandle, account_id: String) -> Result
         builder = builder.user_agent(ua);
     }
     let window = builder.build().map_err(|e| format!("webview build: {e}"))?;
+
+    // Inject the cookie-polling / console-forwarding instrumentation via
+    // post-build eval rather than `.initialization_script(...)`. See comment
+    // above the builder for why document-start injection broke first-paint
+    // hydration. The script is idempotent (guarded by the `sent` flag inside
+    // its IIFE) so running it after the claude.ai page has loaded is safe —
+    // the setInterval cookie poller still fires every 500ms until it captures
+    // sessionKey, and the console patches layer on top of whatever claude.ai
+    // has already set up. Silently-failing eval (returning Err from Tauri)
+    // just means the logger and poller won't attach; the user can still
+    // complete the login manually.
+    if let Err(e) = window.eval(INIT_SCRIPT) {
+        append_login_log(&format!("[init] eval INIT_SCRIPT failed: {}", e));
+    }
 
     // Wire up the two event listeners that replace the custom-command
     // IPC paths we abandoned. App commands (#[tauri::command]) only

@@ -987,22 +987,35 @@ export async function startDaemon(): Promise<void> {
         // Delete every Sentinel-owned keychain entry. Also cover any lingering
         // soft- or hard-removed rows — once the user hits Uninstall we want
         // zero trace of their credentials left on the system.
+        //
+        // Covers both services Sentinel writes to: `Claude Sentinel-credentials`
+        // (OAuth tokens) AND `Claude Sentinel-claude-ai-session` (claude.ai
+        // session cookies used to read overage budget). Missing the session
+        // service meant a post-uninstall reinstall silently inherited the old
+        // cookie, so the app never asked the user to reconnect claude.ai.
+        //
+        // Does NOT touch `Claude Code-credentials` — that slot is owned by
+        // Claude Code, not Sentinel. Users who want to also sign out of
+        // Claude Code must do so through CC's own flow.
         const active = listAccounts(db);
         const removed = listRemovedAccounts(db);
         const seen = new Set<string>();
+        const purgeKey = (key: string): void => {
+          if (seen.has(key)) return;
+          deleteSentinelCredentials(key);
+          deleteClaudeAiSessionKey(key);
+          seen.add(key);
+        };
         for (const a of [...active, ...removed]) {
-          if (!seen.has(a.id)) {
-            deleteSentinelCredentials(a.id);
-            seen.add(a.id);
-          }
+          purgeKey(a.id);
           // Cover the legacy case where the entry was keyed by accountUuid
           // (pre-sentinelKey rows) rather than the sentinel id.
-          if (a.accountUuid && !seen.has(a.accountUuid)) {
-            deleteSentinelCredentials(a.accountUuid);
-            seen.add(a.accountUuid);
-          }
+          if (a.accountUuid) purgeKey(a.accountUuid);
+          // Older entries were email-keyed (see SENTINEL_SERVICE fallback in
+          // persistOAuthResult's credKey). Clear those too when present.
+          if (a.email) purgeKey(a.email);
         }
-        console.log(`[Sentinel] Purged ${seen.size} keychain entries.`);
+        console.log(`[Sentinel] Purged keychain entries for ${seen.size} identifier(s).`);
         respond({ requestType: 'purge_all_data', success: true });
         break;
       }

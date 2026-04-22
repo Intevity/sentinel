@@ -95,6 +95,17 @@ export default function HeaderMenu({ measureRef }: HeaderMenuProps): React.React
       // 1. If user opted in, purge keychain entries (daemon still alive).
       if (deleteData) {
         await sendToSentinel({ type: 'purge_all_data' }).catch(() => undefined);
+        // 1b. Evict WebKit's persistent cookie jar (HttpOnly claude.ai
+        //     sessionKey + localStorage + disk cache). Without this, the
+        //     cookie survives uninstall — WKWebsiteDataStore lives at
+        //     ~/Library/WebKit/Claude Sentinel/, separate from both the
+        //     macOS keychain and ~/.claude-sentinel/. On next Connect
+        //     claude.ai would auto-authenticate in <1 second from the
+        //     cached cookie and the user never sees a login screen —
+        //     making "Also delete all local data" a lie. Must run while
+        //     a webview is still alive (before shutdown/quit). Best-effort:
+        //     failures don't block the rest of the uninstall.
+        await invoke('clear_claude_ai_cookies').catch(() => undefined);
       }
       // 2. Shut the daemon down so the socket/db are released before file deletion.
       await sendToSentinel({ type: 'shutdown_daemon' }).catch(() => undefined);
