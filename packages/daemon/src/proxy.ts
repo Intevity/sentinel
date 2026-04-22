@@ -12,6 +12,7 @@ import type { PermissionsEnforcer } from './security/permissions/enforcer.js';
 import { extractSessionInfo } from './security/permissions/enforcer.js';
 import { loadSettings } from './settings.js';
 import { redactHeaders, type RequestLogStore } from './request-log-db.js';
+import type { RequestAccountMap } from './request-account-map.js';
 import { log } from './logger.js';
 import {
   parseCacheControlMarkers,
@@ -101,6 +102,12 @@ interface ProxyOptions {
    *  records each proxied call here. Gated per-request so the toggle takes
    *  effect without a daemon restart. */
   requestLogStore?: RequestLogStore;
+  /** Short-lived table mapping Anthropic `request-id` → per-request Sentinel
+   *  key. Populated here on every upstream response that carries the header,
+   *  consumed by OtelReceiver so round-robin-routed OTEL events land on the
+   *  account whose token was actually used (not the one Claude Code is
+   *  signed in as). */
+  requestAccountMap?: RequestAccountMap;
 }
 
 /** Mutable capture state threaded through a single request's lifecycle.
@@ -252,7 +259,13 @@ export function createProxyServer(
   const activeAccountId = opts.activeAccountId;
   const rateLimitStore = opts.rateLimitStore;
   const tokenProvider = opts.tokenProvider;
-  const { ipcServer, securityScanner, permissionsEnforcer, requestLogStore } = opts;
+  const {
+    ipcServer,
+    securityScanner,
+    permissionsEnforcer,
+    requestLogStore,
+    requestAccountMap,
+  } = opts;
   const getPausedAccountIds = opts.getPausedAccountIds ?? (() => new Set<string>());
   const getSessionResetAt = opts.getSessionResetAt ?? (() => null);
   const getOverageAllowedIds = opts.getOverageAllowedIds ?? (() => new Set<string>());
@@ -400,6 +413,7 @@ export function createProxyServer(
       requestLogStore,
       opts.db,
       body,
+      requestAccountMap,
     );
   };
 
@@ -476,6 +490,8 @@ export function createProxyServer(
         permissionsEnforcer,
         requestLogStore,
         opts.db,
+        undefined,
+        requestAccountMap,
       ).catch((err) => {
         console.error('[Proxy] Proxy error:', err);
         res.writeHead(502);
@@ -497,6 +513,8 @@ export function createProxyServer(
       undefined,
       requestLogStore,
       opts.db,
+      undefined,
+      requestAccountMap,
     ).catch((err) => {
       console.error('[Proxy] Default proxy error:', err);
       res.writeHead(502);
@@ -530,6 +548,10 @@ async function proxyToAnthropic(
   requestLogStore?: RequestLogStore,
   db?: Database,
   preReadBody?: Buffer,
+  /** Per-request correlation table. Populated here when the upstream response
+   *  carries a `request-id` header so OtelReceiver can attribute OTEL
+   *  api_request / api_error events to the correct account in round-robin mode. */
+  requestAccountMap?: RequestAccountMap,
 ): Promise<void> {
   let body = preReadBody ?? (await readBody(req));
 
@@ -896,6 +918,19 @@ async function proxyToAnthropic(
           headers[k] = v;
         }
         machine.handleHeaders(accountId, headers);
+
+        // Record requestId → account so OtelReceiver can re-bucket OTEL
+        // api_request / api_error events that carry the same id. Anthropic
+        // emits `request-id` on every /v1/messages response; only skip the
+        // write when the header is absent (probes, early errors).
+        if (requestAccountMap) {
+          const reqIdRaw = proxyRes.headers['request-id'];
+          const reqId = Array.isArray(reqIdRaw) ? reqIdRaw[0] : reqIdRaw;
+          if (typeof reqId === 'string' && reqId) {
+            requestAccountMap.set(reqId, rlKey);
+          }
+        }
+
         // Store rate limits under the active account's sentinel key so
         // get_rate_limits can find them by the same key.
         if (rateLimitStore) {

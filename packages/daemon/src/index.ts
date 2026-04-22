@@ -55,6 +55,7 @@ import {
 import { loadSettings, updateSettings as writeSettings } from './settings.js';
 import { IpcServer } from './ipc.js';
 import { OtelReceiver } from './otel-receiver.js';
+import { RequestAccountMap } from './request-account-map.js';
 import { OverageStateMachine } from './overage.js';
 import { SonnetSaturationMachine, buildSonnetSaturationBody } from './sonnet-saturation.js';
 import { createProxyServer, DAEMON_PORT } from './proxy.js';
@@ -393,7 +394,12 @@ export async function startDaemon(): Promise<void> {
     console.error('[Sentinel] Overage state rehydration failed:', err);
   }
 
-  const otelReceiver = new OtelReceiver(db, activeAccountId, ipcServer);
+  // Shared correlation table: proxy writes Anthropic's `request-id` → per-
+  // request Sentinel key on each upstream response; OtelReceiver reads it
+  // when an `api_request`/`api_error` event arrives carrying the same id.
+  // Required for correct OTEL attribution in round-robin mode.
+  const requestAccountMap = new RequestAccountMap();
+  const otelReceiver = new OtelReceiver(db, activeAccountId, ipcServer, requestAccountMap);
   const rateLimitStore = new RateLimitStore();
 
   // In-memory mirror of settings — read at startup, updated on every
@@ -2105,6 +2111,7 @@ export async function startDaemon(): Promise<void> {
       securityScanner,
       permissionsEnforcer,
       requestLogStore,
+      requestAccountMap,
     },
     (req, res) => {
       const url = req.url ?? '/';

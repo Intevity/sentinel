@@ -5,6 +5,7 @@ import { unlinkSync, existsSync } from 'fs';
 import Database from 'better-sqlite3';
 import { getDb, closeDb, getUsageEvents } from './db.js';
 import { OtelReceiver, OTEL_LOG_API_REQUEST, OTEL_METRIC_COST } from './otel-receiver.js';
+import { RequestAccountMap } from './request-account-map.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 // Convenience wrapper for the test's mock response object.
@@ -918,6 +919,84 @@ describe('OtelReceiver', () => {
         expect.any(Error),
       );
       errorSpy.mockRestore();
+    });
+
+    it('api_request with known request_id is attributed to the mapped account, overriding activeAccountId', async () => {
+      // Round-robin mode: Claude Code is signed in as one user but the proxy
+      // routed this specific request to a different account's token. The
+      // request-id map records the routing decision, and the OTEL lookup
+      // must honor it.
+      const requestAccountMap = new RequestAccountMap();
+      requestAccountMap.set('req_routed', 'acc-routed');
+      const rrReceiver = new OtelReceiver(
+        db,
+        { value: 'acc-active' },
+        undefined,
+        requestAccountMap,
+      );
+      const { res } = mockRes();
+      await rrReceiver.handleLogs(
+        makeRequest(
+          logPayload('api_request', {
+            'user.account_uuid': 'acc-signedin',
+            model: 'claude-opus-4',
+            input_tokens: 10,
+            output_tokens: 5,
+            request_id: 'req_routed',
+          }),
+          '/v1/logs',
+        ),
+        res,
+      );
+      expect(getUsageEvents(db, { accountId: 'acc-routed' })).toHaveLength(1);
+      expect(getUsageEvents(db, { accountId: 'acc-active' })).toHaveLength(0);
+    });
+
+    it('api_request without a request_id falls back to activeAccountId', async () => {
+      const requestAccountMap = new RequestAccountMap();
+      const rrReceiver = new OtelReceiver(
+        db,
+        { value: 'acc-active' },
+        undefined,
+        requestAccountMap,
+      );
+      const { res } = mockRes();
+      await rrReceiver.handleLogs(
+        makeRequest(
+          logPayload('api_request', {
+            'user.account_uuid': 'acc-signedin',
+            model: 'claude-opus-4',
+            input_tokens: 10,
+          }),
+          '/v1/logs',
+        ),
+        res,
+      );
+      expect(getUsageEvents(db, { accountId: 'acc-active' })).toHaveLength(1);
+    });
+
+    it('api_request with an unknown request_id falls back to activeAccountId', async () => {
+      const requestAccountMap = new RequestAccountMap();
+      const rrReceiver = new OtelReceiver(
+        db,
+        { value: 'acc-active' },
+        undefined,
+        requestAccountMap,
+      );
+      const { res } = mockRes();
+      await rrReceiver.handleLogs(
+        makeRequest(
+          logPayload('api_request', {
+            'user.account_uuid': 'acc-signedin',
+            model: 'claude-opus-4',
+            input_tokens: 10,
+            request_id: 'req_never_seen',
+          }),
+          '/v1/logs',
+        ),
+        res,
+      );
+      expect(getUsageEvents(db, { accountId: 'acc-active' })).toHaveLength(1);
     });
 
     it('handleMetrics returns 400 on malformed JSON', async () => {

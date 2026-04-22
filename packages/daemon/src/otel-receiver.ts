@@ -3,6 +3,7 @@ import type { Database } from 'better-sqlite3';
 import { insertUsageEvent, insertToolEvent, insertApiError, insertActivityEvent } from './db.js';
 import type { ActiveAccountId } from './proxy.js';
 import type { IpcServer } from './ipc.js';
+import type { RequestAccountMap } from './request-account-map.js';
 
 /**
  * Known Claude Code OTEL metric names. Full list:
@@ -186,6 +187,13 @@ export class OtelReceiver {
      *  batch so the Metrics tab refreshes live. When omitted (e.g. in tests),
      *  writes still happen but no broadcast fires. */
     private readonly ipcServer?: IpcServer,
+    /** Per-request correlation table populated by the proxy. When an OTEL
+     *  `api_request` / `api_error` event arrives carrying the Anthropic
+     *  `request_id` attribute, the map returns the account whose token was
+     *  actually used for that request — which in round-robin mode differs
+     *  from `activeAccountId`. When no hit (or no map), we fall through to
+     *  the active-account path so single-account setups still work. */
+    private readonly requestAccountMap?: RequestAccountMap,
   ) {}
 
   /** Register a callback invoked after every batch that persisted at least
@@ -532,11 +540,27 @@ export class OtelReceiver {
     insertApiError(this.db, ev);
   }
 
-  /** Prefer the active sentinel key so per-org attribution works when one
-   *  Anthropic user belongs to multiple orgs. Falls back to the account UUID
-   *  from OTEL attributes when no key is active. */
+  /** Resolution order:
+   *   1. `request_id` attribute → proxy-recorded account for that upstream
+   *      response. This is the only path that attributes correctly in
+   *      round-robin mode — Claude Code emits a single `user.account_uuid`
+   *      per session, so without the per-request handshake every event
+   *      would otherwise land on `activeAccountId`.
+   *   2. Active sentinel key — preserves correct per-org attribution for
+   *      non-round-robin setups and for events that don't carry a
+   *      request_id (session.count, lines_of_code, active_time, etc.).
+   *      Session-level metrics describe the whole session and can't be
+   *      decomposed per-token, so they stay attributed to the signed-in
+   *      account in round-robin mode by design.
+   *   3. `user.account_uuid` from OTEL — last-resort fallback when no
+   *      active key has been set yet (daemon startup edge case). */
   private resolveAccountId(attrs: OtelAttributes): string {
-    /* v8 ignore next 2 */
+    const reqId = attrs['request_id'];
+    if (typeof reqId === 'string' && reqId) {
+      const mapped = this.requestAccountMap?.get(reqId);
+      if (mapped) return mapped;
+    }
+    /* v8 ignore next 1 */
     const otelAccountId = (attrs['user.account_uuid'] as string | undefined) ?? 'unknown';
     return this.activeAccountId?.value || otelAccountId;
   }

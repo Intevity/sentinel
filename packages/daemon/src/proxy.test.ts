@@ -23,6 +23,7 @@ import {
 } from './proxy.js';
 import type { IpcServer } from './ipc.js';
 import { RateLimitStore } from './rate-limit-store.js';
+import { RequestAccountMap } from './request-account-map.js';
 import type Database from 'better-sqlite3';
 import * as https from 'https';
 
@@ -702,6 +703,149 @@ describe('createProxyServer', () => {
     handler?.(req, res);
     await new Promise((r) => setTimeout(r, 100));
     expect(code).toBe(502);
+    server.close();
+  });
+
+  it('records request-id → rotated-account mapping from upstream response headers', async () => {
+    // Round-robin attribution for OTEL events. The proxy must store each
+    // response's `request-id` → per-request account so OtelReceiver can
+    // re-bucket api_request events to the token that actually served them.
+    const requestAccountMap = new RequestAccountMap();
+    const mockProxyRes = {
+      statusCode: 200,
+      headers: {
+        'content-type': 'application/json',
+        'request-id': 'req_01AbCDeF',
+      },
+      on: vi.fn((event: string, cb: () => void) => {
+        if (event === 'end') setTimeout(cb, 10);
+        return mockProxyRes;
+      }),
+      pipe: vi.fn(),
+    };
+
+    httpsRequestMock.mockImplementation((_opts, cb) => {
+      if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 10);
+      return {
+        on: vi.fn().mockReturnThis(),
+        write: vi.fn(),
+        end: vi.fn(),
+      } as unknown as ClientRequest;
+    });
+
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'primary-token' },
+        activeAccountId: { value: 'primary-id' },
+        tokenProvider: () => ({ token: 'rotated-token', accountId: 'rotated-id' }),
+        requestAccountMap,
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+
+    handler?.(makeReq('/v1/messages', 'POST'), makeRes().res);
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(requestAccountMap.get('req_01AbCDeF')).toBe('rotated-id');
+    server.close();
+  });
+
+  it('skips request-id map write when the header is absent', async () => {
+    const requestAccountMap = new RequestAccountMap();
+    const mockProxyRes = {
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      on: vi.fn((event: string, cb: () => void) => {
+        if (event === 'end') setTimeout(cb, 10);
+        return mockProxyRes;
+      }),
+      pipe: vi.fn(),
+    };
+
+    httpsRequestMock.mockImplementation((_opts, cb) => {
+      if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 10);
+      return {
+        on: vi.fn().mockReturnThis(),
+        write: vi.fn(),
+        end: vi.fn(),
+      } as unknown as ClientRequest;
+    });
+
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'primary-token' },
+        activeAccountId: { value: 'primary-id' },
+        requestAccountMap,
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+
+    handler?.(makeReq('/v1/messages', 'POST'), makeRes().res);
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(requestAccountMap.size()).toBe(0);
+    server.close();
+  });
+
+  it('handles request-id arriving as an array header (takes first value)', async () => {
+    const requestAccountMap = new RequestAccountMap();
+    const mockProxyRes = {
+      statusCode: 200,
+      headers: {
+        'content-type': 'application/json',
+        'request-id': ['req_first', 'req_ignored'],
+      },
+      on: vi.fn((event: string, cb: () => void) => {
+        if (event === 'end') setTimeout(cb, 10);
+        return mockProxyRes;
+      }),
+      pipe: vi.fn(),
+    };
+
+    httpsRequestMock.mockImplementation((_opts, cb) => {
+      if (cb) setTimeout(() => cb(mockProxyRes as unknown as IncomingMessage), 10);
+      return {
+        on: vi.fn().mockReturnThis(),
+        write: vi.fn(),
+        end: vi.fn(),
+      } as unknown as ClientRequest;
+    });
+
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'primary-token' },
+        activeAccountId: { value: 'primary-id' },
+        requestAccountMap,
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+
+    handler?.(makeReq('/v1/messages', 'POST'), makeRes().res);
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(requestAccountMap.get('req_first')).toBe('primary-id');
+    expect(requestAccountMap.get('req_ignored')).toBeNull();
     server.close();
   });
 
