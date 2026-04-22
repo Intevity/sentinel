@@ -1799,6 +1799,49 @@ describe('permission_rules CRUD', () => {
     expect(saved.id).toBe('00000000-0000-0000-0000-000000000000');
     expect(listPermissionRules(db)).toHaveLength(1);
   });
+
+  it('upserts by raw when no id is supplied — same raw updates in place', () => {
+    // Historical bug: an upsert without id for a rule whose raw already
+    // existed would insert a second row because the fallback lookup
+    // keyed on id. Canonical identity is `raw`; same raw = same rule.
+    const first = upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: 'rm -rf *',
+      raw: 'Bash(rm -rf *)',
+    });
+    const second = upsertPermissionRule(db, {
+      decision: 'ask',
+      tool: 'Bash',
+      pattern: 'rm -rf *',
+      raw: 'Bash(rm -rf *)',
+    });
+    expect(second.id).toBe(first.id);
+    expect(second.decision).toBe('ask');
+    expect(listPermissionRules(db)).toHaveLength(1);
+  });
+
+  it('upsert-by-raw preserves sticky source when caller omits it', () => {
+    // Once a rule is claude-code (imported from settings.json), a
+    // bare upsert from some other code path shouldn't silently flip
+    // its ownership back to local — that would break orphan cleanup.
+    const imported = upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: 'rm -rf *',
+      raw: 'Bash(rm -rf *)',
+      source: 'claude-code',
+    });
+    const touched = upsertPermissionRule(db, {
+      decision: 'ask',
+      tool: 'Bash',
+      pattern: 'rm -rf *',
+      raw: 'Bash(rm -rf *)',
+      // no source
+    });
+    expect(touched.id).toBe(imported.id);
+    expect(touched.source).toBe('claude-code');
+  });
 });
 
 describe('cache_ttl_events', () => {

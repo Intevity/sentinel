@@ -362,7 +362,7 @@ interface OAuthProfile {
   };
 }
 
-interface ProfileResult {
+export interface ProfileResult {
   email: string;
   displayName: string;
   accountUuid: string;
@@ -375,7 +375,7 @@ interface ProfileResult {
   hasExtraUsageEnabled: boolean;
 }
 
-async function fetchProfile(accessToken: string): Promise<ProfileResult> {
+export async function fetchProfile(accessToken: string): Promise<ProfileResult> {
   const empty: ProfileResult = {
     email: '',
     displayName: '',

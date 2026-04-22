@@ -86,6 +86,7 @@ import {
 } from './accounts.js';
 import { startOAuthLogin, OAUTH_ABORTED } from './oauth.js';
 import type { OAuthResult } from './oauth.js';
+import { verifyStartupActiveAccount, healDriftedRows } from './credential-verifier.js';
 import {
   startTokenRefresher,
   refreshIfNeeded,
@@ -217,15 +218,33 @@ export async function startDaemon(): Promise<void> {
 
   // Seed the active account into the DB from ~/.claude.json so the UI shows
   // something immediately without waiting for an API call to come through.
-  const activeAccount = getActiveAccount();
+  let activeAccount = getActiveAccount();
   // Capture + store the current keychain token under the Sentinel key so
   // Sentinel accumulates per-account credentials across switches.
   // Keying by sentinelKey (orgUuid || accountUuid) means two accounts sharing
   // the same Anthropic user UUID but in different orgs each get their own entry.
-  const startupKey = activeAccount
+  let startupKey = activeAccount
     ? sentinelKey(activeAccount.organizationUuid ?? '', activeAccount.accountUuid)
     : null;
-  const startupCreds = startupKey ? captureCurrentCredentials(startupKey) : null;
+  let startupCreds = startupKey ? captureCurrentCredentials(startupKey) : null;
+
+  // Verify the captured credential actually matches the org ~/.claude.json
+  // claims. Claude Code refreshes its keychain token silently (potentially
+  // re-binding the token to a different "active" org) without always updating
+  // ~/.claude.json in lockstep. When the two drift, blindly seeding a row
+  // keyed by the JSON's orgUuid creates a phantom row whose stored token is
+  // scoped to a DIFFERENT org — the root cause of Sentinel showing duplicate
+  // "Max" accounts with identical usage numbers. See credential-verifier.ts.
+  const drift = await verifyStartupActiveAccount(activeAccount, startupCreds, {
+    readCredentials: readSentinelCredentials,
+  });
+  if (drift?.drifted) {
+    activeAccount = drift.activeAccount;
+    startupKey = drift.startupKey;
+    // Re-capture under the corrected key so the credential is accessible
+    // under the new row id.
+    startupCreds = captureCurrentCredentials(startupKey);
+  }
 
   if (activeAccount && startupKey) {
     // Preserve planType from the existing DB entry rather than re-deriving it from
@@ -302,6 +321,16 @@ export async function startDaemon(): Promise<void> {
     }
     if (healed > 0) {
       console.log(`[PlanType] Healed ${healed} account(s) with stale planType`);
+    }
+  }
+
+  // Self-heal rows whose stored credentials no longer match their row's
+  // orgUuid. Regression fix for the duplicate-Max scenario — see
+  // credential-verifier.ts#healDriftedRows for the full rationale.
+  {
+    const drifted = await healDriftedRows(db, { readCredentials: readSentinelCredentials });
+    if (drifted > 0) {
+      console.log(`[Startup] Soft-removed ${drifted} row(s) with org-drifted credentials`);
     }
   }
 

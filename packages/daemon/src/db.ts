@@ -508,6 +508,46 @@ export function getDb(dbPath: string = DB_PATH): Database.Database {
     }
   }
 
+  // One-time dedup of permission_rules rows sharing the same `raw`. An
+  // earlier version of claude-sync.ts (pullNow) keyed the existing-row
+  // lookup on `decision|raw` but upsertPermissionRule keyed on `id`,
+  // so re-classifying a rule across decision buckets produced a new
+  // row instead of updating the old one. The unique index created
+  // afterward enforces the invariant going forward; rowToPermissionRule
+  // + the TS layer keep `raw` canonical so this key is stable.
+  const permDedupApplied = _db
+    .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+    .get('dedup_permission_rules_v1') as { ok: number } | undefined;
+  if (!permDedupApplied) {
+    const pruned = _db
+      .prepare(
+        `DELETE FROM permission_rules
+         WHERE id NOT IN (
+           SELECT id FROM (
+             SELECT id, raw, created_at,
+                    ROW_NUMBER() OVER (PARTITION BY raw ORDER BY created_at ASC, id ASC) AS rn
+             FROM permission_rules
+           ) WHERE rn = 1
+         )`,
+      )
+      .run();
+    _db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_perm_rules_raw_unique ON permission_rules(raw)',
+    );
+    _db
+      .prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)')
+      .run('dedup_permission_rules_v1', Date.now());
+    if (pruned.changes > 0) {
+      console.log(
+        `[DB] Collapsed ${pruned.changes} duplicate permission_rules rows (one-time cleanup)`,
+      );
+    }
+  } else {
+    _db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_perm_rules_raw_unique ON permission_rules(raw)',
+    );
+  }
+
   return _db;
 }
 
@@ -2608,48 +2648,61 @@ export function listPermissionRules(db: Database.Database): PermissionRule[] {
   return rows.map(rowToPermissionRule);
 }
 
-/** Insert a new rule or update the existing row with matching id. Auto-assigns
- *  a UUID and a createdAt when creating. Priority defaults to
- *  `max(existing priorities) + 10` so new rules append without re-ordering.
- *  Returns the full persisted row. */
+/** Insert a new rule or update the existing row. Canonical key is `raw` —
+ *  a rule's raw text uniquely identifies it, so changing its decision bucket
+ *  (allow → ask, deny → ask, etc.) updates the existing row instead of
+ *  creating a second one. `id` is honoured as a secondary lookup when
+ *  provided (the UI edit path passes it). Auto-assigns a UUID and createdAt
+ *  when creating. Priority defaults to `max(existing priorities) + 10` so
+ *  new rules append without re-ordering. Returns the full persisted row. */
 export function upsertPermissionRule(
   db: Database.Database,
   input: PermissionRuleInput,
 ): PermissionRule {
   const now = Date.now();
+  // Prefer lookup by id when the caller supplied one; fall back to `raw`
+  // so an upsert with no id still hits the existing row instead of
+  // inserting a duplicate (which would also violate the UNIQUE index
+  // on raw added in dedup_permission_rules_v1).
+  let existing: DbPermissionRuleRow | undefined;
   if (input.id) {
-    const existing = db.prepare('SELECT * FROM permission_rules WHERE id = ?').get(input.id) as
+    existing = db.prepare('SELECT * FROM permission_rules WHERE id = ?').get(input.id) as
       | DbPermissionRuleRow
       | undefined;
-    if (existing) {
-      const enabled = (input.enabled ?? existing.enabled === 1) ? 1 : 0;
-      const priority = input.priority ?? existing.priority;
-      // `source` is sticky once set — updates from the UI never change
-      // it (a user editing the raw text of an imported rule should
-      // still see it as claude-code so the sync engine keeps managing
-      // it). The sync engine itself overrides via explicit `source`
-      // on the input.
-      const source = input.source ?? existing.source ?? 'local';
-      db.prepare(
-        `UPDATE permission_rules
-         SET decision = ?, tool = ?, pattern = ?, raw = ?, note = ?, enabled = ?, priority = ?, source = ?
-         WHERE id = ?`,
-      ).run(
-        input.decision,
-        input.tool,
-        input.pattern,
-        input.raw,
-        input.note ?? null,
-        enabled,
-        priority,
-        source,
-        input.id,
-      );
-      const row = db
-        .prepare('SELECT * FROM permission_rules WHERE id = ?')
-        .get(input.id) as DbPermissionRuleRow;
-      return rowToPermissionRule(row);
-    }
+  }
+  if (!existing) {
+    existing = db.prepare('SELECT * FROM permission_rules WHERE raw = ?').get(input.raw) as
+      | DbPermissionRuleRow
+      | undefined;
+  }
+  if (existing) {
+    const enabled = (input.enabled ?? existing.enabled === 1) ? 1 : 0;
+    const priority = input.priority ?? existing.priority;
+    // `source` is sticky once set — updates from the UI never change
+    // it (a user editing the raw text of an imported rule should
+    // still see it as claude-code so the sync engine keeps managing
+    // it). The sync engine itself overrides via explicit `source`
+    // on the input.
+    const source = input.source ?? existing.source ?? 'local';
+    db.prepare(
+      `UPDATE permission_rules
+       SET decision = ?, tool = ?, pattern = ?, raw = ?, note = ?, enabled = ?, priority = ?, source = ?
+       WHERE id = ?`,
+    ).run(
+      input.decision,
+      input.tool,
+      input.pattern,
+      input.raw,
+      input.note ?? null,
+      enabled,
+      priority,
+      source,
+      existing.id,
+    );
+    const row = db
+      .prepare('SELECT * FROM permission_rules WHERE id = ?')
+      .get(existing.id) as DbPermissionRuleRow;
+    return rowToPermissionRule(row);
   }
   // Create path.
   const id = input.id ?? randomPermissionRuleId();

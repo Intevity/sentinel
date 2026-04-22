@@ -200,6 +200,9 @@ packages/daemon/src/
                       (strategy: balance | earliest-reset)
   alerts.ts         — user-configured usage-alert evaluator
                       (per-account + pool-wide)
+  security/permissions/
+    claude-sync.ts  — bi-directional sync with ~/.claude/settings.json
+                      (see "Claude Code settings sync" below)
 
 packages/app/src-tauri/src/
   ipc.rs            — Rust IPC bridge (connects to daemon socket)
@@ -222,6 +225,20 @@ packages/app/src-tauri/src/
 
 - `settings_changed` — fires on every `update_settings` write
 - `alert_triggered` — a user alert crossed its threshold (per-account or pool); UI fires a native notification
+
+## Claude Code settings sync (permission rules)
+
+Sentinel's `permission_rules` table is the **source of truth**; `~/.claude/settings.json` is a mirror. The sync engine (`packages/daemon/src/security/permissions/claude-sync.ts`) keeps them in lockstep when `claudeCodeSyncEnabled` is on.
+
+- **Canonical key is `raw`.** A rule's raw text (e.g. `"Bash(rm -rf *)"`) uniquely identifies it. Moving a rule across decision buckets (deny → ask, allow → deny, etc.) is an update of the same row, never an insert. DB-level UNIQUE index on `raw` enforces this; `upsertPermissionRule` upserts on `raw` when no `id` is passed.
+- **`ask` rules are Sentinel-only.** Push writes only `allow` and `deny` to `settings.json`; `ask` never appears there. Rationale: approval prompts must have a single surface so remote-approval integrations (Slack, etc.) have one place to hook. Claude Code's own `ask` prompt would otherwise double up with Sentinel's pending-block UI on every matching tool_use. Corollary: ask rules are always `source='local'` regardless of pull mode, and orphan cleanup skips them (file-absence isn't a signal — they're never there).
+- **Push** fires after every local mutation (UI edit or IPC `upsert_permission_rule` / `delete_permission_rule`). Writes the DB's allow/deny state to `settings.json`, preserving every non-permissions top-level key in the file.
+- **Pull** fires on file-watcher events (debounced 500 ms). Collapses duplicate file entries by `raw`. If the same raw appears in multiple buckets, deny > ask > allow (most restrictive wins). Ask rules a user hand-adds to `settings.json` are still imported into the DB; the next push then strips them from the file — the rule "migrates" to Sentinel-only.
+- **Merge mode** (default): updates existing rows' decisions from the file, preserves `source` on allow/deny rows — local rules keep their UI-ownership. Orphan cleanup only deletes `source='claude-code'` allow/deny rows whose raw is no longer in the file.
+- **Import mode**: same as merge, but flips `source` to `claude-code` on every matched allow/deny row — "file wins". Ask rules stay `local`. Used by the one-time upgrade migration and the "Import from Claude Code settings.json" UI button.
+- **Upgrade migration** (`claude_sync_file_wins_v1`): on first sync engine start after upgrade, runs a pull-in-import-mode then a push. Fixes beta users whose file had duplicates or cross-bucket disagreement with the DB, and strips any ask rules out of the file. Marker persisted in the `_migrations` table so it runs once per DB. Does not run when sync is disabled — if the user opted out, Sentinel leaves their file alone.
+
+Hand-editing `settings.json` while the daemon is running still works: the watcher picks up the change, pulls with merge semantics, then pushes back. But the UI is the better path — it's atomic and can't produce ambiguous states.
 
 ## Manual test helpers (send IPC from shell)
 

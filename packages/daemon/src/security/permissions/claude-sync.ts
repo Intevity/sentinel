@@ -30,7 +30,7 @@ import type { IpcServer } from '../../ipc.js';
 import { listPermissionRules, upsertPermissionRule, deletePermissionRule } from '../../db.js';
 import { parseRule } from './parser.js';
 
-const SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
+const DEFAULT_SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
 /** 500 ms after the last watcher event we treat the file as settled
  *  and actually pull. Coalesces bursts — editors emit multiple events
  *  per save (write, attribute-change, sometimes rename-in-place). */
@@ -67,9 +67,14 @@ export interface CreateClaudeSyncDeps {
   /** Call after any pull that mutates the DB so the enforcer's
    *  compiled-rules cache drops its stale view. */
   invalidateRuleCache: () => void;
+  /** Override the settings.json path. Defaults to
+   *  `~/.claude/settings.json`. Used by tests to point the engine
+   *  at a temporary file. */
+  settingsPath?: string;
 }
 
 export function createClaudeSyncEngine(deps: CreateClaudeSyncDeps): ClaudeSyncEngine {
+  const SETTINGS_PATH = deps.settingsPath ?? DEFAULT_SETTINGS_PATH;
   let watcher: FSWatcher | null = null;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let active = false;
@@ -182,59 +187,71 @@ export function createClaudeSyncEngine(deps: CreateClaudeSyncDeps): ClaudeSyncEn
       const perms = extractPermissions(raw);
       lastSeenHash = canonHash(perms);
 
-      const incoming: Array<{
-        raw: string;
-        decision: PermissionDecision;
-        tool: string;
-        pattern: string | null;
-      }> = [];
-      for (const e of perms.allow) {
-        const r = ruleFromEntry(e, 'allow');
-        if (r) incoming.push(r);
-      }
-      for (const e of perms.deny) {
-        const r = ruleFromEntry(e, 'deny');
-        if (r) incoming.push(r);
-      }
-      for (const e of perms.ask) {
-        const r = ruleFromEntry(e, 'ask');
-        if (r) incoming.push(r);
-      }
-
-      // Build a set of incoming canonical keys so we can spot orphans.
-      const incomingKeys = new Set(incoming.map((r) => `${r.decision}|${r.raw}`));
+      // Build an incoming map keyed on `raw` (the canonical rule
+      // identity — a rule's raw text uniquely identifies it). File
+      // duplicates (historical triplication bug) collapse to one entry.
+      // If the same raw appears across decision buckets (shouldn't
+      // normally happen but defensive), deny wins over ask wins over
+      // allow — the most restrictive intent is preserved.
+      const incomingByRaw = new Map<
+        string,
+        { raw: string; decision: PermissionDecision; tool: string; pattern: string | null }
+      >();
+      const ingest = (entries: string[], decision: PermissionDecision): void => {
+        for (const e of entries) {
+          const r = ruleFromEntry(e, decision);
+          if (r && !incomingByRaw.has(r.raw)) incomingByRaw.set(r.raw, r);
+        }
+      };
+      ingest(perms.deny, 'deny');
+      ingest(perms.ask, 'ask');
+      ingest(perms.allow, 'allow');
 
       const existing = listPermissionRules(deps.db);
-      const existingByKey = new Map<string, PermissionRule>();
-      for (const r of existing) existingByKey.set(`${r.decision}|${r.raw}`, r);
+      const existingByRaw = new Map<string, PermissionRule>();
+      for (const r of existing) existingByRaw.set(r.raw, r);
 
-      // Upsert each incoming rule. MERGE and IMPORT differ only in what
-      // happens to rules that exist with `source='local'`: in IMPORT we
-      // overwrite them to `source='claude-code'` (treating the file as
-      // truth); in MERGE we leave them alone (keep them as user-owned).
-      for (const inc of incoming) {
-        const key = `${inc.decision}|${inc.raw}`;
-        const current = existingByKey.get(key);
-        if (current && current.source === 'local' && mode === 'merge') {
-          continue; // user-authored identical rule — leave ownership alone
-        }
+      // Upsert each incoming rule keyed on raw. MERGE and IMPORT differ
+      // only in source: IMPORT flips local rules to claude-code (file
+      // becomes authoritative for future orphan cleanup); MERGE keeps
+      // local rules owned by the UI so a subsequent file deletion
+      // doesn't silently remove them. In both modes the file's
+      // decision wins — that's the whole point of pulling from the
+      // file, and the fix for the historical bug where re-classifying
+      // a rule across buckets produced a duplicate row.
+      //
+      // ask rules are always Sentinel-managed — we never push them to
+      // the file, so the file can't own them. Force source='local' on
+      // ask regardless of pull mode to keep ownership consistent with
+      // where they live.
+      for (const inc of incomingByRaw.values()) {
+        const current = existingByRaw.get(inc.raw);
+        const source =
+          inc.decision === 'ask'
+            ? 'local'
+            : mode === 'import'
+              ? 'claude-code'
+              : (current?.source ?? 'claude-code');
         const input: Parameters<typeof upsertPermissionRule>[1] = {
           decision: inc.decision,
           tool: inc.tool,
           pattern: inc.pattern,
           raw: inc.raw,
-          source: 'claude-code',
+          source,
         };
         if (current) input.id = current.id;
         upsertPermissionRule(deps.db, input);
       }
 
       // Delete orphans: rules marked claude-code that vanished from
-      // the file. Local rules are untouched regardless of file state.
+      // the file. Local rules are untouched regardless of file state
+      // — the UI is their source of truth and only the UI can remove
+      // them. ask rules are likewise immune: they're never in the
+      // file, so file-absence isn't a signal that they were deleted.
       for (const r of existing) {
         if (r.source !== 'claude-code') continue;
-        const key = `${r.decision}|${r.raw}`;
-        if (!incomingKeys.has(key)) {
+        if (r.decision === 'ask') continue;
+        if (!incomingByRaw.has(r.raw)) {
           deletePermissionRule(deps.db, r.id);
         }
       }
@@ -261,10 +278,15 @@ export function createClaudeSyncEngine(deps: CreateClaudeSyncDeps): ClaudeSyncEn
   const pushNow = async (): Promise<void> => {
     try {
       const rules = listPermissionRules(deps.db).filter((r) => r.enabled);
+      // ask rules are Sentinel-only and never sync to the file. The
+      // Sentinel UI is the single surface for approval prompts so
+      // that remote-approval integrations (Slack, etc.) have one
+      // place to plug into. Claude Code still handles allow/deny
+      // since those need no user interaction.
       const perms: PermissionsBlock = {
         allow: rules.filter((r) => r.decision === 'allow').map((r) => r.raw),
         deny: rules.filter((r) => r.decision === 'deny').map((r) => r.raw),
-        ask: rules.filter((r) => r.decision === 'ask').map((r) => r.raw),
+        ask: [],
       };
       const nextHash = canonHash(perms);
       if (nextHash === lastSeenHash) {
@@ -304,6 +326,38 @@ export function createClaudeSyncEngine(deps: CreateClaudeSyncDeps): ClaudeSyncEn
     }, DEBOUNCE_MS);
   };
 
+  /** One-time upgrade migration for beta users whose settings.json was
+   *  left in an inconsistent state by the legacy sync (duplicated
+   *  entries, same-raw-different-decision bugs). Treats the file as
+   *  the source of truth for this one pull — rules imported flip to
+   *  `source='claude-code'`, so future orphan cleanup is driven by the
+   *  file. Idempotent: the marker in `_migrations` keeps it from
+   *  running twice against the same DB. Returns true when it actually
+   *  ran (for logging / status). */
+  const runUpgradeMigrationIfNeeded = async (): Promise<boolean> => {
+    const MARKER = 'claude_sync_file_wins_v1';
+    const applied = deps.db
+      .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+      .get(MARKER) as { ok: number } | undefined;
+    if (applied) return false;
+    try {
+      await pullNow('import');
+      await pushNow();
+      deps.db
+        .prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)')
+        .run(MARKER, Date.now());
+      console.log('[ClaudeSync] upgrade migration applied: file-wins-once reconciliation');
+      return true;
+    } catch (err) {
+      // Don't mark the migration applied if it failed — we'll retry
+      // next startup. Surface the error via the normal status channel.
+      lastError = err instanceof Error ? err.message : String(err);
+      console.error('[ClaudeSync] upgrade migration failed:', err);
+      broadcastStatus();
+      return false;
+    }
+  };
+
   const start = async (opts?: { initialMode?: 'merge' | 'import' | 'export' }): Promise<void> => {
     if (active) return;
     try {
@@ -323,14 +377,21 @@ export function createClaudeSyncEngine(deps: CreateClaudeSyncDeps): ClaudeSyncEn
       });
       active = true;
       broadcastStatus();
-      // Initial reconciliation — honours the user's first-enable
-      // choice (merge / import / export).
-      await pullNow(opts?.initialMode ?? 'merge');
-      // If that pass didn't already write out (export mode triggers a
-      // push internally), make sure the file reflects our state so
-      // subsequent local edits have a stable baseline to diff from.
-      if ((opts?.initialMode ?? 'merge') !== 'export') {
-        await pushNow();
+      // Run the one-time upgrade migration before the normal initial
+      // pull. It's a no-op after the first run. Only runs when sync
+      // is enabled because the start() caller gates on that — if the
+      // user has sync off, Sentinel shouldn't touch their file.
+      const migrated = await runUpgradeMigrationIfNeeded();
+      if (!migrated) {
+        // Initial reconciliation — honours the user's first-enable
+        // choice (merge / import / export).
+        await pullNow(opts?.initialMode ?? 'merge');
+        // If that pass didn't already write out (export mode triggers a
+        // push internally), make sure the file reflects our state so
+        // subsequent local edits have a stable baseline to diff from.
+        if ((opts?.initialMode ?? 'merge') !== 'export') {
+          await pushNow();
+        }
       }
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);

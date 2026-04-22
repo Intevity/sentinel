@@ -186,4 +186,78 @@ describe('getDb migrations on a legacy database', () => {
     };
     expect(preserved?.id).toBe('r1');
   });
+
+  it('collapses duplicate permission_rules rows and adds UNIQUE index on raw (dedup_permission_rules_v1)', () => {
+    // Seed a post-legacy shape (source column, no UNIQUE index) with
+    // three rows that share the same raw — matches the shape produced
+    // by the historical pullNow/upsert bug. The earliest row (smallest
+    // created_at) is the one we expect to survive.
+    {
+      const seed = new Database(dbPath);
+      seed.exec(`
+        CREATE TABLE permission_rules (
+          id          TEXT    PRIMARY KEY,
+          decision    TEXT    NOT NULL,
+          tool        TEXT    NOT NULL,
+          pattern     TEXT,
+          raw         TEXT    NOT NULL,
+          note        TEXT,
+          enabled     INTEGER NOT NULL DEFAULT 1,
+          priority    INTEGER NOT NULL,
+          created_at  INTEGER NOT NULL,
+          source      TEXT    NOT NULL DEFAULT 'local'
+        );
+      `);
+      // Three deny rows with identical raw, differing ids + created_at.
+      seed
+        .prepare(
+          'INSERT INTO permission_rules (id, decision, tool, pattern, raw, priority, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run('r-a', 'deny', 'Bash', 'rm -rf *', 'Bash(rm -rf *)', 100, 100, 'local');
+      seed
+        .prepare(
+          'INSERT INTO permission_rules (id, decision, tool, pattern, raw, priority, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run('r-b', 'deny', 'Bash', 'rm -rf *', 'Bash(rm -rf *)', 100, 200, 'claude-code');
+      seed
+        .prepare(
+          'INSERT INTO permission_rules (id, decision, tool, pattern, raw, priority, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run('r-c', 'deny', 'Bash', 'rm -rf *', 'Bash(rm -rf *)', 100, 300, 'claude-code');
+      // A second distinct rule, no duplicates — should be untouched.
+      seed
+        .prepare(
+          'INSERT INTO permission_rules (id, decision, tool, pattern, raw, priority, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run('r-other', 'allow', 'Read', null, 'Read', 100, 50, 'local');
+      seed.close();
+    }
+
+    const db = getDb(dbPath);
+
+    // Only the earliest row per raw survives.
+    const remaining = db
+      .prepare('SELECT id FROM permission_rules ORDER BY raw, id')
+      .all() as Array<{ id: string }>;
+    expect(remaining.map((r) => r.id).sort()).toEqual(['r-a', 'r-other']);
+
+    // Marker is set so a subsequent open doesn't re-run the delete.
+    const marker = db
+      .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+      .get('dedup_permission_rules_v1') as { ok: number } | undefined;
+    expect(marker?.ok).toBe(1);
+
+    // UNIQUE index exists and enforces uniqueness on raw.
+    const indexes = db.pragma('index_list(permission_rules)') as Array<{
+      name: string;
+      unique: number;
+    }>;
+    const uniqueRaw = indexes.find((i) => i.name === 'idx_perm_rules_raw_unique');
+    expect(uniqueRaw?.unique).toBe(1);
+    expect(() => {
+      db.prepare(
+        'INSERT INTO permission_rules (id, decision, tool, pattern, raw, priority, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run('r-dup', 'ask', 'Bash', 'rm -rf *', 'Bash(rm -rf *)', 100, 400, 'local');
+    }).toThrow(/UNIQUE/);
+  });
 });

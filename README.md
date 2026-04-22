@@ -25,7 +25,7 @@ Sentinel scans every prompt and response in flight. API keys, tokens, private ke
 
 - **Real-time detectors** for secrets, PII, prompt injection, and dangerous tool use — runs before the request leaves your machine
 - **Three enforcement modes** — observe (log only), block HIGH, or block MEDIUM+HIGH, with an optional approve/deny hold banner
-- **Per-tool permission rules** with sub-command pattern matching — allow `git status`, deny `git push --force`, strip denied tools from outbound requests
+- **Per-tool permission rules** with sub-command pattern matching — allow `git status`, deny `git push --force`, or require approval (`ask`) before `rm -rf` runs. Allow/deny rules sync into Claude Code's `settings.json` (it enforces them silently); `ask` rules are Sentinel-only and surface an approve/deny pending block in the tray UI — one place for prompts, ready for future remote-approval integrations (Slack, phone notifications)
 - **Auto-mode aware** — optionally defer to Claude Code's own classifier when auto-mode is active so you don't get double-prompted
 - **Redacted event history** — only fingerprints (never the original secret text) are persisted; allowlist known-safe matches to silence repeats
 - **Guided setup wizard** with sensible defaults; tune every category, threshold, and mute from Settings → Security
@@ -143,6 +143,7 @@ Grab the latest installer from the **[Releases page](https://github.com/Intevity
 ## What it does
 
 - **Security scanning** — In-flight detectors for secrets (API keys, tokens, private keys), PII, prompt injection, and risky tool use (Bash / Write / WebFetch). Three enforcement modes (observe, block HIGH, block MEDIUM+HIGH), per-tool permission rules with sub-command matching, and an optional approve/deny hold banner. Event history stores redacted fingerprints only — never the original secret text.
+- **Permission rules** — Sentinel's rule DB is the source of truth. Allow/deny rules push into `~/.claude/settings.json` so Claude Code enforces them silently. `ask` rules stay in Sentinel only — approvals surface as a pending-block banner in the tray UI, with a single hook point for future Slack / remote-approval integrations (so you're not approving the same command twice in two different places).
 - **Multi-account routing** — Enroll unlimited Claude accounts (Pro, Max, Team, Enterprise) and pick how they're used:
   - **Off** — manage accounts manually from the Accounts tab.
   - **Round-Robin** — rotate the OAuth token on every API request, with two sub-strategies:
