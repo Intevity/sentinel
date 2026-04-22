@@ -7,19 +7,33 @@ import { accountColor } from '../lib/accountColor.js';
 import AccountColorDot from './AccountColorDot.js';
 
 /** Sentinel value used in place of an accountId when the user picks the
- *  cross-account pool view (Usage tab in round-robin mode). */
+ *  round-robin pool view (Usage + Metrics tabs). */
 export const POOL_VIEW = '__pool__';
 
-export type PickerValue = string | typeof POOL_VIEW;
+/** Sentinel value for the "All accounts (everything)" cross-account rollup
+ *  on the Metrics tab. Unlike `POOL_VIEW`, this ignores pool exclusions —
+ *  it's a true total across every enrolled account. */
+export const ALL_VIEW = '__all__';
+
+export type PickerValue = string | typeof POOL_VIEW | typeof ALL_VIEW;
+
+/** A synthetic "aggregate across multiple accounts" row the picker can render
+ *  at the top of its list. Callers pass whichever pool/all rows they want
+ *  surfaced; the picker does not infer membership. */
+export interface PoolOption {
+  value: typeof POOL_VIEW | typeof ALL_VIEW;
+  primary: string;
+  secondary: string;
+}
 
 interface AccountViewPickerProps {
   accounts: AccountInfo[];
   activeAccount: OAuthAccount | null;
-  /** When true, renders an "All accounts (pool)" option at the top.
-   *  Used on the Usage tab when round-robin is enabled. */
-  showPoolOption?: boolean;
-  /** Currently selected value. Defaults to activeAccount.id if unset, or
-   *  POOL_VIEW when showPoolOption is true and no explicit value is given. */
+  /** Pool/aggregate rows rendered at the top of the list. Omit or pass an
+   *  empty array to hide them. */
+  poolOptions?: PoolOption[];
+  /** Currently selected value. Defaults to activeAccount.id if unset, or the
+   *  first pool option when one is provided and no explicit value is given. */
   value?: PickerValue;
   onChange: (value: PickerValue) => void;
   /** Current switching mode. Drives how status is rendered per row:
@@ -45,7 +59,7 @@ interface AccountViewPickerProps {
 export default function AccountViewPicker({
   accounts,
   activeAccount,
-  showPoolOption = false,
+  poolOptions = [],
   value,
   onChange,
   switchingMode,
@@ -56,12 +70,12 @@ export default function AccountViewPicker({
 
   // Resolve the visible selection. Fall back in priority order:
   //   1. explicit value prop
-  //   2. POOL_VIEW when the pool option is enabled
+  //   2. first pool option when present (e.g. default to "All accounts (pool)")
   //   3. active account id
   //   4. first account (last resort — should rarely happen)
   const resolved: PickerValue | null =
     value ??
-    (showPoolOption ? POOL_VIEW : undefined) ??
+    poolOptions[0]?.value ??
     findActiveId(accounts, activeAccount) ??
     accounts[0]?.id ??
     null;
@@ -78,7 +92,7 @@ export default function AccountViewPicker({
 
   if (accounts.length === 0 || !resolved) return null;
 
-  const currentLabel = formatValue(resolved, accounts);
+  const currentLabel = formatValue(resolved, accounts, poolOptions);
   const excludedSet = new Set(poolExcludedIds);
 
   return (
@@ -111,17 +125,18 @@ export default function AccountViewPicker({
           role="listbox"
           className="absolute left-0 top-full mt-1 z-30 min-w-[240px] rounded-xl bg-white dark:bg-[#2C2C2E] shadow-card-md border border-black/5 dark:border-white/10 py-1"
         >
-          {showPoolOption && (
+          {poolOptions.map((opt) => (
             <PickerRow
-              selected={resolved === POOL_VIEW}
-              primary="All accounts (pool)"
-              secondary="Round-robin aggregate"
+              key={opt.value}
+              selected={resolved === opt.value}
+              primary={opt.primary}
+              secondary={opt.secondary}
               onClick={() => {
-                onChange(POOL_VIEW);
+                onChange(opt.value);
                 setOpen(false);
               }}
             />
-          )}
+          ))}
           {accounts.map((acct) => (
             <PickerRow
               key={acct.id}
@@ -225,8 +240,13 @@ function secondaryLine(acct: AccountInfo): string | undefined {
 function formatValue(
   value: PickerValue,
   accounts: AccountInfo[],
+  poolOptions: PoolOption[],
 ): { primary: string; secondary?: string | undefined } {
-  if (value === POOL_VIEW) {
+  if (value === POOL_VIEW || value === ALL_VIEW) {
+    const opt = poolOptions.find((o) => o.value === value);
+    if (opt) return { primary: opt.primary, secondary: opt.secondary };
+    // Fallback for the legacy case where a pool sentinel was selected but
+    // the caller hasn't listed it in poolOptions (shouldn't happen in practice).
     return { primary: 'All accounts', secondary: `${accounts.length} accounts` };
   }
   const acct = accounts.find((a) => a.id === value);

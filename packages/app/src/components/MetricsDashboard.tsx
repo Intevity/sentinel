@@ -5,7 +5,7 @@ import type {
   MetricsByDayModel,
   CacheTtlSessionRow,
 } from '@claude-sentinel/shared';
-import { useMetricsSummary } from '../hooks/useMetricsSummary.js';
+import { useMetricsSummary, type MetricsScope } from '../hooks/useMetricsSummary.js';
 import { useSettings } from '../hooks/useSettings.js';
 import InfoTooltip from './InfoTooltip.js';
 
@@ -83,16 +83,18 @@ function StackedTooltip({
 }
 
 interface MetricsDashboardProps {
-  /** Account to display metrics for. When omitted, the daemon returns the
-   *  currently active account's data (legacy behavior). Set by the per-tab
+  /** Describes which accounts this dashboard renders. When omitted or
+   *  { kind: 'active' } the daemon falls back to the active account.
+   *  Pool/all scopes pass a pre-computed member list so the daemon doesn't
+   *  need to know about pool semantics. Set by the per-tab
    *  AccountViewPicker in App.tsx. */
-  viewAccountId?: string | undefined;
+  scope?: MetricsScope | undefined;
 }
 
 export default function MetricsDashboard({
-  viewAccountId,
+  scope,
 }: MetricsDashboardProps = {}): React.ReactElement {
-  const { summary, loading, error, days, setDays } = useMetricsSummary(viewAccountId);
+  const { summary, loading, error, days, setDays } = useMetricsSummary(scope);
 
   return (
     <div className="space-y-3 pt-1">

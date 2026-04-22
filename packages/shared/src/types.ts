@@ -1059,7 +1059,16 @@ export interface PluginInstall {
  */
 export interface MetricsSummary {
   days: number;
+  /** Sentinel key of the single account queried, or one of `__pool__` /
+   *  `__all__` for aggregate views. Use `scope` for structured membership. */
   accountId: string;
+  /** Describes whether this rollup is a single account or an aggregate across
+   *  multiple accounts. Absent or `{ kind: 'account' }` matches the legacy
+   *  single-account response. */
+  scope?:
+    | { kind: 'account'; id: string }
+    | { kind: 'pool'; label: string; memberCount: number }
+    | { kind: 'all'; label: string; memberCount: number };
   /** { "YYYY-MM-DD": { "claude-sonnet-4-6": { costUsd, inputTokens, ... } } } */
   byDayModel: Record<string, Record<string, MetricsByDayModel>>;
   /** Keyed by model name. */

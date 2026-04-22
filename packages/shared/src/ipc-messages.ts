@@ -458,6 +458,14 @@ export interface GetMetricsSummaryMessage {
    *  currently active account so existing callers keep working; the UI's
    *  per-tab picker passes an explicit id to inspect non-active accounts. */
   accountId?: string;
+  /** Aggregate rollup across a set of sentinel keys. When provided, takes
+   *  precedence over `accountId` and the active-account fallback. The daemon
+   *  does not interpret membership (pool vs. all) — the frontend decides. */
+  accountIds?: string[];
+  /** Optional context about what `accountIds` represents, echoed back in the
+   *  response's `scope` so the UI can render an accurate label. */
+  scopeKind?: 'pool' | 'all';
+  scopeLabel?: string;
 }
 
 export interface AcknowledgeNotificationMessage {

@@ -1988,10 +1988,12 @@ export function insertActivityEvent(db: Database.Database, e: InsertActivityEven
  */
 export function getTokensByDayModel(
   db: Database.Database,
-  accountId: string,
+  accountIds: string[],
   days: number,
 ): Record<string, Record<string, MetricsByDayModel>> {
+  if (accountIds.length === 0) return {};
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT
@@ -2003,11 +2005,11 @@ export function getTokensByDayModel(
        COALESCE(SUM(cache_read), 0)          AS cache_read,
        COALESCE(SUM(cache_create), 0)        AS cache_create
      FROM usage_events
-     WHERE account_id = ? AND ts >= ?
+     WHERE account_id IN (${placeholders}) AND ts >= ?
      GROUP BY day, model
      ORDER BY day ASC`,
     )
-    .all(accountId, sinceTs) as Array<{
+    .all(...accountIds, sinceTs) as Array<{
     day: string;
     model: string;
     cost_usd: number;
@@ -2037,10 +2039,12 @@ export function getTokensByDayModel(
  */
 export function getCacheHitRate(
   db: Database.Database,
-  accountId: string,
+  accountIds: string[],
   days: number,
 ): Record<string, CacheHitRate> {
+  if (accountIds.length === 0) return {};
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT
@@ -2048,10 +2052,14 @@ export function getCacheHitRate(
        COALESCE(SUM(input_tokens), 0) AS input_tokens,
        COALESCE(SUM(cache_read), 0)   AS cache_read
      FROM usage_events
-     WHERE account_id = ? AND ts >= ?
+     WHERE account_id IN (${placeholders}) AND ts >= ?
      GROUP BY model`,
     )
-    .all(accountId, sinceTs) as Array<{ model: string; input_tokens: number; cache_read: number }>;
+    .all(...accountIds, sinceTs) as Array<{
+    model: string;
+    input_tokens: number;
+    cache_read: number;
+  }>;
 
   const result: Record<string, CacheHitRate> = {};
   for (const r of rows) {
@@ -2131,10 +2139,12 @@ export function insertCacheTtlEvent(db: Database.Database, event: InsertCacheTtl
  */
 export function getCacheTtlByDayModel(
   db: Database.Database,
-  accountId: string,
+  accountIds: string[],
   days: number,
 ): Record<string, Record<string, CacheTtlDayRow>> {
+  if (accountIds.length === 0) return {};
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT
@@ -2150,11 +2160,11 @@ export function getCacheTtlByDayModel(
        COALESCE(SUM(cost_1h_write), 0)    AS cost_1h_write,
        COALESCE(SUM(cost_read), 0)        AS cost_read
      FROM cache_ttl_events
-     WHERE account_id = ? AND ts >= ?
+     WHERE account_id IN (${placeholders}) AND ts >= ?
      GROUP BY day, model
      ORDER BY day ASC`,
     )
-    .all(accountId, sinceTs) as Array<{
+    .all(...accountIds, sinceTs) as Array<{
     day: string;
     model: string;
     req_markers_5m: number;
@@ -2191,11 +2201,13 @@ export function getCacheTtlByDayModel(
  */
 export function getCacheTtlBySession(
   db: Database.Database,
-  accountId: string,
+  accountIds: string[],
   days: number,
   limit = 50,
 ): CacheTtlSessionRow[] {
+  if (accountIds.length === 0) return [];
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT
@@ -2218,12 +2230,12 @@ export function getCacheTtlBySession(
        COALESCE(SUM(cost_1h_write), 0)    AS cost_1h_write,
        COALESCE(SUM(cost_read), 0)        AS cost_read
      FROM cache_ttl_events
-     WHERE account_id = ? AND ts >= ? AND session_id IS NOT NULL AND session_id <> ''
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND session_id IS NOT NULL AND session_id <> ''
      GROUP BY session_id
      ORDER BY last_ts DESC
      LIMIT ?`,
     )
-    .all(accountId, sinceTs, limit) as Array<{
+    .all(...accountIds, sinceTs, limit) as Array<{
     session_id: string;
     first_ts: number;
     last_ts: number;
@@ -2260,10 +2272,12 @@ export function getCacheTtlBySession(
 /** Per-day counts of api_errors grouped by status code + retry-exhausted tally. */
 export function getApiErrorsByDay(
   db: Database.Database,
-  accountId: string,
+  accountIds: string[],
   days: number,
 ): { byDay: Record<string, Record<string, number>>; retryExhaustedCount: number } {
+  if (accountIds.length === 0) return { byDay: {}, retryExhaustedCount: 0 };
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT
@@ -2271,11 +2285,11 @@ export function getApiErrorsByDay(
        COALESCE(status_code, 'unknown') AS status_code,
        COUNT(*)                    AS n
      FROM api_errors
-     WHERE account_id = ? AND ts >= ?
+     WHERE account_id IN (${placeholders}) AND ts >= ?
      GROUP BY day, status_code
      ORDER BY day ASC`,
     )
-    .all(accountId, sinceTs) as Array<{ day: string; status_code: string; n: number }>;
+    .all(...accountIds, sinceTs) as Array<{ day: string; status_code: string; n: number }>;
 
   const byDay: Record<string, Record<string, number>> = {};
   for (const r of rows) {
@@ -2286,9 +2300,10 @@ export function getApiErrorsByDay(
   // retries were exhausted. Uses > so we match what the docs describe.
   const exhaustedRow = db
     .prepare(
-      `SELECT COUNT(*) AS n FROM api_errors WHERE account_id = ? AND ts >= ? AND attempt > 10`,
+      `SELECT COUNT(*) AS n FROM api_errors
+       WHERE account_id IN (${placeholders}) AND ts >= ? AND attempt > 10`,
     )
-    .get(accountId, sinceTs) as { n: number };
+    .get(...accountIds, sinceTs) as { n: number };
 
   return { byDay, retryExhaustedCount: exhaustedRow.n };
 }
@@ -2299,11 +2314,13 @@ export function getApiErrorsByDay(
  */
 export function getToolStats(
   db: Database.Database,
-  accountId: string,
+  accountIds: string[],
   days: number,
   limit = 20,
 ): ToolStat[] {
+  if (accountIds.length === 0) return [];
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const placeholders = accountIds.map(() => '?').join(',');
 
   // First pass: per-tool totals + success counts
   const totals = db
@@ -2313,12 +2330,12 @@ export function getToolStats(
        COUNT(*) AS calls,
        SUM(success) AS successes
      FROM tool_events
-     WHERE account_id = ? AND ts >= ?
+     WHERE account_id IN (${placeholders}) AND ts >= ?
      GROUP BY tool_name
      ORDER BY calls DESC
      LIMIT ?`,
     )
-    .all(accountId, sinceTs, limit) as Array<{
+    .all(...accountIds, sinceTs, limit) as Array<{
     tool_name: string;
     calls: number;
     successes: number;
@@ -2327,14 +2344,16 @@ export function getToolStats(
   const result: ToolStat[] = [];
   for (const t of totals) {
     // Second pass: percentiles from the sorted duration list. SQLite lacks
-    // a built-in percentile function, so we compute it in JS.
+    // a built-in percentile function, so we compute it in JS. With multiple
+    // account IDs we're computing percentiles over the union of raw rows,
+    // which is the "accurate" pooled p50/p95.
     const durations = db
       .prepare(
         `SELECT duration_ms FROM tool_events
-       WHERE account_id = ? AND ts >= ? AND tool_name = ? AND duration_ms IS NOT NULL
+       WHERE account_id IN (${placeholders}) AND ts >= ? AND tool_name = ? AND duration_ms IS NOT NULL
        ORDER BY duration_ms ASC`,
       )
-      .all(accountId, sinceTs, t.tool_name) as Array<{ duration_ms: number }>;
+      .all(...accountIds, sinceTs, t.tool_name) as Array<{ duration_ms: number }>;
 
     const p50 = percentile(
       durations.map((r) => r.duration_ms),
@@ -2349,10 +2368,10 @@ export function getToolStats(
     const topErrorRow = db
       .prepare(
         `SELECT error, COUNT(*) AS n FROM tool_events
-       WHERE account_id = ? AND ts >= ? AND tool_name = ? AND success = 0 AND error IS NOT NULL
+       WHERE account_id IN (${placeholders}) AND ts >= ? AND tool_name = ? AND success = 0 AND error IS NOT NULL
        GROUP BY error ORDER BY n DESC LIMIT 1`,
       )
-      .get(accountId, sinceTs, t.tool_name) as { error: string; n: number } | undefined;
+      .get(...accountIds, sinceTs, t.tool_name) as { error: string; n: number } | undefined;
 
     result.push({
       toolName: t.tool_name,
@@ -2376,13 +2395,14 @@ function percentile(sortedValues: number[], q: number): number {
 /** Per-day totals for a set of activity kinds. */
 export function getActivityCounters(
   db: Database.Database,
-  accountId: string,
+  accountIds: string[],
   days: number,
   kinds: ActivityKind[],
 ): Record<string, Record<ActivityKind, number>> {
-  if (kinds.length === 0) return {};
+  if (kinds.length === 0 || accountIds.length === 0) return {};
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
-  const placeholders = kinds.map(() => '?').join(',');
+  const accountPlaceholders = accountIds.map(() => '?').join(',');
+  const kindPlaceholders = kinds.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT
@@ -2390,11 +2410,15 @@ export function getActivityCounters(
        kind,
        COALESCE(SUM(value), COUNT(*)) AS total
      FROM activity_events
-     WHERE account_id = ? AND ts >= ? AND kind IN (${placeholders})
+     WHERE account_id IN (${accountPlaceholders}) AND ts >= ? AND kind IN (${kindPlaceholders})
      GROUP BY day, kind
      ORDER BY day ASC`,
     )
-    .all(accountId, sinceTs, ...kinds) as Array<{ day: string; kind: ActivityKind; total: number }>;
+    .all(...accountIds, sinceTs, ...kinds) as Array<{
+    day: string;
+    kind: ActivityKind;
+    total: number;
+  }>;
 
   const result: Record<string, Record<ActivityKind, number>> = {};
   for (const r of rows) {
@@ -2410,10 +2434,14 @@ export function getActivityCounters(
  */
 export function getEditAcceptRate(
   db: Database.Database,
-  accountId: string,
+  accountIds: string[],
   days: number,
 ): { overall: EditAcceptRate; byLanguage: Record<string, EditAcceptRate> } {
+  if (accountIds.length === 0) {
+    return { overall: { accepts: 0, rejects: 0, rate: 0 }, byLanguage: {} };
+  }
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT
@@ -2421,10 +2449,14 @@ export function getEditAcceptRate(
        decision,
        COUNT(*)                       AS n
      FROM activity_events
-     WHERE account_id = ? AND ts >= ? AND kind = 'edit_decision'
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND kind = 'edit_decision'
      GROUP BY language, decision`,
     )
-    .all(accountId, sinceTs) as Array<{ language: string; decision: string | null; n: number }>;
+    .all(...accountIds, sinceTs) as Array<{
+    language: string;
+    decision: string | null;
+    n: number;
+  }>;
 
   let overallAccepts = 0;
   let overallRejects = 0;
@@ -2467,10 +2499,18 @@ export function getEditAcceptRate(
  */
 export function getToolDecisionBreakdown(
   db: Database.Database,
-  accountId: string,
+  accountIds: string[],
   days: number,
 ): ToolDecisionBreakdown {
+  if (accountIds.length === 0) {
+    return {
+      overall: { accepts: 0, rejects: 0, rate: 0 },
+      byTool: {},
+      bySource: {},
+    };
+  }
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT
@@ -2479,10 +2519,10 @@ export function getToolDecisionBreakdown(
        decision,
        COUNT(*)                       AS n
      FROM activity_events
-     WHERE account_id = ? AND ts >= ? AND kind = 'tool_decision'
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND kind = 'tool_decision'
      GROUP BY tool_name, source, decision`,
     )
-    .all(accountId, sinceTs) as Array<{
+    .all(...accountIds, sinceTs) as Array<{
     tool_name: string;
     source: string;
     decision: string | null;
@@ -2533,10 +2573,12 @@ export function getToolDecisionBreakdown(
  */
 export function getUserPromptStats(
   db: Database.Database,
-  accountId: string,
+  accountIds: string[],
   days: number,
 ): PromptStats {
+  if (accountIds.length === 0) return { total: 0, avgLength: 0, perDay: {} };
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT
@@ -2544,11 +2586,11 @@ export function getUserPromptStats(
        COUNT(*)                                                  AS n,
        AVG(value)                                                AS avg_len
      FROM activity_events
-     WHERE account_id = ? AND ts >= ? AND kind = 'user_prompt'
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND kind = 'user_prompt'
      GROUP BY day
      ORDER BY day`,
     )
-    .all(accountId, sinceTs) as Array<{ day: string; n: number; avg_len: number | null }>;
+    .all(...accountIds, sinceTs) as Array<{ day: string; n: number; avg_len: number | null }>;
 
   let total = 0;
   let weightedLenSum = 0;
@@ -2573,11 +2615,13 @@ export function getUserPromptStats(
 /** Top skills invoked over the period, ordered by invocation count. */
 export function getTopSkills(
   db: Database.Database,
-  accountId: string,
+  accountIds: string[],
   days: number,
   limit = 10,
 ): SkillUsage[] {
+  if (accountIds.length === 0) return [];
   const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT
@@ -2585,12 +2629,16 @@ export function getTopSkills(
        COUNT(*)                 AS n,
        MAX(source)              AS plugin
      FROM activity_events
-     WHERE account_id = ? AND ts >= ? AND kind = 'skill_activated' AND name IS NOT NULL
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND kind = 'skill_activated' AND name IS NOT NULL
      GROUP BY name
      ORDER BY n DESC
      LIMIT ?`,
     )
-    .all(accountId, sinceTs, limit) as Array<{ name: string; n: number; plugin: string | null }>;
+    .all(...accountIds, sinceTs, limit) as Array<{
+    name: string;
+    n: number;
+    plugin: string | null;
+  }>;
   return rows.map((r) => ({ name: r.name, count: r.n, plugin: r.plugin }));
 }
 
@@ -2600,18 +2648,20 @@ export function getTopSkills(
  */
 export function getRecentPlugins(
   db: Database.Database,
-  accountId: string,
+  accountIds: string[],
   limit = 10,
 ): PluginInstall[] {
+  if (accountIds.length === 0) return [];
+  const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT ts, name, version, marketplace
      FROM activity_events
-     WHERE account_id = ? AND kind = 'plugin_installed' AND name IS NOT NULL
+     WHERE account_id IN (${placeholders}) AND kind = 'plugin_installed' AND name IS NOT NULL
      ORDER BY ts DESC
      LIMIT ?`,
     )
-    .all(accountId, limit) as Array<{
+    .all(...accountIds, limit) as Array<{
     ts: number;
     name: string;
     version: string | null;

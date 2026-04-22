@@ -879,7 +879,7 @@ describe('getToolDecisionBreakdown', () => {
     // WebFetch: 1 accept from hook
     seed('WebFetch', 'accept', 'hook');
 
-    const out = getToolDecisionBreakdown(db, 'a', 7);
+    const out = getToolDecisionBreakdown(db, ['a'], 7);
     expect(out.overall.accepts).toBe(4);
     expect(out.overall.rejects).toBe(1);
     expect(out.overall.rate).toBeCloseTo(0.8);
@@ -916,7 +916,7 @@ describe('getToolDecisionBreakdown', () => {
       toolName: 'Edit',
       decision: 'accept',
     });
-    const out = getToolDecisionBreakdown(db, 'a', 7);
+    const out = getToolDecisionBreakdown(db, ['a'], 7);
     expect(out.overall.accepts).toBe(0);
     expect(out.overall.rejects).toBe(0);
     expect(out.overall.rate).toBe(0);
@@ -924,7 +924,7 @@ describe('getToolDecisionBreakdown', () => {
 
   it('empty window yields zeroed overall and empty byTool/bySource', async () => {
     const { getToolDecisionBreakdown } = await import('./db.js');
-    const out = getToolDecisionBreakdown(db, 'a', 7);
+    const out = getToolDecisionBreakdown(db, ['a'], 7);
     expect(out).toEqual({
       overall: { accepts: 0, rejects: 0, rate: 0 },
       byTool: {},
@@ -963,7 +963,7 @@ describe('getUserPromptStats', () => {
       value: 200,
     });
 
-    const out = getUserPromptStats(db, 'a', 7);
+    const out = getUserPromptStats(db, ['a'], 7);
     expect(out.total).toBe(2);
     expect(out.avgLength).toBe(150);
     // Single day key present with the right count.
@@ -981,7 +981,7 @@ describe('getUserPromptStats', () => {
       kind: 'user_prompt',
       value: null,
     });
-    const out = getUserPromptStats(db, 'a', 7);
+    const out = getUserPromptStats(db, ['a'], 7);
     // Total still increments, but avgLength stays 0 because no row carried a
     // length.
     expect(out.total).toBe(1);
@@ -990,7 +990,7 @@ describe('getUserPromptStats', () => {
 
   it('returns empty stats when no user_prompt rows exist', async () => {
     const { getUserPromptStats } = await import('./db.js');
-    expect(getUserPromptStats(db, 'a', 7)).toEqual({ total: 0, avgLength: 0, perDay: {} });
+    expect(getUserPromptStats(db, ['a'], 7)).toEqual({ total: 0, avgLength: 0, perDay: {} });
   });
 });
 
@@ -1141,7 +1141,7 @@ describe('Metrics tab DB helpers', () => {
       cacheCreate: 10,
       durationMs: 2000,
     });
-    const out = getTokensByDayModel(db, acct, 7);
+    const out = getTokensByDayModel(db, [acct], 7);
     const days = Object.keys(out);
     expect(days).toHaveLength(1);
     const day = days[0]!;
@@ -1168,7 +1168,7 @@ describe('Metrics tab DB helpers', () => {
       cacheCreate: 0,
       durationMs: 0,
     });
-    const rates = getCacheHitRate(db, acct, 7);
+    const rates = getCacheHitRate(db, [acct], 7);
     expect(rates['m1']?.rate).toBeCloseTo(0.2); // 200 / (800+200)
   });
 
@@ -1186,7 +1186,7 @@ describe('Metrics tab DB helpers', () => {
       cacheCreate: 0,
       durationMs: 0,
     });
-    expect(getCacheHitRate(db, acct, 7)['m0']?.rate).toBe(0);
+    expect(getCacheHitRate(db, [acct], 7)['m0']?.rate).toBe(0);
   });
 
   it('getApiErrorsByDay + retry-exhausted counter (attempt > 10)', async () => {
@@ -1228,7 +1228,7 @@ describe('Metrics tab DB helpers', () => {
       requestId: null,
       speed: null,
     });
-    const out = getApiErrorsByDay(db, acct, 7);
+    const out = getApiErrorsByDay(db, [acct], 7);
     const day = Object.keys(out.byDay)[0]!;
     expect(out.byDay[day]).toEqual({ '429': 1, '500': 1, unknown: 1 });
     expect(out.retryExhaustedCount).toBe(1);
@@ -1253,7 +1253,7 @@ describe('Metrics tab DB helpers', () => {
         toolResultSizeBytes: null,
       });
     }
-    const stats = getToolStats(db, acct, 7);
+    const stats = getToolStats(db, [acct], 7);
     const bash = stats.find((s) => s.toolName === 'Bash')!;
     expect(bash.calls).toBe(5);
     expect(bash.successRate).toBeCloseTo(0.8);
@@ -1277,14 +1277,14 @@ describe('Metrics tab DB helpers', () => {
       mcpServerScope: null,
       toolResultSizeBytes: null,
     });
-    const stats = getToolStats(db, acct, 7);
+    const stats = getToolStats(db, [acct], 7);
     expect(stats[0]?.topError).toBeNull();
     expect(stats[0]?.successRate).toBe(1);
   });
 
   it('getToolStats with no data returns empty list', async () => {
     const { getToolStats } = await import('./db.js');
-    expect(getToolStats(db, acct, 7)).toEqual([]);
+    expect(getToolStats(db, [acct], 7)).toEqual([]);
   });
 
   it('getActivityCounters sums value per (day, kind)', async () => {
@@ -1299,7 +1299,7 @@ describe('Metrics tab DB helpers', () => {
       kind: 'lines_added',
       value: 100,
     });
-    const out = getActivityCounters(db, acct, 7, ['commit', 'lines_added']);
+    const out = getActivityCounters(db, [acct], 7, ['commit', 'lines_added']);
     const day = Object.keys(out)[0]!;
     expect(out[day]!['commit']).toBe(2);
     expect(out[day]!['lines_added']).toBe(100);
@@ -1307,7 +1307,7 @@ describe('Metrics tab DB helpers', () => {
 
   it('getActivityCounters with empty kinds returns {}', async () => {
     const { getActivityCounters } = await import('./db.js');
-    expect(getActivityCounters(db, acct, 7, [])).toEqual({});
+    expect(getActivityCounters(db, [acct], 7, [])).toEqual({});
   });
 
   it('getEditAcceptRate tallies per language and overall', async () => {
@@ -1324,7 +1324,7 @@ describe('Metrics tab DB helpers', () => {
     insertActivityEvent(db, { ...base, language: 'TypeScript', decision: 'accept' });
     insertActivityEvent(db, { ...base, language: 'TypeScript', decision: 'reject' });
     insertActivityEvent(db, { ...base, language: 'Python', decision: 'accept' });
-    const out = getEditAcceptRate(db, acct, 7);
+    const out = getEditAcceptRate(db, [acct], 7);
     expect(out.overall.accepts).toBe(3);
     expect(out.overall.rejects).toBe(1);
     expect(out.overall.rate).toBeCloseTo(0.75);
@@ -1334,7 +1334,7 @@ describe('Metrics tab DB helpers', () => {
 
   it('getEditAcceptRate with no decisions has rate=0', async () => {
     const { getEditAcceptRate } = await import('./db.js');
-    const out = getEditAcceptRate(db, acct, 7);
+    const out = getEditAcceptRate(db, [acct], 7);
     expect(out.overall.rate).toBe(0);
     expect(Object.keys(out.byLanguage)).toHaveLength(0);
   });
@@ -1356,7 +1356,7 @@ describe('Metrics tab DB helpers', () => {
     insertActivityEvent(db, row('init'));
     insertActivityEvent(db, row('review'));
     insertActivityEvent(db, row('review'));
-    const skills = getTopSkills(db, acct, 7, 10);
+    const skills = getTopSkills(db, [acct], 7, 10);
     expect(skills[0]).toMatchObject({ name: 'init', count: 3 });
     expect(skills[1]).toMatchObject({ name: 'review', count: 2 });
   });
@@ -1383,9 +1383,144 @@ describe('Metrics tab DB helpers', () => {
       version: '2.0',
       marketplace: 'm',
     });
-    const plugins = getRecentPlugins(db, acct, 10);
+    const plugins = getRecentPlugins(db, [acct], 10);
     expect(plugins.map((p) => p.name)).toEqual(['newer', 'older']);
     expect(plugins[0]?.version).toBe('2.0');
+  });
+
+  it('getTokensByDayModel sums across multiple account IDs (pool view)', async () => {
+    const { getTokensByDayModel, insertUsageEvent } = await import('./db.js');
+    const common = {
+      ts: Date.now(),
+      sessionId: 's',
+      model: 'claude-opus-4',
+      outputTokens: 0,
+      cacheRead: 0,
+      cacheCreate: 0,
+      durationMs: 0,
+    };
+    insertUsageEvent(db, { ...common, accountId: 'a', costUsd: 1, inputTokens: 100 });
+    insertUsageEvent(db, { ...common, accountId: 'b', costUsd: 2, inputTokens: 300 });
+    const perA = getTokensByDayModel(db, ['a'], 7);
+    const perB = getTokensByDayModel(db, ['b'], 7);
+    const pooled = getTokensByDayModel(db, ['a', 'b'], 7);
+    const day = Object.keys(pooled)[0]!;
+    expect(pooled[day]!['claude-opus-4']!.costUsd).toBeCloseTo(
+      perA[day]!['claude-opus-4']!.costUsd + perB[day]!['claude-opus-4']!.costUsd,
+    );
+    expect(pooled[day]!['claude-opus-4']!.inputTokens).toBe(400);
+  });
+
+  it('getToolStats computes percentiles over the union of pool account rows', async () => {
+    const { getToolStats, insertToolEvent } = await import('./db.js');
+    // Account A: durations 10..50 ms. Account B: durations 100..500 ms.
+    for (const d of [10, 20, 30, 40, 50]) {
+      insertToolEvent(db, {
+        ts: Date.now(),
+        accountId: 'a',
+        sessionId: 's',
+        toolName: 'Bash',
+        success: true,
+        durationMs: d,
+        error: null,
+        decisionSource: null,
+        decisionType: null,
+        mcpServerScope: null,
+        toolResultSizeBytes: null,
+      });
+    }
+    for (const d of [100, 200, 300, 400, 500]) {
+      insertToolEvent(db, {
+        ts: Date.now(),
+        accountId: 'b',
+        sessionId: 's',
+        toolName: 'Bash',
+        success: true,
+        durationMs: d,
+        error: null,
+        decisionSource: null,
+        decisionType: null,
+        mcpServerScope: null,
+        toolResultSizeBytes: null,
+      });
+    }
+    const pooled = getToolStats(db, ['a', 'b'], 7);
+    const bash = pooled.find((t) => t.toolName === 'Bash')!;
+    // With 10 samples [10,20,30,40,50,100,200,300,400,500] sorted, the helper's
+    // percentile picks floor(q*n) which gives index 5 (=100) for p50 and
+    // index 9 (=500) for p95. The key check: pooled p95 must exceed A-alone p95.
+    const aOnly = getToolStats(db, ['a'], 7).find((t) => t.toolName === 'Bash')!;
+    expect(bash.calls).toBe(10);
+    expect(bash.p95Ms).toBeGreaterThan(aOnly.p95Ms);
+    expect(bash.successRate).toBe(1);
+  });
+
+  it('getApiErrorsByDay merges by-day buckets and sums retry-exhausted across accounts', async () => {
+    const { getApiErrorsByDay, insertApiError } = await import('./db.js');
+    insertApiError(db, {
+      ts: Date.now(),
+      accountId: 'a',
+      sessionId: 's',
+      model: 'm',
+      statusCode: '429',
+      error: 'rate limit',
+      durationMs: 1,
+      attempt: 11,
+      requestId: 'r1',
+      speed: 'normal',
+    });
+    insertApiError(db, {
+      ts: Date.now(),
+      accountId: 'b',
+      sessionId: 's',
+      model: 'm',
+      statusCode: '429',
+      error: 'rate limit',
+      durationMs: 1,
+      attempt: 11,
+      requestId: 'r2',
+      speed: 'normal',
+    });
+    insertApiError(db, {
+      ts: Date.now(),
+      accountId: 'b',
+      sessionId: 's',
+      model: 'm',
+      statusCode: '500',
+      error: 'boom',
+      durationMs: 1,
+      attempt: 2,
+      requestId: 'r3',
+      speed: 'normal',
+    });
+    const pooled = getApiErrorsByDay(db, ['a', 'b'], 7);
+    const day = Object.keys(pooled.byDay)[0]!;
+    expect(pooled.byDay[day]!['429']).toBe(2);
+    expect(pooled.byDay[day]!['500']).toBe(1);
+    expect(pooled.retryExhaustedCount).toBe(2);
+  });
+
+  it('pool helpers short-circuit cleanly on empty accountIds', async () => {
+    const mod = await import('./db.js');
+    expect(mod.getTokensByDayModel(db, [], 7)).toEqual({});
+    expect(mod.getCacheHitRate(db, [], 7)).toEqual({});
+    expect(mod.getApiErrorsByDay(db, [], 7)).toEqual({ byDay: {}, retryExhaustedCount: 0 });
+    expect(mod.getToolStats(db, [], 7)).toEqual([]);
+    expect(mod.getActivityCounters(db, [], 7, ['commit'])).toEqual({});
+    expect(mod.getEditAcceptRate(db, [], 7)).toEqual({
+      overall: { accepts: 0, rejects: 0, rate: 0 },
+      byLanguage: {},
+    });
+    expect(mod.getToolDecisionBreakdown(db, [], 7)).toEqual({
+      overall: { accepts: 0, rejects: 0, rate: 0 },
+      byTool: {},
+      bySource: {},
+    });
+    expect(mod.getUserPromptStats(db, [], 7)).toEqual({ total: 0, avgLength: 0, perDay: {} });
+    expect(mod.getTopSkills(db, [], 7)).toEqual([]);
+    expect(mod.getRecentPlugins(db, [], 10)).toEqual([]);
+    expect(mod.getCacheTtlByDayModel(db, [], 7)).toEqual({});
+    expect(mod.getCacheTtlBySession(db, [], 7)).toEqual([]);
   });
 
   it('legacy getUsageByDayModel aggregates cost + tokens', async () => {
@@ -1926,7 +2061,7 @@ describe('cache_ttl_events', () => {
     await seed({ model: 'claude-sonnet-4-6', cacheCreate5m: 100, cacheCreate1h: 0 });
     await seed({ model: 'claude-sonnet-4-6', cacheCreate5m: 50, cacheCreate1h: 0 });
     await seed({ model: 'claude-opus-4-7', cacheCreate5m: 0, cacheCreate1h: 300 });
-    const out = getCacheTtlByDayModel(db, acct, 7);
+    const out = getCacheTtlByDayModel(db, [acct], 7);
     const days = Object.keys(out);
     expect(days).toHaveLength(1);
     const day = days[0]!;
@@ -1941,7 +2076,7 @@ describe('cache_ttl_events', () => {
     await seed({ ts: tooOld });
     await seed({ accountId: 'other-acct' });
     await seed({ cacheCreate5m: 42 });
-    const out = getCacheTtlByDayModel(db, acct, 7);
+    const out = getCacheTtlByDayModel(db, [acct], 7);
     const totals = Object.values(out).flatMap((m) => Object.values(m));
     expect(totals).toHaveLength(1);
     expect(totals[0]!.create5m).toBe(42);
@@ -1949,7 +2084,7 @@ describe('cache_ttl_events', () => {
 
   it('getCacheTtlByDayModel returns empty object when no rows', async () => {
     const { getCacheTtlByDayModel } = await import('./db.js');
-    expect(getCacheTtlByDayModel(db, acct, 7)).toEqual({});
+    expect(getCacheTtlByDayModel(db, [acct], 7)).toEqual({});
   });
 
   it('getCacheTtlBySession groups rows and sums token + cost fields', async () => {
@@ -1971,7 +2106,7 @@ describe('cache_ttl_events', () => {
       cost1hWrite: 0.01,
     });
     await seed({ ts: base, sessionId: 's2', cacheCreate5m: 3 });
-    const rows = getCacheTtlBySession(db, acct, 7);
+    const rows = getCacheTtlBySession(db, [acct], 7);
     expect(rows).toHaveLength(2);
     // Ordered by lastTs DESC → s2 first
     expect(rows[0]!.sessionId).toBe('s2');
@@ -1990,7 +2125,7 @@ describe('cache_ttl_events', () => {
     await seed({ sessionId: null });
     await seed({ sessionId: '' });
     await seed({ sessionId: 'real' });
-    const rows = getCacheTtlBySession(db, acct, 7);
+    const rows = getCacheTtlBySession(db, [acct], 7);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.sessionId).toBe('real');
   });
@@ -2000,7 +2135,7 @@ describe('cache_ttl_events', () => {
     for (let i = 0; i < 5; i++) {
       await seed({ ts: Date.now() - i * 1000, sessionId: `s${i}` });
     }
-    expect(getCacheTtlBySession(db, acct, 7, 3)).toHaveLength(3);
+    expect(getCacheTtlBySession(db, [acct], 7, 3)).toHaveLength(3);
   });
 
   it('getCacheTtlBySession picks the most recent model per session', async () => {
@@ -2008,7 +2143,7 @@ describe('cache_ttl_events', () => {
     const base = Date.now();
     await seed({ ts: base - 5000, sessionId: 'sx', model: 'claude-sonnet-4-6' });
     await seed({ ts: base, sessionId: 'sx', model: 'claude-opus-4-7' });
-    const rows = getCacheTtlBySession(db, acct, 7);
+    const rows = getCacheTtlBySession(db, [acct], 7);
     expect(rows[0]!.model).toBe('claude-opus-4-7');
   });
 });

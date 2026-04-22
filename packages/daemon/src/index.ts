@@ -96,7 +96,12 @@ import {
 } from './token-refresher.js';
 import { probeRateLimits } from './rate-limit-probe.js';
 import { startUsageProber, type UsageProberHandle } from './usage-probe.js';
-import type { OAuthAccount, PlanType, ClaudeCodeCredentials } from '@claude-sentinel/shared';
+import type {
+  OAuthAccount,
+  PlanType,
+  ClaudeCodeCredentials,
+  MetricsSummary,
+} from '@claude-sentinel/shared';
 import { request as httpRequest, type Server } from 'http';
 import { log } from './logger.js';
 import { getRequestLogStore, closeRequestLogStore } from './request-log-db.js';
@@ -790,16 +795,33 @@ export async function startDaemon(): Promise<void> {
       }
 
       case 'get_metrics_summary': {
-        // View-scope account: prefer msg.accountId (per-tab picker), otherwise
-        // derive from the currently active account. Either must resolve.
-        let key: string | null = null;
-        if (msg.accountId) {
-          key = msg.accountId;
+        // Scope resolution — priority:
+        //   1. msg.accountIds: aggregate across the list (pool/all views)
+        //   2. msg.accountId: single explicit account (per-tab picker)
+        //   3. active account fallback
+        let keys: string[] = [];
+        let responseAccountId = '';
+        let scope: MetricsSummary['scope'];
+        if (msg.accountIds && msg.accountIds.length > 0) {
+          keys = msg.accountIds;
+          const kind = msg.scopeKind ?? 'pool';
+          const label = msg.scopeLabel ?? (kind === 'all' ? 'All accounts' : 'Pool');
+          responseAccountId = kind === 'all' ? '__all__' : '__pool__';
+          scope = { kind, label, memberCount: keys.length };
+        } else if (msg.accountId) {
+          keys = [msg.accountId];
+          responseAccountId = msg.accountId;
+          scope = { kind: 'account', id: msg.accountId };
         } else {
           const active = getActiveAccount();
-          if (active) key = sentinelKey(active.organizationUuid ?? '', active.accountUuid);
+          if (active) {
+            const k = sentinelKey(active.organizationUuid ?? '', active.accountUuid);
+            keys = [k];
+            responseAccountId = k;
+            scope = { kind: 'account', id: k };
+          }
         }
-        if (!key) {
+        if (keys.length === 0) {
           respond({
             requestType: 'get_metrics_summary',
             success: false,
@@ -809,13 +831,13 @@ export async function startDaemon(): Promise<void> {
         }
         const days = msg.days ?? 7;
         // Bundle every dashboard slice in one round-trip. Query helpers all
-        // accept (accountId, days) and do their own windowing, so ordering
+        // accept (accountIds, days) and do their own windowing, so ordering
         // here is just for readability.
-        const byDayModel = getTokensByDayModel(db, key, days);
-        const cacheHitRate = getCacheHitRate(db, key, days);
-        const errors = getApiErrorsByDay(db, key, days);
-        const tools = getToolStats(db, key, days);
-        const perDayCounters = getActivityCounters(db, key, days, [
+        const byDayModel = getTokensByDayModel(db, keys, days);
+        const cacheHitRate = getCacheHitRate(db, keys, days);
+        const errors = getApiErrorsByDay(db, keys, days);
+        const tools = getToolStats(db, keys, days);
+        const perDayCounters = getActivityCounters(db, keys, days, [
           'session',
           'commit',
           'pull_request',
@@ -824,14 +846,14 @@ export async function startDaemon(): Promise<void> {
           'active_user_seconds',
           'active_cli_seconds',
         ]);
-        const editAcceptRate = getEditAcceptRate(db, key, days);
-        const toolDecisions = getToolDecisionBreakdown(db, key, days);
-        const prompts = getUserPromptStats(db, key, days);
-        const skills = getTopSkills(db, key, days, 10);
-        const plugins = getRecentPlugins(db, key, 10);
+        const editAcceptRate = getEditAcceptRate(db, keys, days);
+        const toolDecisions = getToolDecisionBreakdown(db, keys, days);
+        const prompts = getUserPromptStats(db, keys, days);
+        const skills = getTopSkills(db, keys, days, 10);
+        const plugins = getRecentPlugins(db, keys, 10);
         const cacheTtl = {
-          byDayModel: getCacheTtlByDayModel(db, key, days),
-          bySession: getCacheTtlBySession(db, key, days),
+          byDayModel: getCacheTtlByDayModel(db, keys, days),
+          bySession: getCacheTtlBySession(db, keys, days),
         };
 
         // Reshape per-day counters into the flat per-kind records the UI wants.
@@ -860,7 +882,8 @@ export async function startDaemon(): Promise<void> {
           success: true,
           data: {
             days,
-            accountId: key,
+            accountId: responseAccountId,
+            scope,
             byDayModel,
             cacheHitRate,
             errors,

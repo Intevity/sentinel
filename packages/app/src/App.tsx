@@ -16,7 +16,14 @@ import SecurityShield from './components/SecurityShield.js';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import AccountSwitcher from './components/AccountSwitcher.js';
 import AccountColorDot from './components/AccountColorDot.js';
-import AccountViewPicker, { POOL_VIEW, type PickerValue } from './components/AccountViewPicker.js';
+import AccountViewPicker, {
+  POOL_VIEW,
+  ALL_VIEW,
+  type PickerValue,
+  type PoolOption,
+} from './components/AccountViewPicker.js';
+import type { MetricsScope } from './hooks/useMetricsSummary.js';
+import type { AccountInfo } from '@claude-sentinel/shared';
 import { accountColor } from './lib/accountColor.js';
 import UsageView from './components/UsageView.js';
 import MetricsDashboard from './components/MetricsDashboard.js';
@@ -137,7 +144,7 @@ export default function App(): React.ReactElement {
   // active token. Reset defaults on every tab switch so users aren't stuck on
   // a stale selection when they return.
   const [usageView, setUsageView] = useState<PickerValue | undefined>(undefined);
-  const [metricsView, setMetricsView] = useState<string | undefined>(undefined);
+  const [metricsView, setMetricsView] = useState<PickerValue | undefined>(undefined);
   const [overageView, setOverageView] = useState<string | undefined>(undefined);
   const [alertsView, setAlertsView] = useState<string | undefined>(undefined);
   const [securityView, setSecurityView] = useState<string | undefined>(undefined);
@@ -534,11 +541,20 @@ export default function App(): React.ReactElement {
                           </div>
                         );
                       if (activeTab === 'usage') {
+                        const usagePoolOptions: PoolOption[] = isRoundRobin
+                          ? [
+                              {
+                                value: POOL_VIEW,
+                                primary: 'All accounts (pool)',
+                                secondary: 'Round-robin aggregate',
+                              },
+                            ]
+                          : [];
                         const picker = (
                           <AccountViewPicker
                             accounts={accounts}
                             activeAccount={activeAccount}
-                            showPoolOption={isRoundRobin}
+                            poolOptions={usagePoolOptions}
                             switchingMode={pickerSwitchingMode}
                             poolExcludedIds={pickerPoolExcludedIds}
                             {...(usageView !== undefined ? { value: usageView } : {})}
@@ -559,20 +575,55 @@ export default function App(): React.ReactElement {
                         );
                       }
                       if (activeTab === 'metrics') {
+                        // Build pool rows. "All accounts" (ignoring exclusions)
+                        // is always available when ≥2 accounts are enrolled.
+                        // The RR pool row joins it when round-robin is active
+                        // AND the pool differs from the full account list
+                        // (otherwise the two rows would be duplicates).
+                        const poolMemberCount =
+                          accounts.length - pickerPoolExcludedIds.length;
+                        const metricsPoolOptions: PoolOption[] = [];
+                        if (accounts.length > 1) {
+                          metricsPoolOptions.push({
+                            value: ALL_VIEW,
+                            primary: 'All accounts',
+                            secondary: `${accounts.length} accounts`,
+                          });
+                        }
+                        if (
+                          isRoundRobin &&
+                          poolMemberCount > 0 &&
+                          poolMemberCount < accounts.length
+                        ) {
+                          metricsPoolOptions.push({
+                            value: POOL_VIEW,
+                            primary: 'All accounts (pool)',
+                            secondary: `Round-robin · ${poolMemberCount} members`,
+                          });
+                        }
                         const picker = (
                           <AccountViewPicker
                             accounts={accounts}
                             activeAccount={activeAccount}
+                            poolOptions={metricsPoolOptions}
                             switchingMode={pickerSwitchingMode}
                             poolExcludedIds={pickerPoolExcludedIds}
                             {...(metricsView !== undefined ? { value: metricsView } : {})}
-                            onChange={(v) => setMetricsView(v === POOL_VIEW ? undefined : v)}
+                            onChange={setMetricsView}
                           />
+                        );
+                        // Translate picker sentinels into a concrete scope the
+                        // dashboard/hook can execute. Membership is computed
+                        // here so the daemon stays ignorant of "pool" semantics.
+                        const scope = metricsViewToScope(
+                          metricsView,
+                          accounts,
+                          pickerPoolExcludedIds,
                         );
                         return (
                           <>
                             {picker}
-                            <MetricsDashboard viewAccountId={metricsView} />
+                            <MetricsDashboard scope={scope} />
                           </>
                         );
                       }
@@ -659,4 +710,39 @@ export default function App(): React.ReactElement {
       </div>
     </MotionConfig>
   );
+}
+
+/**
+ * Translate the Metrics-tab picker value into a concrete scope the daemon
+ * can execute. Pool membership is decided here (not in the daemon) so the
+ * daemon stays ignorant of what "pool" vs. "all" means in this app's model.
+ *   - ALL_VIEW   → every enrolled account id
+ *   - POOL_VIEW  → enrolled accounts minus the round-robin pool exclusions
+ *   - string id  → single-account pin
+ *   - undefined  → follow the active account
+ */
+function metricsViewToScope(
+  view: PickerValue | undefined,
+  accounts: AccountInfo[],
+  poolExcludedIds: readonly string[],
+): MetricsScope {
+  if (view === ALL_VIEW) {
+    return {
+      kind: 'all',
+      label: 'All accounts',
+      accountIds: accounts.map((a) => a.id),
+    };
+  }
+  if (view === POOL_VIEW) {
+    const excluded = new Set(poolExcludedIds);
+    return {
+      kind: 'pool',
+      label: 'Pool',
+      accountIds: accounts.filter((a) => !excluded.has(a.id)).map((a) => a.id),
+    };
+  }
+  if (typeof view === 'string' && view.length > 0) {
+    return { kind: 'account', id: view };
+  }
+  return { kind: 'active' };
 }

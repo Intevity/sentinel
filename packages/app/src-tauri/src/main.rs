@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod daemon;
+mod first_run;
 mod ipc;
 mod notify;
 mod settings_patch;
@@ -231,9 +232,16 @@ fn main() {
                 tray::seed(&seed_handle).await;
             });
 
-            // Hide the main window on startup — we're a tray app
+            // Tray app: normally start hidden. On first launch, reveal the
+            // window so the user lands in the onboarding tour instead of
+            // staring at a tray icon with no cue that anything needs doing.
             if let Some(window) = app.get_webview_window("main") {
-                window.hide().unwrap_or_default();
+                if first_run::is_first_run(app.handle()) {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                } else {
+                    window.hide().unwrap_or_default();
+                }
             }
 
             // Fire-and-forget update check. No-op unless the user has toggled
