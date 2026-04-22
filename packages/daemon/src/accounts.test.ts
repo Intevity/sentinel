@@ -13,10 +13,6 @@ const {
   writeSentinelCredentials,
   writeClaudeCodeCredentials,
   deleteSentinelCredentials,
-  readClaudeAiSessionKey,
-  writeClaudeAiSessionKey,
-  deleteClaudeAiSessionKey,
-  hasClaudeAiSessionKey,
 } = await import('./accounts.js');
 
 const sampleCreds = {
@@ -349,88 +345,4 @@ describe('accounts', () => {
     });
   });
 
-  describe('readClaudeAiSessionKey', () => {
-    it('returns the trimmed value from the keychain on darwin', () => {
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      mockExecSync.mockReturnValue('session-abc\n');
-      const v = readClaudeAiSessionKey('acct-1');
-      expect(v).toBe('session-abc');
-      const cmd = mockExecSync.mock.calls[0]?.[0] ?? '';
-      expect(cmd).toContain('Claude Sentinel-claude-ai-session');
-    });
-
-    it('returns null when the keychain entry is empty', () => {
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      mockExecSync.mockReturnValue('');
-      expect(readClaudeAiSessionKey('acct-1')).toBeNull();
-    });
-
-    it('returns null when the read helper throws', () => {
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      mockExecSync.mockImplementation(() => {
-        throw new Error('no entry');
-      });
-      expect(readClaudeAiSessionKey('acct-missing')).toBeNull();
-    });
-  });
-
-  describe('writeClaudeAiSessionKey', () => {
-    it('trims whitespace and writes the cookie to the session keychain', () => {
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      mockExecSync.mockReturnValue('');
-      writeClaudeAiSessionKey('acct-1', '  session-xyz  ');
-      const cmd = mockExecSync.mock.calls[0]?.[0] ?? '';
-      expect(cmd).toContain('security add-generic-password');
-      expect(cmd).toContain('Claude Sentinel-claude-ai-session');
-      expect(cmd).toContain('session-xyz');
-    });
-
-    it('refuses to write an empty sessionKey so a blank paste cannot clobber a live entry', () => {
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      expect(() => writeClaudeAiSessionKey('acct-1', '   ')).toThrow(/must not be empty/);
-      expect(mockExecSync).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('deleteClaudeAiSessionKey', () => {
-    it('issues the delete command against the session service on darwin', () => {
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      mockExecSync.mockReturnValue('');
-      deleteClaudeAiSessionKey('acct-1');
-      const cmd = mockExecSync.mock.calls[0]?.[0] ?? '';
-      expect(cmd).toContain('security delete-generic-password');
-      expect(cmd).toContain('Claude Sentinel-claude-ai-session');
-    });
-  });
-
-  describe('hasClaudeAiSessionKey', () => {
-    it('returns true when the keychain returns a non-empty value', () => {
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      mockExecSync.mockReturnValue('session-abc');
-      expect(hasClaudeAiSessionKey('acct-1')).toBe(true);
-    });
-
-    it('returns false when the keychain returns empty', () => {
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      mockExecSync.mockReturnValue('');
-      expect(hasClaudeAiSessionKey('acct-1')).toBe(false);
-    });
-
-    it('returns false when the keychain returns whitespace only', () => {
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      // Note: readDarwin trims its output, so a whitespace-only value becomes
-      // null before hasClaudeAiSessionKey sees it. Still good to pin down
-      // the behavior.
-      mockExecSync.mockReturnValue('   \n');
-      expect(hasClaudeAiSessionKey('acct-1')).toBe(false);
-    });
-
-    it('returns false when the read helper throws', () => {
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      mockExecSync.mockImplementation(() => {
-        throw new Error('no entry');
-      });
-      expect(hasClaudeAiSessionKey('acct-missing')).toBe(false);
-    });
-  });
 });

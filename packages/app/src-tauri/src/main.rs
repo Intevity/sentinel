@@ -1,7 +1,6 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod claude_ai_login;
 mod daemon;
 mod ipc;
 mod notify;
@@ -256,9 +255,6 @@ fn main() {
             sound::play_system_sound,
             notify::display_os_notification,
             updater::check_for_updates,
-            claude_ai_login::start_claude_ai_login,
-            claude_ai_login::clear_claude_ai_cookies,
-            claude_ai_login::open_oauth_webview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Claude Sentinel");

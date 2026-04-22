@@ -352,50 +352,6 @@ export interface RequestLogsClearedMessage {
   deleted: number;
 }
 
-/** Broadcast after the user adds an account and we discover (via
- *  `/api/bootstrap`) that the same claude.ai login carries memberships
- *  in additional chat-capable orgs that Sentinel doesn't yet know
- *  about. Fired once per `set_claude_ai_session_key` when siblings are
- *  present; the UI prompts the user to enroll the remaining orgs via a
- *  fresh OAuth round for each. The list excludes orgs that already
- *  have a Sentinel account row (so re-firing this on a sessionKey
- *  re-set after every sibling is added emits an empty list and the
- *  UI stays quiet). */
-export interface AdditionalOrgsAvailableMessage {
-  type: 'additional_orgs_available';
-  /** Email the sessionKey belongs to — used as the banner heading. */
-  email: string;
-  /** Chat-capable memberships from `/api/bootstrap` that have no
-   *  matching Sentinel account row. Each entry carries its org UUID
-   *  and display name so the UI can list them by name. Order mirrors
-   *  bootstrap order (claude.ai's own switcher order). */
-  orgs: Array<{ orgUuid: string; orgName: string }>;
-}
-
-/** Broadcast during a `start_login` flow to hand the computed OAuth
- *  authorize URL off to the UI client. The Tauri app listens for this
- *  and opens the URL inside an embedded WebviewWindow so claude.ai's
- *  cookies (sessionKey included) end up in the shared WKHTTPCookieStore
- *  — the Connect claude.ai flow that auto-triggers once the new
- *  account row appears then captures those cookies without requiring
- *  a second login. Headless clients that don't subscribe can ignore
- *  this; the daemon will have opened the system browser as a fallback
- *  if the broadcast isn't consumed in time. */
-export interface OauthAuthorizeUrlMessage {
-  type: 'oauth_authorize_url';
-  url: string;
-  /** When present, the webview should warm up the WKHTTPCookieStore
-   *  with `lastActiveOrg=<orgUuidHint>` by GETting
-   *  `https://claude.ai/api/organizations/{orgUuidHint}/sync/settings`
-   *  from a claude.ai-origin context BEFORE navigating to `url`.
-   *  claude.ai's OAuth authorize endpoint keys off that cookie to
-   *  decide which org to mint the token for; preseeding it lets the
-   *  sibling-enrollment walk skip the org-chooser click. Safe to
-   *  omit — behavior without it is the normal "user picks an org"
-   *  flow. */
-  orgUuidHint?: string;
-}
-
 export type DaemonToAppMessage =
   | OverageEnteredMessage
   | OverageExitedMessage
@@ -426,8 +382,6 @@ export type DaemonToAppMessage =
   | DaemonLogMessage
   | DaemonLogsClearedMessage
   | RequestLogsClearedMessage
-  | OauthAuthorizeUrlMessage
-  | AdditionalOrgsAvailableMessage
   | PermissionRulesChangedMessage
   | PermissionsStatusMessage;
 
@@ -500,36 +454,6 @@ export interface StartLoginMessage {
    *  chooser as a fallback). */
   orgUuidHint?: string;
 }
-
-/** Server-to-server OAuth enrollment for a sibling org. Requires an
- *  existing Sentinel account with the given email to have a stored
- *  sessionKey — that sessionKey is reused to authenticate the GET to
- *  /oauth/authorize, avoiding a webview entirely. Broadcasts
- *  `login_complete` on success (same shape as browser OAuth). If the
- *  silent path fails (claude.ai returns a challenge, sessionKey
- *  expired, etc.), the daemon falls back to the regular `start_login`
- *  webview flow automatically so the user still gets enrolled. */
-export interface SilentSiblingLoginMessage {
-  type: 'silent_sibling_login';
-  /** Email of the parent account whose sessionKey to reuse. */
-  email: string;
-  /** Target org UUID to mint the OAuth token for. */
-  orgUuidHint: string;
-}
-
-/** Ask the daemon which sibling orgs could still be enrolled for each
- *  email that already has a sessionKey. The daemon calls /api/bootstrap
- *  once per email, filters memberships to chat-capable orgs not already
- *  present in Sentinel, and returns the leftovers. The Configuration
- *  page uses this to show "+ Add <orgName>" buttons on grouped rows. */
-export interface GetSiblingCandidatesMessage {
-  type: 'get_sibling_candidates';
-}
-
-/** Response payload for get_sibling_candidates. Keyed by email. Empty
- *  map means every enrolled email has zero unenrolled siblings (or no
- *  email has a sessionKey to enumerate). */
-export type SiblingCandidates = Record<string, Array<{ orgUuid: string; orgName: string }>>;
 
 export interface CancelLoginMessage {
   type: 'cancel_login';
@@ -964,31 +888,6 @@ export interface GetSpendSummaryMessage {
   type: 'get_spend_summary';
 }
 
-/** Store a claude.ai sessionKey for an account in the OS keychain. The
- *  daemon uses this cookie to fetch real overage spend + limit data from
- *  `https://api.anthropic.com/api/organizations/{org}/usage` — the only
- *  source of truth for those numbers (no OAuth endpoint exists). Passing
- *  an empty string is rejected; use `clear_claude_ai_session_key` to remove. */
-export interface SetClaudeAiSessionKeyMessage {
-  type: 'set_claude_ai_session_key';
-  accountId: string;
-  sessionKey: string;
-}
-
-/** Remove a stored sessionKey. */
-export interface ClearClaudeAiSessionKeyMessage {
-  type: 'clear_claude_ai_session_key';
-  accountId: string;
-}
-
-/** Presence-check the stored sessionKey. Returns `{ hasKey: boolean }`. The
- *  daemon NEVER returns the value itself — that would defeat keychain
- *  storage. The UI uses this to render "set" / "not set" status. */
-export interface HasClaudeAiSessionKeyMessage {
-  type: 'has_claude_ai_session_key';
-  accountId: string;
-}
-
 /** Fetch the cached claude.ai usage snapshot for the given account. Returns
  *  null when the daemon has not yet successfully fetched (e.g. key missing
  *  or auth rejected). Numbers are dollars (converted from `minor_units`). */
@@ -998,7 +897,7 @@ export interface GetClaudeAiUsageMessage {
 }
 
 /** Force an immediate fetch against the claude.ai usage endpoint. Used on
- *  first sessionKey save so the UI doesn't wait for the periodic poller. */
+ *  account add so the UI doesn't wait for the periodic poller. */
 export interface RefreshClaudeAiUsageMessage {
   type: 'refresh_claude_ai_usage';
   accountId: string;
@@ -1015,8 +914,6 @@ export type AppToDaemonMessage =
   | SwitchAccountMessage
   | RefreshAccountsMessage
   | StartLoginMessage
-  | SilentSiblingLoginMessage
-  | GetSiblingCandidatesMessage
   | CancelLoginMessage
   | RemoveAccountMessage
   | GetRateLimitsMessage
@@ -1059,9 +956,6 @@ export type AppToDaemonMessage =
   | GetOverageGrantsMessage
   | RefreshOverageGrantsMessage
   | GetSpendSummaryMessage
-  | SetClaudeAiSessionKeyMessage
-  | ClearClaudeAiSessionKeyMessage
-  | HasClaudeAiSessionKeyMessage
   | GetClaudeAiUsageMessage
   | RefreshClaudeAiUsageMessage
   | DevTriggerSecurityEventMessage

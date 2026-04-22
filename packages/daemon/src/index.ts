@@ -64,13 +64,6 @@ import { OverageGrantStore } from './overage-grant-store.js';
 import { SpendTracker } from './spend-tracker.js';
 import { ClaudeAiUsageStore } from './claude-ai-usage.js';
 import {
-  writeClaudeAiSessionKey,
-  deleteClaudeAiSessionKey,
-  hasClaudeAiSessionKey,
-  readClaudeAiSessionKey,
-} from './accounts.js';
-import { fetchBootstrap } from './claude-ai-bootstrap.js';
-import {
   startAlertEvaluator,
   startPoolAlertEvaluator,
   evaluatePoolOnce,
@@ -93,7 +86,6 @@ import {
 } from './accounts.js';
 import { startOAuthLogin, OAUTH_ABORTED } from './oauth.js';
 import type { OAuthResult } from './oauth.js';
-import { switchActiveOrg } from './claude-ai-bootstrap.js';
 import {
   startTokenRefresher,
   refreshIfNeeded,
@@ -675,6 +667,13 @@ export async function startDaemon(): Promise<void> {
 
     tokenRotator.refresh();
 
+    // Kick an immediate usage fetch for the new account so the Usage
+    // tab renders real overage / extra-usage numbers on first open
+    // rather than waiting up to 30s for the next poll tick. Fire-and-
+    // forget: failures are surfaced via the store's own broadcast path
+    // (claude_ai_usage_updated with an error discriminator).
+    void claudeAiUsageStore.refresh(credKey);
+
     console.log(
       `[OAuth] Login complete for ${email} (org: ${orgName || '?'}, reauth: ${wasReauth}), broadcasting to ${ipcServer.connectedClients} client(s)`,
     );
@@ -1003,7 +1002,6 @@ export async function startDaemon(): Promise<void> {
         const purgeKey = (key: string): void => {
           if (seen.has(key)) return;
           deleteSentinelCredentials(key);
-          deleteClaudeAiSessionKey(key);
           seen.add(key);
         };
         for (const a of [...active, ...removed]) {
@@ -1049,219 +1047,6 @@ export async function startDaemon(): Promise<void> {
           requestType: 'get_spend_summary',
           success: true,
           data: spendTracker.getSpendSummary(),
-        });
-        break;
-      }
-
-      case 'set_claude_ai_session_key': {
-        try {
-          console.log(
-            `[SessionMirror] set_claude_ai_session_key received for ${msg.accountId} (key len=${msg.sessionKey.length})`,
-          );
-          writeClaudeAiSessionKey(msg.accountId, msg.sessionKey);
-          void claudeAiUsageStore.refresh(msg.accountId);
-          // Respond to the UI immediately so the spinner on the
-          // triggering account's Connect button clears. Mirroring to
-          // sibling accounts (same Google login → multiple Sentinel
-          // rows) runs async below.
-          respond({ requestType: 'set_claude_ai_session_key', success: true });
-
-          // Shared-session mirroring: one claude.ai sessionKey covers
-          // every org the user is a member of, so when a Sentinel
-          // account gets its key set we propagate the same key to every
-          // other Sentinel row whose orgUuid appears in the user's
-          // membership list. That turns a single Connect click into a
-          // simultaneous Connect for all sibling accounts the user has
-          // enrolled under the same login — no per-account Connect
-          // dance required.
-          void (async (): Promise<void> => {
-            // Pass the just-connected account's orgUuid as the
-            // edge-api hint — any membership the user has is a valid
-            // path param and the response enumerates every org.
-            const hintAccount = listAccounts(db).find((a) => a.id === msg.accountId);
-            const orgHint = hintAccount?.orgUuid || msg.accountId;
-            console.log(`[SessionMirror] calling fetchBootstrap (orgHint=${orgHint})…`);
-            const boot = await fetchBootstrap(msg.sessionKey, orgHint);
-            if (!boot) {
-              console.log(
-                '[SessionMirror] fetchBootstrap returned null, aborting sibling mirror/prompt',
-              );
-              return;
-            }
-            console.log(
-              `[SessionMirror] bootstrap result: email=${boot.email ?? '?'} orgs=${boot.orgs.length} (${boot.orgs.map((o) => o.orgName || o.orgUuid).join(', ')})`,
-            );
-            const allAccounts = listAccounts(db);
-            let mirrored = 0;
-            for (const acc of allAccounts) {
-              if (acc.id === msg.accountId) continue;
-              if (!acc.orgUuid || !boot.orgUuids.includes(acc.orgUuid)) continue;
-              try {
-                writeClaudeAiSessionKey(acc.id, msg.sessionKey);
-                void claudeAiUsageStore.refresh(acc.id);
-                mirrored++;
-              } catch (e) {
-                console.warn(
-                  '[SessionMirror] write failed for',
-                  acc.id,
-                  e instanceof Error ? e.message : String(e),
-                );
-              }
-            }
-            if (mirrored > 0) {
-              console.log(
-                '[SessionMirror] mirrored sessionKey to',
-                mirrored,
-                'sibling account(s) for email',
-                boot.email,
-              );
-            }
-
-            // Sibling enrollment prompt: bootstrap lists every chat-capable
-            // org the user can access with this login. Any of those that
-            // DON'T have a Sentinel row yet are candidates for the "add
-            // remaining accounts" prompt. The UI surfaces them so the user
-            // can sign in once more per org without having to remember they
-            // exist. We broadcast even when the list is empty? No — stay
-            // quiet in that case so the user isn't interrupted on the
-            // normal happy path.
-            const enrolledOrgUuids = new Set(
-              allAccounts.map((a) => a.orgUuid).filter((u): u is string => !!u),
-            );
-            const missing = boot.orgs.filter((o) => !enrolledOrgUuids.has(o.orgUuid));
-            console.log(
-              `[SessionMirror] enrolled orgs: [${Array.from(enrolledOrgUuids).join(', ')}]; missing: [${missing.map((o) => o.orgName || o.orgUuid).join(', ')}]`,
-            );
-            if (boot.email) {
-              // Always broadcast — even with empty missing list.
-              // The UI clears its banner when it receives an empty
-              // list, which is how the sibling-add walk knows "I'm
-              // done, hide the prompt." Previously we suppressed
-              // empty broadcasts and the banner got stuck after the
-              // last sibling was added because the UI never got the
-              // signal.
-              console.log(
-                `[SessionMirror] broadcasting additional_orgs_available for ${boot.email} — ${missing.length === 0 ? '(empty: all siblings enrolled)' : missing.map((o) => o.orgName || o.orgUuid).join(', ')}`,
-              );
-              ipcServer.broadcast({
-                type: 'additional_orgs_available',
-                email: boot.email,
-                orgs: missing,
-              });
-            }
-          })();
-        } catch (err) {
-          respond({
-            requestType: 'set_claude_ai_session_key',
-            success: false,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-        break;
-      }
-
-      case 'clear_claude_ai_session_key': {
-        // Read the key BEFORE deleting so we can enumerate siblings via
-        // /api/bootstrap. The endpoint needs a live sessionKey; once
-        // we've deleted ours we can't ask Anthropic "which orgs did
-        // this token cover?"
-        const keyBeforeDelete = readClaudeAiSessionKey(msg.accountId);
-        deleteClaudeAiSessionKey(msg.accountId);
-        void claudeAiUsageStore.refresh(msg.accountId);
-        respond({ requestType: 'clear_claude_ai_session_key', success: true });
-
-        // Mirror the disconnect to siblings the same way Connect
-        // mirrors writes. If bootstrap fails (network, already
-        // server-side expired) we fall back to a local-match strategy:
-        // clear the session-key for every account whose stored value
-        // equals the one we just deleted, since shared-session siblings
-        // all hold byte-for-byte identical copies in keychain.
-        if (keyBeforeDelete) {
-          // Do the byte-match cascade SYNCHRONOUSLY first — it's a
-          // keychain read per account, fast and reliable. Then fire
-          // the /api/bootstrap lookup async as a belt-and-suspenders
-          // catch for accounts whose keychain entry got out of sync
-          // but are still listed as a sibling membership (e.g. one
-          // was written by an older daemon version that didn't
-          // mirror).
-          //
-          // The previous implementation gated stored-key matching
-          // behind "only if bootstrap failed" — that left the door
-          // open for accounts where the stored value matched
-          // perfectly but bootstrap happened to not return their
-          // orgUuid (different routing region, billing state, etc.),
-          // producing exactly the "I disconnected one, the sibling
-          // stayed Connected" bug. Always matching by bytes eliminates
-          // that class entirely.
-          const allAccounts = listAccounts(db);
-          let cleared = 0;
-          for (const acc of allAccounts) {
-            if (acc.id === msg.accountId) continue;
-            if (readClaudeAiSessionKey(acc.id) !== keyBeforeDelete) continue;
-            try {
-              deleteClaudeAiSessionKey(acc.id);
-              void claudeAiUsageStore.refresh(acc.id);
-              cleared++;
-            } catch (e) {
-              console.warn(
-                '[SessionMirror] clear failed for',
-                acc.id,
-                e instanceof Error ? e.message : String(e),
-              );
-            }
-          }
-          if (cleared > 0) {
-            console.log(
-              '[SessionMirror] byte-match cleared sessionKey for',
-              cleared,
-              'sibling account(s)',
-            );
-          }
-
-          // Async bootstrap pass — catches siblings whose stored key
-          // drifted or was never written (legacy data). Fire-and-forget.
-          // Use the disconnecting account's orgUuid as the edge-api
-          // hint so the enumeration runs on the same path as Connect.
-          void (async (): Promise<void> => {
-            const disconnectHint =
-              allAccounts.find((a) => a.id === msg.accountId)?.orgUuid || msg.accountId;
-            const boot = await fetchBootstrap(keyBeforeDelete, disconnectHint);
-            if (!boot) return;
-            let clearedByBoot = 0;
-            for (const acc of allAccounts) {
-              if (acc.id === msg.accountId) continue;
-              if (!acc.orgUuid || !boot.orgUuids.includes(acc.orgUuid)) continue;
-              if (!hasClaudeAiSessionKey(acc.id)) continue; // already byte-cleared or never had one
-              try {
-                deleteClaudeAiSessionKey(acc.id);
-                void claudeAiUsageStore.refresh(acc.id);
-                clearedByBoot++;
-              } catch (e) {
-                console.warn(
-                  '[SessionMirror] bootstrap-clear failed for',
-                  acc.id,
-                  e instanceof Error ? e.message : String(e),
-                );
-              }
-            }
-            if (clearedByBoot > 0) {
-              console.log(
-                '[SessionMirror] bootstrap-match cleared',
-                clearedByBoot,
-                'extra sibling(s) for email',
-                boot.email,
-              );
-            }
-          })();
-        }
-        break;
-      }
-
-      case 'has_claude_ai_session_key': {
-        respond({
-          requestType: 'has_claude_ai_session_key',
-          success: true,
-          data: { hasKey: hasClaudeAiSessionKey(msg.accountId) },
         });
         break;
       }
@@ -1993,200 +1778,6 @@ export async function startDaemon(): Promise<void> {
         break;
       }
 
-      case 'get_sibling_candidates': {
-        // Enumerate unenrolled chat-capable siblings per email. For
-        // each distinct email among active accounts that has at
-        // least one stored sessionKey, call bootstrap once (sessionKey
-        // is shared across orgs so the first one is enough), filter
-        // out orgs we already have a Sentinel row for, return the
-        // leftovers keyed by email.
-        //
-        // Async so respond() fires after the bootstrap round trips
-        // complete — callers rely on the response for their initial
-        // state.
-        void (async (): Promise<void> => {
-          const all = listAccounts(db);
-          const emails = Array.from(new Set(all.map((a) => a.email).filter((e) => e.length > 0)));
-          const out: Record<string, Array<{ orgUuid: string; orgName: string }>> = {};
-          for (const email of emails) {
-            const bearer = all.find((a) => a.email === email && hasClaudeAiSessionKey(a.id));
-            if (!bearer) continue;
-            const key = readClaudeAiSessionKey(bearer.id);
-            if (!key) continue;
-            const boot = await fetchBootstrap(key, bearer.orgUuid || bearer.id);
-            if (!boot) continue;
-            const enrolled = new Set(
-              all
-                .filter((a) => a.email === email)
-                .map((a) => a.orgUuid)
-                .filter((u): u is string => !!u),
-            );
-            const missing = boot.orgs.filter((o) => !enrolled.has(o.orgUuid));
-            if (missing.length > 0) {
-              out[email] = missing.map((o) => ({
-                orgUuid: o.orgUuid,
-                orgName: o.orgName,
-              }));
-            }
-          }
-          respond({ requestType: 'get_sibling_candidates', success: true, data: out });
-        })();
-        break;
-      }
-
-      case 'silent_sibling_login': {
-        // Silent (no-window) sibling enrollment.
-        //
-        // Approach: since claude.ai's sessionKey is shared across every
-        // org the user belongs to, an "enrollment" for a sibling org
-        // doesn't strictly need an OAuth token to exist in Sentinel —
-        // usage fetching is sessionKey-authenticated, and the DB row
-        // plus the mirrored sessionKey are enough to show the account
-        // with full visibility. The tradeoff is that Claude Code
-        // switching + the Sentinel proxy route-per-account can't use
-        // this stub until the user triggers a real OAuth flow later.
-        //
-        // Flow:
-        //   1. Find the parent account that owns a live sessionKey
-        //      for this email.
-        //   2. Hit /api/organizations/{target}/sync/settings to flip
-        //      claude.ai's server-side "active org" for this session
-        //      — mirrors what the web client does when you switch
-        //      orgs in the UI, and primes any subsequent org-scoped
-        //      API call we make with this sessionKey.
-        //   3. Re-fetch bootstrap with the target org uuid as the
-        //      hint. The response carries the org's name + raven_type
-        //      + the user's email/displayName — everything Sentinel
-        //      needs for the DB row.
-        //   4. Upsert the Sentinel account (no keychain credential
-        //      entry — zero OAuth tokens to store) and mirror the
-        //      sessionKey under the new account id so the usage
-        //      fetcher starts returning real data on the next tick.
-        //   5. Broadcast login_complete with `silent: true` so the
-        //      UI shows the account and skips the auto-Connect
-        //      claude.ai flow (which would pop a window and defeat
-        //      the whole point).
-        respond({ requestType: 'silent_sibling_login', success: true });
-
-        void (async (): Promise<void> => {
-          const parentAccount = listAccounts(db).find(
-            (a) => a.email === msg.email && hasClaudeAiSessionKey(a.id),
-          );
-          const parentSessionKey = parentAccount ? readClaudeAiSessionKey(parentAccount.id) : null;
-          if (!parentSessionKey) {
-            console.warn(
-              `[SilentSibling] no sessionKey on file for ${msg.email} — aborting silent enrollment`,
-            );
-            ipcServer.broadcast({ type: 'login_complete', email: '' });
-            return;
-          }
-
-          // 2. Flip server-side active org.
-          await switchActiveOrg(parentSessionKey, msg.orgUuidHint);
-
-          // 3. Fetch bootstrap scoped to the target org for fresh
-          //    metadata.
-          const boot = await fetchBootstrap(parentSessionKey, msg.orgUuidHint);
-          if (!boot) {
-            console.warn('[SilentSibling] bootstrap returned null — aborting silent enrollment');
-            ipcServer.broadcast({ type: 'login_complete', email: '' });
-            return;
-          }
-          const target = boot.orgs.find((o) => o.orgUuid === msg.orgUuidHint);
-          if (!target) {
-            console.warn(
-              `[SilentSibling] target org ${msg.orgUuidHint} not present in bootstrap memberships — aborting`,
-            );
-            ipcServer.broadcast({ type: 'login_complete', email: '' });
-            return;
-          }
-
-          const email = boot.email ?? msg.email;
-          const displayName = boot.displayName ?? '';
-          const accountUuid = boot.accountUuid ?? '';
-          const orgName = target.orgName;
-          const orgUuid = target.orgUuid;
-
-          // Map claude.ai's raven_type to Sentinel's planType.
-          // 'team' / 'claude_pro' / 'claude_max' / 'claude_enterprise'
-          // are the values we've observed. Anything else → 'pro' as
-          // the safe default.
-          const planType: PlanType =
-            target.ravenType === 'team'
-              ? 'team'
-              : target.ravenType === 'claude_max'
-                ? 'max'
-                : target.ravenType === 'max'
-                  ? 'max'
-                  : target.ravenType === 'claude_pro'
-                    ? 'pro'
-                    : target.ravenType === 'pro'
-                      ? 'pro'
-                      : target.ravenType === 'claude_enterprise'
-                        ? 'enterprise'
-                        : 'pro';
-
-          const credKey = sentinelKey(orgUuid, accountUuid) || email;
-
-          // 4. Upsert DB row. No credentials are written — the account
-          //    has no accessToken/refreshToken, which is the stub
-          //    marker performSwitch already handles (it refuses to
-          //    switch with a friendly error).
-          const wasReauth = hasActiveAccount(db, credKey);
-          reactivateAccount(db, credKey);
-          upsertAccount(db, {
-            id: credKey,
-            accountUuid: accountUuid || email,
-            email,
-            displayName,
-            orgUuid,
-            orgName,
-            planType,
-            isActive: false,
-            createdAt: Date.now(),
-            color: null,
-          });
-
-          // Seed a default alert on first enrollment (same policy as
-          // full OAuth path so stub vs full parity is preserved).
-          if (listAlerts(db, { scope: 'account', accountId: credKey }).length === 0) {
-            upsertAlert(db, {
-              scope: 'account',
-              accountId: credKey,
-              thresholdPct: 95,
-              enabled: true,
-            });
-          }
-
-          // 5. Mirror the sessionKey into the sibling's keychain
-          //    entry so the usage fetcher can start hitting
-          //    claude.ai on its behalf immediately.
-          try {
-            writeClaudeAiSessionKey(credKey, parentSessionKey);
-            void claudeAiUsageStore.refresh(credKey);
-          } catch (e) {
-            console.warn(
-              '[SilentSibling] mirrored sessionKey write failed:',
-              e instanceof Error ? e.message : String(e),
-            );
-          }
-
-          tokenRotator.refresh();
-
-          console.log(
-            `[SilentSibling] enrolled ${email} / ${orgName} (${planType}, reauth=${wasReauth}) without OAuth`,
-          );
-          ipcServer.broadcast({
-            type: 'login_complete',
-            email,
-            orgName,
-            reauth: wasReauth,
-            silent: true,
-          });
-        })();
-        break;
-      }
-
       case 'start_login': {
         // If a login is already pending, abort it silently before starting a new
         // one. This happens when the user clicks Cancel in the UI (which only
@@ -2206,29 +1797,10 @@ export async function startDaemon(): Promise<void> {
         startOAuthLogin({
           signal: abortController.signal,
           ...(msg.orgUuidHint ? { orgUuidHint: msg.orgUuidHint } : {}),
-          // Surface the authorize URL via IPC broadcast instead of
-          // exec('open URL'). The Tauri app listens for
-          // `oauth_authorize_url` and opens the URL inside a
-          // WebviewWindow so claude.ai's cookies (sessionKey
-          // included) land in the shared WKHTTPCookieStore — the
-          // Connect claude.ai flow that auto-triggers after the
-          // account is created then finds those cookies instantly,
-          // skipping the second-login hop. We also ALWAYS call
-          // openBrowser as a safety net: if the frontend isn't
-          // listening (daemon running headless during dev, or an
-          // IPC hiccup), the user still gets their system browser
-          // open so the flow isn't stuck.
-          openAuthUrl: (url) => {
-            try {
-              ipcServer.broadcast({
-                type: 'oauth_authorize_url',
-                url,
-                ...(msg.orgUuidHint ? { orgUuidHint: msg.orgUuidHint } : {}),
-              });
-            } catch (e) {
-              console.warn('[OAuth] broadcast failed:', e instanceof Error ? e.message : String(e));
-            }
-          },
+          // Uses oauth.ts' default openBrowser (exec('open URL')) so
+          // the authorize page loads in the user's default browser.
+          // No openAuthUrl override here — Sentinel never hosts the
+          // sign-in flow inside an in-app WebView.
         })
           .then((result) => {
             loginAbortController = null;

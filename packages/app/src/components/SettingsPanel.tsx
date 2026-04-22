@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, Loader2, Volume2, Trash2, Plus, RefreshCw } from 'lucide-react';
+import { X, Loader2, Volume2, Trash2, RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
 import type {
   SwitchingMode,
@@ -17,10 +17,8 @@ import { usePermissionBypasses } from '../hooks/usePermissionBypasses.js';
 import { useClaudeSyncStatus } from '../hooks/useClaudeSyncStatus.js';
 import { useScanBenchmark } from '../hooks/useScanBenchmark.js';
 import { useDaemon } from '../hooks/useDaemon.js';
-import { useClaudeAiLogin } from '../hooks/useClaudeAiLogin.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { useAccounts } from '../hooks/useAccounts.js';
-import { useSiblingCandidates } from '../hooks/useSiblingCandidates.js';
 import { accountColor } from '../lib/accountColor.js';
 import AccountColorDot from './AccountColorDot.js';
 import OverlayPanel from './OverlayPanel.js';
@@ -90,11 +88,6 @@ export default function SettingsPanel({
   const { settings, loading, error, update } = useSettings();
   const { accounts } = useDaemon();
   const { refreshToken } = useAccounts();
-  const { candidates: siblingCandidates, consume: consumeSiblingCandidate } =
-    useSiblingCandidates();
-  // Tracks which sibling is mid-enrollment so the pill button can show
-  // a spinner while silent_sibling_login round-trips through the daemon.
-  const [siblingAdding, setSiblingAdding] = useState<string | null>(null);
 
   // Active tab state. Settings is grouped into 4 tabs (General, Accounts,
   // Security, Data) so no single scroll path exceeds the 628 px tray
@@ -462,128 +455,47 @@ export default function SettingsPanel({
               <Section title="Overage spend tracking">
                 <div className="px-3 pt-2.5 pb-1.5 space-y-1">
                   <p className="text-[11px] text-[#8E8E93] leading-snug">
-                    Overage controls need a live claude.ai connection; Anthropic's
-                    dollar-denominated spend numbers aren't in any OAuth API, only the web session.
-                    Connect once per account; the cookie renews automatically on each fetch.
+                    Per-account overage controls and weekly caps. Sentinel reads dollar spend from
+                    Anthropic&apos;s OAuth usage endpoint using the sign-in you already completed
+                    on Add Account.
                   </p>
                 </div>
-                {(() => {
-                  // Group accounts by email so we can render a header +
-                  // sibling-add affordance for users who hold multiple
-                  // orgs on a single claude.ai login. Single-account
-                  // emails render without a header so nothing changes
-                  // visually for the common case.
-                  const groups = new Map<string, typeof accounts>();
-                  for (const a of accounts) {
-                    const bucket = groups.get(a.email);
-                    if (bucket) bucket.push(a);
-                    else groups.set(a.email, [a]);
-                  }
-                  return Array.from(groups.entries()).map(([email, groupAccounts]) => {
-                    const pendingSiblings = siblingCandidates[email] ?? [];
-                    const showHeader = groupAccounts.length > 1 || pendingSiblings.length > 0;
-                    return (
-                      <div key={email}>
-                        {showHeader && (
-                          <div className="px-3 pt-2 pb-1 flex items-center justify-between">
-                            <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-[#8E8E93]">
-                              {email}
-                            </span>
-                          </div>
-                        )}
-                        {groupAccounts.map((a) => (
-                          <ClaudeAiConnectionRow
-                            key={a.id}
-                            account={a}
-                            overageEnabled={settings.overageEnabledIds.includes(a.id)}
-                            onToggleOverage={(next) => {
-                              const set = new Set(settings.overageEnabledIds);
-                              if (next) set.add(a.id);
-                              else set.delete(a.id);
-                              void update({ overageEnabledIds: Array.from(set) }).catch(
-                                () => undefined,
-                              );
-                            }}
-                            budgetUsd={settings.budgetWeeklyUsdByAccount[a.id] ?? null}
-                            onBudgetChange={(v) => {
-                              const next = { ...settings.budgetWeeklyUsdByAccount };
-                              if (v == null || v === 0) delete next[a.id];
-                              else next[a.id] = v;
-                              void update({ budgetWeeklyUsdByAccount: next }).catch(
-                                () => undefined,
-                              );
-                            }}
-                            onRefresh={async () => {
-                              // Parallel: refresh OAuth token (no-op on
-                              // silent-enrolled stubs, which lack
-                              // credentials; daemon returns a polite
-                              // error that we ignore) and re-fetch
-                              // claude.ai usage numbers.
-                              await Promise.all([
-                                refreshToken(a.id).catch(() => undefined),
-                                sendToSentinel({
-                                  type: 'refresh_claude_ai_usage',
-                                  accountId: a.id,
-                                }).catch(() => undefined),
-                              ]);
-                            }}
-                          />
-                        ))}
-                        {pendingSiblings.length > 0 && (
-                          <div className="px-3 pt-1.5 pb-2 flex flex-wrap gap-1.5">
-                            {pendingSiblings.map((o) => {
-                              const isAdding = siblingAdding === o.orgUuid;
-                              return (
-                                <button
-                                  key={o.orgUuid}
-                                  onClick={() => {
-                                    setSiblingAdding(o.orgUuid);
-                                    // Fire-and-forget. The daemon will
-                                    // broadcast login_complete + an
-                                    // updated additional_orgs_available
-                                    // when enrollment finishes; useDaemon
-                                    // and useSiblingCandidates will
-                                    // react to those and the UI updates
-                                    // on its own.
-                                    void sendToSentinel({
-                                      type: 'silent_sibling_login',
-                                      email,
-                                      orgUuidHint: o.orgUuid,
-                                    })
-                                      .catch(() => undefined)
-                                      .finally(() => {
-                                        setSiblingAdding(null);
-                                        consumeSiblingCandidate(email, o.orgUuid);
-                                      });
-                                  }}
-                                  disabled={isAdding}
-                                  className="flex items-center gap-1 text-[11px] font-semibold text-ios-blue
-                                             bg-ios-blue/10 hover:bg-ios-blue/15 disabled:opacity-50
-                                             active:scale-95 px-2.5 py-1 rounded-full transition-all"
-                                  title={`Enroll ${o.orgName || o.orgUuid} silently via the shared sessionKey`}
-                                >
-                                  {isAdding ? (
-                                    <Loader2 size={11} className="animate-spin" />
-                                  ) : (
-                                    <Plus size={11} strokeWidth={2.5} />
-                                  )}
-                                  Add {o.orgName || o.orgUuid}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  });
-                })()}
+                {accounts.map((a) => (
+                  <ClaudeAiConnectionRow
+                    key={a.id}
+                    account={a}
+                    overageEnabled={settings.overageEnabledIds.includes(a.id)}
+                    onToggleOverage={(next) => {
+                      const set = new Set(settings.overageEnabledIds);
+                      if (next) set.add(a.id);
+                      else set.delete(a.id);
+                      void update({ overageEnabledIds: Array.from(set) }).catch(() => undefined);
+                    }}
+                    budgetUsd={settings.budgetWeeklyUsdByAccount[a.id] ?? null}
+                    onBudgetChange={(v) => {
+                      const next = { ...settings.budgetWeeklyUsdByAccount };
+                      if (v == null || v === 0) delete next[a.id];
+                      else next[a.id] = v;
+                      void update({ budgetWeeklyUsdByAccount: next }).catch(() => undefined);
+                    }}
+                    onRefresh={async () => {
+                      await Promise.all([
+                        refreshToken(a.id).catch(() => undefined),
+                        sendToSentinel({
+                          type: 'refresh_claude_ai_usage',
+                          accountId: a.id,
+                        }).catch(() => undefined),
+                      ]);
+                    }}
+                  />
+                ))}
                 <div className="px-3 pt-2 pb-2 border-t border-black/5 dark:border-white/5">
                   <p className="text-[11px] font-semibold text-black dark:text-white mb-1">
                     Global budget cap
                   </p>
                   <p className="text-[10px] text-[#8E8E93] leading-snug mb-1.5">
                     When summed spend across all connected accounts meets this cap, every connected
-                    account is paused until Anthropic's period resets.
+                    account is paused until Anthropic&apos;s period resets.
                   </p>
                   <BudgetInputRow
                     label="Global cap"
@@ -1526,11 +1438,9 @@ function BypassesRow({
  */
 /**
  * Per-account row in the "Overage spend tracking" section. Shows the
- * account identity, a Connect/Disconnect claude.ai button with status dot,
- * and — only when connected — the per-account overage-opt-in toggle and
- * weekly budget input. Disconnected rows show a CTA instead; the controls
- * are hidden until real spend data is available so users can't configure
- * a cap Sentinel has no way to enforce.
+ * account identity, the overage opt-in toggle, and a weekly cap input.
+ * The OAuth token authorized during Add Account is what authenticates
+ * the usage fetch; there is no separate claude.ai sign-in to manage.
  */
 function ClaudeAiConnectionRow({
   account,
@@ -1545,19 +1455,14 @@ function ClaudeAiConnectionRow({
   onToggleOverage: (v: boolean) => void;
   budgetUsd: number | null | undefined;
   onBudgetChange: (v: number | null) => void;
-  /** Optional: fire OAuth-token + usage refresh for this account. Shown
-   *  as a small refresh icon next to the status dot when `state ===
-   *  'connected'`. Parent (SettingsPanel) owns the actual plumbing so
-   *  the row stays ignorant of hooks. */
+  /** Optional: fire OAuth-token + usage refresh for this account. */
   onRefresh?: () => Promise<void>;
 }): React.ReactElement {
   const [refreshing, setRefreshing] = React.useState(false);
-  const { state, connect, disconnect, refresh, pasteSessionKey } = useClaudeAiLogin(account.id);
   // claude.ai-reported overage cap for this account. Used as the upper
-  // bound on the Sentinel weekly cap below — no point letting the user
-  // type a Sentinel cap higher than the amount claude.ai will actually
-  // allow them to spend. limitUsd is 0 when overage isn't enabled on
-  // the claude.ai side; we treat that as "no cap known yet" (no clamp).
+  // bound on the Sentinel weekly cap below. limitUsd is 0 when overage
+  // isn't enabled on the claude.ai side; we treat that as "no cap
+  // known yet" (no clamp).
   const { snapshot } = useClaudeAiUsage(account.id);
   // Prefer the per-user budget (from /v1/code/routines/run-budget) for
   // team accounts — extra_usage.limitUsd is null for teams anyway and
@@ -1573,49 +1478,11 @@ function ClaudeAiConnectionRow({
     : snapshot?.extraUsage?.limitUsd && snapshot.extraUsage.limitUsd > 0
       ? snapshot.extraUsage.limitUsd
       : null;
-  // Team account without a per-user budget configured → the admin
-  // hasn't enabled the feature, so we have no personal-spend signal
-  // and cap enforcement is meaningless. Surface a hint pointing the
-  // user at the right person to fix it.
   const teamCapAdminOnly = isTeam && snapshot?.extraUsage?.isEnabled === true && !perUserLimit;
-  const [pasteOpen, setPasteOpen] = React.useState(false);
-  const [pasteValue, setPasteValue] = React.useState('');
-  const [pasteBusy, setPasteBusy] = React.useState(false);
-  const [pasteError, setPasteError] = React.useState<string | null>(null);
-
-  const submitPaste = React.useCallback(async () => {
-    setPasteBusy(true);
-    setPasteError(null);
-    const res = await pasteSessionKey(pasteValue);
-    setPasteBusy(false);
-    if (res.ok) {
-      setPasteOpen(false);
-      setPasteValue('');
-    } else {
-      setPasteError(res.error);
-    }
-  }, [pasteSessionKey, pasteValue]);
-
-  const dotColor =
-    state === 'connected'
-      ? 'bg-ios-green'
-      : state === 'expired'
-        ? 'bg-ios-orange'
-        : state === 'loading'
-          ? 'bg-[#8E8E93]/40'
-          : /* disconnected */ 'bg-[#8E8E93]';
-  const statusLabel =
-    state === 'connected'
-      ? 'Connected'
-      : state === 'expired'
-        ? 'Expired'
-        : state === 'loading'
-          ? '…'
-          : 'Not connected';
 
   return (
     <div className="px-3 py-3 border-b border-black/5 dark:border-white/5 last:border-0 space-y-2.5">
-      {/* Header row: identity + status + action */}
+      {/* Header row: identity + refresh */}
       <div className="flex items-center gap-3">
         <AccountColorDot color={accountColor(account)} size="sm" />
         <div className="flex-1 min-w-0">
@@ -1624,160 +1491,58 @@ function ClaudeAiConnectionRow({
           </p>
           <p className="text-[11px] text-[#8E8E93] truncate">{account.email}</p>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          {onRefresh && state === 'connected' && (
-            <button
-              onClick={async () => {
-                if (refreshing) return;
-                setRefreshing(true);
-                try {
-                  await onRefresh();
-                } finally {
-                  setRefreshing(false);
-                }
-              }}
-              disabled={refreshing}
-              className="text-[#8E8E93] hover:text-ios-blue disabled:opacity-40 transition-colors active:scale-90"
-              title="Refresh token + usage"
-            >
-              <RefreshCw size={12} strokeWidth={2.5} className={refreshing ? 'animate-spin' : ''} />
-            </button>
-          )}
-          <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
-          <span className="text-[10px] font-medium text-[#8E8E93]">{statusLabel}</span>
-        </div>
-      </div>
-
-      {/* Action row */}
-      <div className="flex flex-col items-end gap-1">
-        <div className="flex items-center justify-end gap-2">
-          {state === 'disconnected' && (
-            <button
-              onClick={() => void connect().catch(() => undefined)}
-              className="text-[11px] font-semibold text-white bg-ios-blue hover:brightness-110 px-3 py-1 rounded-full transition"
-            >
-              Connect claude.ai
-            </button>
-          )}
-          {state === 'expired' && (
-            <>
-              <button
-                onClick={() => void refresh().catch(() => undefined)}
-                className="text-[11px] font-medium text-[#8E8E93] hover:text-ios-blue transition-colors"
-              >
-                Retry
-              </button>
-              <button
-                onClick={() => void connect().catch(() => undefined)}
-                className="text-[11px] font-semibold text-white bg-ios-blue hover:brightness-110 px-3 py-1 rounded-full transition"
-              >
-                Reconnect
-              </button>
-            </>
-          )}
-          {state === 'connected' && (
-            <button
-              onClick={() => void disconnect().catch(() => undefined)}
-              className="text-[11px] font-medium text-ios-red/70 hover:text-ios-red transition-colors"
-              title="Remove stored session key. Overage controls will disable until you reconnect."
-            >
-              Disconnect
-            </button>
-          )}
-        </div>
-        {(state === 'disconnected' || state === 'expired') && (
-          <div className="flex flex-col items-end gap-1 max-w-[260px]">
-            <p className="text-[10px] text-[#8E8E93]/80 leading-snug text-right">
-              Use email, magic-link, or Apple login inside the window. "Continue with Google"
-              doesn't work in embedded webviews; Google blocks them.
-            </p>
-            <button
-              type="button"
-              onClick={() => setPasteOpen((v) => !v)}
-              className="text-[10px] text-ios-blue hover:brightness-110 underline underline-offset-2"
-            >
-              {pasteOpen ? 'Cancel manual paste' : 'Or paste sessionKey from your browser'}
-            </button>
-          </div>
-        )}
-        {pasteOpen && (state === 'disconnected' || state === 'expired') && (
-          <div className="w-full mt-1 p-3 rounded-lg bg-black/5 dark:bg-white/5 space-y-2 text-left">
-            <p className="text-[11px] text-[#8E8E93] leading-snug">
-              In your regular browser: sign in to <span className="font-mono">claude.ai</span> with
-              any method (Google works here), open DevTools → Application → Cookies →{' '}
-              <span className="font-mono">claude.ai</span>, copy the value of{' '}
-              <span className="font-mono">sessionKey</span>, and paste it below.
-            </p>
-            <textarea
-              value={pasteValue}
-              onChange={(e) => {
-                setPasteValue(e.target.value);
-                setPasteError(null);
-              }}
-              placeholder="sk-ant-sid01-…"
-              spellCheck={false}
-              className="w-full h-20 px-2 py-1.5 rounded-md text-[11px] font-mono bg-white dark:bg-black/40 border border-black/10 dark:border-white/10 focus:outline-none focus:ring-1 focus:ring-ios-blue resize-none"
-            />
-            {pasteError && <p className="text-[10px] text-ios-red">{pasteError}</p>}
-            <div className="flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setPasteOpen(false);
-                  setPasteValue('');
-                  setPasteError(null);
-                }}
-                className="text-[11px] font-medium text-[#8E8E93] hover:text-ios-blue transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={pasteBusy || !pasteValue.trim()}
-                onClick={() => void submitPaste()}
-                className="text-[11px] font-semibold text-white bg-ios-blue hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed px-3 py-1 rounded-full transition"
-              >
-                {pasteBusy ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-          </div>
+        {onRefresh && (
+          <button
+            onClick={async () => {
+              if (refreshing) return;
+              setRefreshing(true);
+              try {
+                await onRefresh();
+              } finally {
+                setRefreshing(false);
+              }
+            }}
+            disabled={refreshing}
+            className="text-[#8E8E93] hover:text-ios-blue disabled:opacity-40 transition-colors active:scale-90 shrink-0"
+            title="Refresh token + usage"
+          >
+            <RefreshCw size={12} strokeWidth={2.5} className={refreshing ? 'animate-spin' : ''} />
+          </button>
         )}
       </div>
 
-      {/* Gated controls — only visible when actually connected */}
-      {state === 'connected' && (
-        <div className="space-y-2 pt-1 pl-5 border-l-2 border-ios-green/30">
-          <label className="flex items-center justify-between cursor-pointer">
-            <div>
-              <p className="text-[12px] font-medium text-black dark:text-white">
-                Allow spending overage
-              </p>
-              <p className="text-[10px] text-[#8E8E93] leading-snug">
-                Round-robin picks this account for new requests after its 5-hour quota is exhausted.
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              checked={overageEnabled}
-              onChange={(e) => onToggleOverage(e.target.checked)}
-              className="accent-ios-blue w-4 h-4"
-            />
-          </label>
-          <BudgetInputRow
-            label="Weekly cap"
-            sublabel="Pauses this account when Anthropic-reported spend meets the cap"
-            value={budgetUsd ?? null}
-            onChange={onBudgetChange}
-            maxUsd={claudeAiOverageCap}
-            {...(teamCapAdminOnly
-              ? {
-                  adminOnlyHint:
-                    "Team overage cap isn't exposed to non-admins. Ask an org owner for the value.",
-                }
-              : {})}
+      {/* Overage controls */}
+      <div className="space-y-2 pt-1 pl-5 border-l-2 border-ios-green/30">
+        <label className="flex items-center justify-between cursor-pointer">
+          <div>
+            <p className="text-[12px] font-medium text-black dark:text-white">
+              Allow spending overage
+            </p>
+            <p className="text-[10px] text-[#8E8E93] leading-snug">
+              Round-robin picks this account for new requests after its 5-hour quota is exhausted.
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            checked={overageEnabled}
+            onChange={(e) => onToggleOverage(e.target.checked)}
+            className="accent-ios-blue w-4 h-4"
           />
-        </div>
-      )}
+        </label>
+        <BudgetInputRow
+          label="Weekly cap"
+          sublabel="Pauses this account when Anthropic-reported spend meets the cap"
+          value={budgetUsd ?? null}
+          onChange={onBudgetChange}
+          maxUsd={claudeAiOverageCap}
+          {...(teamCapAdminOnly
+            ? {
+                adminOnlyHint:
+                  "Team overage cap isn't exposed to non-admins. Ask an org owner for the value.",
+              }
+            : {})}
+        />
+      </div>
     </div>
   );
 }

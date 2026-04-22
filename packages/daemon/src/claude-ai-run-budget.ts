@@ -4,8 +4,7 @@
  * personal usage cap for each member; this endpoint returns that cap
  * (`limit`) plus the member's spend-to-date (`used`) in dollars.
  *
- * Why this matters for Sentinel: the existing
- * `/api/organizations/{org}/usage` endpoint returns
+ * Why this matters for Sentinel: the OAuth usage endpoint returns
  * `extra_usage.used_credits`, which is the **team-wide** total across
  * every member — useful for a team admin, misleading for an individual
  * member reading Sentinel's UI as "my usage". The run-budget endpoint
@@ -18,10 +17,11 @@
  *     Caller treats null return as "no per-user data, fall back to
  *     org-level figures."
  *
- * Host quirk: claude.ai fronts this behind Cloudflare's bot-detection
- * (403 on server-to-server requests). Only api.anthropic.com works
- * for daemon traffic, same as the `/api/organizations/{org}/usage`
- * endpoint.
+ * Auth: OAuth Bearer. Verified live that the endpoint accepts the same
+ * token the `/api/oauth/usage` fetcher uses. The OAuth token is scoped
+ * to a single org; we still pass the org via `x-organization-uuid`
+ * because the endpoint pre-dates OAuth and reads that header as its
+ * routing hint.
  */
 
 const BASE_URL = 'https://api.anthropic.com';
@@ -63,9 +63,9 @@ function parseDollarField(v: unknown): number | null {
  */
 export async function fetchRunBudget(
   orgUuid: string,
-  sessionKey: string,
+  accessToken: string,
 ): Promise<RunBudget | null> {
-  const trimmed = sessionKey.trim();
+  const trimmed = accessToken.trim();
   if (!trimmed || !orgUuid) return null;
 
   let resp: Response;
@@ -73,12 +73,9 @@ export async function fetchRunBudget(
     resp = await fetch(`${BASE_URL}/v1/code/routines/run-budget`, {
       method: 'GET',
       headers: {
-        Cookie: `sessionKeyLC=${trimmed}; sessionKey=${trimmed}`,
-        // Beta header gating + org routing header are both required
-        // (confirmed via live-captured curl from claude.ai/settings/usage).
+        Authorization: `Bearer ${trimmed}`,
+        // Beta header gating + org routing header are both required.
         'anthropic-beta': 'ccr-triggers-2026-01-30',
-        'anthropic-client-platform': 'web_claude_ai',
-        'anthropic-client-version': '1.0.0',
         'anthropic-version': '2023-06-01',
         'x-organization-uuid': orgUuid,
         Accept: '*/*',

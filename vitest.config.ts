@@ -31,6 +31,9 @@ export default defineConfig({
         // as oauth.ts.
         'packages/daemon/src/claude-ai-usage.ts',
         'packages/daemon/src/claude-ai-run-budget.ts',
+        // Inlined base64 app icon consumed by oauth.ts's callback page.
+        // No runtime logic, just a data-URL constant.
+        'packages/daemon/src/logo.ts',
         // Bi-directional file-watcher sync against ~/.claude/settings.json:
         // uses fs.watch on the parent directory; external-integration module.
         'packages/daemon/src/security/permissions/claude-sync.ts',

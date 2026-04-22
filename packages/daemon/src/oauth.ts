@@ -14,6 +14,7 @@ import { createHash, randomBytes } from 'crypto';
 
 import { exec } from 'child_process';
 import type { ClaudeCodeCredentials } from '@claude-sentinel/shared';
+import { SENTINEL_LOGO_DATA_URL } from './logo.js';
 
 /** Sentinel error thrown when a login is intentionally aborted (cancel or restart). */
 export const OAUTH_ABORTED = 'LOGIN_ABORTED';
@@ -120,18 +121,110 @@ async function startCallbackServer(expectedState: string, signal?: AbortSignal):
         return;
       }
 
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(`
-        <html>
-        <head><title>Claude Sentinel</title></head>
-        <body style="font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f5f5f7">
-          <div style="text-align:center">
-            <p style="font-size:24px;font-weight:600;color:#1d1d1f">Signed in!</p>
-            <p style="color:#6e6e73">This window will close automatically.</p>
-          </div>
-        </body>
-        </html>
-      `);
+      // Confirmation page shown after OAuth consent succeeds. Browsers
+      // block `window.close()` on tabs they didn't open via JS, so the
+      // tab doesn't auto-close; the copy tells the user what to do
+      // next. Styling uses the Sentinel app's iOS-blue accent and the
+      // 128×128 app icon (inlined as a data URL by build time) so the
+      // page feels continuous with Sentinel itself.
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Claude Sentinel</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --ios-blue: #007AFF;
+      --bg: #F5F5F7;
+      --card: #FFFFFF;
+      --fg: #1D1D1F;
+      --muted: #6E6E73;
+      --border: rgba(0,0,0,0.08);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0D0D0F;
+        --card: #1E1E1E;
+        --fg: #F5F5F7;
+        --muted: #8E8E93;
+        --border: rgba(255,255,255,0.08);
+      }
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    .shell {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+      box-sizing: border-box;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 40px 36px;
+      text-align: center;
+      max-width: 420px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.08);
+    }
+    .logo {
+      width: 72px;
+      height: 72px;
+      margin: 0 auto 20px;
+      border-radius: 16px;
+      display: block;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .check {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 12px;
+      color: var(--ios-blue);
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .check svg { width: 16px; height: 16px; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="card">
+      <img class="logo" src="${SENTINEL_LOGO_DATA_URL}" alt="Claude Sentinel">
+      <div class="check">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 8.5l3.5 3.5L13 5"></path>
+        </svg>
+        Signed in
+      </div>
+      <h1>Claude Sentinel is ready</h1>
+      <p>You can close this window and return to Sentinel.</p>
+    </div>
+  </div>
+</body>
+</html>`);
       server.close();
       resolve(code);
     });

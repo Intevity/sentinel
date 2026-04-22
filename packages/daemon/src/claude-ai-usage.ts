@@ -1,12 +1,12 @@
 import type { IpcServer } from './ipc.js';
 import type { ClaudeAiUsageSnapshot } from '@claude-sentinel/shared';
-import { readClaudeAiSessionKey } from './accounts.js';
+import { readSentinelCredentials } from './accounts.js';
 import { fetchRunBudget } from './claude-ai-run-budget.js';
 
 /**
- * Shape of Anthropic's `/api/organizations/{org}/usage` response (captured
- * from a live claude.ai /settings/usage request). Undocumented; treat
- * fields defensively.
+ * Shape of Anthropic's `/api/oauth/usage` response. Undocumented; treat
+ * fields defensively. Matches the shape previously returned by
+ * `/api/organizations/{uuid}/usage` — `parseUsage` is unchanged.
  */
 interface RawUsageResponse {
   five_hour?: { utilization?: number; resets_at?: string | null } | null;
@@ -23,7 +23,7 @@ interface RawUsageResponse {
 }
 
 /** Discriminator returned alongside a null snapshot so the UI can distinguish
- *  "you haven't connected yet" from "your cookie expired, please reconnect". */
+ *  "this account has no valid OAuth token" from "the fetch failed in flight." */
 export type UsageFetchError = 'missing_key' | 'auth_expired' | 'network' | 'parse';
 
 export interface UsageFetchResult {
@@ -32,72 +32,46 @@ export interface UsageFetchResult {
 }
 
 const BASE_URL = 'https://api.anthropic.com';
-const CLAUDE_AI_URL = 'https://claude.ai';
+const USAGE_PATH = '/api/oauth/usage';
+/** Beta header required by the OAuth usage endpoint. Matches the value
+ *  the Claude Code CLI sends today (GitHub issue anthropics/claude-code#31021). */
+const OAUTH_BETA = 'oauth-2025-04-20';
 
 /**
- * Fetch usage for an org. Tries `api.anthropic.com` first (no Cloudflare
- * challenge in front of it, cleaner from a daemon process) and falls back
- * to `claude.ai` if that rejects. Both honor the sessionKey cookie when
- * provided; neither accepts the OAuth Bearer we have for anthropic-messaging.
+ * Fetch usage for an org using the OAuth Bearer token Sentinel already has.
+ * Replaces the previous sessionKey-cookie path: `/api/oauth/usage` serves
+ * the same JSON shape that `/api/organizations/{uuid}/usage` did, so
+ * parseUsage is unchanged. The Bearer token is scoped to a single org,
+ * so orgUuid is only needed for the per-user run-budget sub-call (team
+ * plans) — the main usage endpoint derives the org from the token.
  */
 export async function fetchOrgUsage(
   orgUuid: string,
-  sessionKey: string,
+  accessToken: string,
 ): Promise<UsageFetchResult> {
-  const trimmed = sessionKey.trim();
+  const trimmed = accessToken.trim();
   if (!trimmed) return { snapshot: null, error: 'missing_key' };
 
-  // Kick off the per-user run-budget fetch in parallel with the org
-  // usage fetch. On team plans this returns the viewing member's
-  // personal cap + spend (the numbers Sentinel wants to show that
-  // member). On individual plans it 403s and we degrade to null.
-  // Starting the fetch now (rather than after the primary) overlaps
-  // the two RTT windows; the snapshot below awaits both.
+  // Kick off per-user run-budget in parallel with the org usage fetch.
+  // Team plans return numbers here; Pro/Max return 403/404 and the call
+  // resolves to null, in which case the UI falls back to extraUsage.
   const runBudgetPromise = fetchRunBudget(orgUuid, trimmed).catch(() => null);
 
-  // Send BOTH cookie names. claude.ai's current web deployment sets the
-  // session token under `sessionKeyLC` (confirmed via DevTools
-  // document.cookie enumeration — the `LC` suffix is a production
-  // naming that the Anthropic backend now expects). Older deployments
-  // accepted bare `sessionKey`; we ship both so a single captured token
-  // works across whatever rollout Anthropic has routed this request to.
-  // Both entries point at the same secret — whichever the server
-  // validates will match.
   const headers: Record<string, string> = {
-    Cookie: `sessionKeyLC=${trimmed}; sessionKey=${trimmed}`,
-    // `web_claude_ai` client header mirrors what a real browser sends; some
-    // edges on anthropic's backend gate on it.
-    'anthropic-client-platform': 'web_claude_ai',
-    'anthropic-client-version': '1.0.0',
+    Authorization: `Bearer ${trimmed}`,
+    'anthropic-beta': OAUTH_BETA,
+    'Content-Type': 'application/json',
     Accept: 'application/json',
   };
 
-  // Primary: api.anthropic.com (no CF in front of this particular API host
-  // today, so daemon requests aren't challenged).
   let resp: Response;
   try {
-    resp = await fetch(`${BASE_URL}/api/organizations/${orgUuid}/usage`, {
+    resp = await fetch(`${BASE_URL}${USAGE_PATH}`, {
       method: 'GET',
       headers,
     });
   } catch {
     return { snapshot: null, error: 'network' };
-  }
-
-  // Fallback: some accounts or Anthropic regions may route differently;
-  // try claude.ai host if the API host 404s or the session isn't
-  // recognized there. claude.ai has Cloudflare bot protection but
-  // accepts server-to-server requests with only `Cookie: sessionKey` on
-  // the API subpath (no browser-fingerprint challenge for /api/* today).
-  if (resp.status === 404 || resp.status === 401) {
-    try {
-      resp = await fetch(`${CLAUDE_AI_URL}/api/organizations/${orgUuid}/usage`, {
-        method: 'GET',
-        headers,
-      });
-    } catch {
-      return { snapshot: null, error: 'network' };
-    }
   }
 
   if (resp.status === 401 || resp.status === 403) {
@@ -140,33 +114,22 @@ export function parseUsage(raw: RawUsageResponse): ClaudeAiUsageSnapshot {
   const extra = raw.extra_usage ?? null;
 
   // Server sends utilization on the 0-100 percent scale for the window
-  // members but 0-100 for extra_usage too. Normalize to 0-1 for 5h/7d to
-  // match our existing RateLimitWindow type; leave extra_usage as percent
-  // since the UI presents it as dollars + a percentage readout.
+  // members but 0-1 fraction in some rollouts. Normalize both to 0-1
+  // to match our RateLimitWindow type.
   const utilFraction = (v: number | undefined | null): number | null => {
     if (v == null || !Number.isFinite(v)) return null;
-    // Observed live: `"five_hour": { "utilization": 0.0 }` where 1.0 means
-    // fully used. But `"seven_day": { "utilization": 29.0 }` where 100 means
-    // fully used. Defensive: if the value looks like a percent (>1.01 and
-    // ≤100) scale down; if it looks like a fraction (≤1.0) leave alone.
+    // If the value looks like a percent (>1.01 and ≤100), scale down.
+    // If it looks like a fraction (≤1.0), leave alone.
     if (v > 1.01 && v <= 100) return v / 100;
     return v;
   };
 
-  // Anthropic's `/api/organizations/{org}/usage` response has two
-  // spend-ish fields under extra_usage on individual (Max/Pro) plans:
-  //   - `used_credits`: a per-credit counter, NOT equivalent to
-  //     dollar spend — for team plans this value is a team-wide
-  //     credit counter that doesn't map to actual per-user dollars.
-  //   - `utilization`: the percent (0-100) of the cap consumed. The
-  //     canonical spend signal for individual plans — always matches
-  //     what the claude.ai /settings/usage page displays.
-  // For team plans `utilization` comes back as null (confirmed live),
-  // which is why we fall back to the per-user run-budget endpoint.
-  // Here we always compute `usedUsd = (utilization/100) * limit` so
-  // the number matches claude.ai's own display exactly on individual
-  // plans and naturally sits at 0 on team plans (where both fields
-  // are null and perUserBudget takes over in the UI).
+  // `extra_usage` shape varies by plan:
+  //   - Max/Pro: `monthly_limit` and `utilization` both populated.
+  //   - Team: `monthly_limit` and `utilization` are null (admin-only);
+  //     `used_credits` is the team-wide total. The UI relies on
+  //     `perUserBudget` from the run-budget endpoint for per-member
+  //     figures and shows this as the team-wide context.
   const extraUsage: ClaudeAiUsageSnapshot['extraUsage'] =
     extra && typeof extra.is_enabled === 'boolean'
       ? {
@@ -189,38 +152,36 @@ export function parseUsage(raw: RawUsageResponse): ClaudeAiUsageSnapshot {
     sevenDaySonnetUtilization: utilFraction(sonnet?.utilization),
     sevenDaySonnetResetsAt: sonnet?.resets_at ?? null,
     extraUsage,
-    // Populated by fetchOrgUsage after parseUsage — parseUsage itself
-    // doesn't know about the per-user budget endpoint. Default null
-    // here so callers (tests, UI fallback paths) always see the
-    // expected shape even if perUserBudget never gets set.
+    // Populated by fetchOrgUsage after parseUsage.
     perUserBudget: null,
     fetchedAt: Date.now(),
   };
 }
 
-/** Cents → dollars, with null guard. Anthropic sends `monthly_limit: 10000`
- *  meaning $100.00; dividing by 100 keeps our types in dollars everywhere. */
+/** Cents → dollars, with null guard. */
 function toUsd(minorUnits: number | null | undefined): number {
   if (minorUnits == null || !Number.isFinite(minorUnits)) return 0;
   return minorUnits / 100;
 }
 
-/** How often to poll the usage endpoint when a sessionKey is configured.
- *  Claude.ai's own UI appears to cache for ~30s; 5 minutes is plenty for
- *  a background budget display while staying well inside any sensible rate
- *  limit Anthropic might apply. */
+/** How often to poll the usage endpoint. Claude Code caches its own
+ *  response for 1 hour; the OAuth usage host rate-limits aggressively
+ *  (anthropics/claude-code#31021 reports 429s under heavy polling).
+ *  5 minutes is a conservative middle ground: fresh enough for a
+ *  background budget display, well below the 1h the CLI uses. */
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
-/** Back-off after an auth_expired error — the cookie is stale and won't
- *  recover until the user re-logs in. Don't keep hammering. */
+/** Back-off after auth_expired — the token refresher will pick it up
+ *  soon, but don't re-hammer the endpoint in the meantime. */
 const AUTH_EXPIRED_BACKOFF_MS = 30 * 60 * 1000;
 
 export interface ClaudeAiUsageStoreDeps {
   ipcServer: IpcServer;
-  /** Maps Sentinel account id → org UUID. Orgs are keyed that way in the
-   *  usage URL, and AccountInfo carries both. */
+  /** Maps Sentinel account id → org UUID. Needed for the per-user
+   *  run-budget sub-call; the main usage endpoint derives org from
+   *  the token itself. */
   getOrgUuid: (accountId: string) => string | null;
   /** List of Sentinel ids we should poll for. Typically every enrolled
-   *  account; the store skips accounts with no sessionKey configured. */
+   *  account; the store skips accounts with no stored credential. */
   getAccountIds: () => string[];
   /** Test seam: swap fetch for a stub. */
   fetch?: typeof fetchOrgUsage;
@@ -292,8 +253,8 @@ export class ClaudeAiUsageStore {
     return this.lastError.get(accountId) ?? null;
   }
 
-  /** Force an immediate fetch for a specific account (used on
-   *  `set_claude_ai_session_key` so the UI doesn't wait for the poller). */
+  /** Force an immediate fetch for a specific account (used after account
+   *  add / token refresh so the UI doesn't wait for the poller). */
   async refresh(accountId: string): Promise<void> {
     await this.fetchOne(accountId, /* force */ true);
   }
@@ -308,9 +269,9 @@ export class ClaudeAiUsageStore {
   }
 
   private async fetchOne(accountId: string, force: boolean): Promise<void> {
-    const sessionKey = readClaudeAiSessionKey(accountId);
+    const creds = readSentinelCredentials(accountId);
     const orgUuid = this.deps.getOrgUuid(accountId);
-    if (!sessionKey) {
+    if (!creds?.accessToken) {
       this.recordFailure(accountId, 'missing_key', force);
       return;
     }
@@ -318,7 +279,7 @@ export class ClaudeAiUsageStore {
       this.recordFailure(accountId, 'parse', force);
       return;
     }
-    const result = await this.fetchImpl(orgUuid, sessionKey);
+    const result = await this.fetchImpl(orgUuid, creds.accessToken);
     if (result.error) {
       this.recordFailure(accountId, result.error, force);
       return;
@@ -340,15 +301,15 @@ export class ClaudeAiUsageStore {
   }
 
   private recordFailure(accountId: string, error: UsageFetchError, force: boolean): void {
-    // Longer backoff for auth expiry — the cookie is dead until user
-    // re-logs in. `force` (on-demand refresh) bypasses the cooldown.
+    // Longer backoff for auth expiry — the refresher handles recovery.
+    // `force` (on-demand refresh) bypasses the cooldown.
     const backoff = error === 'auth_expired' && !force ? AUTH_EXPIRED_BACKOFF_MS : POLL_INTERVAL_MS;
     this.nextPollAt.set(accountId, this.clock() + backoff);
     this.lastError.set(accountId, error);
     // Don't zero out the snapshot on transient failures — the UI keeps
     // showing the last-known good numbers with a warning indicator. Only
     // missing_key clears the snapshot (there's nothing meaningful cached
-    // when no key was ever set).
+    // when no credential is available).
     if (error === 'missing_key') this.snapshots.delete(accountId);
     this.deps.ipcServer.broadcast({
       type: 'claude_ai_usage_updated',

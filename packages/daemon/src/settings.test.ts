@@ -259,6 +259,7 @@ describe('settings', () => {
       expect(bad.securitySetupCompleted).toBe(DEFAULT_SETTINGS.securitySetupCompleted);
       expect(bad.tourCompleted).toBe(DEFAULT_SETTINGS.tourCompleted);
     });
+
   });
 
   describe('saveSettings', () => {

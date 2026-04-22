@@ -41,7 +41,6 @@ import { useDaemon } from './hooks/useDaemon.js';
 import { useDaemonErrors } from './hooks/useDaemonErrors.js';
 import { useSettings } from './hooks/useSettings.js';
 import { useNativeAlertNotifications } from './hooks/useNotifications.js';
-import { usePendingSiblings } from './hooks/usePendingSiblings.js';
 import { planLabel, planColor } from './lib/plan.js';
 import { DUR, EASE_STD } from './lib/motion.js';
 import { sendToSentinel } from './lib/ipc.js';
@@ -183,14 +182,13 @@ export default function App(): React.ReactElement {
 
   // First-run security setup wizard. Opens once per install (tracked via
   // settings.securitySetupCompleted) after the user has added at least one
-  // account and any sibling-enrollment walk has finished.
+  // account.
   //
   // Gated behind tour completion: a user seeing the app for the first
   // time should finish the tour before being asked to pick a risk
   // profile; otherwise the wizard hides the tour.
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardForceOpen, setWizardForceOpen] = useState(false);
-  const { pending: siblingsPending } = usePendingSiblings();
   // Mirror of `tourClosedThisSession` for the wizard: once the user
   // closes it (Apply / Skip / X), don't re-open while the
   // `securitySetupCompleted: true` broadcast is still in flight.
@@ -213,7 +211,6 @@ export default function App(): React.ReactElement {
     if (wizardClosedThisSession.current) return;
     if (settings.securitySetupCompleted) return;
     if (accounts.length === 0) return;
-    if (siblingsPending) return;
     // Defer the wizard until the tour is finished. `tourCompleted`
     // flips to true inside `finishTour` as soon as the user skips or
     // completes the last step, so this effect re-runs naturally and
@@ -226,7 +223,6 @@ export default function App(): React.ReactElement {
     settings?.securitySetupCompleted,
     settings?.tourCompleted,
     accounts.length,
-    siblingsPending,
     wizardOpen,
     wizardForceOpen,
     tourOpen,

@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
-import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel } from '../lib/ipc.js';
 import type {
   RateLimitWindow,
@@ -166,17 +165,18 @@ interface OverageMeterRowProps {
    *  `inUse` flag; the numeric dollar values themselves come from the
    *  claude.ai usage endpoint (ClaudeAiUsageSnapshot.extraUsage). */
   window: RateLimitWindow;
-  /** Anthropic's usage snapshot for the viewed account. `null` when no
-   *  sessionKey is configured yet or the first fetch hasn't landed. */
+  /** Anthropic's usage snapshot for the viewed account. `null` when the
+   *  first fetch hasn't landed yet or the account has no stored OAuth
+   *  credential. */
   usage: ClaudeAiUsageSnapshot | null;
   /** Error discriminator from the latest fetch, or null on success. Drives
-   *  the "Connect claude.ai" CTA vs "Reconnect" vs "Retry" copy. */
+   *  the "Reconnect" CTA copy when the token's gone bad. */
   usageError: 'missing_key' | 'auth_expired' | 'network' | 'parse' | null;
   /** User-configured Sentinel cap for the viewed account, or null if none
    *  is set. When null, the Sentinel sub-bar is suppressed. */
   sentinelCapUsd: number | null;
-  /** Sentinel account id — passed to `start_claude_ai_login` when the CTA
-   *  is clicked. */
+  /** Sentinel account id — used to route the Reconnect CTA to the right
+   *  account via `start_login`. */
   accountId: string | null;
   /** Paused-state metadata for the viewed account (null when not paused). */
   pauseState: PausedState | null;
@@ -246,39 +246,36 @@ function OverageMeterRow({
   const showAnthropic = teamPerUserValid || individualAnthropicValid;
   const showSentinel = sentinelCapUsd != null && sentinelCapUsd > 0 && !!extra && !isTeam;
 
-  // No sessionKey and no cap → two render paths:
+  // No overage data yet → two render paths:
   //
-  // (a) Genuinely no sessionKey yet (`missing_key`): the per-window util%
-  //     we'd otherwise render here is a rate-limit number that reads as
-  //     "0 / 100% usage" to a user who hasn't told Sentinel about their
-  //     claude.ai cookie. That framing is misleading — the overage
-  //     section is about dollar spend, not rate-limit buckets, and we
-  //     have no dollar data until the user connects. Swap the meter for
-  //     a prominent CTA that makes the action obvious.
+  // (a) `missing_key` / `auth_expired`: the account's OAuth token is
+  //     missing or rejected. Auto-refresh usually fixes auth_expired
+  //     within seconds; persistent failures mean the refresh token
+  //     itself is dead. Surface a Reconnect CTA that reruns OAuth so
+  //     the user ends up with a fresh credential without hunting
+  //     through Settings.
   //
   // (b) Any other state (network error, snapshot still loading, or
   //     connected but without overage enabled): fall back to the plain
   //     ProgressRow so at least the rate-limit util% the proxy sees
   //     still shows something. The dollar overlay is skipped.
   if (!showAnthropic && !showSentinel) {
-    if (usageError === 'missing_key' && accountId) {
+    if ((usageError === 'missing_key' || usageError === 'auth_expired') && accountId) {
       return (
         <div className="rounded-xl bg-ios-blue/[0.08] dark:bg-ios-blue/[0.12] border border-ios-blue/20 p-3 flex items-center gap-3">
           <div className="flex-1 min-w-0">
             <p className="text-[12px] font-semibold text-black dark:text-white leading-tight">
-              Connect claude.ai to track overage spend
+              {usageError === 'auth_expired' ? 'Sign-in expired' : 'Sign-in required'}
             </p>
             <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
-              Dollar-denominated usage + weekly caps unlock once your session cookie is captured.
+              Reconnect to refresh your subscription usage and overage spend.
             </p>
           </div>
           <button
-            onClick={() =>
-              void invoke('start_claude_ai_login', { accountId }).catch(() => undefined)
-            }
+            onClick={() => void sendToSentinel({ type: 'start_login' }).catch(() => undefined)}
             className="shrink-0 text-[11px] font-semibold text-white bg-ios-blue hover:brightness-110 px-3 py-1.5 rounded-full transition"
           >
-            Connect
+            Reconnect
           </button>
         </div>
       );
@@ -356,10 +353,10 @@ function OverageMeterRow({
 
       {usageError === 'auth_expired' && accountId && (
         <button
-          onClick={() => void invoke('start_claude_ai_login', { accountId }).catch(() => undefined)}
+          onClick={() => void sendToSentinel({ type: 'start_login' }).catch(() => undefined)}
           className="w-full text-left text-[11px] text-ios-orange hover:underline"
         >
-          Your claude.ai session expired. Reconnect to refresh numbers →
+          Sign-in expired. Reconnect to refresh numbers →
         </button>
       )}
 

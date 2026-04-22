@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshCw, Plus, Loader2, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { invoke } from '@tauri-apps/api/core';
 import AccountCard from './AccountCard.js';
 import { useAccounts } from '../hooks/useAccounts.js';
 import {
@@ -98,30 +97,6 @@ export default function AccountSwitcher({
   const [rrSuggestionVisible, setRrSuggestionVisible] = useState(false);
   const [enablingRoundRobin, setEnablingRoundRobin] = useState(false);
 
-  // Sibling enrollment prompt state. Fired by the daemon after a
-  // sessionKey is captured when `/api/bootstrap` reveals additional
-  // chat-capable orgs the user can access with the same login.
-  //
-  // `siblingOffer` is the latest broadcast payload (email + remaining
-  // org list). When non-null the banner is visible. `siblingAdding`
-  // tracks whether we're currently walking the user through adding
-  // them — once set, each `login_complete` automatically kicks off
-  // OAuth for the next sibling instead of waiting for another click.
-  const [siblingOffer, setSiblingOffer] = useState<{
-    email: string;
-    orgs: Array<{ orgUuid: string; orgName: string }>;
-  } | null>(null);
-  const [siblingAdding, setSiblingAdding] = useState(false);
-  // Mirror to a ref so the login_complete callback can read the live
-  // value without forcing the effect to re-subscribe on every change.
-  const siblingAddingRef = useRef(false);
-  useEffect(() => {
-    siblingAddingRef.current = siblingAdding;
-  }, [siblingAdding]);
-  const siblingOfferRef = useRef<typeof siblingOffer>(null);
-  useEffect(() => {
-    siblingOfferRef.current = siblingOffer;
-  }, [siblingOffer]);
   const prevAccountCountRef = useRef<number>(accounts.length);
   useEffect(() => {
     const prev = prevAccountCountRef.current;
@@ -187,65 +162,9 @@ export default function AccountSwitcher({
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     onDaemonMessage((msg) => {
-      if (msg.type === 'additional_orgs_available') {
-        // Daemon has just discovered the user has more chat-capable
-        // orgs on this sessionKey than we have Sentinel rows for. The
-        // list is incremental — re-broadcast after each sibling is
-        // added with the remainder. Empty list means we're done.
-        if (msg.orgs.length === 0) {
-          setSiblingOffer(null);
-          setSiblingAdding(false);
-        } else {
-          setSiblingOffer({ email: msg.email, orgs: msg.orgs });
-          // If we're mid-walk (user clicked Add Remaining earlier),
-          // auto-advance to the next OAuth round. The next broadcast
-          // after that round completes will either narrow the list or
-          // clear it.
-          if (siblingAddingRef.current) {
-            void (async () => {
-              try {
-                await sendToSentinel({ type: 'start_login' });
-                setLoggingIn(true);
-              } catch {
-                setSiblingAdding(false);
-                setStatusMessage({
-                  text: 'Failed to start login for the next account.',
-                  kind: 'error',
-                });
-              }
-            })();
-          }
-        }
-        return;
-      }
-      if (msg.type === 'oauth_authorize_url') {
-        // Daemon has generated the OAuth authorize URL and wants it
-        // opened. We hand it to a Tauri WebviewWindow instead of the
-        // system browser so claude.ai's cookies land in the app's own
-        // cookie store — the Connect claude.ai flow that fires after
-        // the new account appears then finds the sessionKey without
-        // a second login. `orgUuidHint`, when present, tells the Rust
-        // side to warm up the WKHTTPCookieStore with the target
-        // org's `lastActiveOrg` cookie before navigating to the
-        // OAuth URL, so claude.ai preselects the right org and skips
-        // the chooser (used by the sibling-enrollment walk). Errors
-        // are logged but not surfaced; the daemon's callback server
-        // stays alive either way.
-        void invoke('open_oauth_webview', {
-          url: msg.url,
-          ...(msg.orgUuidHint ? { orgUuidHint: msg.orgUuidHint } : {}),
-        }).catch((e: unknown) => {
-          console.warn('[OAuth] open_oauth_webview failed:', e);
-        });
-        return;
-      }
       if (msg.type === 'login_complete') {
         setLoggingIn(false);
         if (!msg.email) {
-          // A failed/cancelled login aborts any in-flight sibling walk;
-          // resuming would surprise the user (they likely cancelled on
-          // purpose).
-          setSiblingAdding(false);
           setStatusMessage({ text: 'Login failed or was cancelled.', kind: 'error' });
           return;
         }
@@ -256,7 +175,7 @@ export default function AccountSwitcher({
           // their claude.ai browser was still on the one they already had.
           setStatusMessage({
             text:
-              `Signed in to ${msg.orgName ?? msg.email} — this org was already added, token refreshed.\n` +
+              `Signed in to ${msg.orgName ?? msg.email}: this org was already added, token refreshed.\n` +
               `To add a different org for the same email, open claude.ai, switch the org selector ` +
               `(top-left sidebar) to the org you want, then click Add Account again.`,
             kind: 'info',
@@ -273,41 +192,7 @@ export default function AccountSwitcher({
           for (const a of accounts) if (a.email === msg.email) next.delete(a.id);
           return next;
         });
-        void (async () => {
-          await refreshAccounts();
-          // Auto-kick the Connect claude.ai flow for the freshly-
-          // added account. The OAuth webview we just opened left
-          // claude.ai cookies (including the HttpOnly sessionKey) in
-          // the shared WKHTTPCookieStore; the claude.ai login webview
-          // that `start_claude_ai_login` spins up will scrape them in
-          // <200ms without requiring a second user login. Skip when
-          // it's a re-auth of an existing account — that path
-          // already keeps whatever sessionKey the user previously
-          // captured and auto-reconnecting would surprise them.
-          // Also skip when this was a silent-sibling enrollment:
-          // that path has already mirrored the sessionKey in the
-          // daemon, and auto-kicking Connect would pop a visible
-          // webview, erasing the "no window" UX we just shipped.
-          if (msg.reauth || msg.silent) return;
-          // Find the latest account row for this email. The daemon
-          // upserts synchronously before broadcasting, so by the
-          // time refreshAccounts returns it's in state. Take the one
-          // with the highest createdAt (most recent) to disambiguate
-          // same-email + different-org cases.
-          const latest = await sendToSentinel<import('@claude-sentinel/shared').AccountInfo[]>({
-            type: 'refresh_accounts',
-          });
-          if (!latest.success || !latest.data) return;
-          const candidate = latest.data
-            .filter((a) => a.email === msg.email)
-            .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0];
-          if (!candidate) return;
-          try {
-            await invoke('start_claude_ai_login', { accountId: candidate.id });
-          } catch (e) {
-            console.warn('[OAuth] auto-connect after login_complete failed:', e);
-          }
-        })();
+        void refreshAccounts();
       } else if (msg.type === 'token_refresh_failed') {
         if (msg.reason === 'expired') {
           setExpiredAccountIds((prev) => new Set(prev).add(msg.accountId));
@@ -380,39 +265,6 @@ export default function AccountSwitcher({
     setPurgingId(null);
     setStatusMessage({ text: result.message, kind: result.success ? 'success' : 'error' });
     if (result.success) setTimeout(() => setStatusMessage(null), 4000);
-  };
-
-  const handleAddRemainingSiblings = async (): Promise<void> => {
-    setSiblingAdding(true);
-    setStatusMessage(null);
-    const firstMissing = siblingOffer?.orgs[0]?.orgUuid;
-    const email = siblingOffer?.email;
-    if (!firstMissing || !email) {
-      setSiblingAdding(false);
-      return;
-    }
-    // Silent server-to-server enrollment: reuses the shared sessionKey
-    // to pull an OAuth token for the target org without opening any
-    // webview. The daemon falls back to the browser/webview flow
-    // automatically if claude.ai refuses the silent path (Cloudflare
-    // challenge, sessionKey expired, etc.), so the user still gets
-    // enrolled in that case — just with a visible window.
-    try {
-      await sendToSentinel({
-        type: 'silent_sibling_login',
-        email,
-        orgUuidHint: firstMissing,
-      });
-      setLoggingIn(true);
-    } catch {
-      setSiblingAdding(false);
-      setStatusMessage({ text: 'Failed to start login.', kind: 'error' });
-    }
-  };
-
-  const handleDismissSiblingOffer = (): void => {
-    setSiblingOffer(null);
-    setSiblingAdding(false);
   };
 
   const handleAddAccount = async (): Promise<void> => {
@@ -603,63 +455,6 @@ export default function AccountSwitcher({
         )}
       </AnimatePresence>
 
-      {/* Sibling account enrollment offer. Daemon fires
-          `additional_orgs_available` after sessionKey capture when
-          claude.ai reports the signed-in user has more chat-capable
-          orgs than Sentinel has rows for. We surface the list with
-          friendly org names and offer to walk the user through
-          adding them one OAuth round at a time. Re-broadcasts after
-          each added sibling narrow the list; empty list auto-clears
-          this banner. */}
-      <AnimatePresence initial={false}>
-        {siblingOffer && (
-          <motion.div
-            {...TRANSIENT_ANIM}
-            className="overflow-hidden rounded-2xl bg-ios-blue/[0.08] dark:bg-ios-blue/[0.12] ring-1 ring-ios-blue/20"
-          >
-            <div className="px-4 py-3">
-              <p className="text-[12px] font-semibold text-ios-blue mb-1">
-                {siblingAdding
-                  ? `Add ${siblingOffer.orgs[0]?.orgName || 'the next org'} next`
-                  : `More accounts for ${siblingOffer.email}`}
-              </p>
-              <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
-                {siblingAdding
-                  ? 'Sign in at claude.ai and pick this org when the chooser appears:'
-                  : `You have ${siblingOffer.orgs.length} more claude.ai ${siblingOffer.orgs.length === 1 ? 'account' : 'accounts'} on this login. Add ${siblingOffer.orgs.length === 1 ? 'it' : 'them'}?`}
-              </p>
-              <ul className="text-[11px] text-black dark:text-white mb-2.5 space-y-0.5">
-                {siblingOffer.orgs.map((o, i) => (
-                  <li
-                    key={o.orgUuid}
-                    className={i === 0 && siblingAdding ? 'font-semibold text-ios-blue' : ''}
-                  >
-                    • {o.orgName || o.orgUuid}
-                  </li>
-                ))}
-              </ul>
-              {!siblingAdding && (
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => void handleAddRemainingSiblings()}
-                    disabled={loggingIn}
-                    className="flex-1 text-[12px] font-semibold text-white bg-ios-blue hover:opacity-90 active:scale-95 px-3 py-1.5 rounded-full transition-all disabled:opacity-50"
-                  >
-                    {siblingOffer.orgs.length === 1 ? 'Add account' : 'Add all'}
-                  </button>
-                  <button
-                    onClick={handleDismissSiblingOffer}
-                    className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
-                  >
-                    Not now
-                  </button>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Login in progress hint */}
       <AnimatePresence initial={false}>
         {loggingIn && (
@@ -675,7 +470,6 @@ export default function AccountSwitcher({
                 onClick={() => {
                   void sendToSentinel({ type: 'cancel_login' }).catch(() => {});
                   setLoggingIn(false);
-                  setSiblingAdding(false);
                 }}
                 className="text-[11px] text-ios-blue/60 hover:text-ios-blue ml-2 shrink-0"
               >
