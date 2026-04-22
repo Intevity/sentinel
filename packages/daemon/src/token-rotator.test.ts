@@ -306,8 +306,10 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     seed(db, 'b', 'b@x');
     const store = new RateLimitStore();
     // `a` resets later but has low utilization; `b` resets soonest.
+    // Both utils stay under the default buffer threshold so they're
+    // eligible — this test covers strategy, not the buffer gate.
     setResetAndUtil(store, 'a', 1_000_000, 0.1);
-    setResetAndUtil(store, 'b', 500_000, 0.9);
+    setResetAndUtil(store, 'b', 500_000, 0.7);
     const rotator = new TokenRotator(
       db,
       store,
@@ -345,7 +347,9 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     seed(db, 'unknown', 'u@x');
     const store = new RateLimitStore();
     // `known` has a reset; `unknown` has no rate-limit data at all.
-    setResetAndUtil(store, 'known', 10_000, 0.9);
+    // Keep util under the default buffer threshold so `known` isn't
+    // removed by the at-threshold skip — this test is about no-reset data.
+    setResetAndUtil(store, 'known', 10_000, 0.5);
     const rotator = new TokenRotator(
       db,
       store,
@@ -588,10 +592,11 @@ describe('TokenRotator overage gate', () => {
     expect(rotator.pick()?.accountId).toBe('spare');
   });
 
-  it('does not treat saturated accounts as overage when overage-status is not "allowed"', () => {
-    // An account at 100% util with overage disabled is not "about to spend
-    // overage" — it's just exhausted. The rotator's existing blocked-status
-    // skip covers that case; the overage gate should NOT claim it.
+  it('skips saturated accounts even when overage-status is not "allowed"', () => {
+    // An account at 100% util with overage disabled can't spill into
+    // overage, but it can (and will) return 429s on the next request.
+    // The buffer gate protects Claude Code from that cliff the same way
+    // it does for opted-out allowed accounts — skip entirely.
     const db = getDb(dbPath);
     seed(db, 'exhausted', 'e@x');
     const store = new RateLimitStore();
@@ -606,10 +611,7 @@ describe('TokenRotator overage gate', () => {
       () => 'balance',
       () => new Set(), // not opted in
     );
-    // `exhausted` has overage disabled so isn't "will use overage" — the
-    // rotator keeps it in the fresh tier and picks it (the proxy will then
-    // observe Anthropic's 429 and the overage machine will react).
-    expect(rotator.pick()?.accountId).toBe('exhausted');
+    expect(rotator.pick()).toBeNull();
   });
 
   it('skips paused accounts entirely (paused wins over any other gate)', () => {
@@ -794,16 +796,19 @@ describe('TokenRotator overage gate', () => {
     expect(rotator.pick()).toBeNull();
   });
 
-  it('buffer gate ignores overage status=disabled (same as pre-fix)', () => {
-    // Defensive: even a big buffer shouldn't treat a saturated-but-
-    // overage-disabled account as "will burn overage" — there's no
-    // overage to burn. Exactly-saturated + disabled still uses the
-    // blocked-status skip, not our gate.
+  it('buffer gate applies to overage-disabled accounts (keeps RR alive before 429)', () => {
+    // An account whose owner disabled overage on claude.ai still benefits
+    // from the buffer: the purpose isn't only cost control, it's keeping
+    // Claude Code running. A disabled account at 95% is one request away
+    // from a hard 429, so the rotator must rotate off it just like it
+    // does for an allowed-but-opted-out account.
     const db = getDb(dbPath);
     seed(db, 'capped', 'c@x');
+    seed(db, 'spare', 's@x');
     const store = new RateLimitStore();
     setSession(store, 'capped', 0.95);
     setOverage(store, 'capped', { status: 'disabled' });
+    setSession(store, 'spare', 0.2);
 
     const rotator = new TokenRotator(
       db,
@@ -815,7 +820,59 @@ describe('TokenRotator overage gate', () => {
       () => new Set(),
       () => 10,
     );
-    expect(rotator.pick()?.accountId).toBe('capped');
+    expect(rotator.pick()?.accountId).toBe('spare');
+    expect(rotator.pick()?.accountId).toBe('spare');
+  });
+
+  it('opt-in cannot rescue an overage-disabled account past the buffer', () => {
+    // Opting a disabled account in doesn't conjure overage that claude.ai
+    // has turned off. The rotator still skips it entirely at threshold so
+    // the pool rotates to a fresh candidate.
+    const db = getDb(dbPath);
+    seed(db, 'capped', 'c@x');
+    seed(db, 'spare', 's@x');
+    const store = new RateLimitStore();
+    setSession(store, 'capped', 0.96);
+    setOverage(store, 'capped', { status: 'disabled' });
+    setSession(store, 'spare', 0.1);
+
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'capped' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(['capped']), // opted in but overage unavailable
+      () => new Set(),
+      () => 10,
+    );
+    expect(rotator.pick()?.accountId).toBe('spare');
+  });
+
+  it('buffer gate applies to accounts with no overage window at all', () => {
+    // API-key / legacy plans don't report an overage window. Under the old
+    // logic these sailed to 100%; now they're treated the same as disabled
+    // accounts and rotate off at the buffer threshold.
+    const db = getDb(dbPath);
+    seed(db, 'legacy', 'l@x');
+    seed(db, 'fresh', 'f@x');
+    const store = new RateLimitStore();
+    setSession(store, 'legacy', 0.95);
+    // intentionally no setOverage for 'legacy' — window absent
+    setSession(store, 'fresh', 0.3);
+
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'legacy' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(),
+      () => new Set(),
+      () => 10,
+    );
+    expect(rotator.pick()?.accountId).toBe('fresh');
+    expect(rotator.pick()?.accountId).toBe('fresh');
   });
 
   // ── Sonnet saturation gate ────────────────────────────────────────
@@ -931,6 +988,10 @@ describe('TokenRotator overage gate', () => {
     const store = new RateLimitStore();
     setSession(store, 'saturated', 0.3);
     setSonnet(store, 'saturated', 1.0);
+    // Sonnet-saturated accounts spill into the monthly overage pool;
+    // Anthropic reports `overage-status: allowed` in that case, which
+    // the overage tier now requires before accepting a candidate.
+    setOverage(store, 'saturated', { status: 'allowed' });
 
     const rotator = new TokenRotator(
       db,

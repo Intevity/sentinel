@@ -158,3 +158,29 @@ export class SonnetSaturationMachine {
     return this.states.get(accountId)?.isSaturated ?? false;
   }
 }
+
+/**
+ * Build the notification body for an `entered` Sonnet saturation event.
+ * Pure so the wiring in index.ts can stay simple and the two copy paths
+ * stay unit-tested. `who` is whatever identifier the UI should show
+ * (email preferred, account id fallback).
+ *
+ * The two branches reflect what Sentinel will actually do next:
+ *
+ *   optedIn  — proxy lets further Sonnet requests through; Anthropic
+ *              bills them against the monthly overage pool.
+ *   not-in   — proxy's Sonnet short-circuit returns 503 for further
+ *              Sonnet requests on this account, so the accurate message
+ *              is "will be blocked", not "will draw from overage".
+ */
+export function buildSonnetSaturationBody(
+  who: string,
+  utilization: number,
+  optedIn: boolean,
+): string {
+  const pct = (utilization * 100).toFixed(1);
+  if (optedIn) {
+    return `${who} has used ${pct}% of its Sonnet 7-day window. Further Sonnet requests will draw from overage.`;
+  }
+  return `${who} has used ${pct}% of its Sonnet 7-day window. Further Sonnet requests will be blocked by Sentinel. Switch accounts, use a non-Sonnet model, or enable overage in Settings.`;
+}

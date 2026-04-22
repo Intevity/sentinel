@@ -300,10 +300,53 @@ describe('startAlertEvaluator (per-account)', () => {
     const ipc = ipcStub();
     startAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
-    updateSessionWindow(store, 'acc-a', 0.85, 111);
-    updateSessionWindow(store, 'acc-a', 0.85, 222);
+    // Second reset must be far enough ahead to clear the dedup tolerance —
+    // a real 5h window advance (18000 sec) is comfortably past it.
+    updateSessionWindow(store, 'acc-a', 0.85, 1_000_000);
+    updateSessionWindow(store, 'acc-a', 0.85, 1_018_000);
 
     expect(ipc.broadcasts).toHaveLength(2);
+  });
+
+  it('does not re-fire when the reset timestamp jitters within the same window', () => {
+    // Regression: two data sources (proxy headers + claude.ai sync) can
+    // report the same logical 5h window reset as 1-second-apart values.
+    // Strict equality would treat every flip between the two as a new
+    // window and re-fire; the tolerance check must swallow the jitter.
+    const db = getDb(dbPath);
+    upsertAlert(db, { scope: 'account', accountId: 'acc-a', thresholdPct: 75, enabled: true });
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    startAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateSessionWindow(store, 'acc-a', 1.08, 1_776_909_600);
+    updateSessionWindow(store, 'acc-a', 1.0, 1_776_909_601);
+    updateSessionWindow(store, 'acc-a', 1.08, 1_776_909_600);
+
+    expect(ipc.broadcasts).toHaveLength(1);
+  });
+
+  it('does not re-fire after an update drops session.reset to null', () => {
+    // Regression: a previously-known reset followed by an update with no
+    // reset header must not be treated as a new window. The evaluator
+    // falls back to resetTs=0, and the tolerance check's `resetTs > 0`
+    // guard keeps the alert silent.
+    const db = getDb(dbPath);
+    upsertAlert(db, { scope: 'account', accountId: 'acc-a', thresholdPct: 75, enabled: true });
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    startAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateSessionWindow(store, 'acc-a', 0.95, 1_776_909_600);
+    // Second update carries utilization + status but no reset — after the
+    // rate-limit-store merge, reset stays populated (header path preserves
+    // missing fields), so this is a same-window update.
+    store.update('acc-a', {
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
+      'anthropic-ratelimit-unified-5h-utilization': '1.0',
+    });
+
+    expect(ipc.broadcasts).toHaveLength(1);
   });
 
   it('ignores disabled alerts', () => {
@@ -520,18 +563,47 @@ describe('startPoolAlertEvaluator', () => {
       getSettings: () => rrSettings(),
     });
 
-    // Both above threshold; min(reset)=200.
-    updateSessionWindow(store, 'a', 0.8, 200);
-    updateSessionWindow(store, 'b', 0.9, 500);
+    // Both above threshold; min(reset)=1_000_000.
+    updateSessionWindow(store, 'a', 0.8, 1_000_000);
+    updateSessionWindow(store, 'b', 0.9, 1_500_000);
     expect(ipc.broadcasts).toHaveLength(1);
 
     // Another update in the same "min reset" window — no re-fire.
-    updateSessionWindow(store, 'a', 0.95, 200);
+    updateSessionWindow(store, 'a', 0.95, 1_000_000);
     expect(ipc.broadcasts).toHaveLength(1);
 
-    // Account a's window rolls over: min(reset) is now 500. Alert re-arms.
-    updateSessionWindow(store, 'a', 0.7, 900); // min(a=900, b=500) = 500 → different gate
+    // Account a's window rolls over: min(reset) is now 1_500_000 — far
+    // enough past the 1_000_000 we fired on to clear the dedup tolerance.
+    updateSessionWindow(store, 'a', 0.7, 2_000_000);
     expect(ipc.broadcasts).toHaveLength(2);
+  });
+
+  it('does not re-fire the pool alert when min(reset) jitters within the same window', () => {
+    // Regression: pool min(reset) flips by ±1 sec when one member's 5h
+    // reset is being overwritten alternately by header vs sync data. The
+    // dedup tolerance must swallow the jitter.
+    const db = getDb(dbPath);
+    seedAccount(db, 'a');
+    seedAccount(db, 'b');
+    upsertAlert(db, { scope: 'pool', accountId: null, thresholdPct: 60, enabled: true });
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    startPoolAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => rrSettings(),
+    });
+
+    updateSessionWindow(store, 'a', 0.9, 1_776_909_600);
+    updateSessionWindow(store, 'b', 0.4, 1_776_909_900); // mean = 0.65 → fires once
+    expect(ipc.broadcasts).toHaveLength(1);
+
+    // Flip a's reset by 1 sec (cross-source skew) — min(reset) flips to
+    // 1_776_909_601 or stays at 1_776_909_600 depending on ordering. Either
+    // way, the advance is < 300 sec so dedup holds.
+    updateSessionWindow(store, 'a', 0.9, 1_776_909_601);
+    expect(ipc.broadcasts).toHaveLength(1);
   });
 
   it('no-op when pool has no eligible members', () => {
@@ -796,7 +868,7 @@ describe('primeNewAlertAgainstCurrentWindow', () => {
   it('still lets a primed alert fire after the window resets', () => {
     const db = getDb(dbPath);
     const store = new RateLimitStore();
-    updateSessionWindow(store, 'acc-a', 0.27, 111);
+    updateSessionWindow(store, 'acc-a', 0.27, 1_000_000);
 
     const alert = upsertAlert(db, {
       scope: 'account',
@@ -808,9 +880,11 @@ describe('primeNewAlertAgainstCurrentWindow', () => {
 
     const ipc = ipcStub();
     startAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
-    updateSessionWindow(store, 'acc-a', 0.3, 111);
+    updateSessionWindow(store, 'acc-a', 0.3, 1_000_000);
     expect(ipc.broadcasts).toHaveLength(0);
-    updateSessionWindow(store, 'acc-a', 0.3, 222);
+    // Next 5h window — 18000 sec past the primed reset, well clear of the
+    // dedup tolerance.
+    updateSessionWindow(store, 'acc-a', 0.3, 1_018_000);
     expect(ipc.broadcasts).toHaveLength(1);
   });
 
@@ -1009,7 +1083,9 @@ describe('account-sonnet alerts', () => {
     startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
     updateSonnetWindow(store, 'acc-a', 0.9, 500);
-    // Window rolls over — new reset timestamp.
+    // Window rolls over — new reset timestamp. Must be far enough past
+    // the first reset to clear the dedup tolerance (a real 7-day rollover
+    // advances the reset by 604800 sec, so 9999 is plenty).
     updateSonnetWindow(store, 'acc-a', 0.9, 9_999);
 
     const fires = ipc.broadcasts.filter(
@@ -1020,6 +1096,31 @@ describe('account-sonnet alerts', () => {
         (m as { scope?: string }).scope === 'account-sonnet',
     );
     expect(fires).toHaveLength(2);
+  });
+
+  it('does not re-fire the Sonnet alert when reset jitters within the same window', () => {
+    // Regression: same cross-source skew that plagues unified-5h can affect
+    // unified-7d_sonnet too. Dedup tolerance must cover both.
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, { scope: 'account-sonnet', accountId: 'acc-a', thresholdPct: 80, enabled: true });
+    startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateSonnetWindow(store, 'acc-a', 0.9, 1_776_909_600);
+    updateSonnetWindow(store, 'acc-a', 0.9, 1_776_909_601);
+    updateSonnetWindow(store, 'acc-a', 0.9, 1_776_909_600);
+
+    const fires = ipc.broadcasts.filter(
+      (m): m is { scope: string } =>
+        typeof m === 'object' &&
+        m !== null &&
+        (m as { type?: string }).type === 'alert_triggered' &&
+        (m as { scope?: string }).scope === 'account-sonnet',
+    );
+    expect(fires).toHaveLength(1);
   });
 
   it('does not fire when Sonnet util is below the threshold', () => {

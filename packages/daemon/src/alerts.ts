@@ -11,6 +11,18 @@ const SESSION_WINDOW = 'unified-5h';
  *  evaluate against this window rather than `unified-5h`. */
 const SONNET_WINDOW = 'unified-7d_sonnet';
 
+/** Minimum advance in the session reset timestamp before an alert
+ *  re-fires. The rate-limit store merges two data sources (proxy
+ *  response headers and the claude.ai usage sync) that both describe
+ *  the same logical 5h/7d window reset, but their timestamps can
+ *  disagree by ±1 second due to ISO-string rounding — strict equality
+ *  on `resetTs` would treat every flip between sources as a new
+ *  window and re-fire the alert on every header update while
+ *  utilization stayed above threshold. 300 sec is well below any
+ *  legitimate window length (5h = 18000, 7d_sonnet = 604800), so a
+ *  genuine rollover still re-arms the alert. */
+const WINDOW_DEDUP_TOLERANCE_SEC = 300;
+
 export interface AlertEvaluatorDeps {
   db: Database;
   rateLimitStore: RateLimitStore;
@@ -75,7 +87,13 @@ export function startAlertEvaluator(deps: AlertEvaluatorDeps): void {
 
     for (const alert of alerts) {
       if (utilPct < alert.thresholdPct) continue;
-      if (alert.lastTriggeredResetTs === resetTs) continue;
+      if (
+        alert.lastTriggeredResetTs != null &&
+        resetTs > 0 &&
+        resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC
+      ) {
+        continue;
+      }
 
       const email = deps.getEmailForAccount?.(accountId) ?? accountId;
       const title = `Sentinel: ${alert.thresholdPct}% usage reached`;
@@ -158,7 +176,13 @@ export function evaluatePoolOnce(deps: PoolAlertEvaluatorDeps): void {
 
   for (const alert of alerts) {
     if (snapshot.utilPct < alert.thresholdPct) continue;
-    if (alert.lastTriggeredResetTs === snapshot.resetTs) continue;
+    if (
+      alert.lastTriggeredResetTs != null &&
+      snapshot.resetTs > 0 &&
+      snapshot.resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC
+    ) {
+      continue;
+    }
 
     const title = `Sentinel: pool at ${alert.thresholdPct}%`;
     const body = `Round-robin pool has used ${snapshot.utilPct.toFixed(1)}% of its 5-hour window on average across ${snapshot.memberCount} account${snapshot.memberCount === 1 ? '' : 's'}.`;
@@ -227,7 +251,13 @@ export function startSonnetAlertEvaluator(deps: AlertEvaluatorDeps): void {
 
     for (const alert of alerts) {
       if (utilPct < alert.thresholdPct) continue;
-      if (alert.lastTriggeredResetTs === resetTs) continue;
+      if (
+        alert.lastTriggeredResetTs != null &&
+        resetTs > 0 &&
+        resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC
+      ) {
+        continue;
+      }
 
       const email = deps.getEmailForAccount?.(accountId) ?? accountId;
       const title = `Sentinel: ${alert.thresholdPct}% Sonnet usage reached`;

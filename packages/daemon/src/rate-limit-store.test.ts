@@ -521,5 +521,63 @@ describe('RateLimitStore', () => {
       });
       expect(store.getAll('acc-1').find((w) => w.name === 'unified-5h')?.reset).toBeNull();
     });
+
+    it('preserves an existing reset when the sync payload has none', () => {
+      // Regression: claude.ai snapshots occasionally arrive with
+      // fiveHourResetsAt=null. The sync used to REPLACE the entire window,
+      // wiping a reset timestamp the proxy-header path had already captured.
+      // Alert dedup keys on reset, so the wipe made the next header update
+      // look like a fresh window and re-fired the alert.
+      const store = new RateLimitStore();
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(1000));
+      store.update('acc-1', {
+        'anthropic-ratelimit-unified-5h-status': 'allowed',
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-5h-reset': '1776909600',
+      });
+      vi.useRealTimers();
+
+      store.syncFromClaudeAiSnapshot('acc-1', {
+        ...baseSnapshot(),
+        fiveHourUtilization: 0.6,
+        fiveHourResetsAt: null,
+        fetchedAt: 2000,
+      });
+
+      const fiveHour = store.getAll('acc-1').find((w) => w.name === 'unified-5h');
+      expect(fiveHour?.reset).toBe(1_776_909_600);
+      expect(fiveHour?.utilization).toBeCloseTo(0.6);
+    });
+
+    it('preserves an existing inUse flag when the sync passes null', () => {
+      // Sync always passes inUse=null for unified-5h/7d/7d_sonnet (those
+      // windows don't carry that flag in the claude.ai snapshot). The
+      // overage window's header-derived inUse=false is load-bearing for
+      // the overage state machine; sync must not wipe it.
+      const store = new RateLimitStore();
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(1000));
+      store.update('acc-1', {
+        'anthropic-ratelimit-unified-overage-status': 'allowed',
+        'anthropic-ratelimit-unified-overage-in-use': 'false',
+      });
+      vi.useRealTimers();
+
+      store.syncFromClaudeAiSnapshot('acc-1', {
+        ...baseSnapshot(),
+        extraUsage: {
+          isEnabled: true,
+          limitUsd: 100,
+          usedUsd: 50,
+          utilizationPct: 50,
+          currency: 'USD',
+        },
+        fetchedAt: 2000,
+      });
+
+      const overage = store.getAll('acc-1').find((w) => w.name === 'unified-overage');
+      expect(overage?.inUse).toBe(false);
+    });
   });
 });

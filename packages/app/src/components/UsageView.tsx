@@ -805,10 +805,19 @@ function PoolMeterBlock({
   utils: number[];
   totalAccounts: number;
 }): React.ReactElement {
+  // Clamp each util to [0, 1] before averaging so an account in overage
+  // (util > 1) doesn't inflate the pool past what the per-account rows show
+  // — utilToPct caps individual meters at 100%, and the pool average must
+  // match that visible reality.
   const avg =
     utils.length === 0
       ? null
-      : Math.min(100, Math.round((utils.reduce((a, b) => a + b, 0) / utils.length) * 100));
+      : Math.min(
+          100,
+          Math.round(
+            (utils.reduce((a, b) => a + Math.max(0, Math.min(1, b)), 0) / utils.length) * 100,
+          ),
+        );
   const colors = meterColors(avg);
   return (
     <div className="space-y-1.5">

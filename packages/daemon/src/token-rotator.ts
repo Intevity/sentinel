@@ -56,9 +56,17 @@ export interface RotatedCredential {
  *     account until it blocks or its window rolls over, maximizing usage
  *     of headroom that's about to be reclaimed anyway.
  *
- * Blocked or overage-disabled accounts are skipped. If the pool is empty or
- * every account is unavailable, `pick()` returns null so the proxy can fall
- * back to the active-account behaviour (standard single-token flow).
+ * Accounts at or above the buffer threshold drop out of the fresh tier
+ * regardless of whether overage is available on claude.ai. That's the
+ * point of the buffer — it's keep-alive headroom, not just overage
+ * avoidance. An at-threshold account is only eligible via the overage
+ * tier when overage is `allowed` AND the account is opted in; in every
+ * other case (overage `disabled`, no overage window, or `allowed` but not
+ * opted in) it's skipped entirely. Blocked accounts are also skipped.
+ *
+ * If the pool is empty or every account is unavailable, `pick()` returns
+ * null so the proxy can fall back to the active-account behaviour
+ * (standard single-token flow).
  */
 export class TokenRotator {
   private pool: RotatedCredential[] = [];
@@ -79,9 +87,10 @@ export class TokenRotator {
      *  next request with no restart. Defaults to `'balance'`. */
     private readonly getStrategy: () => RoundRobinStrategy = () => 'balance',
     /** Live accessor for the user's overage opt-in allow-list (Sentinel ids).
-     *  An account NOT on this list whose 5h window is saturated — i.e. the
-     *  next request would consume Anthropic's overage budget — is skipped by
-     *  `pick()`. Defaults to an empty set (opt-in: no overage spending). */
+     *  Once an account crosses the buffer threshold it leaves the fresh
+     *  tier; only accounts on this list (AND with overage status `allowed`)
+     *  are retained as overage-tier fallbacks. Defaults to empty set
+     *  (opt-in: no overage spending). */
     private readonly getOverageAllowedIds: () => ReadonlySet<string> = () => new Set(),
     /** Live accessor for the Sentinel-side paused-account set. An account
      *  in this set is never returned from `pick()` regardless of rate-limit
@@ -151,14 +160,15 @@ export class TokenRotator {
    *      refresh(), not here.
    *   2. Not blocked (`status === 'blocked'` on any window).
    *   3. Not paused by SpendTracker (Sentinel-side weekly cap hit).
-   *   4. Two-tier overage gate: candidates whose next request would draw
-   *      Anthropic overage (5h saturated with overage status 'allowed',
-   *      overage-inUse=true, OR — for Sonnet requests — 7d_sonnet
-   *      saturated) are set aside. The rotator prefers candidates that
-   *      will NOT spend overage so pool-wide quota drains first. Only
-   *      when no "fresh" candidates remain do we fall through to the
-   *      overage tier — and even then, only accounts the user has
-   *      explicitly opted in via `overageEnabledIds` are eligible.
+   *   4. Two-tier buffer gate. Below threshold → fresh tier. At or above
+   *      threshold (or with overage already `in-use`) → only retained as
+   *      an overage-tier fallback when overage status is `allowed` AND
+   *      the account is on `overageEnabledIds`. Everything else is
+   *      skipped: accounts whose claude.ai overage is `disabled`, plans
+   *      without an overage window, and opted-out `allowed` accounts all
+   *      drop out at the threshold so the pool rotates off them before
+   *      Claude Code hits 100% and stalls. The rotator always drains the
+   *      fresh tier before touching the overage tier.
    */
   pick(ctx?: { isSonnet: boolean }): RotatedCredential | null {
     if (this.pool.length === 0) return null;
@@ -194,21 +204,30 @@ export class TokenRotator {
       const sonnetWindow = windows.find((w) => w.name === SONNET_WINDOW);
       const util = sessionWindow?.utilization ?? 0;
       const reset = sessionWindow?.reset ?? Number.POSITIVE_INFINITY;
-      // "Will this request draw overage?" — the 5h signals apply to every
-      // model, and for Sonnet requests we additionally check the Sonnet
-      // 7-day window. Sonnet saturation draws overage even when 5h has
-      // room, so this is the gap the explicit context closes.
-      const sonnetWouldDrawOverage =
+      // Partitioning runs in two steps. First: is this account out of the
+      // fresh tier? That's true whenever its 5h (or Sonnet 7d, for Sonnet
+      // requests) utilization is at or above the buffer threshold — or the
+      // overage window shows `in-use` already. The buffer is keep-alive
+      // headroom as much as it is an overage-cost guard: an account at 99%
+      // is one request away from a 429 whether or not overage exists to
+      // catch it.
+      const sonnetAtThreshold =
         isSonnet &&
         sonnetWindow?.utilization != null &&
         sonnetWindow.utilization >= overageThreshold;
-      const willUseOverage =
-        overageWindow?.inUse === true ||
-        (util >= overageThreshold && overageWindow?.status === 'allowed') ||
-        sonnetWouldDrawOverage;
+      const atOrAboveThreshold = util >= overageThreshold || sonnetAtThreshold;
+      const overageActive = overageWindow?.inUse === true;
 
-      if (willUseOverage) {
-        if (!overageAllowed.has(entry.accountId)) continue;
+      if (atOrAboveThreshold || overageActive) {
+        // Second step: eligible for the overage tier? Only when overage is
+        // actually available on this account (claude.ai hasn't disabled it,
+        // and the window exists at all) AND the user opted this account in.
+        // Everyone else is skipped entirely — including accounts with
+        // overage disabled, which previously slipped through to the fresh
+        // tier and drove Claude Code into 429s at 100%.
+        const canUseOverage =
+          overageWindow?.status === 'allowed' && overageAllowed.has(entry.accountId);
+        if (!canUseOverage) continue;
         overage.push({ idx: i, util, reset });
         if (util < minUtilOverage) minUtilOverage = util;
       } else {

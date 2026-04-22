@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { SonnetSaturationMachine, type SonnetSaturationEvent } from './sonnet-saturation.js';
+import {
+  SonnetSaturationMachine,
+  buildSonnetSaturationBody,
+  type SonnetSaturationEvent,
+} from './sonnet-saturation.js';
 
 describe('SonnetSaturationMachine', () => {
   let machine: SonnetSaturationMachine;
@@ -95,5 +99,22 @@ describe('SonnetSaturationMachine', () => {
     expect(machine.update('acct', 0.97, 9_000, 95)?.transition).toBe('entered');
     expect(machine.update('acct', 0.5, 9_000, 95)?.transition).toBe('exited');
     expect(machine.update('acct', 0.99, 9_000, 95)).toBeNull();
+  });
+});
+
+describe('buildSonnetSaturationBody', () => {
+  it('tells opted-in accounts that further requests will draw overage', () => {
+    const body = buildSonnetSaturationBody('user@x', 0.97, true);
+    expect(body).toContain('97.0%');
+    expect(body).toContain('will draw from overage');
+    expect(body).not.toContain('blocked');
+  });
+
+  it('tells not-opted-in accounts that further requests will be blocked', () => {
+    const body = buildSonnetSaturationBody('user@x', 1.0, false);
+    expect(body).toContain('100.0%');
+    expect(body).toContain('blocked by Sentinel');
+    expect(body).toContain('enable overage in Settings');
+    expect(body).not.toContain('will draw from overage');
   });
 });

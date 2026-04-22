@@ -56,7 +56,7 @@ import { loadSettings, updateSettings as writeSettings } from './settings.js';
 import { IpcServer } from './ipc.js';
 import { OtelReceiver } from './otel-receiver.js';
 import { OverageStateMachine } from './overage.js';
-import { SonnetSaturationMachine } from './sonnet-saturation.js';
+import { SonnetSaturationMachine, buildSonnetSaturationBody } from './sonnet-saturation.js';
 import { createProxyServer, DAEMON_PORT } from './proxy.js';
 import type { ActiveToken, ActiveAccountId } from './proxy.js';
 import { RateLimitStore } from './rate-limit-store.js';
@@ -1927,15 +1927,15 @@ export async function startDaemon(): Promise<void> {
   sonnetMachine.onTransition((event) => {
     const { accountId, transition, utilization, resetsAt } = event;
     if (transition === 'entered') {
-      const pct = (utilization * 100).toFixed(1);
       const acct = listAccounts(db).find((a) => a.id === accountId);
       const who = acct?.email ?? accountId;
+      const optedIn = currentSettings.overageEnabledIds.includes(accountId);
       insertNotification(db, {
         ts: Date.now(),
         accountId,
         type: 'overage_entered',
         title: 'Sentinel: Sonnet 7-day saturated',
-        body: `${who} has used ${pct}% of its Sonnet 7-day window. Further Sonnet requests will draw from overage.`,
+        body: buildSonnetSaturationBody(who, utilization, optedIn),
       });
       ipcServer.broadcast({
         type: 'sonnet_saturation_entered',

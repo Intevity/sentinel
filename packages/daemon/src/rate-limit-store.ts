@@ -193,8 +193,22 @@ export class RateLimitStore {
         inUse,
         lastUpdated: capturedAt,
       };
-      accountMap.set(name, w);
-      upserts.push(w);
+      // Merge onto existing so sync doesn't wipe fields only the header
+      // path captures. Specifically: claude.ai occasionally returns null
+      // for fiveHourResetsAt and always passes null for inUse — without
+      // this guard, a sync would null-out a reset Anthropic's header just
+      // set, causing alert dedup (which keys on resetTs) to break and
+      // re-fire the alert every time the header and sync alternate.
+      const merged: RateLimitWindow = existing
+        ? {
+            ...existing,
+            ...w,
+            reset: w.reset ?? existing.reset ?? null,
+            inUse: w.inUse ?? existing.inUse ?? null,
+          }
+        : w;
+      accountMap.set(name, merged);
+      upserts.push(merged);
     };
 
     maybeSync('unified-5h', snapshot.fiveHourUtilization, snapshot.fiveHourResetsAt, null);
