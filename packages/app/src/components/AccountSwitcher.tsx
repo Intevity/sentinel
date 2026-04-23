@@ -110,9 +110,17 @@ export default function AccountSwitcher({
       return next;
     });
 
+    // Fire both in parallel per account: refresh_claude_ai_usage is free
+    // and covers auth liveness + overage/extra-usage numbers;
+    // probe_rate_limits costs ~1 Haiku token and is what actually advances
+    // the 5h-reset countdown (claude.ai's usage endpoint often returns
+    // null for that field). Only the usage call's result drives the
+    // per-card OK/error chip — the probe broadcasts rate_limits_updated
+    // on its own and is best-effort.
     const usageResults = await Promise.all(
-      targetIds.map((id) =>
-        sendToSentinel({ type: 'refresh_claude_ai_usage', accountId: id })
+      targetIds.map((id) => {
+        void sendToSentinel({ type: 'probe_rate_limits', accountId: id }).catch(() => undefined);
+        return sendToSentinel({ type: 'refresh_claude_ai_usage', accountId: id })
           .then((res) => ({
             id,
             ok: !!res.success,
@@ -122,8 +130,8 @@ export default function AccountSwitcher({
             id,
             ok: false,
             error: err instanceof Error ? err.message : 'Refresh failed',
-          })),
-      ),
+          }));
+      }),
     );
     await syncPromise;
 
@@ -154,6 +162,17 @@ export default function AccountSwitcher({
     }
   }, [accounts, refreshAccounts]);
   const [loggingIn, setLoggingIn] = useState(false);
+  // When non-null, the pre-Add-Account confirmation sheet is open. We show
+  // this the first time a user with at least one existing account clicks
+  // Add Account, so they can acknowledge claude.ai's limitation around
+  // switching identities mid-OAuth and opt into a private-browser open.
+  // null = sheet closed. Suppressed entirely on the first-ever Add Account
+  // (accounts.length === 0) and on re-auth (same-email, no identity switch).
+  const [pendingAddAccountConfirm, setPendingAddAccountConfirm] = useState<boolean>(false);
+  // Checkbox state inside the confirmation sheet. Controls whether the
+  // daemon opens the OAuth URL in a private-mode browser (Chrome / Brave /
+  // Edge / Arc / Firefox, whichever is installed).
+  const [addAccountIncognito, setAddAccountIncognito] = useState<boolean>(false);
   const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null);
   const [purgingId, setPurgingId] = useState<string | null>(null);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
@@ -228,6 +247,31 @@ export default function AccountSwitcher({
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [refreshAccounts]);
+
+  // Auto-fire a free auth-liveness check for every account on mount and
+  // every time the tray window regains focus. If an account's OAuth token
+  // was revoked server-side while the app was closed, the daemon's inline
+  // force-refresh cascade lights up the Re-authenticate banner within
+  // seconds of the user opening the tray — so the user doesn't discover
+  // the dead token by failing to run a Claude Code command. No Haiku cost:
+  // refresh_claude_ai_usage only hits /api/oauth/usage.
+  const accountIdsKey = accounts.map((a) => a.id).join(',');
+  useEffect(() => {
+    if (accounts.length === 0) return;
+    const fireAuthCheck = (): void => {
+      for (const a of accounts) {
+        void sendToSentinel({ type: 'refresh_claude_ai_usage', accountId: a.id }).catch(
+          () => undefined,
+        );
+      }
+    };
+    fireAuthCheck();
+    window.addEventListener('focus', fireAuthCheck);
+    return () => window.removeEventListener('focus', fireAuthCheck);
+    // accountIdsKey captures the set of IDs so re-mounts after add/remove
+    // re-arm the focus listener with the current accounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountIdsKey]);
 
   // Listen for login_complete broadcast from daemon
   useEffect(() => {
@@ -338,15 +382,32 @@ export default function AccountSwitcher({
     if (result.success) setTimeout(() => setStatusMessage(null), 4000);
   };
 
-  const handleAddAccount = async (): Promise<void> => {
+  // Actually fires the start_login IPC. Split from handleAddAccount so
+  // the reauth path (same email) and the confirmed-new-account path can
+  // both call this directly, bypassing the confirmation sheet.
+  const startLogin = async (incognito: boolean): Promise<void> => {
     setLoggingIn(true);
     setStatusMessage(null);
     try {
-      await sendToSentinel({ type: 'start_login' });
+      await sendToSentinel({ type: 'start_login', ...(incognito ? { incognito: true } : {}) });
     } catch {
       setLoggingIn(false);
       setStatusMessage({ text: 'Failed to start login.', kind: 'error' });
     }
+  };
+
+  const handleAddAccount = async (): Promise<void> => {
+    // If this is the user's first account, no existing claude.ai session
+    // can get in the way — go straight to OAuth in the default browser.
+    if (accounts.length === 0) {
+      await startLogin(false);
+      return;
+    }
+    // Otherwise, surface the confirmation sheet so the user can opt into
+    // a private window if they're adding a different email.
+    setStatusMessage(null);
+    setAddAccountIncognito(false);
+    setPendingAddAccountConfirm(true);
   };
 
   const handleRefreshToken = async (id: string): Promise<void> => {
@@ -548,6 +609,60 @@ export default function AccountSwitcher({
         )}
       </AnimatePresence>
 
+      {/* Add Account confirmation sheet. Shown when a user with ≥1 existing
+          account clicks Add Account. Explains claude.ai's known limitation
+          (the "switch accounts" link on the OAuth consent page drops OAuth
+          state — same bug Claude Code has) and lets the user opt into a
+          private-browser open if they're enrolling a different identity. */}
+      <AnimatePresence initial={false}>
+        {pendingAddAccountConfirm && (
+          <motion.div
+            {...TRANSIENT_ANIM}
+            className="overflow-hidden rounded-2xl bg-ios-blue/[0.08] dark:bg-ios-blue/[0.12] ring-1 ring-ios-blue/20"
+          >
+            <div className="p-4">
+              <p className="text-[13px] font-semibold text-black dark:text-white mb-1">
+                Add another account
+              </p>
+              <p className="text-[11px] text-[#8E8E93] leading-snug mb-3">
+                Re-authorizing the same email (to add another organization, for example) works in
+                your default browser. Switching to a different email signs you out of claude.ai and
+                drops the OAuth flow: the same limitation Claude Code has. For a different email,
+                check the box below to complete sign-in in a private window.
+              </p>
+              <label className="flex items-center gap-2 cursor-pointer mb-3 select-none">
+                <input
+                  type="checkbox"
+                  checked={addAccountIncognito}
+                  onChange={(e) => setAddAccountIncognito(e.target.checked)}
+                  className="accent-ios-blue w-4 h-4"
+                />
+                <span className="text-[12px] text-black dark:text-white">
+                  Adding a different email (open in a private window)
+                </span>
+              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setPendingAddAccountConfirm(false);
+                    void startLogin(addAccountIncognito);
+                  }}
+                  className="flex-1 text-[12px] font-semibold text-white bg-ios-blue hover:opacity-90 active:scale-95 px-3 py-1.5 rounded-full transition-all"
+                >
+                  Continue
+                </button>
+                <button
+                  onClick={() => setPendingAddAccountConfirm(false)}
+                  className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Remove confirmation prompt */}
       <AnimatePresence initial={false}>
         {pendingRemoveId &&
@@ -618,7 +733,7 @@ export default function AccountSwitcher({
             onRefreshToken={(id) => void handleRefreshToken(id)}
             refreshing={refreshingId === account.id}
             needsReauth={expired}
-            onReauth={() => void handleAddAccount()}
+            onReauth={() => void startLogin(true)}
             isRoundRobin={isRoundRobin}
             inPool={inPool}
             canExclude={poolMemberCount > 1}

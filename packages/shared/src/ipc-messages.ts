@@ -504,6 +504,14 @@ export interface StartLoginMessage {
    *  effect if claude.ai ignores the hint (the user still gets the
    *  chooser as a fallback). */
   orgUuidHint?: string;
+  /** Open the OAuth URL in a private/incognito browser window. Set
+   *  this when the user is adding a DIFFERENT email/identity than any
+   *  existing Sentinel account — claude.ai's "switch accounts" link
+   *  on the OAuth consent page drops OAuth state (same bug as Claude
+   *  Code CLI), so a fresh cookie jar is the only reliable way to
+   *  switch identities mid-flow. The UI exposes this as an opt-in
+   *  checkbox on the Add Account confirmation sheet. */
+  incognito?: boolean;
 }
 
 export interface CancelLoginMessage {
@@ -951,10 +959,34 @@ export interface GetClaudeAiUsageMessage {
 }
 
 /** Force an immediate fetch against the claude.ai usage endpoint. Used on
- *  account add so the UI doesn't wait for the periodic poller. */
+ *  account add so the UI doesn't wait for the periodic poller. Also
+ *  fired by the Accounts tab on mount/focus as a free auth-liveness
+ *  probe: a 401 here triggers the inline force-refresh cascade, so
+ *  dead tokens surface as the yellow Re-authenticate banner without
+ *  waiting for the periodic poll. */
 export interface RefreshClaudeAiUsageMessage {
   type: 'refresh_claude_ai_usage';
   accountId: string;
+}
+
+/** Fire a minimal /v1/messages probe (max_tokens: 1 on Haiku 4.5) through
+ *  the local proxy to force-refresh the `unified-5h-reset` header for a
+ *  given account. Separated from `refresh_claude_ai_usage` because the
+ *  probe costs ~1 Haiku token per call, so we only fire it on explicit
+ *  user action (Refresh button) not on passive mount/focus paths. */
+export interface ProbeRateLimitsMessage {
+  type: 'probe_rate_limits';
+  accountId: string;
+}
+
+/** Fetch the daemon's SpendTracker-paused set with each entry's reason +
+ *  resets-at. Response payload is `Array<{ accountId, reason, resetsAt }>`.
+ *  Used by `usePausedAccounts` on mount so the Accounts-page paused badge
+ *  renders on first paint instead of waiting for the next `account_paused`
+ *  broadcast (which only fires on state transitions, never for pauses
+ *  carried across daemon restarts). */
+export interface GetPausedAccountsMessage {
+  type: 'get_paused_accounts';
 }
 
 export type AppToDaemonMessage =
@@ -1012,6 +1044,8 @@ export type AppToDaemonMessage =
   | GetSpendSummaryMessage
   | GetClaudeAiUsageMessage
   | RefreshClaudeAiUsageMessage
+  | ProbeRateLimitsMessage
+  | GetPausedAccountsMessage
   | DevTriggerSecurityEventMessage
   | DevTriggerAlertEventMessage
   | ListPermissionRulesMessage

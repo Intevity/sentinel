@@ -499,10 +499,11 @@ export async function startDaemon(): Promise<void> {
     },
   });
   getPausedAccountIds = () => spendTracker.getPausedIds();
-  // Initial pass — paused state is empty at startup, but a spend summary
-  // broadcast lets the UI seed its dashboard without waiting for the first
-  // OTEL batch.
-  spendTracker.recompute();
+  // The initial `spendTracker.recompute()` is deferred to after the
+  // rate-limit store and the persisted paused set are loaded (see below),
+  // so the first evaluator pass has full state and won't re-fire
+  // `account_paused` for pauses that were already active before restart.
+  //
   // Start the weekly-pause fallback sweep. Idempotent; cleared by
   // spendTracker.stop() in the SIGTERM/SIGINT handlers.
   spendTracker.start();
@@ -612,6 +613,18 @@ export async function startDaemon(): Promise<void> {
     rateLimitStore.loadAccount(accountId, windows);
     console.log(`[RateLimit] Loaded ${windows.length} window(s) from DB for ${accountId}`);
   }
+
+  // Rehydrate the SpendTracker paused set from SQLite. Must run AFTER the
+  // rate-limit store is populated so loadPersistedPauses can detect
+  // rollovers that happened while the daemon was off. Must also run BEFORE
+  // the first recompute() so the evaluators see `this.paused.has(id)` is
+  // true and skip the redundant `account_paused` broadcast +
+  // insertNotification that caused the on-restart notification bug.
+  spendTracker.loadPersistedPauses();
+  // First recompute with full state: spend summary broadcast seeds the UI
+  // dashboard, paused set is intact, evaluators no-op on already-paused
+  // accounts.
+  spendTracker.recompute();
 
   // Write through to SQLite whenever live rate-limit data arrives from API headers.
   rateLimitStore.onUpdate((accountId, windows) => {
@@ -1137,6 +1150,15 @@ export async function startDaemon(): Promise<void> {
         break;
       }
 
+      case 'get_paused_accounts': {
+        respond({
+          requestType: 'get_paused_accounts',
+          success: true,
+          data: spendTracker.getPausedDetails(),
+        });
+        break;
+      }
+
       case 'get_claude_ai_usage': {
         respond({
           requestType: 'get_claude_ai_usage',
@@ -1153,9 +1175,29 @@ export async function startDaemon(): Promise<void> {
         // Kick off the fetch and respond immediately; the result lands via
         // the usual claude_ai_usage_updated broadcast when it completes.
         // Avoiding `await` keeps this handler sync-friendly (the outer
-        // switch isn't an async fn).
+        // switch isn't an async fn). Deliberately free (no Haiku probe) so
+        // the UI can fire this on mount/focus for every account as an
+        // auth-liveness check without burning tokens — the fetch's 401
+        // path triggers the force-refresh cascade that surfaces dead
+        // tokens as the Re-authenticate banner.
         void claudeAiUsageStore.refresh(msg.accountId);
         respond({ requestType: 'refresh_claude_ai_usage', success: true });
+        break;
+      }
+
+      case 'probe_rate_limits': {
+        // Fire a minimal /v1/messages request through our local proxy to
+        // capture a fresh `unified-5h-reset` header into RateLimitStore.
+        // Claude.ai's usage endpoint often returns null for that field,
+        // and syncFromClaudeAiSnapshot's merge preserves a stale value —
+        // the probe is the only reliable way to force the countdown to
+        // advance. Skipped for silent-sibling team enrollments that have
+        // no OAuth token. Costs ~1 Haiku token, fire-and-forget.
+        const credsForProbe = readSentinelCredentials(msg.accountId);
+        if (credsForProbe?.accessToken) {
+          probeRateLimits(msg.accountId, ipcServer, credsForProbe.accessToken);
+        }
+        respond({ requestType: 'probe_rate_limits', success: true });
         break;
       }
 
@@ -1889,10 +1931,14 @@ export async function startDaemon(): Promise<void> {
         startOAuthLogin({
           signal: abortController.signal,
           ...(msg.orgUuidHint ? { orgUuidHint: msg.orgUuidHint } : {}),
-          // Uses oauth.ts' default openBrowser (exec('open URL')) so
-          // the authorize page loads in the user's default browser.
-          // No openAuthUrl override here — Sentinel never hosts the
-          // sign-in flow inside an in-app WebView.
+          // When the UI requests incognito, open the OAuth URL in a
+          // private-mode browser window. Used for Add Account when the
+          // user is enrolling a different email/identity than any
+          // existing Sentinel account — claude.ai's "switch accounts"
+          // link on the OAuth consent page drops OAuth state in a
+          // default browser that already has a live sessionKey. A
+          // fresh cookie jar lets the user complete the flow cleanly.
+          ...(msg.incognito ? { incognito: true } : {}),
         })
           .then((result) => {
             loginAbortController = null;
@@ -2096,6 +2142,12 @@ export async function startDaemon(): Promise<void> {
   ipcServer.start();
   console.log('[Sentinel] IPC server started');
 
+  // Tracks which accounts have an in-flight inline refresh triggered by a
+  // proxy 401, so a burst of concurrent 401s (Claude Code running multiple
+  // tool calls in parallel against a dead token) fires only one refresh
+  // attempt rather than N.
+  const inFlightAuthRefresh = new Set<string>();
+
   // Create HTTP proxy server. The tokenProvider returns a rotated credential
   // only when the user has opted into round-robin mode; otherwise the proxy
   // falls back to the shared activeToken/activeAccountId refs (original flow).
@@ -2127,6 +2179,30 @@ export async function startDaemon(): Promise<void> {
       permissionsEnforcer,
       requestLogStore,
       requestAccountMap,
+      // A 401 on a real Claude Code request means the token was revoked
+      // server-side while the local `expiresAt` still claims it's valid —
+      // the background refresher can't detect this because it only refreshes
+      // within 30 min of local expiry. Force a refresh inline so the NEXT
+      // request uses the fresh token; on refresh failure, refreshIfNeeded
+      // broadcasts `token_refresh_failed` → the UI's Re-authenticate banner
+      // appears within seconds of the failing command.
+      onUpstreamAuthFailure: (accountId) => {
+        if (inFlightAuthRefresh.has(accountId)) return;
+        const acct = getAccount(db, accountId);
+        if (!acct) return;
+        inFlightAuthRefresh.add(accountId);
+        console.log(
+          `[Proxy] 401 from upstream for ${accountId} — forcing token refresh`,
+        );
+        void refreshIfNeeded(
+          { db, activeToken, activeAccountId, ipcServer, tokenRotator },
+          accountId,
+          acct.email,
+          /* force */ true,
+        ).finally(() => {
+          inFlightAuthRefresh.delete(accountId);
+        });
+      },
     },
     (req, res) => {
       const url = req.url ?? '/';

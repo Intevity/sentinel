@@ -62,7 +62,23 @@ export async function refreshIfNeeded(
 
   const creds = readSentinelCredentials(accountId);
   if (!creds?.refreshToken) {
-    return { success: false, error: 'No stored refresh token — sign in again.' };
+    // Missing keychain entry is the same end-state as a rejected refresh
+    // token from the user's POV: the account cannot be refreshed without
+    // re-auth. Broadcast so the UI's Re-authenticate banner lights up
+    // instead of the card silently drifting on stale data. Reused reason
+    // 'expired' keeps the UI listener single-path (AccountSwitcher maps
+    // that reason to expiredAccountIds → needsReauth → banner).
+    deps.ipcServer.broadcast({
+      type: 'token_refresh_failed',
+      accountId,
+      email,
+      reason: 'expired',
+    });
+    return {
+      success: false,
+      error: 'No stored refresh token — sign in again.',
+      needsReauth: true,
+    };
   }
 
   const msRemaining = creds.expiresAt - Date.now();

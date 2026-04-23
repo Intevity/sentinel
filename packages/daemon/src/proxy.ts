@@ -122,6 +122,16 @@ interface ProxyOptions {
    *  account whose token was actually used (not the one Claude Code is
    *  signed in as). */
   requestAccountMap?: RequestAccountMap;
+  /** Called when an upstream Anthropic response returns 401 for an
+   *  identified account. Wired in index.ts to call refreshIfNeeded(force=true)
+   *  so a server-side-revoked-but-not-yet-locally-expired token gets
+   *  refreshed (or, if the refresh itself fails, the refresher broadcasts
+   *  token_refresh_failed so the UI's Re-authenticate banner lights up
+   *  within seconds of the failing Claude Code request). Fire-and-forget —
+   *  the proxy does not retry the current request, but the next one will
+   *  use the freshly-refreshed token. Dedup of in-flight refreshes is the
+   *  callback's responsibility. */
+  onUpstreamAuthFailure?: (accountId: string) => void;
 }
 
 /** Mutable capture state threaded through a single request's lifecycle.
@@ -279,6 +289,7 @@ export function createProxyServer(
     permissionsEnforcer,
     requestLogStore,
     requestAccountMap,
+    onUpstreamAuthFailure,
   } = opts;
   const getPausedAccountIds = opts.getPausedAccountIds ?? (() => new Set<string>());
   const getPauseReason = opts.getPauseReason ?? (() => null);
@@ -455,6 +466,7 @@ export function createProxyServer(
       opts.db,
       body,
       requestAccountMap,
+      onUpstreamAuthFailure,
     );
   };
 
@@ -526,6 +538,7 @@ export function createProxyServer(
         opts.db,
         undefined,
         requestAccountMap,
+        onUpstreamAuthFailure,
       ).catch((err) => {
         console.error('[Proxy] Proxy error:', err);
         res.writeHead(502);
@@ -549,6 +562,7 @@ export function createProxyServer(
       opts.db,
       undefined,
       requestAccountMap,
+      onUpstreamAuthFailure,
     ).catch((err) => {
       console.error('[Proxy] Default proxy error:', err);
       res.writeHead(502);
@@ -586,6 +600,9 @@ async function proxyToAnthropic(
    *  carries a `request-id` header so OtelReceiver can attribute OTEL
    *  api_request / api_error events to the correct account in round-robin mode. */
   requestAccountMap?: RequestAccountMap,
+  /** Fire-and-forget hook invoked when an upstream response returns 401
+   *  for an identified account. See ProxyOptions.onUpstreamAuthFailure. */
+  onUpstreamAuthFailure?: (accountId: string) => void,
 ): Promise<void> {
   let body = preReadBody ?? (await readBody(req));
 
@@ -931,6 +948,19 @@ async function proxyToAnthropic(
         console.log(
           `[Proxy] ${req.method} ${req.url} → ${proxyRes.statusCode} (account: ${rlKey})`,
         );
+
+        // 401 on an upstream request means the OAuth token was rejected —
+        // typically a server-side revocation that the local `expiresAt`
+        // check still thinks is valid, so the background token-refresher
+        // never fired. Hand off to the daemon's callback which force-
+        // refreshes inline; if the refresh itself fails, the refresher
+        // broadcasts token_refresh_failed so the Re-authenticate banner
+        // lights up within ~1s. We do not retry the current request (too
+        // invasive — would require buffering the body), but the next one
+        // will use the fresh token.
+        if (proxyRes.statusCode === 401 && onUpstreamAuthFailure) {
+          onUpstreamAuthFailure(rlKey);
+        }
 
         if (capture) {
           capture.responseStatus = proxyRes.statusCode ?? null;

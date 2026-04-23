@@ -2,7 +2,15 @@ import type { Database } from 'better-sqlite3';
 import type { RateLimitStore } from './rate-limit-store.js';
 import type { IpcServer } from './ipc.js';
 import type { Settings, Alert, PauseReason } from '@claude-sentinel/shared';
-import { listAlerts, listAccounts, markAlertTriggered, insertNotification } from './db.js';
+import {
+  listAlerts,
+  listAccounts,
+  markAlertTriggered,
+  insertNotification,
+  upsertPausedAccount,
+  deletePausedAccount,
+  listPausedAccounts,
+} from './db.js';
 
 const SESSION_WINDOW = 'unified-5h';
 
@@ -19,6 +27,21 @@ const WEEKLY_RATE_LIMIT_WINDOW = 'unified-7d';
  *  releases any weekly pause whose stored reset timestamp has passed. Five
  *  minutes is plenty — the user won't notice, and it keeps the tick cheap. */
 const WEEKLY_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+
+/** Minimum forward motion of `reset` (Unix-seconds) that counts as a real
+ *  rollover, per window. The rate-limit store is updated from two sources
+ *  that parse the reset independently (proxy response headers via
+ *  `parseInt` and claude.ai snapshots via `Math.floor(Date.parse/1000)`),
+ *  so the same logical window can appear with values that differ by ±1s.
+ *  Without a floor, every sub-threshold drift would trip the rollover
+ *  branch, clear the pause, and fire a redundant `account_paused`
+ *  broadcast the moment the evaluator runs again. Genuine rollovers always
+ *  jump by close to a full window length, so a threshold set well below
+ *  that length catches them without false positives. */
+const MIN_ROLLOVER_DELTA_SEC: Record<string, number> = {
+  [SESSION_WINDOW]: 4 * 60 * 60,
+  [WEEKLY_RATE_LIMIT_WINDOW]: 6 * 24 * 60 * 60,
+};
 
 /** Spend summary sourced from Anthropic's `/api/organizations/{org}/usage`
  *  endpoint. `perAccount[id]` is the dollar value of overage spend for the
@@ -128,6 +151,96 @@ export class SpendTracker {
     return this.paused.get(accountId) ?? null;
   }
 
+  /** Snapshot the paused set with each entry's reset timestamp sourced from
+   *  the live rate-limit store. Used by the `get_paused_accounts` IPC so
+   *  the UI can seed its paused-badge state on mount without waiting for
+   *  the next broadcast. */
+  getPausedDetails(): Array<{
+    accountId: string;
+    reason: PauseReason;
+    resetsAt: number | null;
+  }> {
+    const out: Array<{ accountId: string; reason: PauseReason; resetsAt: number | null }> = [];
+    for (const [accountId, reason] of this.paused) {
+      const windowName =
+        reason === 'sentinel_weekly_rate_limit' ? WEEKLY_RATE_LIMIT_WINDOW : SESSION_WINDOW;
+      const w = this.deps.rateLimitStore.getAll(accountId).find((x) => x.name === windowName);
+      out.push({ accountId, reason, resetsAt: w?.reset ?? null });
+    }
+    return out;
+  }
+
+  /** Rehydrate the paused set from SQLite at daemon startup. Must run
+   *  AFTER the rate-limit store has been populated from its own persistent
+   *  table so we can detect whether the triggering window rolled over
+   *  while the daemon was off — in that case we drop the stale row
+   *  instead of rehydrating a pause that would immediately be released.
+   *
+   *  Silent: no broadcasts, no notification rows. The next evaluator pass
+   *  will see `this.paused.has(id)` is true and skip the re-broadcast that
+   *  caused the restart-notification bug.
+   *
+   *  Pauses owned by reasons other than the two this tracker manages
+   *  (`anthropic_overage_disabled`, for instance, which lives in a
+   *  different evaluator) are never written here and so are never seen.
+   *  A row with an unknown reason is dropped as defensive cleanup. */
+  loadPersistedPauses(): void {
+    const now = this.clock();
+    const nowSec = Math.floor(now / 1000);
+    for (const row of listPausedAccounts(this.deps.db)) {
+      let windowName: string | null = null;
+      if (row.reason === 'sentinel_budget') windowName = SESSION_WINDOW;
+      else if (row.reason === 'sentinel_weekly_rate_limit') windowName = WEEKLY_RATE_LIMIT_WINDOW;
+      if (windowName == null) {
+        deletePausedAccount(this.deps.db, row.accountId);
+        console.log(
+          `[Spend] Dropping persisted pause for ${row.accountId} (unknown reason=${row.reason})`,
+        );
+        continue;
+      }
+      const w = this.deps.rateLimitStore
+        .getAll(row.accountId)
+        .find((x) => x.name === windowName);
+      // Rollover detection mirrors handleRateLimitUpdate: a jump of more
+      // than the threshold means the window the pause was captured on has
+      // been superseded while the daemon was off. If status is already
+      // 'allowed', the condition has cleared even within-window.
+      const rollover =
+        w != null &&
+        w.reset != null &&
+        row.resetTs != null &&
+        w.reset - row.resetTs >= MIN_ROLLOVER_DELTA_SEC[windowName]!;
+      const statusCleared = w?.status != null && w.status !== 'blocked';
+      // If the reset is simply in the past and status is not blocked, the
+      // window expired during downtime without us seeing a successor yet.
+      const expired =
+        w?.reset != null && w.reset <= nowSec && w.status !== 'blocked';
+      if (rollover || statusCleared || expired) {
+        deletePausedAccount(this.deps.db, row.accountId);
+        console.log(
+          `[Spend] Dropped stale pause for ${row.accountId} (reason=${row.reason}, rolled over during downtime)`,
+        );
+        continue;
+      }
+      this.paused.set(row.accountId, row.reason as PauseReason);
+      // Also seed the rollover-detection map with the captured reset so
+      // the first post-rehydrate handleRateLimitUpdate call doesn't treat
+      // the stored reset as "first-seen" (which would skip rollover
+      // detection entirely on the next real rollover).
+      if (row.resetTs != null) {
+        let byName = this.lastResetByWindow.get(row.accountId);
+        if (!byName) {
+          byName = new Map<string, number>();
+          this.lastResetByWindow.set(row.accountId, byName);
+        }
+        byName.set(windowName, row.resetTs);
+      }
+      console.log(
+        `[Spend] Rehydrated paused ${row.accountId} (reason=${row.reason}, resetTs=${row.resetTs ?? 'null'})`,
+      );
+    }
+  }
+
   /** Start the fallback sweep tick. Idempotent. Must be paired with
    *  `stop()` on daemon shutdown — otherwise the interval leaks into
    *  test teardown and hot-reload. */
@@ -202,20 +315,35 @@ export class SpendTracker {
       if (!w || w.reset == null) continue;
       const prev = byName.get(windowName);
       byName.set(windowName, w.reset);
-      // Only interesting transitions: the reset timestamp moved forward. A
-      // first-seen reset doesn't count as a rollover.
-      if (prev == null || w.reset <= prev) continue;
+      // Only interesting transitions: the reset timestamp moved forward by
+      // more than the rollover threshold. A first-seen reset doesn't count,
+      // and sub-threshold drift between the proxy-header and claude.ai
+      // sources is ignored (see MIN_ROLLOVER_DELTA_SEC comment for why).
+      if (prev == null) continue;
+      const delta = w.reset - prev;
+      if (delta < MIN_ROLLOVER_DELTA_SEC[windowName]!) continue;
       rolledOver.add(windowName);
     }
     if (rolledOver.size === 0) return;
-    // Clear pauses whose reason matches a window that just rolled over.
+    // Clear pauses whose reason matches a window that just rolled over —
+    // but only if the underlying condition has actually cleared. If
+    // Anthropic is still returning status='blocked' after a threshold-sized
+    // reset jump, the pause must hold; releasing would just let the next
+    // recompute re-pause and fire a redundant broadcast.
     const currentReason = this.paused.get(accountId);
-    if (
-      (currentReason === 'sentinel_budget' && rolledOver.has(SESSION_WINDOW)) ||
-      (currentReason === 'sentinel_weekly_rate_limit' &&
-        rolledOver.has(WEEKLY_RATE_LIMIT_WINDOW))
-    ) {
+    const sessionWindow = allWindows.find((x) => x.name === SESSION_WINDOW);
+    const weeklyWindow = allWindows.find((x) => x.name === WEEKLY_RATE_LIMIT_WINDOW);
+    const budgetCleared =
+      currentReason === 'sentinel_budget' &&
+      rolledOver.has(SESSION_WINDOW) &&
+      sessionWindow?.status !== 'blocked';
+    const weeklyCleared =
+      currentReason === 'sentinel_weekly_rate_limit' &&
+      rolledOver.has(WEEKLY_RATE_LIMIT_WINDOW) &&
+      weeklyWindow?.status !== 'blocked';
+    if (budgetCleared || weeklyCleared) {
       this.paused.delete(accountId);
+      deletePausedAccount(this.deps.db, accountId);
       this.deps.ipcServer.broadcast({ type: 'account_unpaused', accountId });
     }
     this.recompute();
@@ -237,7 +365,14 @@ export class SpendTracker {
         .find((x) => x.name === WEEKLY_RATE_LIMIT_WINDOW);
       if (w?.reset == null) continue;
       if (nowSec < w.reset) continue;
+      // The stored reset has elapsed, but Anthropic may still be blocking.
+      // If so, the stored reset is stale (drifted from another source) —
+      // releasing would let the next evaluator call re-pause the account
+      // and fire a redundant broadcast. Hold the pause until the window
+      // actually unblocks.
+      if (w.status === 'blocked') continue;
       this.paused.delete(id);
+      deletePausedAccount(this.deps.db, id);
       this.deps.ipcServer.broadcast({ type: 'account_unpaused', accountId: id });
       console.log(`[Spend] Unpaused ${id} (reason=weekly_rate_limit, sweep)`);
       changed = true;
@@ -321,6 +456,7 @@ export class SpendTracker {
           ? `Global weekly budget of $${globalCap!.toFixed(2)} reached. All accounts paused until the 5-hour window resets.`
           : `Weekly budget of $${settings.budgetWeeklyUsdByAccount[id]!.toFixed(2)} reached. Paused until the 5-hour window resets.`,
       });
+      upsertPausedAccount(this.deps.db, id, 'sentinel_budget', resetsAt, this.clock());
       console.log(
         `[Spend] Paused ${id} (spend=$${(spend.perAccount[id] ?? 0).toFixed(2)}, cap=$${(settings.budgetWeeklyUsdByAccount[id] ?? globalCap ?? 0).toFixed?.(2)}, reason=${globalTripped ? 'global' : 'account'})`,
       );
@@ -331,6 +467,7 @@ export class SpendTracker {
       if (reason !== 'sentinel_budget') continue;
       if (shouldPause.has(id)) continue;
       this.paused.delete(id);
+      deletePausedAccount(this.deps.db, id);
       this.deps.ipcServer.broadcast({ type: 'account_unpaused', accountId: id });
       console.log(`[Spend] Unpaused ${id} (spend=$${(spend.perAccount[id] ?? 0).toFixed(2)})`);
     }
@@ -379,6 +516,7 @@ export class SpendTracker {
         title: 'Sentinel: account paused',
         body: 'Weekly (7-day) rate limit reached. Paused until the 7-day window resets.',
       });
+      upsertPausedAccount(this.deps.db, id, 'sentinel_weekly_rate_limit', resetsAt, this.clock());
       console.log(
         `[Spend] Paused ${id} (reason=weekly_rate_limit, resetsAt=${resetsAt ?? 'unknown'})`,
       );
@@ -391,6 +529,7 @@ export class SpendTracker {
       if (reason !== 'sentinel_weekly_rate_limit') continue;
       if (shouldPause.has(id)) continue;
       this.paused.delete(id);
+      deletePausedAccount(this.deps.db, id);
       this.deps.ipcServer.broadcast({ type: 'account_unpaused', accountId: id });
       console.log(`[Spend] Unpaused ${id} (reason=weekly_rate_limit)`);
     }

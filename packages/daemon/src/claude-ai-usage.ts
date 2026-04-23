@@ -237,12 +237,16 @@ function toUsd(minorUnits: number | null | undefined): number {
   return minorUnits / 100;
 }
 
-/** How often to poll the usage endpoint. Claude Code caches its own
- *  response for 1 hour; the OAuth usage host rate-limits aggressively
- *  (anthropics/claude-code#31021 reports 429s under heavy polling).
- *  5 minutes is a conservative middle ground: fresh enough for a
- *  background budget display, well below the 1h the CLI uses. */
-const POLL_INTERVAL_MS = 5 * 60 * 1000;
+/** How often to poll the usage endpoint. Doubles as the primary
+ *  server-side-revoked-token detection path: a 401 here triggers an
+ *  inline forced refresh, and a failed refresh broadcasts
+ *  `token_refresh_failed` → the UI's Re-authenticate banner. A tight
+ *  cadence is what keeps Claude Code from blowing up on a dead token
+ *  the user didn't know had been revoked. 90s strikes the balance —
+ *  well above claude.ai's 429 threshold for a handful of accounts,
+ *  fast enough that the yellow banner appears within a minute or two
+ *  of server-side revocation even if the user never opens the tray. */
+const POLL_INTERVAL_MS = 90 * 1000;
 /** Back-off after auth_expired — the refresh + retry happens inline in
  *  fetchOne, so by the time we land here we've already tried to recover.
  *  The long cooldown is for persistently-dead tokens where the refresher

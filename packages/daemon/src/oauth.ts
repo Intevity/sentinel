@@ -30,7 +30,15 @@ export const REFRESH_TOKEN_EXPIRED = 'REFRESH_TOKEN_EXPIRED';
 let serverClosePromise: Promise<void> | null = null;
 
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const AUTH_URL = 'https://claude.ai/oauth/authorize';
+// Canonical Claude Code OAuth authorize endpoint. The legacy
+// `https://claude.ai/oauth/authorize` URL still rendered a consent
+// page for already-signed-in accounts, but its "switch accounts"
+// affordance navigated away from the authorize URL and dropped the
+// OAuth state, leaving the user stranded on /chat with the callback
+// server hanging. `claude.com/cai/oauth/authorize` is the URL the
+// Claude Code CLI ships in its prod config and handles account
+// switching cleanly.
+const AUTH_URL = 'https://claude.com/cai/oauth/authorize';
 const TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
 const SCOPES =
   'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload org:create_api_key';
@@ -71,8 +79,26 @@ async function startCallbackServer(expectedState: string, signal?: AbortSignal):
       closeResolve = r;
     });
 
+    // Track active sockets so we can force-close keep-alive connections
+    // on server.close(). Without this, the node HTTP server waits for
+    // idle keep-alive timeouts (~5s–2min depending on client) before
+    // the 'close' event fires, which delays the NEXT OAuth attempt
+    // from binding to port 47285.
+    const activeSockets = new Set<import('net').Socket>();
+
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', `http://localhost:${CALLBACK_PORT}`);
+
+      // Verbose request log: every request to the callback server.
+      // Helps diagnose flows where the browser hits the port with
+      // something other than /callback (prefetch, favicon, redirected
+      // error pages, etc.) — critical for figuring out why an OAuth
+      // attempt doesn't complete.
+      const referer = req.headers['referer'] ?? req.headers['referrer'] ?? 'none';
+      const ua = (req.headers['user-agent'] ?? '').slice(0, 80);
+      console.log(
+        `[OAuth] HTTP ${req.method} ${req.url} — referer=${referer} ua="${ua}"`,
+      );
 
       // Silently ignore browser-initiated requests (favicon, etc.)
       if (url.pathname !== '/callback') {
@@ -84,16 +110,17 @@ async function startCallbackServer(expectedState: string, signal?: AbortSignal):
       const code = url.searchParams.get('code');
       const state = url.searchParams.get('state');
       const error = url.searchParams.get('error');
+      const errorDesc = url.searchParams.get('error_description');
 
       console.log(
-        `[OAuth] Callback received — has_code: ${!!code}, state_match: ${state === expectedState}, error: ${error ?? 'none'}`,
+        `[OAuth] Callback received — has_code: ${!!code}, state_match: ${state === expectedState}, error: ${error ?? 'none'}${errorDesc ? `, desc: ${errorDesc}` : ''}`,
       );
 
       // Hard failure: the provider returned an explicit error.
       if (error) {
         res.writeHead(400, { 'Content-Type': 'text/html' });
         res.end('<html><body><p>Login failed. You can close this window.</p></body></html>');
-        server.close();
+        forceClose();
         reject(new Error(`OAuth error: ${error}`));
         return;
       }
@@ -225,13 +252,33 @@ async function startCallbackServer(expectedState: string, signal?: AbortSignal):
   </div>
 </body>
 </html>`);
-      server.close();
+      forceClose();
       resolve(code);
     });
+
+    // Track active connections so we can force-close them on shutdown.
+    server.on('connection', (socket) => {
+      activeSockets.add(socket);
+      socket.on('close', () => activeSockets.delete(socket));
+    });
+
+    // Force-close helper: destroys every open socket AND calls
+    // server.close(). Without destroying sockets, keep-alive
+    // connections from the browser hold the port for seconds to
+    // minutes after server.close().
+    const forceClose = (): void => {
+      console.log(
+        `[OAuth] Closing callback server (destroying ${activeSockets.size} active socket(s))`,
+      );
+      for (const s of activeSockets) s.destroy();
+      activeSockets.clear();
+      server.close();
+    };
 
     // When the server closes for any reason, resolve the close-promise so that
     // the next startCallbackServer call can safely bind to the same port.
     server.on('close', () => {
+      console.log('[OAuth] Callback server closed.');
       closeResolve();
       serverClosePromise = null;
     });
@@ -239,7 +286,8 @@ async function startCallbackServer(expectedState: string, signal?: AbortSignal):
     // Abort handler — closes the server and rejects with the sentinel value so
     // the daemon knows not to broadcast a failure notification.
     const onAbort = (): void => {
-      server.close(); // triggers 'close' event → closeResolve()
+      console.log('[OAuth] Abort signal received — tearing down callback server.');
+      forceClose();
       reject(new Error(OAUTH_ABORTED));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -247,7 +295,8 @@ async function startCallbackServer(expectedState: string, signal?: AbortSignal):
     // Timeout after 5 minutes
     const timer = setTimeout(
       () => {
-        server.close();
+        console.log('[OAuth] 5-minute timeout expired — tearing down callback server.');
+        forceClose();
         reject(new Error('OAuth login timed out (5 minutes)'));
       },
       5 * 60 * 1000,
@@ -445,6 +494,156 @@ function openBrowser(url: string): void {
   });
 }
 
+/**
+ * Open `url` in a browser window with a fresh cookie jar (private/incognito).
+ *
+ * Used by Add Account when the user is adding a DIFFERENT email/identity
+ * than any existing Sentinel account. The default browser will have a
+ * live claude.ai sessionKey from the previous login, and claude.ai's
+ * OAuth consent page offers a "switch accounts" link that navigates
+ * away from `/oauth/authorize` and drops the OAuth state (confirmed
+ * behavior — Claude Code CLI hits the same bug). A private window
+ * bypasses this entirely: no prior session, so claude.ai shows the
+ * login form and the user picks the account they want.
+ *
+ * Strategy: try Chrome → Brave → Edge → Arc → Firefox in priority
+ * order. Fall back to the default browser if none are installed (the
+ * user will need to sign out of claude.ai manually in that case).
+ */
+function openBrowserIncognito(url: string): void {
+  if (process.platform === 'darwin') return openBrowserIncognitoMac(url);
+  if (process.platform === 'win32') return openBrowserIncognitoWindows(url);
+  return openBrowserIncognitoLinux(url);
+}
+
+function openBrowserIncognitoMac(url: string): void {
+  // Each entry: [app name under /Applications, private-mode CLI flag].
+  // Chromium-based browsers honor --incognito / --inprivate; Firefox
+  // uses --private-window.
+  const candidates: Array<{ app: string; flag: string }> = [
+    { app: 'Google Chrome', flag: '--incognito' },
+    { app: 'Brave Browser', flag: '--incognito' },
+    { app: 'Microsoft Edge', flag: '--inprivate' },
+    { app: 'Arc', flag: '--incognito' },
+    { app: 'Firefox', flag: '--private-window' },
+  ];
+
+  const statSync: typeof import('fs').statSync = require('fs').statSync;
+  for (const { app, flag } of candidates) {
+    try {
+      statSync(`/Applications/${app}.app`);
+    } catch {
+      continue;
+    }
+    // -n: force a new instance so the incognito window opens even if
+    // the browser is already running. -a: target app by name.
+    // --args: pass subsequent args to the app rather than `open`.
+    const cmd = `open -na "${app}" --args ${flag} "${url}"`;
+    console.log(`[OAuth] Opening OAuth URL in ${app} private mode`);
+    exec(cmd, (err) => {
+      if (err) console.error(`[OAuth] Failed to open ${app}:`, err.message);
+    });
+    return;
+  }
+
+  console.warn('[OAuth] No private-mode browser on macOS; using default browser.');
+  openBrowser(url);
+}
+
+function openBrowserIncognitoWindows(url: string): void {
+  const programFiles = process.env['ProgramFiles'] ?? 'C:\\Program Files';
+  const programFilesX86 = process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)';
+  const localAppData = process.env['LOCALAPPDATA'] ?? '';
+  // Each entry: [path candidates in priority order, CLI flag for private mode].
+  const candidates: Array<{ name: string; paths: string[]; flag: string }> = [
+    {
+      name: 'Chrome',
+      paths: [
+        `${programFiles}\\Google\\Chrome\\Application\\chrome.exe`,
+        `${programFilesX86}\\Google\\Chrome\\Application\\chrome.exe`,
+        localAppData && `${localAppData}\\Google\\Chrome\\Application\\chrome.exe`,
+      ].filter(Boolean),
+      flag: '--incognito',
+    },
+    {
+      name: 'Edge',
+      paths: [
+        `${programFiles}\\Microsoft\\Edge\\Application\\msedge.exe`,
+        `${programFilesX86}\\Microsoft\\Edge\\Application\\msedge.exe`,
+      ],
+      flag: '--inprivate',
+    },
+    {
+      name: 'Brave',
+      paths: [
+        `${programFiles}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe`,
+        `${programFilesX86}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe`,
+        localAppData && `${localAppData}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe`,
+      ].filter(Boolean),
+      flag: '--incognito',
+    },
+    {
+      name: 'Firefox',
+      paths: [`${programFiles}\\Mozilla Firefox\\firefox.exe`, `${programFilesX86}\\Mozilla Firefox\\firefox.exe`],
+      flag: '-private-window',
+    },
+  ];
+
+  const statSync: typeof import('fs').statSync = require('fs').statSync;
+  for (const { name, paths, flag } of candidates) {
+    for (const p of paths) {
+      try {
+        statSync(p);
+      } catch {
+        continue;
+      }
+      // Quote the executable and URL to handle spaces in paths.
+      const cmd = `"${p}" ${flag} "${url}"`;
+      console.log(`[OAuth] Opening OAuth URL in ${name} private mode (Windows)`);
+      exec(cmd, (err) => {
+        if (err) console.error(`[OAuth] Failed to open ${name}:`, err.message);
+      });
+      return;
+    }
+  }
+
+  console.warn('[OAuth] No private-mode browser on Windows; using default browser.');
+  openBrowser(url);
+}
+
+function openBrowserIncognitoLinux(url: string): void {
+  // On Linux, private-mode browsers are expected on PATH. We probe with
+  // `command -v` (posix) to detect the first one available and invoke
+  // it directly with the correct flag.
+  const candidates: Array<{ bin: string; flag: string }> = [
+    { bin: 'google-chrome', flag: '--incognito' },
+    { bin: 'google-chrome-stable', flag: '--incognito' },
+    { bin: 'chromium', flag: '--incognito' },
+    { bin: 'chromium-browser', flag: '--incognito' },
+    { bin: 'brave-browser', flag: '--incognito' },
+    { bin: 'microsoft-edge', flag: '--inprivate' },
+    { bin: 'firefox', flag: '--private-window' },
+  ];
+
+  const { execSync } = require('child_process') as typeof import('child_process');
+  for (const { bin, flag } of candidates) {
+    try {
+      execSync(`command -v ${bin}`, { stdio: 'ignore' });
+    } catch {
+      continue;
+    }
+    const cmd = `${bin} ${flag} "${url}"`;
+    console.log(`[OAuth] Opening OAuth URL in ${bin} private mode (Linux)`);
+    exec(cmd, (err) => {
+      if (err) console.error(`[OAuth] Failed to open ${bin}:`, err.message);
+    });
+    return;
+  }
+
+  console.warn('[OAuth] No private-mode browser on Linux; using default browser.');
+  openBrowser(url);
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────────
 
 export interface OAuthResult {
@@ -487,6 +686,15 @@ export interface OAuthLoginOptions {
    *  should honor the hint and skip the org chooser. When it isn't
    *  honored, the user sees the chooser as usual — no regression. */
   orgUuidHint?: string;
+  /** Open the OAuth URL in a private/incognito browser window instead
+   *  of the default browser. Use this when the user is adding a
+   *  DIFFERENT email/identity than any existing Sentinel account —
+   *  claude.ai's "switch accounts" link on the OAuth consent page
+   *  drops the OAuth state (same bug as Claude Code CLI), so a fresh
+   *  cookie jar is the only reliable way to complete the flow in one
+   *  shot. Default (false): open in default browser, which is correct
+   *  for first-ever login and same-email re-auth. */
+  incognito?: boolean;
 }
 
 export async function startOAuthLogin(
@@ -527,9 +735,11 @@ export async function startOAuthLogin(
   // the URL up, along with the hint so the caller can wire it into
   // the webview.
 
-  const openAuthUrl = opts.openAuthUrl ?? openBrowser;
+  const openAuthUrl = opts.openAuthUrl ?? (opts.incognito ? openBrowserIncognito : openBrowser);
   openAuthUrl(authUrl);
-  console.log('[OAuth] Surfaced auth URL:', authUrl);
+  console.log(
+    `[OAuth] Surfaced auth URL${opts.incognito ? ' (incognito)' : ''}: ${authUrl}`,
+  );
 
   // Wait for the auth code
   const code = await codePromise;

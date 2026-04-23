@@ -94,6 +94,21 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   PRIMARY KEY (account_id, name)
 );
 
+-- Persisted SpendTracker pause set. Without this, the in-memory paused
+-- set starts empty on every daemon launch and the first recompute
+-- re-broadcasts account_paused for any account still tripping its pause
+-- condition, which fires a redundant OS notification and writes a
+-- duplicate row to the notifications table. reset_ts is the Unix-seconds
+-- reset value of the triggering window at the moment the pause fired;
+-- on rehydrate we compare against the current window reset to detect
+-- whether a rollover happened while the daemon was off.
+CREATE TABLE IF NOT EXISTS paused_accounts (
+  account_id TEXT PRIMARY KEY,
+  reason     TEXT NOT NULL,
+  reset_ts   INTEGER,
+  paused_at  INTEGER NOT NULL
+);
+
 -- Alerts come in several scopes (see AlertScope in shared/types.ts for the
 -- full discriminator). account_id stores '' for any scope whose TS type is
 -- null (pool, pool-weekly, budget:global) so the legacy NOT NULL constraint
@@ -647,6 +662,7 @@ export function purgeAccount(db: Database.Database, id: string): boolean {
   db.prepare('DELETE FROM notifications   WHERE account_id = ?').run(id);
   db.prepare('DELETE FROM alerts          WHERE account_id = ?').run(id);
   db.prepare('DELETE FROM security_events WHERE account_id = ?').run(id);
+  db.prepare('DELETE FROM paused_accounts WHERE account_id = ?').run(id);
   // Mark as purged (removed = 2). If the row does not exist yet, insert a bare
   // tombstone so refresh_accounts cannot create a fresh removed = 0 row later.
   const upd = db.prepare('UPDATE accounts SET removed = 2 WHERE id = ?').run(id);
@@ -1519,6 +1535,64 @@ export function loadRateLimits(db: Database.Database): Map<string, RateLimitWind
     });
   }
   return result;
+}
+
+// ─── Paused account queries ──────────────────────────────────────────────────
+
+export interface PersistedPause {
+  accountId: string;
+  reason: string;
+  resetTs: number | null;
+  pausedAt: number;
+}
+
+/**
+ * Upsert a paused-account row. Called by SpendTracker whenever an account
+ * transitions into a paused state (budget cap tripped, weekly rate limit
+ * reached). The reason + resetTs are captured at the moment of the
+ * transition so startup rehydration can detect whether the triggering
+ * window has rolled over while the daemon was off.
+ */
+export function upsertPausedAccount(
+  db: Database.Database,
+  accountId: string,
+  reason: string,
+  resetTs: number | null,
+  pausedAt: number,
+): void {
+  db.prepare(
+    `
+    INSERT INTO paused_accounts (account_id, reason, reset_ts, paused_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(account_id) DO UPDATE SET
+      reason    = excluded.reason,
+      reset_ts  = excluded.reset_ts,
+      paused_at = excluded.paused_at
+  `,
+  ).run(accountId, reason, resetTs, pausedAt);
+}
+
+/** Delete a paused-account row. Called by SpendTracker on every
+ *  out-of-paused transition (evaluator cleanup, rollover, sweep). */
+export function deletePausedAccount(db: Database.Database, accountId: string): void {
+  db.prepare('DELETE FROM paused_accounts WHERE account_id = ?').run(accountId);
+}
+
+/** Load every persisted paused-account row. Called once at daemon startup
+ *  by SpendTracker.loadPersistedPauses to rehydrate the in-memory map. */
+export function listPausedAccounts(db: Database.Database): PersistedPause[] {
+  const rows = db.prepare('SELECT * FROM paused_accounts').all() as Array<{
+    account_id: string;
+    reason: string;
+    reset_ts: number | null;
+    paused_at: number;
+  }>;
+  return rows.map((r) => ({
+    accountId: r.account_id,
+    reason: r.reason,
+    resetTs: r.reset_ts,
+    pausedAt: r.paused_at,
+  }));
 }
 
 // ─── Alert queries ────────────────────────────────────────────────────────────

@@ -1,8 +1,14 @@
 import { useState, useEffect } from 'react';
 import type { PauseReason } from '@claude-sentinel/shared';
-import { onDaemonMessage } from '../lib/ipc.js';
+import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 export interface PausedState {
+  reason: PauseReason;
+  resetsAt: number | null;
+}
+
+interface PausedAccountDetail {
+  accountId: string;
   reason: PauseReason;
   resetsAt: number | null;
 }
@@ -15,17 +21,37 @@ export interface PausedState {
  * `account_unpaused` when the condition clears (5h rollover drops the spend
  * below the cap, or the cap itself was removed).
  *
+ * Seeds state from `get_paused_accounts` on mount so paused-badge UI
+ * renders on first paint — broadcasts only fire on state transitions, so
+ * a pause that persists across a daemon restart would otherwise be
+ * invisible until the next real transition.
+ *
  * Returns a map keyed by Sentinel id with the reason + projected rollover
  * timestamp. Consumers render "Paused — resumes in Xh" badges from this.
- *
- * NOTE: this hook only reflects events broadcast while it is mounted. When
- * a component mounts after some accounts have already entered the paused
- * set, it will miss those until the daemon rebroadcasts (which happens on
- * every spend recompute for state transitions only). If this matters, add
- * a `get_paused_accounts` IPC.
  */
 export function usePausedAccounts(): Record<string, PausedState> {
   const [paused, setPaused] = useState<Record<string, PausedState>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await sendToSentinel<PausedAccountDetail[]>({ type: 'get_paused_accounts' });
+        if (!cancelled && res.success && res.data) {
+          const seeded: Record<string, PausedState> = {};
+          for (const entry of res.data) {
+            seeded[entry.accountId] = { reason: entry.reason, resetsAt: entry.resetsAt };
+          }
+          setPaused((prev) => ({ ...seeded, ...prev }));
+        }
+      } catch {
+        // ignore — broadcasts will still populate state as transitions fire
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;

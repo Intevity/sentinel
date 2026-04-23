@@ -294,7 +294,7 @@ export default function AccountCard({
                     </div>
                   </div>
                 </div>
-                {fiveHourResetAt != null && fiveHourResetAt > 0 && (
+                {!needsReauth && fiveHourResetAt != null && fiveHourResetAt > 0 && (
                   <ResetCountdown epochSec={fiveHourResetAt} variant="pill" />
                 )}
                 {refreshUsageStatus === 'ok' && (
