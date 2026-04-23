@@ -4,6 +4,7 @@ import type {
   Alert,
   AlertScope,
   BudgetAlertScope,
+  PauseReason,
   NotificationRecord,
   MetricsSummary,
   OverageCreditGrant,
@@ -283,16 +284,19 @@ export interface SpendUpdateMessage {
 
 /** Broadcast when the daemon pauses an account from further use. Reason
  *  discriminates why so the UI can show specific copy:
- *    sentinel_budget         — rolling 7d spend crossed the user-configured cap.
+ *    sentinel_budget            — rolling 7d spend crossed the user-configured cap.
+ *    sentinel_weekly_rate_limit — Anthropic marked the account's unified-7d
+ *                                 window as 'blocked'; stays paused until the
+ *                                 7-day reset (not the 5-hour reset).
  *    anthropic_overage_disabled — Anthropic flipped overage-status to 'disabled'.
  *
- *  `resetsAt` is the Unix-seconds timestamp at which the unified-5h window
- *  next rolls over (when Sentinel will re-evaluate and potentially
- *  auto-unpause). `null` when no reset info is available yet. */
+ *  `resetsAt` is the Unix-seconds timestamp at which the relevant window
+ *  next rolls over (unified-5h for budget pauses, unified-7d for
+ *  weekly-rate-limit pauses). `null` when no reset info is available yet. */
 export interface AccountPausedMessage {
   type: 'account_paused';
   accountId: string;
-  reason: 'sentinel_budget' | 'anthropic_overage_disabled';
+  reason: PauseReason;
   resetsAt: number | null;
 }
 
@@ -603,11 +607,12 @@ export interface UpdateAccountMessage {
 export interface ListAlertsMessage {
   type: 'list_alerts';
   /** When provided, only alerts bound to this Sentinel account key are returned.
-   *  Implies `scope === 'account'` (or budget:account). Ignored when
-   *  scope === 'pool' or budget:global. */
+   *  Implies an account-bound scope (`account`, `account-sonnet`,
+   *  `account-weekly`, or `budget:account`). Ignored when scope is
+   *  `pool`, `pool-weekly`, or `budget:global`. */
   accountId?: string;
-  /** Filter by scope. `'all'` (default) returns every scope; `'account'`,
-   *  `'pool'`, and `'budget'` each return only the named scope. */
+  /** Filter by scope. `'all'` (default) returns every scope; any specific
+   *  scope value returns only rows in that scope. */
   scope?: AlertScope | 'all';
 }
 
@@ -615,11 +620,13 @@ export interface UpsertAlertMessage {
   type: 'upsert_alert';
   /** Omit to create; provide an existing id to update in place. */
   id?: number;
-  /** `'account'` requires a non-null accountId; `'pool'` requires accountId
-   *  to be null; `'budget'` requires an accompanying `budgetScope`. Defaults
-   *  to `'account'` for backwards compatibility. */
+  /** Scope-dependent accountId validation:
+   *    - `account`, `account-sonnet`, `account-weekly` require non-null accountId
+   *    - `pool`, `pool-weekly` require accountId to be null
+   *    - `budget` requires an accompanying `budgetScope`
+   *  Defaults to `'account'` for backwards compatibility. */
   scope?: AlertScope;
-  /** Null when scope === 'pool', or scope === 'budget' with budgetScope === 'global'. */
+  /** Null for pool scopes (`pool`, `pool-weekly`) and `budget:global`. */
   accountId: string | null;
   thresholdPct: number;
   enabled: boolean;

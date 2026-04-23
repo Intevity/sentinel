@@ -601,7 +601,9 @@ export default function AccountSwitcher({
         const inPool = !excludedIds.has(account.id);
         const weeklyCap =
           settings?.budgetWeeklyUsdByAccount[account.id] ?? settings?.budgetWeeklyUsdGlobal ?? null;
-        const paused = !!pausedMap[account.id];
+        const pausedState = pausedMap[account.id];
+        const paused = pausedState != null;
+        const pauseReason = pausedState?.reason ?? null;
         const cardStatus = cardRefreshStatus[account.id];
         return (
           <AccountCard
@@ -625,6 +627,7 @@ export default function AccountSwitcher({
             fiveHourResetAt={resetAt}
             weeklyCapUsd={weeklyCap}
             paused={paused}
+            pauseReason={pauseReason}
             {...(cardStatus ? { refreshUsageStatus: cardStatus.status } : {})}
             refreshUsageError={cardStatus?.status === 'err' ? cardStatus.error : null}
           />

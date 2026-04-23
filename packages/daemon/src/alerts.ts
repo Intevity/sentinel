@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import type { RateLimitStore } from './rate-limit-store.js';
 import type { IpcServer } from './ipc.js';
-import type { RateLimitWindow, Settings } from '@claude-sentinel/shared';
+import type { AlertScope, RateLimitWindow, Settings } from '@claude-sentinel/shared';
 import { listAlerts, listAccounts, markAlertTriggered, insertNotification } from './db.js';
 
 /** Only evaluate alerts against the 5-hour window — see plan rationale. */
@@ -10,6 +10,13 @@ const SESSION_WINDOW = 'unified-5h';
 /** Window name for Sonnet's weekly quota. `account-sonnet`-scoped alerts
  *  evaluate against this window rather than `unified-5h`. */
 const SONNET_WINDOW = 'unified-7d_sonnet';
+
+/** Window name for the general weekly quota (caps Opus and every other
+ *  non-Sonnet model). `account-weekly` and `pool-weekly`-scoped alerts
+ *  evaluate against this window. Distinct from SONNET_WINDOW — the two
+ *  quotas are reported separately by Anthropic and a user may want
+ *  independent thresholds on each. */
+const WEEKLY_WINDOW = 'unified-7d';
 
 /** Minimum advance in the session reset timestamp before an alert
  *  re-fires. The rate-limit store merges two data sources (proxy
@@ -127,27 +134,31 @@ export function startAlertEvaluator(deps: AlertEvaluatorDeps): void {
 }
 
 /**
- * Snapshot of the pool's aggregate 5-hour state. `utilPct` is the arithmetic
- * mean of each pool member's unified-5h utilization (missing treated as 0
- * so fresh, unprobed accounts don't artificially lower the mean). `resetTs`
- * is the minimum `reset` timestamp across pool members — i.e. the earliest
- * any pool window will roll over. Zero when no pool member has observed
- * reset headers yet.
+ * Snapshot of the pool's aggregate state for a given window name. `utilPct`
+ * is the arithmetic mean of each pool member's utilization on the named
+ * window (missing treated as 0 so fresh, unprobed accounts don't
+ * artificially lower the mean). `resetTs` is the minimum `reset` timestamp
+ * across pool members — i.e. the earliest any pool member's window will
+ * roll over. Zero when no pool member has observed reset headers yet.
  *
  * Returns null when pool has zero eligible members (no enrolled accounts, or
  * all are excluded).
+ *
+ * `windowName` defaults to the 5-hour window to preserve the original call
+ * sites; pass `WEEKLY_WINDOW` for the pool-weekly evaluator.
  */
 function computePoolSnapshot(
   db: Database,
   rateLimitStore: RateLimitStore,
   excluded: ReadonlySet<string>,
+  windowName: string = SESSION_WINDOW,
 ): { utilPct: number; resetTs: number; memberCount: number } | null {
   const members = listAccounts(db).filter((a) => !excluded.has(a.id));
   if (members.length === 0) return null;
   let sumUtil = 0;
   let minReset = Number.POSITIVE_INFINITY;
   for (const m of members) {
-    const w = rateLimitStore.getAll(m.id).find((x) => x.name === SESSION_WINDOW);
+    const w = rateLimitStore.getAll(m.id).find((x) => x.name === windowName);
     sumUtil += w?.utilization ?? 0;
     if (w?.reset != null) minReset = Math.min(minReset, w.reset);
   }
@@ -228,6 +239,75 @@ export function startPoolAlertEvaluator(deps: PoolAlertEvaluatorDeps): void {
 }
 
 /**
+ * Pool-weekly counterpart of `evaluatePoolOnce` — fires `pool-weekly`-scope
+ * alerts when the mean `unified-7d` utilization across the round-robin pool
+ * crosses a configured threshold. Mirrors the 5-hour pool evaluator but
+ * reads the general weekly window instead, and only re-fires once per 7-day
+ * rollover. Called both on every rate-limit update and eagerly when
+ * `poolExcludedIds` changes.
+ */
+export function evaluateWeeklyPoolOnce(deps: PoolAlertEvaluatorDeps): void {
+  const settings = deps.getSettings();
+  if (settings.switchingMode !== 'round-robin') return;
+  const excluded = new Set(settings.poolExcludedIds);
+  const snapshot = computePoolSnapshot(deps.db, deps.rateLimitStore, excluded, WEEKLY_WINDOW);
+  if (!snapshot) return;
+
+  const alerts = listAlerts(deps.db, { scope: 'pool-weekly' }).filter((a) => a.enabled);
+  if (alerts.length === 0) return;
+
+  for (const alert of alerts) {
+    if (snapshot.utilPct < alert.thresholdPct) continue;
+    if (
+      alert.lastTriggeredResetTs != null &&
+      snapshot.resetTs > 0 &&
+      snapshot.resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC
+    ) {
+      continue;
+    }
+
+    const title = `Sentinel: pool weekly at ${alert.thresholdPct}%`;
+    const body = `Round-robin pool has used ${snapshot.utilPct.toFixed(1)}% of its 7-day window on average across ${snapshot.memberCount} account${snapshot.memberCount === 1 ? '' : 's'}.`;
+
+    insertNotification(deps.db, {
+      ts: Date.now(),
+      accountId: null,
+      type: 'usage_alert',
+      title,
+      body,
+    });
+
+    deps.ipcServer.broadcast({
+      type: 'alert_triggered',
+      alertId: alert.id,
+      accountId: null,
+      scope: 'pool-weekly',
+      thresholdPct: alert.thresholdPct,
+      utilization: snapshot.utilPct / 100,
+    });
+
+    markAlertTriggered(deps.db, alert.id, snapshot.resetTs);
+    console.log(
+      `[Alerts] Fired pool-weekly alert ${alert.id} (${alert.thresholdPct}%) at ${snapshot.utilPct.toFixed(1)}%`,
+    );
+  }
+}
+
+/**
+ * Wire the pool-weekly evaluator to rate-limit updates. Same gating as
+ * `startPoolAlertEvaluator`: no-op outside round-robin, skip when the
+ * updated account is excluded from the pool.
+ */
+export function startWeeklyPoolAlertEvaluator(deps: PoolAlertEvaluatorDeps): void {
+  deps.rateLimitStore.onUpdate((accountId) => {
+    const settings = deps.getSettings();
+    if (settings.switchingMode !== 'round-robin') return;
+    if (settings.poolExcludedIds.includes(accountId)) return;
+    evaluateWeeklyPoolOnce(deps);
+  });
+}
+
+/**
  * Subscribe to rate-limit updates and fire user-configured
  * `account-sonnet`-scope alerts when the unified-7d_sonnet window crosses
  * the configured threshold. Mirrors `startAlertEvaluator` but reads the
@@ -291,6 +371,73 @@ export function startSonnetAlertEvaluator(deps: AlertEvaluatorDeps): void {
 }
 
 /**
+ * Subscribe to rate-limit updates and fire user-configured
+ * `account-weekly`-scope alerts when the unified-7d window crosses the
+ * configured threshold. Mirrors `startSonnetAlertEvaluator` but reads the
+ * general (non-Sonnet) weekly window; re-fire is gated per-weekly-window
+ * reset so each alert fires at most once per 7-day rollover.
+ *
+ * Distinct from the `account-sonnet` evaluator: an account can saturate its
+ * Sonnet 7-day quota while the general 7-day window is fresh (and vice
+ * versa), and users frequently want different thresholds on each.
+ */
+export function startWeeklyAlertEvaluator(deps: AlertEvaluatorDeps): void {
+  const handler = (accountId: string, _windows: RateLimitWindow[]): void => {
+    const weekly = deps.rateLimitStore.getAll(accountId).find((w) => w.name === WEEKLY_WINDOW);
+    if (!weekly || weekly.utilization == null) return;
+
+    if (isExcludedInRoundRobin(deps.getSettings, accountId)) return;
+
+    const alerts = listAlerts(deps.db, { scope: 'account-weekly', accountId }).filter(
+      (a) => a.enabled,
+    );
+    if (alerts.length === 0) return;
+
+    const utilPct = weekly.utilization * 100;
+    const resetTs = weekly.reset ?? 0;
+
+    for (const alert of alerts) {
+      if (utilPct < alert.thresholdPct) continue;
+      if (
+        alert.lastTriggeredResetTs != null &&
+        resetTs > 0 &&
+        resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC
+      ) {
+        continue;
+      }
+
+      const email = deps.getEmailForAccount?.(accountId) ?? accountId;
+      const title = `Sentinel: ${alert.thresholdPct}% weekly usage reached`;
+      const body = `${email} has used ${utilPct.toFixed(1)}% of its weekly 7-day window.`;
+
+      insertNotification(deps.db, {
+        ts: Date.now(),
+        accountId,
+        type: 'usage_alert',
+        title,
+        body,
+      });
+
+      deps.ipcServer.broadcast({
+        type: 'alert_triggered',
+        alertId: alert.id,
+        accountId,
+        scope: 'account-weekly',
+        thresholdPct: alert.thresholdPct,
+        utilization: weekly.utilization,
+      });
+
+      markAlertTriggered(deps.db, alert.id, resetTs);
+      console.log(
+        `[Alerts] Fired weekly alert ${alert.id} (${alert.thresholdPct}%) on ${accountId} at ${utilPct.toFixed(1)}%`,
+      );
+    }
+  };
+
+  deps.rateLimitStore.onUpdate(handler);
+}
+
+/**
  * Prevent a newly-created alert from firing in the window where it was born.
  *
  * Without this, an alert whose threshold is already met at creation time will
@@ -311,7 +458,7 @@ export function primeNewAlertAgainstCurrentWindow(
   rateLimitStore: RateLimitStore,
   alert: {
     id: number;
-    scope: 'account' | 'account-sonnet' | 'pool' | 'budget';
+    scope: AlertScope;
     accountId: string | null;
     thresholdPct: number;
   },
@@ -320,19 +467,25 @@ export function primeNewAlertAgainstCurrentWindow(
   // Budget-scope alerts have their own priming path on spend-tracker init;
   // they don't fire off rate-limit headers.
   if (alert.scope === 'budget') return;
-  if (alert.scope === 'pool') {
+  if (alert.scope === 'pool' || alert.scope === 'pool-weekly') {
     // Pool alerts require access to settings for the exclusion list.
     const settings = getSettings?.();
     if (!settings) return;
     const excluded = new Set(settings.poolExcludedIds);
-    const snapshot = computePoolSnapshot(db, rateLimitStore, excluded);
+    const windowName = alert.scope === 'pool-weekly' ? WEEKLY_WINDOW : SESSION_WINDOW;
+    const snapshot = computePoolSnapshot(db, rateLimitStore, excluded, windowName);
     if (!snapshot) return;
     if (snapshot.utilPct < alert.thresholdPct) return;
     markAlertTriggered(db, alert.id, snapshot.resetTs);
     return;
   }
   if (!alert.accountId) return;
-  const windowName = alert.scope === 'account-sonnet' ? SONNET_WINDOW : SESSION_WINDOW;
+  const windowName =
+    alert.scope === 'account-sonnet'
+      ? SONNET_WINDOW
+      : alert.scope === 'account-weekly'
+        ? WEEKLY_WINDOW
+        : SESSION_WINDOW;
   const w = rateLimitStore.getAll(alert.accountId).find((x) => x.name === windowName);
   if (!w || w.utilization == null) return;
   const utilPct = w.utilization * 100;

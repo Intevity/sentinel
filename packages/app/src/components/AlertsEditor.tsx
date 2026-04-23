@@ -57,10 +57,14 @@ export default function AlertsEditor({
 
   const accountTarget: UseAlertsTarget = { scope: 'account', accountId };
   const sonnetTarget: UseAlertsTarget = { scope: 'account-sonnet', accountId };
+  const weeklyTarget: UseAlertsTarget = { scope: 'account-weekly', accountId };
   const poolTarget: UseAlertsTarget = { scope: 'pool' };
+  const poolWeeklyTarget: UseAlertsTarget = { scope: 'pool-weekly' };
   const perAccount = useAlerts(accountTarget);
   const perAccountSonnet = useAlerts(sonnetTarget);
+  const perAccountWeekly = useAlerts(weeklyTarget);
   const pool = useAlerts(poolTarget);
+  const poolWeekly = useAlerts(poolWeeklyTarget);
   const { notifications, refetch: refetchNotifications } = useNotifications();
 
   return (
@@ -113,6 +117,24 @@ export default function AlertsEditor({
         />
       )}
 
+      {/* ── Pooled weekly alerts (round-robin only) ────────────── */}
+      {isRoundRobin && (
+        <AlertList
+          title="Pooled weekly alerts"
+          emptyCopy="No pool weekly alerts yet. Add one to get notified when pool-wide 7-day usage (averaged across every account in the pool) crosses a threshold."
+          rowSuffix="of pool 7-day average"
+          alerts={poolWeekly.alerts}
+          loading={poolWeekly.loading}
+          error={poolWeekly.error}
+          available={true}
+          rowColor={null}
+          create={poolWeekly.create}
+          update={poolWeekly.update}
+          toggle={poolWeekly.toggle}
+          remove={poolWeekly.remove}
+        />
+      )}
+
       {/* ── Per-account alerts ─────────────────────────────────── */}
       <AlertList
         title="Alerts"
@@ -145,6 +167,23 @@ export default function AlertsEditor({
         update={perAccountSonnet.update}
         toggle={perAccountSonnet.toggle}
         remove={perAccountSonnet.remove}
+      />
+
+      {/* ── Per-account weekly (7-day) alerts ───────────────────── */}
+      <AlertList
+        title="Weekly 7-day alerts"
+        emptyCopy="No weekly alerts yet. Add one to get notified before this account's general weekly quota saturates."
+        rowSuffix="of weekly 7-day usage"
+        unavailableCopy="Switch to an account to configure weekly alerts."
+        alerts={perAccountWeekly.alerts}
+        loading={perAccountWeekly.loading}
+        error={perAccountWeekly.error}
+        available={hasAccountContext}
+        rowColor={rowInfo ? accountColor(rowInfo) : null}
+        create={perAccountWeekly.create}
+        update={perAccountWeekly.update}
+        toggle={perAccountWeekly.toggle}
+        remove={perAccountWeekly.remove}
       />
 
       {/* ── History ─────────────────────────────────────────── */}

@@ -71,15 +71,23 @@ export function useNativeAlertNotifications(): void {
         const headline =
           msg.scope === 'pool'
             ? `Sentinel: pool at ${msg.thresholdPct}%`
-            : msg.scope === 'account-sonnet'
-              ? `Sentinel: ${msg.thresholdPct}% Sonnet usage reached`
-              : `Sentinel: ${msg.thresholdPct}% usage reached`;
+            : msg.scope === 'pool-weekly'
+              ? `Sentinel: pool weekly at ${msg.thresholdPct}%`
+              : msg.scope === 'account-sonnet'
+                ? `Sentinel: ${msg.thresholdPct}% Sonnet usage reached`
+                : msg.scope === 'account-weekly'
+                  ? `Sentinel: ${msg.thresholdPct}% weekly usage reached`
+                  : `Sentinel: ${msg.thresholdPct}% usage reached`;
         const body =
           msg.scope === 'pool'
             ? `Round-robin pool has used ${pct}% on average across its 5-hour window.`
-            : msg.scope === 'account-sonnet'
-              ? `Active account has used ${pct}% of its Sonnet 7-day window.`
-              : `Active account has used ${pct}% of its 5-hour window.`;
+            : msg.scope === 'pool-weekly'
+              ? `Round-robin pool has used ${pct}% on average across its 7-day window.`
+              : msg.scope === 'account-sonnet'
+                ? `Active account has used ${pct}% of its Sonnet 7-day window.`
+                : msg.scope === 'account-weekly'
+                  ? `Active account has used ${pct}% of its weekly 7-day window.`
+                  : `Active account has used ${pct}% of its 5-hour window.`;
         void fireNativeStandard(headline, body, soundName);
       } else if (msg.type === 'sonnet_saturation_entered') {
         if (overageOsNotify) {
@@ -121,9 +129,11 @@ export function useNativeAlertNotifications(): void {
         const reasonBlurb =
           msg.reason === 'sentinel_budget'
             ? 'hit weekly budget cap'
-            : msg.reason === 'anthropic_overage_disabled'
-              ? 'Anthropic disabled overage'
-              : 'paused';
+            : msg.reason === 'sentinel_weekly_rate_limit'
+              ? 'hit weekly 7-day rate limit'
+              : msg.reason === 'anthropic_overage_disabled'
+                ? 'Anthropic disabled overage'
+                : 'paused';
         void fireNativeStandard(
           'Claude Sentinel: Account paused',
           `${short}… ${reasonBlurb}.`,

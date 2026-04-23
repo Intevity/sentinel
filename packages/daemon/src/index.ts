@@ -68,8 +68,11 @@ import { ClaudeAiUsageStore } from './claude-ai-usage.js';
 import {
   startAlertEvaluator,
   startSonnetAlertEvaluator,
+  startWeeklyAlertEvaluator,
   startPoolAlertEvaluator,
+  startWeeklyPoolAlertEvaluator,
   evaluatePoolOnce,
+  evaluateWeeklyPoolOnce,
   primeNewAlertAgainstCurrentWindow,
 } from './alerts.js';
 import { createSecurityScanner } from './security/scanner.js';
@@ -102,6 +105,7 @@ import type {
   PlanType,
   ClaudeCodeCredentials,
   MetricsSummary,
+  AlertScope,
 } from '@claude-sentinel/shared';
 import { request as httpRequest, type Server } from 'http';
 import { log } from './logger.js';
@@ -499,6 +503,9 @@ export async function startDaemon(): Promise<void> {
   // broadcast lets the UI seed its dashboard without waiting for the first
   // OTEL batch.
   spendTracker.recompute();
+  // Start the weekly-pause fallback sweep. Idempotent; cleared by
+  // spendTracker.stop() in the SIGTERM/SIGINT handlers.
+  spendTracker.start();
 
   /**
    * Change the active account: update ~/.claude.json, swap the Claude Code
@@ -1175,7 +1182,10 @@ export async function startDaemon(): Promise<void> {
           prev.switchingMode !== next.switchingMode ||
           prev.poolExcludedIds.length !== next.poolExcludedIds.length ||
           prev.poolExcludedIds.some((id, i) => id !== next.poolExcludedIds[i]);
-        if (poolChanged) evaluatePoolOnce(poolAlertDeps);
+        if (poolChanged) {
+          evaluatePoolOnce(poolAlertDeps);
+          evaluateWeeklyPoolOnce(poolAlertDeps);
+        }
         // Interval change → restart the background prober so the new cadence
         // takes effect immediately (no daemon restart).
         if (prev.backgroundProbeIntervalSec !== next.backgroundProbeIntervalSec) {
@@ -1662,10 +1672,7 @@ export async function startDaemon(): Promise<void> {
       }
 
       case 'list_alerts': {
-        const opts: {
-          scope?: 'account' | 'account-sonnet' | 'pool' | 'budget';
-          accountId?: string;
-        } = {};
+        const opts: { scope?: AlertScope; accountId?: string } = {};
         if (msg.scope && msg.scope !== 'all') opts.scope = msg.scope;
         if (msg.accountId) opts.accountId = msg.accountId;
         const rows = listAlerts(db, opts);
@@ -1683,27 +1690,22 @@ export async function startDaemon(): Promise<void> {
           break;
         }
         const scope = msg.scope ?? 'account';
-        if (scope === 'pool' && msg.accountId != null) {
+        if ((scope === 'pool' || scope === 'pool-weekly') && msg.accountId != null) {
           respond({
             requestType: 'upsert_alert',
             success: false,
-            error: 'pool alerts must have accountId = null',
+            error: `${scope} alerts must have accountId = null`,
           });
           break;
         }
-        if (scope === 'account' && !msg.accountId) {
+        if (
+          (scope === 'account' || scope === 'account-sonnet' || scope === 'account-weekly') &&
+          !msg.accountId
+        ) {
           respond({
             requestType: 'upsert_alert',
             success: false,
-            error: 'account alerts require an accountId',
-          });
-          break;
-        }
-        if (scope === 'account-sonnet' && !msg.accountId) {
-          respond({
-            requestType: 'upsert_alert',
-            success: false,
-            error: 'account-sonnet alerts require an accountId',
+            error: `${scope} alerts require an accountId`,
           });
           break;
         }
@@ -1940,12 +1942,20 @@ export async function startDaemon(): Promise<void> {
   // unified-5h; re-fire gated per Sonnet window reset.
   startSonnetAlertEvaluator(alertEvaluatorDeps);
 
+  // Evaluate user-created `account-weekly`-scoped alerts. Reads the general
+  // unified-7d window (non-Sonnet weekly cap); an account can saturate its
+  // Sonnet 7-day quota while the general 7-day window is fresh, and vice
+  // versa, so this is deliberately a separate evaluator/scope.
+  startWeeklyAlertEvaluator(alertEvaluatorDeps);
+
   // Pool-wide alerts (round-robin only). No-ops outside round-robin mode.
   // Also called eagerly from the update_settings handler when the user
   // changes pool membership or switches into round-robin, so the new pool's
   // utilization is checked without waiting for the next rate-limit update.
   const poolAlertDeps = { ...alertEvaluatorDeps, getSettings };
   startPoolAlertEvaluator(poolAlertDeps);
+  // Pool-weekly alerts — same gating as pool, but mean is over unified-7d.
+  startWeeklyPoolAlertEvaluator(poolAlertDeps);
 
   // Sonnet saturation transitions — fire native notifications + persist a
   // timeline entry when an account's unified-7d_sonnet utilization crosses
@@ -2102,8 +2112,13 @@ export async function startDaemon(): Promise<void> {
         return tokenRotator.pick(ctx);
       },
       getPausedAccountIds: () => spendTracker.getPausedIds(),
+      getPauseReason: (accountId) => spendTracker.getPauseReason(accountId),
       getSessionResetAt: (accountId) => {
         const w = rateLimitStore.getAll(accountId).find((x) => x.name === 'unified-5h');
+        return w?.reset ?? null;
+      },
+      getWeeklyResetAt: (accountId) => {
+        const w = rateLimitStore.getAll(accountId).find((x) => x.name === 'unified-7d');
         return w?.reset ?? null;
       },
       getOverageAllowedIds: () => new Set(currentSettings.overageEnabledIds),
@@ -2251,6 +2266,7 @@ export async function startDaemon(): Promise<void> {
     usageProber?.stop();
     clearInterval(telemetryPurgeTimer);
     clearInterval(requestLogPurgeTimer);
+    spendTracker.stop();
     permissionsEnforcer.shutdown();
     ipcServer.close();
     server.close();

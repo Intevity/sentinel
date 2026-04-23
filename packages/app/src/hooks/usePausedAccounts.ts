@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
+import type { PauseReason } from '@claude-sentinel/shared';
 import { onDaemonMessage } from '../lib/ipc.js';
 
 export interface PausedState {
-  reason: 'sentinel_budget' | 'anthropic_overage_disabled';
+  reason: PauseReason;
   resetsAt: number | null;
 }
 

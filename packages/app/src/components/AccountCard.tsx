@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Loader2, Check, X } from 'lucide-react';
-import type { AccountInfo } from '@claude-sentinel/shared';
+import type { AccountInfo, PauseReason } from '@claude-sentinel/shared';
 import { planLabel, planColor } from '../lib/plan.js';
 import { getAccountStatus } from '../lib/account-status.js';
 import { avatarStyle } from '../lib/accountColor.js';
@@ -28,9 +28,15 @@ interface AccountCardProps {
   /** Effective Sentinel cap for this account in USD (per-account override
    *  falling back to global). 0 or undefined suppresses the Sentinel chip. */
   weeklyCapUsd?: number | null;
-  /** True when Sentinel has paused this account (weekly cap reached). Shown
-   *  as a red "Paused" pill replacing the normal spend chip. */
+  /** True when Sentinel has paused this account. Shown as a red "Paused"
+   *  pill replacing the normal spend chip. Reason-specific copy is rendered
+   *  from `pauseReason` in the hover tooltip. */
   paused?: boolean;
+  /** Reason the account is paused. Drives the hover tooltip copy so a user
+   *  can tell at a glance whether it's a Sentinel dollar cap, an Anthropic
+   *  7-day rate-limit block, or claude.ai's overage disabled state. Null
+   *  when not paused (or when the daemon hasn't broadcast a reason yet). */
+  pauseReason?: PauseReason | null;
   /** Click handler for the "Refresh token" action. When set, the card
    *  renders a small tertiary button that triggers a manual token refresh. */
   onRefreshToken?: (id: string) => void;
@@ -77,6 +83,7 @@ export default function AccountCard({
   onTogglePool,
   weeklyCapUsd,
   paused,
+  pauseReason,
   fiveHourResetAt,
   refreshUsageStatus,
   refreshUsageError,
@@ -339,7 +346,11 @@ export default function AccountCard({
               </span>
               <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
                 <div className="bg-black/85 dark:bg-white/90 text-white dark:text-black text-[10px] font-medium px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
-                  Paused: weekly budget reached
+                  {pauseReason === 'sentinel_weekly_rate_limit'
+                    ? 'Paused: weekly (7-day) rate limit reached'
+                    : pauseReason === 'anthropic_overage_disabled'
+                      ? 'Paused: Anthropic disabled overage'
+                      : 'Paused: weekly budget reached'}
                 </div>
               </div>
             </div>

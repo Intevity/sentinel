@@ -852,9 +852,20 @@ export const ALERT_SOUNDS: ReadonlyArray<{ label: string; value: string | null }
  *                    weekly pool on Max plans). Distinct from `account` so
  *                    a user can configure 5-hour and Sonnet 7-day
  *                    thresholds independently on the same account.
+ *   account-weekly — bound to a single Sentinel account key; fires on that
+ *                    account's unified-7d utilization (the general weekly
+ *                    quota that caps Opus and other non-Sonnet models).
+ *                    Parallel to `account-sonnet` but reads the general
+ *                    7-day window; users frequently want distinct
+ *                    thresholds for the two weekly quotas.
  *   pool           — round-robin only; fires on the mean unified-5h
  *                    utilization across every pool member (accounts not
  *                    in `poolExcludedIds`).
+ *   pool-weekly    — round-robin only; fires on the mean unified-7d
+ *                    utilization across every pool member. Catches the
+ *                    case where every pool account is drifting toward
+ *                    weekly cap simultaneously so rotation alone can't
+ *                    save you.
  *   budget         — fires on rolling 7-day spend vs. the user-configured
  *                    Sentinel budget. `budgetScope: 'account'` compares
  *                    against `Settings.budgetWeeklyUsdByAccount[accountId]`;
@@ -862,7 +873,33 @@ export const ALERT_SOUNDS: ReadonlyArray<{ label: string; value: string | null }
  *                    `budgetWeeklyUsdGlobal`. Re-arms on ISO-week rollover
  *                    rather than 5h-window reset.
  */
-export type AlertScope = 'account' | 'account-sonnet' | 'pool' | 'budget';
+export type AlertScope =
+  | 'account'
+  | 'account-sonnet'
+  | 'account-weekly'
+  | 'pool'
+  | 'pool-weekly'
+  | 'budget';
+
+/** Reason an account was paused by the daemon. Embedded in
+ *  `AccountPausedMessage` so the UI and proxy can render cause-specific
+ *  copy and pick the correct reset window for Retry-After.
+ *
+ *    sentinel_budget             — rolling 7d spend crossed the
+ *                                  user-configured dollar cap. Resumes
+ *                                  on the next unified-5h reset.
+ *    sentinel_weekly_rate_limit  — Anthropic set unified-7d status to
+ *                                  'blocked' on this account. Resumes
+ *                                  on the unified-7d reset (days away,
+ *                                  not hours).
+ *    anthropic_overage_disabled  — Anthropic flipped overage-status to
+ *                                  'disabled'. Not time-based; clears
+ *                                  when Anthropic re-enables overage.
+ */
+export type PauseReason =
+  | 'sentinel_budget'
+  | 'sentinel_weekly_rate_limit'
+  | 'anthropic_overage_disabled';
 
 /**
  * Sub-scope for `scope: 'budget'` alerts. `'account'` binds the alert to a

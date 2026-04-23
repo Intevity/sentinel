@@ -16,8 +16,11 @@ import { RateLimitStore } from './rate-limit-store.js';
 import {
   startAlertEvaluator,
   startSonnetAlertEvaluator,
+  startWeeklyAlertEvaluator,
   startPoolAlertEvaluator,
+  startWeeklyPoolAlertEvaluator,
   evaluatePoolOnce,
+  evaluateWeeklyPoolOnce,
   primeNewAlertAgainstCurrentWindow,
 } from './alerts.js';
 import { DEFAULT_SETTINGS } from './settings.js';
@@ -1237,5 +1240,510 @@ describe('account-sonnet alerts', () => {
         (m as { scope?: string }).scope === 'account-sonnet',
     );
     expect(fires).toHaveLength(1);
+  });
+});
+
+// ── account-weekly scope ───────────────────────────────────────────────────
+
+function updateWeeklyWindow(
+  store: RateLimitStore,
+  accountId: string,
+  utilization: number,
+  reset = 500,
+  status: string = 'allowed',
+): void {
+  store.update(accountId, {
+    'anthropic-ratelimit-unified-7d-status': status,
+    'anthropic-ratelimit-unified-7d-utilization': String(utilization),
+    'anthropic-ratelimit-unified-7d-reset': String(reset),
+  });
+}
+
+function weeklyFires(broadcasts: unknown[], scope: string): unknown[] {
+  return broadcasts.filter(
+    (m): m is { scope: string } =>
+      typeof m === 'object' &&
+      m !== null &&
+      (m as { type?: string }).type === 'alert_triggered' &&
+      (m as { scope?: string }).scope === scope,
+  );
+}
+
+describe('account-weekly alerts', () => {
+  let dbPath: string;
+
+  beforeEach(() => {
+    dbPath = TEST_DB();
+  });
+  afterEach(() => {
+    closeDb();
+    if (existsSync(dbPath)) unlinkSync(dbPath);
+  });
+
+  it('fires on the general 7-day window, independent of the 5-hour and Sonnet windows', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    startWeeklyAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    // 5-hour and Sonnet saturated but should be ignored by this evaluator.
+    updateSessionWindow(store, 'acc-a', 0.99);
+    updateSonnetWindow(store, 'acc-a', 0.99, 500);
+    // No weekly fire yet — evaluator reads 7d only, and we haven't pushed a
+    // 7d header. Sanity check the isolation.
+    expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(0);
+    // Now push a 7d header above threshold → fire.
+    updateWeeklyWindow(store, 'acc-a', 0.9, 500);
+    expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(1);
+  });
+
+  it('does not re-fire within the same weekly window', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    startWeeklyAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateWeeklyWindow(store, 'acc-a', 0.85, 500);
+    updateWeeklyWindow(store, 'acc-a', 0.92, 500);
+    updateWeeklyWindow(store, 'acc-a', 0.99, 500);
+
+    expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(1);
+  });
+
+  it('re-arms after the weekly window rolls over', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    startWeeklyAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateWeeklyWindow(store, 'acc-a', 0.9, 500);
+    updateWeeklyWindow(store, 'acc-a', 0.9, 9_999);
+
+    expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(2);
+  });
+
+  it('does not re-fire when reset jitters within the same window', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    startWeeklyAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateWeeklyWindow(store, 'acc-a', 0.9, 1_776_909_600);
+    updateWeeklyWindow(store, 'acc-a', 0.9, 1_776_909_601);
+    updateWeeklyWindow(store, 'acc-a', 0.9, 1_776_909_600);
+
+    expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(1);
+  });
+
+  it('does not fire when weekly util is below the threshold', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    startWeeklyAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateWeeklyWindow(store, 'acc-a', 0.6, 500);
+
+    expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(0);
+  });
+
+  it('stays silent for accounts excluded from the round-robin pool', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    startWeeklyAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => rrSettings({ poolExcludedIds: ['acc-a'] }),
+    });
+
+    updateWeeklyWindow(store, 'acc-a', 0.95, 500);
+    expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(0);
+  });
+
+  it('still fires for excluded accounts outside round-robin mode', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    startWeeklyAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => ({
+        ...DEFAULT_SETTINGS,
+        switchingMode: 'off',
+        poolExcludedIds: ['acc-a'],
+      }),
+    });
+
+    updateWeeklyWindow(store, 'acc-a', 0.95, 500);
+    expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(1);
+  });
+
+  it('ignores disabled weekly alerts', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: false,
+    });
+    startWeeklyAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateWeeklyWindow(store, 'acc-a', 0.95, 500);
+    expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(0);
+  });
+
+  it('is a no-op when no alerts are configured for the account', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    startWeeklyAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateWeeklyWindow(store, 'acc-a', 0.95, 500);
+    expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(0);
+  });
+
+  it('skips updates when the weekly window is missing', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    startWeeklyAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    // A non-weekly update lands — evaluator should silently skip.
+    updateSessionWindow(store, 'acc-a', 0.95);
+    expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(0);
+  });
+
+  it('uses the account email lookup when provided', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a', 'human@example.com');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    startWeeklyAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getEmailForAccount: () => 'human@example.com',
+    });
+
+    updateWeeklyWindow(store, 'acc-a', 0.9, 500);
+    const [notif] = listNotifications(db, { limit: 10 });
+    expect(notif?.body ?? '').toContain('human@example.com');
+  });
+
+  it('weekly prime suppresses first-fire when already above threshold', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    updateWeeklyWindow(store, 'acc-a', 0.95, 500);
+
+    const alert = upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    primeNewAlertAgainstCurrentWindow(db, store, alert);
+
+    const [row] = listAlerts(db, { scope: 'account-weekly', accountId: 'acc-a' });
+    expect(row?.lastTriggeredResetTs).toBe(500);
+
+    const ipc = ipcStub();
+    startWeeklyAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+    updateWeeklyWindow(store, 'acc-a', 0.97, 500);
+    expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(0);
+  });
+});
+
+describe('pool-weekly alerts', () => {
+  let dbPath: string;
+
+  beforeEach(() => {
+    dbPath = TEST_DB();
+  });
+  afterEach(() => {
+    closeDb();
+    if (existsSync(dbPath)) unlinkSync(dbPath);
+  });
+
+  it('fires when the pool-wide 7-day mean crosses the threshold', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    seedAccount(db, 'acc-b');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, { scope: 'pool-weekly', accountId: null, thresholdPct: 70, enabled: true });
+    startWeeklyPoolAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => rrSettings(),
+    });
+
+    // Mean of 0.8 and 0.6 → 0.7 → threshold met.
+    updateWeeklyWindow(store, 'acc-a', 0.8, 500);
+    updateWeeklyWindow(store, 'acc-b', 0.6, 600);
+
+    expect(weeklyFires(ipc.broadcasts, 'pool-weekly').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('ignores excluded accounts when computing the mean', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    seedAccount(db, 'acc-b');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, { scope: 'pool-weekly', accountId: null, thresholdPct: 70, enabled: true });
+    startWeeklyPoolAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => rrSettings({ poolExcludedIds: ['acc-b'] }),
+    });
+
+    // acc-b excluded; mean is acc-a alone at 0.6 → below 70%.
+    updateWeeklyWindow(store, 'acc-a', 0.6, 500);
+    // Update for excluded acc must not even trigger evaluation (startup
+    // gate skips it).
+    updateWeeklyWindow(store, 'acc-b', 0.99, 600);
+
+    expect(weeklyFires(ipc.broadcasts, 'pool-weekly')).toHaveLength(0);
+  });
+
+  it('skips when switching mode is not round-robin', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, { scope: 'pool-weekly', accountId: null, thresholdPct: 50, enabled: true });
+    startWeeklyPoolAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => DEFAULT_SETTINGS,
+    });
+
+    updateWeeklyWindow(store, 'acc-a', 0.9, 500);
+    expect(weeklyFires(ipc.broadcasts, 'pool-weekly')).toHaveLength(0);
+  });
+
+  it('evaluateWeeklyPoolOnce fires immediately without needing a store update', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    updateWeeklyWindow(store, 'acc-a', 0.9, 500);
+
+    upsertAlert(db, { scope: 'pool-weekly', accountId: null, thresholdPct: 70, enabled: true });
+    evaluateWeeklyPoolOnce({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => rrSettings(),
+    });
+
+    expect(weeklyFires(ipc.broadcasts, 'pool-weekly')).toHaveLength(1);
+  });
+
+  it('evaluateWeeklyPoolOnce is a no-op when switching mode is not round-robin', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    updateWeeklyWindow(store, 'acc-a', 0.99, 500);
+
+    upsertAlert(db, { scope: 'pool-weekly', accountId: null, thresholdPct: 50, enabled: true });
+    evaluateWeeklyPoolOnce({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => DEFAULT_SETTINGS,
+    });
+
+    expect(weeklyFires(ipc.broadcasts, 'pool-weekly')).toHaveLength(0);
+  });
+
+  it('evaluateWeeklyPoolOnce is a no-op when the pool has no eligible members', () => {
+    const db = getDb(dbPath);
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, { scope: 'pool-weekly', accountId: null, thresholdPct: 50, enabled: true });
+    evaluateWeeklyPoolOnce({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => rrSettings(),
+    });
+
+    expect(weeklyFires(ipc.broadcasts, 'pool-weekly')).toHaveLength(0);
+  });
+
+  it('gates re-fire by min(reset) across pool members (weekly)', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    seedAccount(db, 'acc-b');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, { scope: 'pool-weekly', accountId: null, thresholdPct: 70, enabled: true });
+    startWeeklyPoolAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => rrSettings(),
+    });
+
+    // First fire at mean 0.8.
+    updateWeeklyWindow(store, 'acc-a', 0.8, 500);
+    updateWeeklyWindow(store, 'acc-b', 0.8, 600);
+    // Stay within the same window: nothing new should fire.
+    updateWeeklyWindow(store, 'acc-a', 0.9, 500);
+    const firesAfterSameWindow = weeklyFires(ipc.broadcasts, 'pool-weekly').length;
+    // Advance BOTH members so min(reset) moves forward well past the
+    // dedup tolerance. A genuine 7-day rollover bumps reset by 604800.
+    updateWeeklyWindow(store, 'acc-a', 0.9, 10_000);
+    updateWeeklyWindow(store, 'acc-b', 0.9, 10_001);
+
+    expect(weeklyFires(ipc.broadcasts, 'pool-weekly').length).toBeGreaterThan(
+      firesAfterSameWindow,
+    );
+  });
+
+  it('ignores disabled pool-weekly alerts', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, { scope: 'pool-weekly', accountId: null, thresholdPct: 50, enabled: false });
+    startWeeklyPoolAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => rrSettings(),
+    });
+
+    updateWeeklyWindow(store, 'acc-a', 0.9, 500);
+    expect(weeklyFires(ipc.broadcasts, 'pool-weekly')).toHaveLength(0);
+  });
+
+  it('skips when the updated account is excluded from the pool', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    seedAccount(db, 'acc-b');
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+
+    upsertAlert(db, { scope: 'pool-weekly', accountId: null, thresholdPct: 50, enabled: true });
+    startWeeklyPoolAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => rrSettings({ poolExcludedIds: ['acc-a'] }),
+    });
+
+    // Excluded account update — evaluator returns without recomputing.
+    updateWeeklyWindow(store, 'acc-a', 0.99, 500);
+    expect(weeklyFires(ipc.broadcasts, 'pool-weekly')).toHaveLength(0);
+  });
+
+  it('primes a pool-weekly alert when the current pool mean is already at threshold', () => {
+    const db = getDb(dbPath);
+    seedAccount(db, 'acc-a');
+    const store = new RateLimitStore();
+    updateWeeklyWindow(store, 'acc-a', 0.9, 500);
+
+    const alert = upsertAlert(db, {
+      scope: 'pool-weekly',
+      accountId: null,
+      thresholdPct: 70,
+      enabled: true,
+    });
+    primeNewAlertAgainstCurrentWindow(db, store, alert, () => rrSettings());
+
+    const [row] = listAlerts(db, { scope: 'pool-weekly' });
+    expect(row?.lastTriggeredResetTs).toBe(500);
   });
 });

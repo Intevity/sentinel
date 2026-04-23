@@ -21,6 +21,7 @@ import {
 } from './cache-ttl/parser.js';
 import { computeCacheCosts } from './cache-ttl/pricing.js';
 import { rewriteCacheControlTtl } from './cache-ttl/rewriter.js';
+import type { PauseReason } from '@claude-sentinel/shared';
 
 export const DAEMON_PORT = 47284;
 export const ANTHROPIC_HOST = 'api.anthropic.com';
@@ -68,16 +69,29 @@ interface ProxyOptions {
   tokenProvider?: (ctx?: { isSonnet: boolean }) => TokenSelection | null;
   /** Live accessor for the Sentinel-side paused-account set. When the
    *  account that a request is about to be attributed to is paused, the
-   *  proxy short-circuits the request with 503 + Retry-After pointing at
-   *  the 5h rollover. Needed for `off` mode where the rotator's pause gate
-   *  is bypassed. Ignored in round-robin (the rotator already skips paused
-   *  accounts so no short-circuit is needed there). */
+   *  proxy short-circuits the request with 503 + Retry-After. The reset
+   *  window used for Retry-After depends on the pause reason (see
+   *  `getPauseReason`): 5-hour for `sentinel_budget`, 7-day for
+   *  `sentinel_weekly_rate_limit`. Needed for `off` mode where the
+   *  rotator's pause gate is bypassed. */
   getPausedAccountIds?: () => ReadonlySet<string>;
+  /** Live accessor for the reason an account is paused. Consumed by the
+   *  503 short-circuit to pick the correct error type and Retry-After
+   *  source window. Returning null means "not paused" (or the caller
+   *  didn't wire this up — the proxy falls back to the budget path for
+   *  backwards compatibility). */
+  getPauseReason?: (accountId: string) => PauseReason | null;
   /** Live accessor for the 5h reset timestamp (Unix seconds) per account.
-   *  Used to populate the Retry-After header on the 503 short-circuit.
-   *  Returning null means "no reset info available"; the proxy picks a
-   *  conservative default. */
+   *  Used to populate the Retry-After header on the 503 short-circuit for
+   *  budget-reason pauses. Returning null means "no reset info available";
+   *  the proxy picks a conservative default. */
   getSessionResetAt?: (accountId: string) => number | null;
+  /** Live accessor for the 7-day reset timestamp (Unix seconds) per
+   *  account. Used in place of `getSessionResetAt` when a pause's reason
+   *  is `sentinel_weekly_rate_limit` — Claude Code backing off to the 5h
+   *  reset would retry hours before Anthropic will honour the request.
+   *  Returning null falls back to the 5h reset. */
+  getWeeklyResetAt?: (accountId: string) => number | null;
   /** Live accessor for the user's overage opt-in allow-list (Sentinel ids).
    *  Consulted by the Sonnet short-circuit: a Sonnet request whose selected
    *  account has `unified-7d_sonnet` saturated is refused with 503 unless
@@ -267,9 +281,42 @@ export function createProxyServer(
     requestAccountMap,
   } = opts;
   const getPausedAccountIds = opts.getPausedAccountIds ?? (() => new Set<string>());
+  const getPauseReason = opts.getPauseReason ?? (() => null);
   const getSessionResetAt = opts.getSessionResetAt ?? (() => null);
+  const getWeeklyResetAt = opts.getWeeklyResetAt ?? (() => null);
   const getOverageAllowedIds = opts.getOverageAllowedIds ?? (() => new Set<string>());
   const getOverageBufferPct = opts.getOverageBufferPct ?? (() => 5);
+
+  /** Pick the right 503 parameters for a paused account based on reason.
+   *  Budget pauses release on the 5h reset; weekly-rate-limit pauses
+   *  release on the 7d reset (clearer signal to Claude Code to stop
+   *  retrying for hours, not minutes). Anthropic's own overage-disabled
+   *  state falls through to the budget shape for backwards compatibility
+   *  — the caller injected the pause for a reason we can't distinguish
+   *  from budget at this layer. */
+  const respondPaused = (res: ServerResponse, accountId: string): void => {
+    const reason = getPauseReason(accountId);
+    if (reason === 'sentinel_weekly_rate_limit') {
+      const resetSec = getWeeklyResetAt(accountId) ?? getSessionResetAt(accountId);
+      respond503(
+        res,
+        resetSec,
+        'sentinel_weekly_rate_limit_paused',
+        'Sentinel has paused this account because its weekly (7-day) rate limit was reached. ' +
+          'It will resume automatically when the 7-day window resets. ' +
+          'Switch accounts to unblock sooner.',
+      );
+      return;
+    }
+    respond503(
+      res,
+      getSessionResetAt(accountId),
+      'sentinel_budget_paused',
+      'Sentinel has paused this account because its weekly budget was reached. ' +
+        'It will resume automatically when the 5-hour window resets. ' +
+        'Switch accounts or raise the Sentinel budget in Settings to unblock sooner.',
+    );
+  };
 
   // Tracks the last broadcast time per account to debounce rapid-fire requests
   const lastBroadcast = new Map<string, number>();
@@ -354,17 +401,11 @@ export function createProxyServer(
 
     // Sentinel-side pause short-circuit. The rotator already skips paused
     // accounts in round-robin, so this only fires in `off` mode or when
-    // a probe header landed on a paused account. Retry-After points at
-    // the 5h rollover so Claude Code backs off until Sentinel re-evaluates.
+    // a probe header landed on a paused account. Retry-After and error
+    // type depend on the pause reason — see respondPaused for the split
+    // between budget (5h reset) and weekly-rate-limit (7d reset).
     if (perRequestAccountId && getPausedAccountIds().has(perRequestAccountId)) {
-      respond503(
-        res,
-        getSessionResetAt(perRequestAccountId),
-        'sentinel_budget_paused',
-        'Sentinel has paused this account because its weekly budget was reached. ' +
-          'It will resume automatically when the 5-hour window resets. ' +
-          'Switch accounts or raise the Sentinel budget in Settings to unblock sooner.',
-      );
+      respondPaused(res, perRequestAccountId);
       return;
     }
 
@@ -466,14 +507,7 @@ export function createProxyServer(
     // /v1/models GETs, etc.). The messages path runs the same check inside
     // handleMessagesPost after the body is buffered.
     if (perRequestAccountId && getPausedAccountIds().has(perRequestAccountId)) {
-      respond503(
-        res,
-        getSessionResetAt(perRequestAccountId),
-        'sentinel_budget_paused',
-        'Sentinel has paused this account because its weekly budget was reached. ' +
-          'It will resume automatically when the 5-hour window resets. ' +
-          'Switch accounts or raise the Sentinel budget in Settings to unblock sooner.',
-      );
+      respondPaused(res, perRequestAccountId);
       return;
     }
 

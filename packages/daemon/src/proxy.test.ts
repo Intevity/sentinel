@@ -1303,6 +1303,150 @@ describe('createProxyServer', () => {
     server.close();
   });
 
+  it('short-circuits weekly-rate-limit pauses with 503 keyed on the 7d reset', async () => {
+    // When the pause reason is 'sentinel_weekly_rate_limit', Retry-After
+    // must point at the unified-7d reset (days away), not the 5h reset.
+    // The error type also switches so Claude Code's backoff state machine
+    // doesn't conflate it with a dollar-cap pause.
+    const nowSec = Math.floor(Date.now() / 1000);
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'tok' },
+        activeAccountId: { value: 'paused-acct' },
+        getPausedAccountIds: () => new Set(['paused-acct']),
+        getPauseReason: () => 'sentinel_weekly_rate_limit',
+        getSessionResetAt: () => nowSec + 600, // 10 min — must NOT be used
+        getWeeklyResetAt: () => nowSec + 48 * 3600, // 48 hours
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+
+    const req = makeReq('/v1/messages', 'POST');
+    let code = 0;
+    let capturedHeaders: Record<string, unknown> = {};
+    let bodyStr = '';
+    const res = {
+      writeHead: (c: number, hdrs?: unknown) => {
+        code = c;
+        if (hdrs && typeof hdrs === 'object') capturedHeaders = hdrs as Record<string, unknown>;
+      },
+      end: (data?: string) => {
+        bodyStr = data ?? '';
+      },
+      write: vi.fn(),
+      pipe: vi.fn(),
+    } as unknown as ServerResponse;
+
+    handler?.(req, res);
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(httpsRequestMock).not.toHaveBeenCalled();
+    expect(code).toBe(503);
+    const retry = Number(capturedHeaders['Retry-After']);
+    // Must be 7d-scale, not 5h-scale. 48h = 172800s, 10min = 600s.
+    expect(retry).toBeGreaterThan(600);
+    expect(retry).toBeLessThanOrEqual(48 * 3600);
+    const parsed = JSON.parse(bodyStr);
+    expect(parsed.error?.type).toBe('sentinel_weekly_rate_limit_paused');
+    expect(parsed.error?.message).toContain('weekly (7-day) rate limit');
+    server.close();
+  });
+
+  it('weekly-pause on a non-messages path also returns the weekly-rate-limit 503 shape', async () => {
+    // The second 503 callsite — /v1/models GETs and similar probes — has
+    // its own reason-aware dispatch. Regression guard for that branch.
+    const nowSec = Math.floor(Date.now() / 1000);
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'tok' },
+        activeAccountId: { value: 'paused-acct' },
+        getPausedAccountIds: () => new Set(['paused-acct']),
+        getPauseReason: () => 'sentinel_weekly_rate_limit',
+        getSessionResetAt: () => null,
+        getWeeklyResetAt: () => nowSec + 24 * 3600,
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+
+    const req = makeReq('/v1/models', 'GET', '');
+    let code = 0;
+    let bodyStr = '';
+    const res = {
+      writeHead: (c: number) => {
+        code = c;
+      },
+      end: (data?: string) => {
+        bodyStr = data ?? '';
+      },
+      write: vi.fn(),
+      pipe: vi.fn(),
+    } as unknown as ServerResponse;
+
+    handler?.(req, res);
+    expect(code).toBe(503);
+    const parsed = JSON.parse(bodyStr);
+    expect(parsed.error?.type).toBe('sentinel_weekly_rate_limit_paused');
+    server.close();
+  });
+
+  it('weekly pause falls back to the 5h reset when no 7d reset has been observed', async () => {
+    // Edge case: the pause was entered but the rate-limit store hasn't
+    // stored a 7d reset yet (shouldn't happen in practice — status=blocked
+    // always co-arrives with reset — but cover the fallback so the UI
+    // never renders NaN).
+    const nowSec = Math.floor(Date.now() / 1000);
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'tok' },
+        activeAccountId: { value: 'paused-acct' },
+        getPausedAccountIds: () => new Set(['paused-acct']),
+        getPauseReason: () => 'sentinel_weekly_rate_limit',
+        getSessionResetAt: () => nowSec + 400,
+        getWeeklyResetAt: () => null,
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+    const req = makeReq('/v1/messages', 'POST');
+    let capturedHeaders: Record<string, unknown> = {};
+    const res = {
+      writeHead: (_c: number, hdrs?: unknown) => {
+        if (hdrs && typeof hdrs === 'object') capturedHeaders = hdrs as Record<string, unknown>;
+      },
+      end: vi.fn(),
+      write: vi.fn(),
+      pipe: vi.fn(),
+    } as unknown as ServerResponse;
+
+    handler?.(req, res);
+    await new Promise((r) => setTimeout(r, 30));
+    // Falls back to the 5h reset timestamp (400s from now).
+    const retry = Number(capturedHeaders['Retry-After']);
+    expect(retry).toBeGreaterThan(0);
+    expect(retry).toBeLessThanOrEqual(400);
+    server.close();
+  });
+
   it('falls back to 300s Retry-After when no 5h reset is known', async () => {
     const server = createProxyServer(
       {

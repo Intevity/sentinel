@@ -1800,6 +1800,167 @@ describe('budget-scope alerts', () => {
   });
 });
 
+describe('weekly-scope alerts (account-weekly + pool-weekly)', () => {
+  const WEEKLY_DB = join(
+    tmpdir(),
+    `sentinel-alerts-weekly-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+  );
+
+  afterEach(() => {
+    closeDb();
+    if (existsSync(WEEKLY_DB)) unlinkSync(WEEKLY_DB);
+  });
+
+  it('round-trips an account-weekly alert', async () => {
+    const db = getDb(WEEKLY_DB);
+    const { upsertAlert, listAlerts } = await import('./db.js');
+    const saved = upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 75,
+      enabled: true,
+    });
+    expect(saved.scope).toBe('account-weekly');
+    expect(saved.accountId).toBe('acc-a');
+    expect(saved.thresholdPct).toBe(75);
+
+    const rows = listAlerts(db, { scope: 'account-weekly', accountId: 'acc-a' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.scope).toBe('account-weekly');
+  });
+
+  it('round-trips a pool-weekly alert with null accountId', async () => {
+    const db = getDb(WEEKLY_DB);
+    const { upsertAlert, listAlerts } = await import('./db.js');
+    const saved = upsertAlert(db, {
+      scope: 'pool-weekly',
+      accountId: null,
+      thresholdPct: 85,
+      enabled: true,
+    });
+    expect(saved.scope).toBe('pool-weekly');
+    expect(saved.accountId).toBe(null);
+
+    const rows = listAlerts(db, { scope: 'pool-weekly' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.accountId).toBe(null);
+  });
+
+  it('rejects an account-weekly alert with no accountId', async () => {
+    const db = getDb(WEEKLY_DB);
+    const { upsertAlert } = await import('./db.js');
+    expect(() =>
+      upsertAlert(db, {
+        scope: 'account-weekly',
+        accountId: null,
+        thresholdPct: 80,
+        enabled: true,
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a pool-weekly alert with a non-null accountId', async () => {
+    const db = getDb(WEEKLY_DB);
+    const { upsertAlert } = await import('./db.js');
+    expect(() =>
+      upsertAlert(db, {
+        scope: 'pool-weekly',
+        accountId: 'acc-a',
+        thresholdPct: 80,
+        enabled: true,
+      }),
+    ).toThrow();
+  });
+
+  it('listAlerts by account-weekly scope with no accountId returns every row ordered by account', async () => {
+    const db = getDb(WEEKLY_DB);
+    const { upsertAlert, listAlerts } = await import('./db.js');
+    upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-b',
+      thresholdPct: 70,
+      enabled: true,
+    });
+    upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+
+    const rows = listAlerts(db, { scope: 'account-weekly' });
+    expect(rows).toHaveLength(2);
+    // Ordered by account_id, threshold_pct ASC.
+    expect(rows[0]?.accountId).toBe('acc-a');
+    expect(rows[1]?.accountId).toBe('acc-b');
+  });
+
+  it('updates an account-weekly alert in place', async () => {
+    const db = getDb(WEEKLY_DB);
+    const { upsertAlert } = await import('./db.js');
+    const saved = upsertAlert(db, {
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
+    const updated = upsertAlert(db, {
+      id: saved.id,
+      scope: 'account-weekly',
+      accountId: 'acc-a',
+      thresholdPct: 90,
+      enabled: false,
+    });
+    expect(updated.id).toBe(saved.id);
+    expect(updated.thresholdPct).toBe(90);
+    expect(updated.enabled).toBe(false);
+  });
+
+  it('updates a pool-weekly alert in place', async () => {
+    const db = getDb(WEEKLY_DB);
+    const { upsertAlert } = await import('./db.js');
+    const saved = upsertAlert(db, {
+      scope: 'pool-weekly',
+      accountId: null,
+      thresholdPct: 85,
+      enabled: true,
+    });
+    const updated = upsertAlert(db, {
+      id: saved.id,
+      scope: 'pool-weekly',
+      accountId: null,
+      thresholdPct: 75,
+      enabled: false,
+    });
+    expect(updated.id).toBe(saved.id);
+    expect(updated.thresholdPct).toBe(75);
+    expect(updated.enabled).toBe(false);
+  });
+
+  it('normalizes pool-weekly storage to account_id="" then back to null', async () => {
+    // Mirrors the pool-scope invariant: the schema has a legacy NOT NULL
+    // on account_id so the row is stored with '' and normalized back to
+    // null in rowToAlert. Guards against a regression in either direction.
+    const db = getDb(WEEKLY_DB);
+    const { upsertAlert, listAlerts } = await import('./db.js');
+    upsertAlert(db, {
+      scope: 'pool-weekly',
+      accountId: null,
+      thresholdPct: 80,
+      enabled: true,
+    });
+    // Raw SQL: row should have account_id = '' (stored form).
+    const rawRows = db
+      .prepare("SELECT account_id FROM alerts WHERE scope = 'pool-weekly'")
+      .all() as Array<{ account_id: string }>;
+    expect(rawRows).toHaveLength(1);
+    expect(rawRows[0]?.account_id).toBe('');
+    // Typed listAlerts normalizes back to null.
+    const rows = listAlerts(db, { scope: 'pool-weekly' });
+    expect(rows[0]?.accountId).toBe(null);
+  });
+});
+
 const PERMS_DB = join(
   tmpdir(),
   `sentinel-perms-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,

@@ -98,6 +98,65 @@ describe('TokenRotator', () => {
     expect(rotator.pick()).toBeNull();
   });
 
+  it('skips an account whose weekly (unified-7d) window is blocked even if 5h is healthy', () => {
+    // Regression guard: the `windows.some(w => w.status === 'blocked')` check
+    // in TokenRotator.pick iterates every stored window, so a blocked 7d
+    // window must be sufficient to exclude the account from rotation —
+    // even when its 5h utilization is low.
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    // 'a' has fresh 5h but Anthropic marked its general weekly window blocked.
+    store.update('a', {
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
+      'anthropic-ratelimit-unified-5h-utilization': '0.1',
+      'anthropic-ratelimit-unified-7d-status': 'blocked',
+      'anthropic-ratelimit-unified-7d-utilization': '1.0',
+    });
+    // 'b' is clean across both windows.
+    store.update('b', {
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
+      'anthropic-ratelimit-unified-5h-utilization': '0.2',
+    });
+    const rotator = new TokenRotator(db, store, { value: 'a' });
+    // Every pick must land on 'b' — 'a' is skipped despite being the lower
+    // 5h utilization candidate (would otherwise win under balance strategy).
+    for (let i = 0; i < 4; i++) {
+      expect(rotator.pick()?.accountId).toBe('b');
+    }
+  });
+
+  it('re-admits a previously 7d-blocked account once its status returns to allowed', () => {
+    // Complements the prior test: after Anthropic lifts the block (status
+    // flips back to 'allowed' on a 7d rollover), the rotator must pick the
+    // account up again. The RateLimitStore's merge semantics preserve the
+    // rest of the window state, so overwriting status alone is enough.
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    store.update('a', {
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
+      'anthropic-ratelimit-unified-5h-utilization': '0.1',
+      'anthropic-ratelimit-unified-7d-status': 'blocked',
+    });
+    store.update('b', {
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
+      'anthropic-ratelimit-unified-5h-utilization': '0.5',
+    });
+    const rotator = new TokenRotator(db, store, { value: 'a' });
+    expect(rotator.pick()?.accountId).toBe('b');
+
+    // 7d window rolls over — status flips to allowed.
+    store.update('a', {
+      'anthropic-ratelimit-unified-7d-status': 'allowed',
+      'anthropic-ratelimit-unified-7d-utilization': '0.0',
+    });
+    // 'a' is now the lower-utilization candidate again — should win.
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+
   it('refresh picks up newly-added accounts', () => {
     const db = getDb(dbPath);
     seed(db, 'a', 'a@x');

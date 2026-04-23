@@ -13,6 +13,7 @@ import type {
   PlanType,
   RateLimitWindow,
   Alert,
+  AlertScope,
   MetricsByDayModel,
   CacheHitRate,
   ToolStat,
@@ -93,14 +94,10 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   PRIMARY KEY (account_id, name)
 );
 
--- Alerts come in two scopes:
---   'account' → bound to a specific account; fires on that account's
---               unified-5h utilization. account_id stores the Sentinel key.
---   'pool'    → round-robin only; fires on the pool-wide MEAN unified-5h
---               utilization across every account not in poolExcludedIds.
---               account_id is stored as '' so the NOT NULL constraint still
---               holds on legacy databases (see rowToAlert for the mapping
---               back to null in the TS type).
+-- Alerts come in several scopes (see AlertScope in shared/types.ts for the
+-- full discriminator). account_id stores '' for any scope whose TS type is
+-- null (pool, pool-weekly, budget:global) so the legacy NOT NULL constraint
+-- still holds; rowToAlert normalizes back to null when reading.
 CREATE TABLE IF NOT EXISTS alerts (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
   scope                      TEXT    NOT NULL DEFAULT 'account',
@@ -1538,24 +1535,28 @@ interface DbAlertRow {
 }
 
 function rowToAlert(row: DbAlertRow): Alert {
-  const scope: 'account' | 'account-sonnet' | 'pool' | 'budget' =
+  const scope: AlertScope =
     row.scope === 'pool'
       ? 'pool'
-      : row.scope === 'budget'
-        ? 'budget'
-        : row.scope === 'account-sonnet'
-          ? 'account-sonnet'
-          : 'account';
-  // Budget-scope rows may be global (account_id = '') or per-account.
+      : row.scope === 'pool-weekly'
+        ? 'pool-weekly'
+        : row.scope === 'budget'
+          ? 'budget'
+          : row.scope === 'account-sonnet'
+            ? 'account-sonnet'
+            : row.scope === 'account-weekly'
+              ? 'account-weekly'
+              : 'account';
+  // Account-bound scopes use their stored account_id; pool and
+  // budget-global rows were stored with ''.
   const hasAccountId =
     scope === 'account' ||
     scope === 'account-sonnet' ||
+    scope === 'account-weekly' ||
     (scope === 'budget' && row.budget_scope !== 'global');
   const alert: Alert = {
     id: row.id,
     scope,
-    // Pool rows — and budget-global rows — are stored with account_id = ''
-    // to satisfy the legacy NOT NULL column; normalize back to null.
     accountId: hasAccountId ? row.account_id || null : null,
     thresholdPct: row.threshold_pct,
     enabled: row.enabled === 1,
@@ -1570,15 +1571,16 @@ function rowToAlert(row: DbAlertRow): Alert {
 
 export function listAlerts(
   db: Database.Database,
-  opts: { scope?: 'account' | 'account-sonnet' | 'pool' | 'budget'; accountId?: string } = {},
+  opts: { scope?: AlertScope; accountId?: string } = {},
 ): Alert[] {
   const { scope, accountId } = opts;
-  // accountId filter implies account scope; honour scope when explicitly set.
+  // accountId filter implies an account-bound scope; honour scope when
+  // explicitly set. Pool scopes ignore accountId; budget branches on both.
   let sql: string;
   let params: unknown[];
-  if (scope === 'pool') {
-    sql = "SELECT * FROM alerts WHERE scope = 'pool' ORDER BY threshold_pct ASC";
-    params = [];
+  if (scope === 'pool' || scope === 'pool-weekly') {
+    sql = 'SELECT * FROM alerts WHERE scope = ? ORDER BY threshold_pct ASC';
+    params = [scope];
   } else if (scope === 'budget' && accountId) {
     sql =
       "SELECT * FROM alerts WHERE scope = 'budget' AND account_id = ? ORDER BY threshold_pct ASC";
@@ -1587,21 +1589,15 @@ export function listAlerts(
     sql =
       "SELECT * FROM alerts WHERE scope = 'budget' ORDER BY budget_scope, account_id, threshold_pct ASC";
     params = [];
-  } else if (scope === 'account-sonnet' && accountId) {
-    sql =
-      "SELECT * FROM alerts WHERE scope = 'account-sonnet' AND account_id = ? ORDER BY threshold_pct ASC";
-    params = [accountId];
-  } else if (scope === 'account-sonnet') {
-    sql =
-      "SELECT * FROM alerts WHERE scope = 'account-sonnet' ORDER BY account_id, threshold_pct ASC";
-    params = [];
-  } else if (scope === 'account' && accountId) {
-    sql =
-      "SELECT * FROM alerts WHERE scope = 'account' AND account_id = ? ORDER BY threshold_pct ASC";
-    params = [accountId];
-  } else if (scope === 'account') {
-    sql = "SELECT * FROM alerts WHERE scope = 'account' ORDER BY account_id, threshold_pct ASC";
-    params = [];
+  } else if (
+    (scope === 'account-sonnet' || scope === 'account-weekly' || scope === 'account') &&
+    accountId
+  ) {
+    sql = 'SELECT * FROM alerts WHERE scope = ? AND account_id = ? ORDER BY threshold_pct ASC';
+    params = [scope, accountId];
+  } else if (scope === 'account-sonnet' || scope === 'account-weekly' || scope === 'account') {
+    sql = 'SELECT * FROM alerts WHERE scope = ? ORDER BY account_id, threshold_pct ASC';
+    params = [scope];
   } else if (accountId) {
     sql = 'SELECT * FROM alerts WHERE account_id = ? ORDER BY threshold_pct ASC';
     params = [accountId];
@@ -1617,7 +1613,7 @@ export function upsertAlert(
   db: Database.Database,
   input: {
     id?: number;
-    scope?: 'account' | 'account-sonnet' | 'pool' | 'budget';
+    scope?: AlertScope;
     accountId: string | null;
     thresholdPct: number;
     enabled: boolean;
@@ -1625,14 +1621,14 @@ export function upsertAlert(
   },
 ): Alert {
   const scope = input.scope ?? 'account';
-  if (scope === 'pool' && input.accountId != null) {
-    throw new Error('pool-scoped alerts must have accountId = null');
+  if ((scope === 'pool' || scope === 'pool-weekly') && input.accountId != null) {
+    throw new Error(`${scope}-scoped alerts must have accountId = null`);
   }
-  if (scope === 'account' && !input.accountId) {
-    throw new Error('account-scoped alerts require a non-empty accountId');
-  }
-  if (scope === 'account-sonnet' && !input.accountId) {
-    throw new Error('account-sonnet-scoped alerts require a non-empty accountId');
+  if (
+    (scope === 'account' || scope === 'account-sonnet' || scope === 'account-weekly') &&
+    !input.accountId
+  ) {
+    throw new Error(`${scope}-scoped alerts require a non-empty accountId`);
   }
   const budgetScope: 'account' | 'global' | null =
     scope === 'budget' ? (input.budgetScope ?? 'account') : null;
@@ -1645,7 +1641,9 @@ export function upsertAlert(
   // Pool rows and budget-global rows store '' for the legacy NOT NULL column;
   // normalized back to null by rowToAlert when reading.
   const dbAccountId =
-    scope === 'pool' || (scope === 'budget' && budgetScope === 'global')
+    scope === 'pool' ||
+    scope === 'pool-weekly' ||
+    (scope === 'budget' && budgetScope === 'global')
       ? ''
       : (input.accountId as string);
 

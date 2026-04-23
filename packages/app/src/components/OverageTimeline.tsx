@@ -1,17 +1,17 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { AlertTriangle, CheckCircle, XCircle, PauseCircle, PlayCircle, Trash2 } from 'lucide-react';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
-import type { OverageEvent } from '@claude-sentinel/shared';
+import type { OverageEvent, PauseReason } from '@claude-sentinel/shared';
 
 /** In-memory pause event tracked from `account_paused`/`account_unpaused`
- *  broadcasts. Not persisted — the timeline only reflects pauses that have
+ *  broadcasts. Not persisted; the timeline only reflects pauses that have
  *  happened while this UI instance has been mounted. */
 interface PauseEvent {
   id: string;
   ts: number;
   accountId: string;
   kind: 'paused' | 'unpaused';
-  reason?: 'sentinel_budget' | 'anthropic_overage_disabled';
+  reason?: PauseReason;
 }
 
 interface OverageTimelineProps {
@@ -184,7 +184,9 @@ export default function OverageTimeline({
               pe.kind === 'paused'
                 ? pe.reason === 'sentinel_budget'
                   ? 'Paused by Sentinel budget'
-                  : 'Paused: overage disabled'
+                  : pe.reason === 'sentinel_weekly_rate_limit'
+                    ? 'Paused: weekly (7-day) rate limit'
+                    : 'Paused: overage disabled'
                 : 'Resumed';
             return (
               <div key={pe.id} className="glass-card p-3">

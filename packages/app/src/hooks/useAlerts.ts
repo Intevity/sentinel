@@ -21,15 +21,23 @@ interface UseAlertsResult {
  *                                            account's unified-7d_sonnet
  *                                            window. Same id, separate
  *                                            threshold list.
+ *   { scope: 'account-weekly', accountId } — per-account alerts fired on the
+ *                                            account's unified-7d (general
+ *                                            weekly) window. Independent
+ *                                            threshold list from Sonnet.
  *   { scope: 'pool' }                      — pool-wide alerts (round-robin
  *                                            only); fire on mean unified-5h
  *                                            utilization across the pool.
+ *   { scope: 'pool-weekly' }               — pool-wide alerts on mean
+ *                                            unified-7d utilization.
  *   { scope: 'budget', ... }               — rolling 7-day spend alerts.
  */
 export type UseAlertsTarget =
   | { scope: 'account'; accountId: string | undefined }
   | { scope: 'account-sonnet'; accountId: string | undefined }
+  | { scope: 'account-weekly'; accountId: string | undefined }
   | { scope: 'pool' }
+  | { scope: 'pool-weekly' }
   | { scope: 'budget'; budgetScope: BudgetAlertScope; accountId?: string | undefined };
 
 /**
@@ -49,7 +57,9 @@ export function useAlerts(arg: string | undefined | UseAlertsTarget): UseAlertsR
 
   const scope: AlertScope = target.scope;
   const accountId =
-    target.scope === 'account' || target.scope === 'account-sonnet'
+    target.scope === 'account' ||
+    target.scope === 'account-sonnet' ||
+    target.scope === 'account-weekly'
       ? target.accountId
       : target.scope === 'budget'
         ? target.accountId
@@ -72,6 +82,7 @@ export function useAlerts(arg: string | undefined | UseAlertsTarget): UseAlertsR
     if (
       (scope === 'account' ||
         scope === 'account-sonnet' ||
+        scope === 'account-weekly' ||
         (scope === 'budget' && budgetScope === 'account')) &&
       !accountId
     ) {
@@ -82,15 +93,13 @@ export function useAlerts(arg: string | undefined | UseAlertsTarget): UseAlertsR
     setLoading(true);
     try {
       const res = await sendToSentinel<Alert[]>(
-        scope === 'pool'
-          ? { type: 'list_alerts', scope: 'pool' }
+        scope === 'pool' || scope === 'pool-weekly'
+          ? { type: 'list_alerts', scope }
           : scope === 'budget'
             ? accountId
               ? { type: 'list_alerts', scope: 'budget', accountId }
               : { type: 'list_alerts', scope: 'budget' }
-            : scope === 'account-sonnet'
-              ? { type: 'list_alerts', scope: 'account-sonnet', accountId: accountId as string }
-              : { type: 'list_alerts', scope: 'account', accountId: accountId as string },
+            : { type: 'list_alerts', scope, accountId: accountId as string },
       );
       if (res.success) {
         const filtered = (res.data ?? []).filter((a) =>
@@ -114,10 +123,15 @@ export function useAlerts(arg: string | undefined | UseAlertsTarget): UseAlertsR
 
   const create = useCallback(
     async (thresholdPct: number): Promise<void> => {
-      if ((scope === 'account' || scope === 'account-sonnet') && !accountId) return;
+      if (
+        (scope === 'account' || scope === 'account-sonnet' || scope === 'account-weekly') &&
+        !accountId
+      ) {
+        return;
+      }
       if (scope === 'budget' && budgetScope === 'account' && !accountId) return;
       const payloadAccountId =
-        scope === 'pool'
+        scope === 'pool' || scope === 'pool-weekly'
           ? null
           : scope === 'budget' && budgetScope === 'global'
             ? null
