@@ -15,6 +15,7 @@ import { createHash, randomBytes } from 'crypto';
 import { exec } from 'child_process';
 import type { ClaudeCodeCredentials } from '@claude-sentinel/shared';
 import { SENTINEL_LOGO_DATA_URL } from './logo.js';
+import { getAnthropicOrigin, getOAuthAuthUrl, getOAuthTokenUrl } from './hosts.js';
 
 /** Sentinel error thrown when a login is intentionally aborted (cancel or restart). */
 export const OAUTH_ABORTED = 'LOGIN_ABORTED';
@@ -38,8 +39,8 @@ const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 // server hanging. `claude.com/cai/oauth/authorize` is the URL the
 // Claude Code CLI ships in its prod config and handles account
 // switching cleanly.
-const AUTH_URL = 'https://claude.com/cai/oauth/authorize';
-const TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
+// Tests override both URLs via OAUTH_AUTH_URL / OAUTH_TOKEN_URL env vars;
+// see hosts.ts. Production defaults are unchanged.
 const SCOPES =
   'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload org:create_api_key';
 
@@ -340,8 +341,9 @@ async function exchangeCode(
     state,
   };
 
-  console.log(`[OAuth] Token exchange → POST ${TOKEN_URL}`);
-  const res = await fetch(TOKEN_URL, {
+  const tokenUrl = getOAuthTokenUrl();
+  console.log(`[OAuth] Token exchange → POST ${tokenUrl}`);
+  const res = await fetch(tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -370,8 +372,9 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRes
     client_id: CLIENT_ID,
   };
 
-  console.log(`[OAuth] Token refresh → POST ${TOKEN_URL}`);
-  const res = await fetch(TOKEN_URL, {
+  const tokenUrl = getOAuthTokenUrl();
+  console.log(`[OAuth] Token refresh → POST ${tokenUrl}`);
+  const res = await fetch(tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -439,7 +442,7 @@ export async function fetchProfile(accessToken: string): Promise<ProfileResult> 
   };
 
   try {
-    const res = await fetch('https://api.anthropic.com/api/oauth/profile', {
+    const res = await fetch(`${getAnthropicOrigin()}/api/oauth/profile`, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
@@ -724,7 +727,7 @@ export async function startOAuthLogin(
     code_challenge_method: 'S256',
     state,
   });
-  const authUrl = `${AUTH_URL}?${params.toString()}`;
+  const authUrl = `${getOAuthAuthUrl()}?${params.toString()}`;
   // Note: we intentionally don't pass `organization_uuid` on the
   // authorize URL. claude.ai's server keys off the `lastActiveOrg`
   // cookie rather than a URL param, so the correct way to preselect

@@ -216,6 +216,139 @@ describe('createProxyServer', () => {
     server.close();
   });
 
+  it('retries a 429 /v1/messages POST once against a different rotator account', async () => {
+    // Defense-in-depth against stale pause state: when the first account's
+    // upstream request comes back 429, the proxy re-picks a different
+    // account from the rotator and reissues the buffered body. Only one
+    // retry is attempted per request so worst-case latency is bounded.
+    const capturedAuths: string[] = [];
+    let callNumber = 0;
+
+    httpsRequestMock.mockImplementation((opts, cb) => {
+      capturedAuths.push(String((opts.headers as Record<string, string>)['authorization']));
+      callNumber += 1;
+      const thisCall = callNumber;
+      const resp = {
+        statusCode: thisCall === 1 ? 429 : 200,
+        headers:
+          thisCall === 1
+            ? {
+                'content-type': 'application/json',
+                'anthropic-ratelimit-unified-5h-status': 'blocked',
+                'anthropic-ratelimit-unified-5h-reset': '2000000000',
+              }
+            : {
+                'content-type': 'application/json',
+                'anthropic-ratelimit-unified-5h-utilization': '0.1',
+              },
+        on: vi.fn((event: string, handler: () => void) => {
+          if (event === 'end') setTimeout(handler, 5);
+          return resp;
+        }),
+        pipe: vi.fn(),
+        resume: vi.fn(),
+      };
+      if (cb) setTimeout(() => cb(resp as unknown as IncomingMessage), 5);
+      return {
+        on: vi.fn().mockReturnThis(),
+        write: vi.fn(),
+        end: vi.fn(),
+      } as unknown as ClientRequest;
+    });
+
+    const rateLimitStore = new RateLimitStore();
+    const provided = [
+      { token: 'first-token', accountId: 'first-acc' },
+      { token: 'second-token', accountId: 'second-acc' },
+    ];
+    let call = 0;
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        rateLimitStore,
+        activeToken: { value: 'primary' },
+        activeAccountId: { value: 'primary-id' },
+        tokenProvider: () => provided[Math.min(call++, provided.length - 1)] ?? null,
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+
+    handler?.(makeReq('/v1/messages', 'POST'), makeRes().res);
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(capturedAuths).toEqual(['Bearer first-token', 'Bearer second-token']);
+    // Rate limits from the 429 attempt must attribute to the first account
+    // so the rotator sees the blocked state immediately.
+    expect(rateLimitStore.getAll('first-acc').length).toBeGreaterThan(0);
+    expect(rateLimitStore.getAll('second-acc').length).toBeGreaterThan(0);
+    server.close();
+  });
+
+  it('forwards the 429 when no alternate account is available for retry', async () => {
+    // When the rotator can only return the same account that just 429'd
+    // (pool of one, or every sibling paused), the proxy must not retry —
+    // the client needs to see the 429 and back off.
+    let callNumber = 0;
+    httpsRequestMock.mockImplementation((_opts, cb) => {
+      callNumber += 1;
+      const resp = {
+        statusCode: 429,
+        headers: { 'content-type': 'application/json' },
+        on: vi.fn((event: string, handler: () => void) => {
+          if (event === 'end') setTimeout(handler, 5);
+          return resp;
+        }),
+        pipe: vi.fn(),
+        resume: vi.fn(),
+      };
+      if (cb) setTimeout(() => cb(resp as unknown as IncomingMessage), 5);
+      return {
+        on: vi.fn().mockReturnThis(),
+        write: vi.fn(),
+        end: vi.fn(),
+      } as unknown as ClientRequest;
+    });
+
+    const server = createProxyServer(
+      {
+        db,
+        ipcServer,
+        activeToken: { value: 'primary' },
+        activeAccountId: { value: 'primary-id' },
+        // Provider always returns the same (only) account.
+        tokenProvider: () => ({ token: 'only-token', accountId: 'only-acc' }),
+      },
+      otelHandler,
+    );
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+
+    let clientStatus = 0;
+    const res = {
+      writeHead: (code: number) => {
+        clientStatus = code;
+      },
+      end: vi.fn(),
+      write: vi.fn(),
+    } as unknown as ServerResponse;
+
+    handler?.(makeReq('/v1/messages', 'POST'), res);
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(callNumber).toBe(1);
+    expect(clientStatus).toBe(429);
+    server.close();
+  });
+
   it('x-sentinel-probe-token/-account headers override activeToken and tokenProvider, then are stripped before upstream', async () => {
     const capturedHeaders: Record<string, string> = {};
     const mockProxyRes = {

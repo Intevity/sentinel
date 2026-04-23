@@ -10,7 +10,9 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:build:app": "tauri build --bundles app"
+    "tauri:build:app": "tauri build --bundles app",
+    "e2e": "playwright test -c e2e/playwright.config.ts",
+    "e2e:install": "playwright install chromium"
   },
   "dependencies": {
     "@claude-sentinel/shared": "workspace:*",
@@ -28,7 +30,10 @@
     "recharts": "^2.12.7"
   },
   "devDependencies": {
+    "@claude-sentinel/test-harness": "workspace:*",
+    "@playwright/test": "^1.47.0",
     "@tauri-apps/cli": "^2.0.0",
+    "@types/node": "^22.0.0",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.2",

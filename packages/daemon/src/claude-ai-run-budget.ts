@@ -24,7 +24,7 @@
  * routing hint.
  */
 
-const BASE_URL = 'https://api.anthropic.com';
+import { getAnthropicOrigin } from './hosts.js';
 
 interface RawRunBudgetResponse {
   limit?: string | number | null;
@@ -70,7 +70,7 @@ export async function fetchRunBudget(
 
   let resp: Response;
   try {
-    resp = await fetch(`${BASE_URL}/v1/code/routines/run-budget`, {
+    resp = await fetch(`${getAnthropicOrigin()}/v1/code/routines/run-budget`, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${trimmed}`,

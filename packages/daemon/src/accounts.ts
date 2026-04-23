@@ -1,9 +1,35 @@
 import { execSync } from 'child_process';
 import { userInfo as osUserInfo } from 'os';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { ClaudeCodeCredentials } from '@claude-sentinel/shared';
 
 /** Claude Code's keychain service name (single shared slot, keyed by OS username). */
 const CC_SERVICE = 'Claude Code-credentials';
+
+/** When set, credential reads/writes use a JSON file instead of the OS
+ *  keychain. Used by E2E tests and Playwright so the test harness never
+ *  touches the user's real keychain. Production always leaves this unset. */
+const TEST_KEYCHAIN_ENV = 'CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE';
+
+function testKeychainPath(): string | null {
+  return process.env[TEST_KEYCHAIN_ENV] ?? null;
+}
+
+function readTestKeychain(): Record<string, Record<string, string>> {
+  const path = testKeychainPath();
+  if (!path || !existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, Record<string, string>>;
+  } catch {
+    return {};
+  }
+}
+
+function writeTestKeychain(data: Record<string, Record<string, string>>): void {
+  const path = testKeychainPath();
+  if (!path) return;
+  writeFileSync(path, JSON.stringify(data, null, 2));
+}
 
 /**
  * Sentinel's own per-email credential store.
@@ -127,6 +153,10 @@ export function writeClaudeCodeCredentials(creds: ClaudeCodeCredentials): void {
 // ─── Low-level keychain helpers ──────────────────────────────────────────────
 
 function readCredentialBlob(service: string, account: string): string | null {
+  if (testKeychainPath()) {
+    const data = readTestKeychain();
+    return data[service]?.[account] ?? null;
+  }
   try {
     if (process.platform === 'darwin') return readDarwin(service, account);
     /* v8 ignore next 3 */
@@ -138,6 +168,13 @@ function readCredentialBlob(service: string, account: string): string | null {
 }
 
 function writeCredentialBlob(service: string, account: string, blob: string): void {
+  if (testKeychainPath()) {
+    const data = readTestKeychain();
+    if (!data[service]) data[service] = {};
+    data[service][account] = blob;
+    writeTestKeychain(data);
+    return;
+  }
   if (process.platform === 'darwin') {
     writeDarwin(service, account, blob);
     return;
@@ -150,8 +187,16 @@ function writeCredentialBlob(service: string, account: string, blob: string): vo
   writeLinux(service, account, blob);
 }
 
-/* v8 ignore next 6 */
+/* v8 ignore next 14 */
 function deleteCredentialBlob(service: string, account: string): void {
+  if (testKeychainPath()) {
+    const data = readTestKeychain();
+    if (data[service]) {
+      delete data[service][account];
+      writeTestKeychain(data);
+    }
+    return;
+  }
   if (process.platform === 'darwin') {
     deleteDarwin(service, account);
     return;

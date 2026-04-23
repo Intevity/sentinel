@@ -91,6 +91,13 @@ export interface SpendTrackerDeps {
    *  fetch hasn't landed. Pause logic refuses to fire when this is null —
    *  we never pause on assumption, only on confirmed numbers. */
   getAnthropicSpend: (accountId: string) => number | null;
+  /** Live accessor for the user's overage opt-in allow-list (Sentinel ids).
+   *  The weekly-rate-limit evaluator consults this: an account whose
+   *  `unified-7d` window is blocked is still usable via overage when
+   *  `unified-overage.status === 'allowed'` AND the account is opted in,
+   *  so the pause is deferred until overage itself runs out. Defaults to
+   *  an empty set (no accounts overage-eligible). */
+  getOverageAllowedIds?: () => ReadonlySet<string>;
   /** Current time getter — injectable so tests can freeze the clock. */
   now?: () => number;
 }
@@ -354,7 +361,17 @@ export class SpendTracker {
    *  account near the actual rollover. Handles the "idle account" case —
    *  if nothing rotated to this account during its 7-day rollover window,
    *  header-driven release never fires and the pause would otherwise
-   *  linger past the rollover. */
+   *  linger past the rollover.
+   *
+   *  Previously this path held the pause when the stored `status` was still
+   *  `'blocked'`. That created a deadlock: while every account was paused,
+   *  the proxy short-circuits every request with 503 before reaching
+   *  Anthropic, so the rate-limit store never received fresh headers —
+   *  meaning the stale `'blocked'` status stuck forever even after
+   *  Anthropic had rolled the window. Once `reset` has elapsed, trust
+   *  the reset timestamp and release: the next real request either
+   *  succeeds (confirming release) or returns 429 (which will re-pause
+   *  via the upstream response headers). */
   private sweepWeeklyResets(): void {
     const nowSec = Math.floor(this.clock() / 1000);
     let changed = false;
@@ -365,12 +382,6 @@ export class SpendTracker {
         .find((x) => x.name === WEEKLY_RATE_LIMIT_WINDOW);
       if (w?.reset == null) continue;
       if (nowSec < w.reset) continue;
-      // The stored reset has elapsed, but Anthropic may still be blocking.
-      // If so, the stored reset is stale (drifted from another source) —
-      // releasing would let the next evaluator call re-pause the account
-      // and fire a redundant broadcast. Hold the pause until the window
-      // actually unblocks.
-      if (w.status === 'blocked') continue;
       this.paused.delete(id);
       deletePausedAccount(this.deps.db, id);
       this.deps.ipcServer.broadcast({ type: 'account_unpaused', accountId: id });
@@ -481,15 +492,35 @@ export class SpendTracker {
    *  not the 5-hour reset — a budget-style 5h release would re-admit the
    *  account hours before Anthropic is willing to serve it.
    *
+   *  Overage escape hatch: if Anthropic still reports
+   *  `unified-overage.status === 'allowed'` AND the user has opted this
+   *  account into overage spending, the pause is deferred. The account
+   *  stays usable by draining its overage grant instead. Once Anthropic
+   *  flips overage to a non-`allowed` state (grant exhausted), the next
+   *  evaluator pass applies the pause.
+   *
    *  Scoped to its own reason: does not touch 'sentinel_budget' pauses,
    *  and its own pauses survive a budget evaluation pass. */
   private evaluateWeeklyRateLimitPauses(): void {
     const shouldPause = new Set<string>();
+    const overageAllowed = this.deps.getOverageAllowedIds?.() ?? new Set<string>();
+    const nowSec = Math.floor(this.clock() / 1000);
     for (const acc of listAccounts(this.deps.db)) {
-      const w = this.deps.rateLimitStore
-        .getAll(acc.id)
-        .find((x) => x.name === WEEKLY_RATE_LIMIT_WINDOW);
-      if (w?.status === 'blocked') shouldPause.add(acc.id);
+      const windows = this.deps.rateLimitStore.getAll(acc.id);
+      const weekly = windows.find((x) => x.name === WEEKLY_RATE_LIMIT_WINDOW);
+      if (weekly?.status !== 'blocked') continue;
+      // Stale-blocked guard: once the window's reset has elapsed, the
+      // stored `status='blocked'` is known-stale (the server-side window
+      // has rolled, but no fresh upstream response has landed to refresh
+      // it yet). Skip re-pausing in that case — this mirrors the sweep's
+      // release policy so that a recompute immediately following a sweep
+      // doesn't undo the release.
+      if (weekly.reset != null && weekly.reset <= nowSec) continue;
+      const overage = windows.find((x) => x.name === 'unified-overage');
+      const canUseOverage =
+        overage?.status === 'allowed' && overageAllowed.has(acc.id);
+      if (canUseOverage) continue;
+      shouldPause.add(acc.id);
     }
 
     // Enter weekly pauses. Skip ids already paused for any reason — if an

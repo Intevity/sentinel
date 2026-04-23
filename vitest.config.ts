@@ -4,6 +4,9 @@ export default defineConfig({
   test: {
     globals: true,
     include: ['packages/*/src/**/*.test.ts', 'packages/*/src/**/*.spec.ts'],
+    // Exclude Playwright specs — they use @playwright/test, not vitest,
+    // and fail if vitest tries to collect them.
+    exclude: ['**/node_modules/**', '**/dist/**', 'packages/app/e2e/**'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
@@ -48,7 +51,7 @@ export default defineConfig({
       thresholds: {
         lines: 95,
         functions: 95,
-        branches: 90,
+        branches: 95,
         statements: 95,
       },
     },

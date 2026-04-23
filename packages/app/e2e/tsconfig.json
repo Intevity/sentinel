@@ -1,0 +1,12 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["**/*.ts", "**/*.spec.ts"],
+  "exclude": ["helpers/*.mjs"]
+}

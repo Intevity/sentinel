@@ -198,12 +198,25 @@ export class TokenRotator {
       const entry = this.pool[i]!;
       if (paused.has(entry.accountId)) continue;
       const windows = this.rateLimitStore.getAll(entry.accountId);
-      if (windows.some((w) => w.status === 'blocked')) continue;
       const sessionWindow = windows.find((w) => w.name === SESSION_WINDOW);
       const overageWindow = windows.find((w) => w.name === OVERAGE_WINDOW);
       const sonnetWindow = windows.find((w) => w.name === SONNET_WINDOW);
       const util = sessionWindow?.utilization ?? 0;
       const reset = sessionWindow?.reset ?? Number.POSITIVE_INFINITY;
+      // Blocked on any window means the 5h or 7d quota is exhausted. The
+      // account is still reachable when overage is available and opted in:
+      // Anthropic lets the overage grant cover further spend. Route those
+      // through the overage tier. Every other blocked case (overage
+      // disabled, no overage window, not opted in) skips the account —
+      // the caller would just get a 429 otherwise.
+      if (windows.some((w) => w.status === 'blocked')) {
+        const canUseOverage =
+          overageWindow?.status === 'allowed' && overageAllowed.has(entry.accountId);
+        if (!canUseOverage) continue;
+        overage.push({ idx: i, util, reset });
+        if (util < minUtilOverage) minUtilOverage = util;
+        continue;
+      }
       // Partitioning runs in two steps. First: is this account out of the
       // fresh tier? That's true whenever its 5h (or Sonnet 7d, for Sonnet
       // requests) utilization is at or above the buffer threshold — or the

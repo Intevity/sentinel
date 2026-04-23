@@ -1,0 +1,7 @@
+{
+  "_source": "hand-authored reference; overwrite with real capture via scripts/record-fixtures.mjs",
+  "_matches": "claude-ai-run-budget.ts RawRunBudgetResponse interface (packages/daemon/src/claude-ai-run-budget.ts:29-34)",
+  "limit": 10000,
+  "used": 1234,
+  "unified_billing_enabled": true
+}

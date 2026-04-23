@@ -625,11 +625,23 @@ describe('SpendTracker', () => {
   });
 
   describe('weekly rate-limit pauses', () => {
-    const blockWeekly = (store: RateLimitStore, id: string, reset = 1_800_000): void => {
+    const blockWeekly = (store: RateLimitStore, id: string, reset = 1_800_000_000): void => {
       store.update(id, {
         'anthropic-ratelimit-unified-7d-status': 'blocked',
         'anthropic-ratelimit-unified-7d-utilization': '1.0',
         'anthropic-ratelimit-unified-7d-reset': String(reset),
+      });
+    };
+
+    const setOverage = (
+      store: RateLimitStore,
+      id: string,
+      status: 'allowed' | 'disabled',
+    ): void => {
+      store.update(id, {
+        'anthropic-ratelimit-unified-overage-status': status,
+        'anthropic-ratelimit-unified-overage-utilization': '0.0',
+        'anthropic-ratelimit-unified-overage-reset': '1777593600',
       });
     };
 
@@ -638,7 +650,7 @@ describe('SpendTracker', () => {
       const store = new RateLimitStore();
       const ipc = ipcStub();
       seed(db, 'a');
-      blockWeekly(store, 'a', 1_800_000);
+      blockWeekly(store, 'a', 1_800_000_000);
 
       const tracker = new SpendTracker({
         db,
@@ -658,7 +670,7 @@ describe('SpendTracker', () => {
       );
       expect(paused).toMatchObject({
         reason: 'sentinel_weekly_rate_limit',
-        resetsAt: 1_800_000,
+        resetsAt: 1_800_000_000,
       });
     });
 
@@ -698,7 +710,7 @@ describe('SpendTracker', () => {
       const store = new RateLimitStore();
       const ipc = ipcStub();
       seed(db, 'a');
-      blockWeekly(store, 'a', 1_800_000);
+      blockWeekly(store, 'a', 1_800_000_000);
 
       const tracker = new SpendTracker({
         db,
@@ -718,7 +730,7 @@ describe('SpendTracker', () => {
       store.update('a', {
         'anthropic-ratelimit-unified-7d-status': 'allowed',
         'anthropic-ratelimit-unified-7d-utilization': '0.0',
-        'anthropic-ratelimit-unified-7d-reset': '2404800',
+        'anthropic-ratelimit-unified-7d-reset': String(1_800_000_000 + 7 * 24 * 60 * 60),
       });
       tracker.handleRateLimitUpdate('a');
 
@@ -733,7 +745,7 @@ describe('SpendTracker', () => {
       const store = new RateLimitStore();
       const ipc = ipcStub();
       seed(db, 'a');
-      blockWeekly(store, 'a', 1_800_000);
+      blockWeekly(store, 'a', 1_800_000_000);
 
       const tracker = new SpendTracker({
         db,
@@ -1012,7 +1024,7 @@ describe('SpendTracker', () => {
       const store = new RateLimitStore();
       const ipc = ipcStub();
       seed(db, 'a');
-      blockWeekly(store, 'a', 1_800_000);
+      blockWeekly(store, 'a', 1_800_000_000);
 
       const tracker = new SpendTracker({
         db,
@@ -1028,7 +1040,7 @@ describe('SpendTracker', () => {
       const broadcastsBefore = ipc.broadcasts.length;
 
       // Bump reset forward by 2 seconds — well below the 6-day threshold.
-      blockWeekly(store, 'a', 1_800_002);
+      blockWeekly(store, 'a', 1_800_000_002);
       tracker.handleRateLimitUpdate('a');
 
       expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
@@ -1042,16 +1054,23 @@ describe('SpendTracker', () => {
       ).toBe(false);
     });
 
-    it('does NOT clear a weekly pause on a threshold-sized reset jump if status is still blocked', () => {
-      // Belt-and-suspenders: even if the threshold were crossed (e.g.,
-      // Anthropic genuinely rolled the reset forward), we must not release
-      // while status='blocked' — that would trigger a re-pause on the next
-      // recompute and fire a redundant broadcast.
+    it('does NOT clear a weekly pause on a threshold-sized reset jump if status is still blocked and the window is in the future', () => {
+      // Belt-and-suspenders: within the reset window (not yet elapsed),
+      // if Anthropic genuinely rolled the reset forward but status is
+      // still 'blocked', the rollover-release path in handleRateLimitUpdate
+      // must hold the pause — otherwise we'd release and the next
+      // recompute would re-pause with a redundant broadcast. The sweep's
+      // stale-reset release is a different path (tested separately).
       const db = getDb(dbPath);
       const store = new RateLimitStore();
       const ipc = ipcStub();
       seed(db, 'a');
-      blockWeekly(store, 'a', 1_800_000);
+      // Anchor timestamps in the future so the stale-reset guard in the
+      // evaluator (reset <= nowSec → treat as stale) doesn't apply.
+      const nowMs = 1_700_000_000_000;
+      const nowSec = Math.floor(nowMs / 1000);
+      const firstReset = nowSec + 3600;
+      blockWeekly(store, 'a', firstReset);
 
       const tracker = new SpendTracker({
         db,
@@ -1059,22 +1078,27 @@ describe('SpendTracker', () => {
         ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
         getSettings: () => settings(),
         getAnthropicSpend: () => 0,
-        now: () => 1_700_000_000_000,
+        now: () => nowMs,
       });
       tracker.recompute();
       tracker.handleRateLimitUpdate('a');
 
-      // Threshold-crossing jump but status still blocked.
-      blockWeekly(store, 'a', 1_800_000 + 7 * 24 * 60 * 60);
+      // Threshold-crossing jump (>6 days forward) but status still blocked.
+      // Still in the future so the evaluator sees a fresh-not-stale window.
+      blockWeekly(store, 'a', firstReset + 7 * 24 * 60 * 60);
       tracker.handleRateLimitUpdate('a');
 
       expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
     });
 
-    it('sweepWeeklyResets holds the pause when the stored reset is past but status is still blocked', () => {
-      // Same drift problem, different code path. If the sweep releases
-      // while the window is still blocked, the next recompute re-pauses
-      // and fires a redundant broadcast.
+    it('sweepWeeklyResets releases the pause when the stored reset is past, even if status is still blocked', () => {
+      // Deadlock guard: while every account is paused, the proxy
+      // short-circuits every request with 503 before reaching Anthropic,
+      // so the rate-limit store never receives fresh headers — meaning
+      // the stored `status='blocked'` stays stale forever. Once the
+      // stored `reset` has elapsed, the sweep must release the pause so
+      // traffic can flow again; the next real upstream response either
+      // confirms the release or re-pauses with a fresh reset.
       const db = getDb(dbPath);
       const store = new RateLimitStore();
       const ipc = ipcStub();
@@ -1096,6 +1120,90 @@ describe('SpendTracker', () => {
       nowMs = 500_000;
       (tracker as unknown as { sweepWeeklyResets: () => void }).sweepWeeklyResets();
 
+      expect(tracker.getPauseReason('a')).toBe(null);
+    });
+
+    it('does NOT pause a weekly-blocked account when overage is allowed and the account is opted in', () => {
+      // Overage escape hatch: Anthropic still has budget to spill the
+      // weekly-blocked account into overage, and the user has opted in —
+      // so the account remains usable and Sentinel defers the pause.
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      blockWeekly(store, 'a');
+      setOverage(store, 'a', 'allowed');
+
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings(),
+        getAnthropicSpend: () => 0,
+        getOverageAllowedIds: () => new Set(['a']),
+        now: () => 1_700_000_000_000,
+      });
+      tracker.recompute();
+
+      expect(tracker.getPauseReason('a')).toBe(null);
+      expect(
+        ipc.broadcasts.some((b) => b.type === 'account_paused'),
+      ).toBe(false);
+    });
+
+    it('pauses a weekly-blocked account when overage is allowed but the account is NOT opted in', () => {
+      // Opt-in is required: a user who has not enabled overage for this
+      // account explicitly doesn't want it spilling into overage, even
+      // if Anthropic would allow it.
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      blockWeekly(store, 'a');
+      setOverage(store, 'a', 'allowed');
+
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings(),
+        getAnthropicSpend: () => 0,
+        getOverageAllowedIds: () => new Set(),
+        now: () => 1_700_000_000_000,
+      });
+      tracker.recompute();
+
+      expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
+    });
+
+    it('pauses when the overage window flips from allowed to non-allowed', () => {
+      // Simulates exhausting the overage grant: once Anthropic reports
+      // unified-overage.status !== 'allowed', Sentinel must apply the
+      // weekly pause so Claude Code stops receiving 429s.
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      blockWeekly(store, 'a');
+      setOverage(store, 'a', 'allowed');
+
+      const opted = new Set(['a']);
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings(),
+        getAnthropicSpend: () => 0,
+        getOverageAllowedIds: () => opted,
+        now: () => 1_700_000_000_000,
+      });
+      tracker.recompute();
+      expect(tracker.getPauseReason('a')).toBe(null);
+
+      // Overage grant exhausted — Anthropic reports disabled.
+      setOverage(store, 'a', 'disabled');
+      tracker.recompute();
+
       expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
     });
 
@@ -1104,7 +1212,7 @@ describe('SpendTracker', () => {
       const store = new RateLimitStore();
       const ipc = ipcStub();
       seed(db, 'a');
-      blockWeekly(store, 'a', 1_800_000);
+      blockWeekly(store, 'a', 1_800_000_000);
 
       const tracker = new SpendTracker({
         db,
@@ -1121,7 +1229,7 @@ describe('SpendTracker', () => {
       expect(rows[0]).toMatchObject({
         accountId: 'a',
         reason: 'sentinel_weekly_rate_limit',
-        resetTs: 1_800_000,
+        resetTs: 1_800_000_000,
       });
 
       // Flip status to allowed — evaluator cleanup branch fires.
@@ -1143,7 +1251,7 @@ describe('SpendTracker', () => {
       // a restart-time re-broadcast.
       const db = getDb(dbPath);
       seed(db, 'a');
-      upsertPausedAccount(db, 'a', 'sentinel_weekly_rate_limit', 1_800_000, Date.now());
+      upsertPausedAccount(db, 'a', 'sentinel_weekly_rate_limit', 1_800_000_000, Date.now());
       // Populate the rate-limit store to mimic loadRateLimits having
       // restored the blocked window before the rehydrate runs.
       const store = new RateLimitStore();
@@ -1154,7 +1262,7 @@ describe('SpendTracker', () => {
           utilization: 1,
           limit: null,
           remaining: null,
-          reset: 1_800_000,
+          reset: 1_800_000_000,
           inUse: null,
           lastUpdated: Date.now(),
         },
@@ -1183,13 +1291,13 @@ describe('SpendTracker', () => {
     });
 
     it('loadPersistedPauses drops rows whose window rolled over during daemon downtime', () => {
-      // Stored pause was captured against reset=1_800_000; current
+      // Stored pause was captured against reset=1_800_000_000; current
       // rate-limit store reports the window has advanced by a full week
       // (and status flipped to 'allowed'). Rehydrate must delete the row
       // instead of re-paused the account.
       const db = getDb(dbPath);
       seed(db, 'a');
-      upsertPausedAccount(db, 'a', 'sentinel_weekly_rate_limit', 1_800_000, Date.now());
+      upsertPausedAccount(db, 'a', 'sentinel_weekly_rate_limit', 1_800_000_000, Date.now());
       const store = new RateLimitStore();
       store.loadAccount('a', [
         {
@@ -1198,7 +1306,7 @@ describe('SpendTracker', () => {
           utilization: 0,
           limit: null,
           remaining: null,
-          reset: 1_800_000 + 7 * 24 * 60 * 60,
+          reset: 1_800_000_000 + 7 * 24 * 60 * 60,
           inUse: null,
           lastUpdated: Date.now(),
         },
@@ -1248,7 +1356,7 @@ describe('SpendTracker', () => {
       // to 'allowed' means the condition is gone and the pause is stale.
       const db = getDb(dbPath);
       seed(db, 'a');
-      upsertPausedAccount(db, 'a', 'sentinel_weekly_rate_limit', 1_800_000, Date.now());
+      upsertPausedAccount(db, 'a', 'sentinel_weekly_rate_limit', 1_800_000_000, Date.now());
       const store = new RateLimitStore();
       store.loadAccount('a', [
         {
@@ -1257,7 +1365,7 @@ describe('SpendTracker', () => {
           utilization: 0.5,
           limit: null,
           remaining: null,
-          reset: 1_800_000,
+          reset: 1_800_000_000,
           inUse: null,
           lastUpdated: Date.now(),
         },
@@ -1282,7 +1390,7 @@ describe('SpendTracker', () => {
       const ipc = ipcStub();
       seed(db, 'a');
       seed(db, 'b');
-      blockWeekly(store, 'a', 1_800_000);
+      blockWeekly(store, 'a', 1_800_000_000);
       const spend = spendStub({ a: 0, b: 25 });
       const tracker = new SpendTracker({
         db,
@@ -1302,7 +1410,7 @@ describe('SpendTracker', () => {
       const details = tracker.getPausedDetails();
       const a = details.find((d) => d.accountId === 'a');
       const b = details.find((d) => d.accountId === 'b');
-      expect(a).toMatchObject({ reason: 'sentinel_weekly_rate_limit', resetsAt: 1_800_000 });
+      expect(a).toMatchObject({ reason: 'sentinel_weekly_rate_limit', resetsAt: 1_800_000_000 });
       expect(b).toMatchObject({ reason: 'sentinel_budget', resetsAt: 1_700_018_000 });
     });
   });

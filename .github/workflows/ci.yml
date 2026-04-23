@@ -54,7 +54,13 @@ jobs:
       - name: Lint
         run: pnpm exec eslint packages/daemon/src packages/shared/src
 
-      - name: Test with coverage
+      - name: Build test-harness (needed for integration tests)
+        run: pnpm --filter @claude-sentinel/test-harness run build
+
+      - name: Fake API contract check
+        run: pnpm exec vitest run packages/test-harness/src/fake-anthropic.contract.test.ts
+
+      - name: Test with coverage (fails the job on threshold regression)
         run: pnpm exec vitest run --coverage
 
       - name: Upload coverage report
@@ -63,4 +69,54 @@ jobs:
         with:
           name: coverage
           path: coverage/
+          retention-days: 7
+
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    needs: lint-test
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build better-sqlite3 native module
+        run: |
+          cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3
+          npm run build-release
+        shell: bash
+
+      - name: Build shared
+        run: pnpm --filter @claude-sentinel/shared run build
+
+      - name: Build daemon
+        run: pnpm --filter @claude-sentinel/daemon run build
+
+      - name: Build test-harness
+        run: pnpm --filter @claude-sentinel/test-harness run build
+
+      - name: Install Playwright browsers
+        run: pnpm --filter @claude-sentinel/app exec playwright install --with-deps chromium
+
+      - name: Run Playwright
+        run: pnpm --filter @claude-sentinel/app run e2e
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: packages/app/playwright-report/
           retention-days: 7

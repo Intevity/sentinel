@@ -497,6 +497,7 @@ export async function startDaemon(): Promise<void> {
       const snap = claudeAiUsageStore.getSnapshot(accountId);
       return snap?.extraUsage?.usedUsd ?? null;
     },
+    getOverageAllowedIds: () => new Set(currentSettings.overageEnabledIds),
   });
   getPausedAccountIds = () => spendTracker.getPausedIds();
   // The initial `spendTracker.recompute()` is deferred to after the

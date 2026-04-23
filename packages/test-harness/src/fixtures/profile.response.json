@@ -1,0 +1,19 @@
+{
+  "_source": "hand-authored reference; overwrite with real capture via scripts/record-fixtures.mjs",
+  "_matches": "oauth.ts OAuthProfile interface (packages/daemon/src/oauth.ts:394-412)",
+  "account": {
+    "uuid": "00000000-0000-0000-0000-000000000001",
+    "email": "test@example.com",
+    "display_name": "Test User",
+    "has_claude_max": true
+  },
+  "organization": {
+    "uuid": "00000000-0000-0000-0000-000000000002",
+    "name": "Test Org",
+    "organization_type": "claude_max",
+    "rate_limit_tier": "default",
+    "organization_role": "primary_owner",
+    "workspace_role": null,
+    "has_extra_usage_enabled": true
+  }
+}

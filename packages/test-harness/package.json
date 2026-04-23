@@ -1,0 +1,32 @@
+{
+  "name": "@claude-sentinel/test-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./fake-anthropic": {
+      "import": "./dist/fake-anthropic.js",
+      "types": "./dist/fake-anthropic.d.ts"
+    },
+    "./scenarios": {
+      "import": "./dist/scenarios.js",
+      "types": "./dist/scenarios.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "*",
+    "vitest": "*"
+  }
+}

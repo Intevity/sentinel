@@ -1,0 +1,9 @@
+{
+  "_source": "hand-authored reference; overwrite with real capture via scripts/record-fixtures.mjs",
+  "_matches": "oauth.ts TokenResponse interface (packages/daemon/src/oauth.ts:320-326)",
+  "access_token": "fake-access-token",
+  "refresh_token": "fake-refresh-token",
+  "expires_in": 3600,
+  "scope": "user:profile user:inference",
+  "token_type": "Bearer"
+}

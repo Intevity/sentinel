@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { request as httpsRequest } from 'https';
+import { request as httpRequest } from 'http';
 import type { Server } from 'http';
+import { getAnthropicUpstream } from './hosts.js';
 import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { OverageStateMachine } from './overage.js';
@@ -452,6 +454,22 @@ export function createProxyServer(
       }
     }
 
+    // 429-retry callback. Only the messages path has a buffered body to
+    // replay, so only this path offers retry. The provider picks a fresh
+    // round-robin credential excluding the account that just 429'd — when
+    // the rotator returns the same account (pool of one, or all others
+    // unavailable), we skip the retry so the client sees the 429.
+    const retryProvider = tokenProvider
+      ? (currentAccountId: string): TokenSelection | null => {
+          for (let i = 0; i < 5; i++) {
+            const next = tokenProvider({ isSonnet });
+            if (!next) return null;
+            if (next.accountId !== currentAccountId) return next;
+          }
+          return null;
+        }
+      : undefined;
+
     await proxyToAnthropic(
       req,
       res,
@@ -467,6 +485,7 @@ export function createProxyServer(
       body,
       requestAccountMap,
       onUpstreamAuthFailure,
+      retryProvider,
     );
   };
 
@@ -603,6 +622,13 @@ async function proxyToAnthropic(
   /** Fire-and-forget hook invoked when an upstream response returns 401
    *  for an identified account. See ProxyOptions.onUpstreamAuthFailure. */
   onUpstreamAuthFailure?: (accountId: string) => void,
+  /** Retry callback consulted only on a 429 response. Given the account id
+   *  whose request just 429'd, returns a replacement credential to retry
+   *  with (or null to forward the 429 unmodified). Only one retry is
+   *  attempted per request; a second 429 is forwarded to the client.
+   *  Not provided for non-messages endpoints (probes, GETs) — those have
+   *  no buffered body to replay. */
+  retryCredentialProvider?: (currentAccountId: string) => TokenSelection | null,
 ): Promise<void> {
   let body = preReadBody ?? (await readBody(req));
 
@@ -933,98 +959,180 @@ async function proxyToAnthropic(
   };
 
   return new Promise((resolve, reject) => {
-    const proxyReq = httpsRequest(
-      {
-        hostname: ANTHROPIC_HOST,
-        port: 443,
-        path: req.url,
-        method: req.method,
-        headers: {
-          ...req.headers,
-          host: ANTHROPIC_HOST,
+    const upstream = getAnthropicUpstream();
+    const makeRequest = upstream.protocol === 'http:' ? httpRequest : httpsRequest;
+
+    /** Dispatch one upstream attempt. On a 429 where a retry credential is
+     *  available, drains the response and re-dispatches with the new
+     *  credential — bounded to one retry per request to cap worst-case
+     *  latency. Any other status code flows through the normal response
+     *  forwarding path.
+     *
+     *  `currentRlKey` is the attribution id for this attempt: the initial
+     *  attempt uses the caller-supplied rlKey; a retry uses the
+     *  replacement account's id so its rate-limit headers land in the
+     *  correct bucket. Captures and cache-ttl state are reused (they
+     *  represent the caller's logical request, not the per-attempt wire
+     *  exchange). */
+    const dispatch = (
+      attemptHeaders: Record<string, string | string[] | undefined>,
+      currentRlKey: string,
+      currentAccountId: string,
+      retriesLeft: number,
+    ): void => {
+      const proxyReq = makeRequest(
+        {
+          hostname: upstream.hostname,
+          port: upstream.port,
+          path: req.url,
+          method: req.method,
+          headers: {
+            ...attemptHeaders,
+            host: upstream.hostname,
+          },
         },
-      },
-      (proxyRes) => {
-        console.log(
-          `[Proxy] ${req.method} ${req.url} → ${proxyRes.statusCode} (account: ${rlKey})`,
-        );
+        (proxyRes) => {
+          console.log(
+            `[Proxy] ${req.method} ${req.url} → ${proxyRes.statusCode} (account: ${currentRlKey})`,
+          );
 
-        // 401 on an upstream request means the OAuth token was rejected —
-        // typically a server-side revocation that the local `expiresAt`
-        // check still thinks is valid, so the background token-refresher
-        // never fired. Hand off to the daemon's callback which force-
-        // refreshes inline; if the refresh itself fails, the refresher
-        // broadcasts token_refresh_failed so the Re-authenticate banner
-        // lights up within ~1s. We do not retry the current request (too
-        // invasive — would require buffering the body), but the next one
-        // will use the fresh token.
-        if (proxyRes.statusCode === 401 && onUpstreamAuthFailure) {
-          onUpstreamAuthFailure(rlKey);
-        }
-
-        if (capture) {
-          capture.responseStatus = proxyRes.statusCode ?? null;
-          capture.responseHeaders = redactHeaders(proxyRes.headers, capture.redactAuth);
-          const encodingHeader = proxyRes.headers['content-encoding'];
-          capture.isSse =
-            !encodingHeader &&
-            req.method === 'POST' &&
-            (req.url?.startsWith('/v1/messages') ?? false);
-        }
-        if (cacheTtlCtx) {
-          const ct = String(proxyRes.headers['content-type'] ?? '');
-          cacheTtlCtx.isSse = ct.includes('text/event-stream');
-        }
-
-        // Inspect overage + rate-limit headers
-        const headers: Record<string, string | string[] | undefined> = {};
-        for (const [k, v] of Object.entries(proxyRes.headers)) {
-          headers[k] = v;
-        }
-        machine.handleHeaders(accountId, headers);
-
-        // Record requestId → account so OtelReceiver can re-bucket OTEL
-        // api_request / api_error events that carry the same id. Anthropic
-        // emits `request-id` on every /v1/messages response; only skip the
-        // write when the header is absent (probes, early errors).
-        if (requestAccountMap) {
-          const reqIdRaw = proxyRes.headers['request-id'];
-          const reqId = Array.isArray(reqIdRaw) ? reqIdRaw[0] : reqIdRaw;
-          if (typeof reqId === 'string' && reqId) {
-            requestAccountMap.set(reqId, rlKey);
+          // 401 on an upstream request means the OAuth token was rejected —
+          // typically a server-side revocation that the local `expiresAt`
+          // check still thinks is valid, so the background token-refresher
+          // never fired. Hand off to the daemon's callback which force-
+          // refreshes inline; if the refresh itself fails, the refresher
+          // broadcasts token_refresh_failed so the Re-authenticate banner
+          // lights up within ~1s. We do not retry the current request (too
+          // invasive — would require buffering the body), but the next one
+          // will use the fresh token.
+          if (proxyRes.statusCode === 401 && onUpstreamAuthFailure) {
+            onUpstreamAuthFailure(currentRlKey);
           }
-        }
 
-        // Store rate limits under the active account's sentinel key so
-        // get_rate_limits can find them by the same key.
-        if (rateLimitStore) {
-          const summary = summarizeOverageHeaders(headers);
-          if (summary !== null) {
-            console.log(`[Proxy] RL for ${rlKey}: ${summary}`);
+          // Inspect overage + rate-limit headers
+          const headers: Record<string, string | string[] | undefined> = {};
+          for (const [k, v] of Object.entries(proxyRes.headers)) {
+            headers[k] = v;
           }
-          rateLimitStore.update(rlKey, headers);
-          const stored = rateLimitStore.getAll(rlKey);
-          console.log(`[Proxy] RL store now has ${stored.length} window(s) for ${rlKey}`);
-          // Broadcast to the app so UsageView can refresh immediately.
-          // Debounce to avoid flooding on rapid sequential requests.
-          if (ipcServer && lastBroadcast && stored.length > 0) {
-            const now = Date.now();
-            const last = lastBroadcast.get(rlKey) ?? 0;
-            if (now - last >= RL_BROADCAST_DEBOUNCE_MS) {
-              lastBroadcast.set(rlKey, now);
-              ipcServer.broadcast({ type: 'rate_limits_updated', accountId: rlKey });
-              console.log(`[Proxy] Broadcast rate_limits_updated for ${rlKey}`);
+          machine.handleHeaders(accountId, headers);
+
+          // Store rate limits FIRST (before the retry decision) so the
+          // rotator/spend-tracker see the blocked state the 429 implies.
+          // Otherwise a retry would pick the same account again.
+          if (rateLimitStore) {
+            const summary = summarizeOverageHeaders(headers);
+            if (summary !== null) {
+              console.log(`[Proxy] RL for ${currentRlKey}: ${summary}`);
+            }
+            rateLimitStore.update(currentRlKey, headers);
+            const stored = rateLimitStore.getAll(currentRlKey);
+            console.log(`[Proxy] RL store now has ${stored.length} window(s) for ${currentRlKey}`);
+            // Broadcast to the app so UsageView can refresh immediately.
+            // Debounce to avoid flooding on rapid sequential requests.
+            if (ipcServer && lastBroadcast && stored.length > 0) {
+              const now = Date.now();
+              const last = lastBroadcast.get(currentRlKey) ?? 0;
+              if (now - last >= RL_BROADCAST_DEBOUNCE_MS) {
+                lastBroadcast.set(currentRlKey, now);
+                ipcServer.broadcast({ type: 'rate_limits_updated', accountId: currentRlKey });
+                console.log(`[Proxy] Broadcast rate_limits_updated for ${currentRlKey}`);
+              }
             }
           }
-        }
 
+          // 429 retry path: drain the upstream response and re-dispatch
+          // with a different account's credentials when one is available.
+          // The rate-limit store was just updated above so the rotator
+          // won't re-pick the account we just hit. If the provider returns
+          // the same account (pool of one, or all others paused), fall
+          // through to the normal forwarding path so the client sees 429.
+          if (
+            proxyRes.statusCode === 429 &&
+            retriesLeft > 0 &&
+            retryCredentialProvider
+          ) {
+            const next = retryCredentialProvider(currentAccountId);
+            if (next && next.accountId !== currentAccountId) {
+              console.log(
+                `[Proxy] 429 on ${currentRlKey} → retrying with ${next.accountId}`,
+              );
+              proxyRes.resume();
+              proxyRes.on('end', () => {
+                const nextHeaders = {
+                  ...attemptHeaders,
+                  authorization: `Bearer ${next.token}`,
+                };
+                dispatch(nextHeaders, next.accountId, next.accountId, retriesLeft - 1);
+              });
+              proxyRes.on('error', (err) => {
+                if (capture) capture.errorMessage = err.message;
+                finalizeCapture();
+                reject(err);
+              });
+              return;
+            }
+          }
+
+          // Final response for this request — commit capture + forward.
+          if (capture) {
+            capture.responseStatus = proxyRes.statusCode ?? null;
+            capture.responseHeaders = redactHeaders(proxyRes.headers, capture.redactAuth);
+            const encodingHeader = proxyRes.headers['content-encoding'];
+            capture.isSse =
+              !encodingHeader &&
+              req.method === 'POST' &&
+              (req.url?.startsWith('/v1/messages') ?? false);
+          }
+          if (cacheTtlCtx) {
+            const ct = String(proxyRes.headers['content-type'] ?? '');
+            cacheTtlCtx.isSse = ct.includes('text/event-stream');
+          }
+
+          // Record requestId → account so OtelReceiver can re-bucket OTEL
+          // api_request / api_error events that carry the same id. Anthropic
+          // emits `request-id` on every /v1/messages response; only skip the
+          // write when the header is absent (probes, early errors). Attribute
+          // to the account that produced the forwarded response, not any
+          // earlier attempt that was retried away from.
+          if (requestAccountMap) {
+            const reqIdRaw = proxyRes.headers['request-id'];
+            const reqId = Array.isArray(reqIdRaw) ? reqIdRaw[0] : reqIdRaw;
+            if (typeof reqId === 'string' && reqId) {
+              requestAccountMap.set(reqId, currentRlKey);
+            }
+          }
+
+          forwardResponse(proxyRes, currentRlKey);
+        },
+      );
+
+      proxyReq.on('error', (err) => {
+        if (capture) capture.errorMessage = err.message;
+        finalizeCapture();
+        reject(err);
+      });
+
+      if (body.length > 0) {
+        proxyReq.write(body);
+      }
+      proxyReq.end();
+    };
+
+    /** Stream the chosen upstream response back to the client. Shared
+     *  between the first-attempt and retry-attempt paths — the attempt
+     *  that actually reaches here is the one whose status code will be
+     *  seen by Claude Code. */
+    const forwardResponse = (
+      proxyRes: IncomingMessage,
+      currentRlKey: string,
+    ): void => {
         // Forward response to Claude Code. When a security tap is active,
         // we hand chunks to the client synchronously and also feed a
         // non-blocking copy to the scanner. A slow tap can NEVER delay the
         // client because we don't let its backpressure reach proxyRes.
         /* v8 ignore next 1 */
         res.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers);
-        const tap = securityScanner?.startResponseTap(rlKey, req.url) ?? null;
+        const tap = securityScanner?.startResponseTap(currentRlKey, req.url) ?? null;
         const encoding = proxyRes.headers['content-encoding'];
         const tapActive = tap !== null && !encoding;
         if (tap !== null && encoding) {
@@ -1036,7 +1144,7 @@ async function proxyToAnthropic(
         // at the request layer (accept-encoding was stripped).
         const isSse = !encoding && req.url?.startsWith('/v1/messages') && req.method === 'POST';
         const interceptor = isSse
-          ? (permissionsEnforcer?.createInterceptor(res, rlKey, req.headers) ?? null)
+          ? (permissionsEnforcer?.createInterceptor(res, currentRlKey, req.headers) ?? null)
           : null;
 
         const captureChunk = (chunk: Buffer): void => {
@@ -1114,19 +1222,17 @@ async function proxyToAnthropic(
             reject(err);
           });
         }
-      },
+    };
+
+    // Kick off the first attempt. `rlKey` is already set above from the
+    // per-request `attributionAccountId`. Retry budget = 1 by policy so
+    // worst-case wall time is bounded to ~2x a single upstream round-trip.
+    dispatch(
+      { ...req.headers },
+      rlKey,
+      attributionAccountId ?? rlKey,
+      retryCredentialProvider ? 1 : 0,
     );
-
-    proxyReq.on('error', (err) => {
-      if (capture) capture.errorMessage = err.message;
-      finalizeCapture();
-      reject(err);
-    });
-
-    if (body.length > 0) {
-      proxyReq.write(body);
-    }
-    proxyReq.end();
   });
 }
 

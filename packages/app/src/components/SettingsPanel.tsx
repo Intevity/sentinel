@@ -20,6 +20,7 @@ import { useDaemon } from '../hooks/useDaemon.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { useAccounts } from '../hooks/useAccounts.js';
 import { accountColor } from '../lib/accountColor.js';
+import { planLabel } from '../lib/plan.js';
 import AccountColorDot from './AccountColorDot.js';
 import OverlayPanel from './OverlayPanel.js';
 import { Section, ToggleRow, RadioRow } from './settings/primitives.js';
@@ -1504,7 +1505,10 @@ function ClaudeAiConnectionRow({
           <p className="text-[13px] font-medium text-black dark:text-white truncate">
             {account.displayName || account.email}
           </p>
-          <p className="text-[11px] text-[#8E8E93] truncate">{account.email}</p>
+          <p className="text-[11px] text-[#8E8E93] truncate">
+            {account.email}
+            {account.planType ? ` (${planLabel(account.planType)})` : ''}
+          </p>
         </div>
         {onRefresh && (
           <button

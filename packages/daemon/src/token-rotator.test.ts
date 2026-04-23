@@ -673,6 +673,57 @@ describe('TokenRotator overage gate', () => {
     expect(rotator.pick()).toBeNull();
   });
 
+  it('admits a blocked account into the overage tier when overage is allowed and opted in', () => {
+    // A unified-5h or unified-7d `status='blocked'` on its own is not a
+    // dead end — if Anthropic still reports overage `allowed` and the
+    // user has opted the account into overage, traffic can keep flowing
+    // via the overage grant. The rotator keeps the account in the
+    // overage tier instead of skipping it.
+    const db = getDb(dbPath);
+    seed(db, 'blocked', 'b@x');
+    const store = new RateLimitStore();
+    store.update('blocked', {
+      'anthropic-ratelimit-unified-5h-status': 'blocked',
+      'anthropic-ratelimit-unified-5h-utilization': '1.0',
+      'anthropic-ratelimit-unified-5h-reset': '500',
+    });
+    setOverage(store, 'blocked', { status: 'allowed' });
+
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'blocked' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(['blocked']),
+    );
+    expect(rotator.pick()?.accountId).toBe('blocked');
+  });
+
+  it('still skips a blocked account when the user has not opted into overage', () => {
+    // Mirror of the prior test: without opt-in, a blocked account is
+    // skipped entirely even if Anthropic would allow overage.
+    const db = getDb(dbPath);
+    seed(db, 'blocked', 'b@x');
+    const store = new RateLimitStore();
+    store.update('blocked', {
+      'anthropic-ratelimit-unified-5h-status': 'blocked',
+      'anthropic-ratelimit-unified-5h-utilization': '1.0',
+      'anthropic-ratelimit-unified-5h-reset': '500',
+    });
+    setOverage(store, 'blocked', { status: 'allowed' });
+
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'blocked' },
+      () => new Set(),
+      () => 'balance',
+      () => new Set(),
+    );
+    expect(rotator.pick()).toBeNull();
+  });
+
   it('skips paused accounts entirely (paused wins over any other gate)', () => {
     const db = getDb(dbPath);
     seed(db, 'paused', 'p@x');

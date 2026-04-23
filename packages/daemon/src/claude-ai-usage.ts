@@ -44,8 +44,12 @@ export interface UsageFetchResult {
   error: UsageFetchError | null;
 }
 
-const BASE_URL = 'https://api.anthropic.com';
+import { getAnthropicOrigin } from './hosts.js';
+
 const USAGE_PATH = '/api/oauth/usage';
+function baseUrl(): string {
+  return getAnthropicOrigin();
+}
 
 /** Pattern identifying Anthropic's "org has OAuth disabled" 403 message.
  *  The exact text surfaced today is "OAuth authentication is currently not
@@ -128,7 +132,7 @@ export async function fetchOrgUsage(
 
   let resp: Response;
   try {
-    resp = await fetch(`${BASE_URL}${USAGE_PATH}`, {
+    resp = await fetch(`${baseUrl()}${USAGE_PATH}`, {
       method: 'GET',
       headers,
     });
@@ -186,15 +190,21 @@ export function parseUsage(raw: RawUsageResponse): ClaudeAiUsageSnapshot {
   const sonnet = raw.seven_day_sonnet ?? null;
   const extra = raw.extra_usage ?? null;
 
-  // Server sends utilization on the 0-100 percent scale for the window
-  // members but 0-1 fraction in some rollouts. Normalize both to 0-1
-  // to match our RateLimitWindow type.
+  // claude.ai returns utilization as a percent on the 0-100 scale —
+  // verified live for both Max (5h=36, 7d=3, extra_usage=77.22) and Team
+  // (5h=7, 7d=1) responses. This matches how `extra_usage.utilization` is
+  // consumed below (`/100` on line ~217).
+  //
+  // A prior heuristic ("if the value looks like a fraction ≤1.0, leave
+  // alone; if it looks like a percent >1.01, scale down") tried to handle
+  // a hypothetical rollout that used 0-1 fractions. It broke at the
+  // 0-1% boundary: a real `seven_day.utilization = 1.0` (meaning 1%) was
+  // left at 1.0 and `statusFor(1.0)` resolved to `'blocked'`, sticking
+  // Team accounts into a permanent `unified-7d=blocked` state even when
+  // claude.ai itself reported them far below saturation. Always scale.
   const utilFraction = (v: number | undefined | null): number | null => {
     if (v == null || !Number.isFinite(v)) return null;
-    // If the value looks like a percent (>1.01 and ≤100), scale down.
-    // If it looks like a fraction (≤1.0), leave alone.
-    if (v > 1.01 && v <= 100) return v / 100;
-    return v;
+    return v / 100;
   };
 
   // `extra_usage` shape varies by plan:

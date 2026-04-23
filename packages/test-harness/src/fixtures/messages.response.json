@@ -1,0 +1,18 @@
+{
+  "_source": "hand-authored reference; overwrite with real capture via scripts/record-fixtures.mjs",
+  "_matches": "Anthropic /v1/messages non-streaming response",
+  "id": "msg_01ABC",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-7",
+  "content": [
+    { "type": "text", "text": "ok" }
+  ],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 1,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+  }
+}
