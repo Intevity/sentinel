@@ -601,6 +601,14 @@ export default function App(): React.ReactElement {
                             secondary: `Round-robin · ${poolMemberCount} members`,
                           });
                         }
+                        // Mirror the picker's display fallback (see
+                        // AccountViewPicker resolve logic) so the chart's
+                        // scope matches the dropdown's visible label on the
+                        // first render. Without this, an undefined metricsView
+                        // makes the picker show the first pool option while
+                        // the scope quietly defaults to the active account.
+                        const effectiveMetricsView: PickerValue | undefined =
+                          metricsView ?? metricsPoolOptions[0]?.value;
                         const picker = (
                           <AccountViewPicker
                             accounts={accounts}
@@ -608,7 +616,9 @@ export default function App(): React.ReactElement {
                             poolOptions={metricsPoolOptions}
                             switchingMode={pickerSwitchingMode}
                             poolExcludedIds={pickerPoolExcludedIds}
-                            {...(metricsView !== undefined ? { value: metricsView } : {})}
+                            {...(effectiveMetricsView !== undefined
+                              ? { value: effectiveMetricsView }
+                              : {})}
                             onChange={setMetricsView}
                           />
                         );
@@ -616,7 +626,7 @@ export default function App(): React.ReactElement {
                         // dashboard/hook can execute. Membership is computed
                         // here so the daemon stays ignorant of "pool" semantics.
                         const scope = metricsViewToScope(
-                          metricsView,
+                          effectiveMetricsView,
                           accounts,
                           pickerPoolExcludedIds,
                         );
