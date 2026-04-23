@@ -358,6 +358,62 @@ export function createClaudeSyncEngine(deps: CreateClaudeSyncDeps): ClaudeSyncEn
     }
   };
 
+  /** One-time migration that promotes the broad Bash wildcard denies
+   *  shipped by the Medium/High presets into Sentinel-managed `ask`
+   *  rules. A flat deny prevents legitimate one-offs (e.g. a user who
+   *  genuinely wants `rm -rf /tmp/build-output`); ask surfaces the
+   *  prompt through Sentinel's approval UI instead. Ask rules are
+   *  Sentinel-only by contract, so the follow-up push strips the
+   *  flipped raws out of `settings.json` and Claude Code stops
+   *  enforcing them directly.
+   *
+   *  Targets an exact raw list so we don't sweep up user-authored
+   *  wildcard denies. Idempotent via `_migrations`; marker is inserted
+   *  even when no rows matched so a later-added deny row isn't
+   *  retroactively flipped. */
+  const runWildcardToAskMigrationIfNeeded = async (): Promise<boolean> => {
+    const MARKER = 'wildcard_denies_to_ask_v1';
+    const WILDCARD_ASK_RAWS = [
+      'Bash(rm -rf *)',
+      'Bash(sudo *)',
+      'Bash(chmod 777 *)',
+      'Bash(curl * | bash)',
+      'Bash(curl * | sh)',
+      'Bash(wget * | bash)',
+      'Bash(wget * | sh)',
+    ];
+    const applied = deps.db
+      .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+      .get(MARKER) as { ok: number } | undefined;
+    if (applied) return false;
+    try {
+      const placeholders = WILDCARD_ASK_RAWS.map(() => '?').join(',');
+      const res = deps.db
+        .prepare(
+          `UPDATE permission_rules
+           SET decision = 'ask', source = 'local'
+           WHERE decision = 'deny' AND raw IN (${placeholders})`,
+        )
+        .run(...WILDCARD_ASK_RAWS);
+      deps.db
+        .prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)')
+        .run(MARKER, Date.now());
+      if (res.changes > 0) {
+        deps.invalidateRuleCache();
+        await pushNow();
+        console.log(
+          `[ClaudeSync] wildcard-to-ask migration flipped ${res.changes} rule(s) to ask`,
+        );
+      }
+      return res.changes > 0;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      console.error('[ClaudeSync] wildcard-to-ask migration failed:', err);
+      broadcastStatus();
+      return false;
+    }
+  };
+
   const start = async (opts?: { initialMode?: 'merge' | 'import' | 'export' }): Promise<void> => {
     if (active) return;
     try {
@@ -382,6 +438,10 @@ export function createClaudeSyncEngine(deps: CreateClaudeSyncDeps): ClaudeSyncEn
       // is enabled because the start() caller gates on that — if the
       // user has sync off, Sentinel shouldn't touch their file.
       const migrated = await runUpgradeMigrationIfNeeded();
+      // Wildcard-to-ask runs after the upgrade migration so the DB
+      // already reflects file state; otherwise we might flip a row
+      // that the very next pull re-imports as deny.
+      await runWildcardToAskMigrationIfNeeded();
       if (!migrated) {
         // Initial reconciliation — honours the user's first-enable
         // choice (merge / import / export).

@@ -381,3 +381,226 @@ describe('claude-sync upgrade migration', () => {
     engine.stop();
   });
 });
+
+describe('claude-sync wildcard-to-ask migration', () => {
+  let root: string;
+  let settingsPath: string;
+  let dbPath: string;
+  let db: Database;
+  let engine: ClaudeSyncEngine;
+
+  /** The seven raws the migration targets. A rule outside this list
+   *  must never be flipped, even if it matches the "Bash(... *)" shape. */
+  const TARGET_RAWS = [
+    'Bash(rm -rf *)',
+    'Bash(sudo *)',
+    'Bash(chmod 777 *)',
+    'Bash(curl * | bash)',
+    'Bash(curl * | sh)',
+    'Bash(wget * | bash)',
+    'Bash(wget * | sh)',
+  ];
+
+  beforeEach(() => {
+    root = tmpRoot();
+    mkdirSync(root, { recursive: true });
+    settingsPath = join(root, 'settings.json');
+    dbPath = join(root, 'sentinel.db');
+    db = getDb(dbPath);
+    engine = createClaudeSyncEngine({
+      db,
+      ipcServer: makeIpcStub(),
+      invalidateRuleCache: () => {},
+      settingsPath,
+    });
+    // Isolate the wildcard-to-ask migration from the older upgrade
+    // migration by pre-setting its marker. The two are independent
+    // and run in sequence in start(); pinning the first lets these
+    // tests observe the second's behavior in isolation.
+    db.prepare('INSERT INTO _migrations (name, applied_at) VALUES (?, ?)').run(
+      'claude_sync_file_wins_v1',
+      Date.now(),
+    );
+  });
+
+  afterEach(() => {
+    closeDb();
+    if (existsSync(root)) rmSync(root, { recursive: true, force: true });
+  });
+
+  it('flips all 7 wildcard deny rules to ask on first start and leaves unrelated rules alone', async () => {
+    // Seed each target raw as a plain deny, plus one unrelated deny
+    // and one unrelated allow that must survive untouched.
+    for (const raw of TARGET_RAWS) {
+      const pattern = raw.slice('Bash('.length, -1);
+      upsertPermissionRule(db, {
+        decision: 'deny',
+        tool: 'Bash',
+        pattern,
+        raw,
+        source: 'local',
+      });
+    }
+    upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: 'evil *',
+      raw: 'Bash(evil *)',
+      source: 'local',
+    });
+    upsertPermissionRule(db, {
+      decision: 'allow',
+      tool: 'Bash',
+      pattern: 'git *',
+      raw: 'Bash(git *)',
+      source: 'local',
+    });
+    writeSettings(settingsPath, {});
+    await engine.start();
+    const rows = listPermissionRules(db);
+    for (const raw of TARGET_RAWS) {
+      const row = rows.find((r) => r.raw === raw);
+      expect(row?.decision).toBe('ask');
+      expect(row?.source).toBe('local');
+    }
+    // Untargeted rules stay as the user authored them.
+    expect(rows.find((r) => r.raw === 'Bash(evil *)')?.decision).toBe('deny');
+    expect(rows.find((r) => r.raw === 'Bash(git *)')?.decision).toBe('allow');
+    engine.stop();
+  });
+
+  it('forces source=local when flipping a rule that was owned by the file', async () => {
+    // Simulate a user who had Bash(sudo *) synced in from settings.json
+    // as a claude-code-owned deny. The migration must take ownership
+    // back because ask rules are Sentinel-only.
+    upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: 'sudo *',
+      raw: 'Bash(sudo *)',
+      source: 'claude-code',
+    });
+    writeSettings(settingsPath, { deny: ['Bash(sudo *)'] });
+    await engine.start();
+    const row = listPermissionRules(db).find((r) => r.raw === 'Bash(sudo *)');
+    expect(row?.decision).toBe('ask');
+    expect(row?.source).toBe('local');
+    engine.stop();
+  });
+
+  it('does not re-run after the marker is set, even if a target raw is re-added as deny', async () => {
+    upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: 'rm -rf *',
+      raw: 'Bash(rm -rf *)',
+      source: 'local',
+    });
+    writeSettings(settingsPath, {});
+    await engine.start();
+    expect(
+      listPermissionRules(db).find((r) => r.raw === 'Bash(rm -rf *)')?.decision,
+    ).toBe('ask');
+    engine.stop();
+
+    // User (or some other path) hand-flips the rule back to deny. On
+    // the next start, the migration must NOT fire again — otherwise
+    // the user's intent would be silently overridden every restart.
+    db.prepare("UPDATE permission_rules SET decision='deny' WHERE raw=?").run(
+      'Bash(rm -rf *)',
+    );
+    const engine2 = createClaudeSyncEngine({
+      db,
+      ipcServer: makeIpcStub(),
+      invalidateRuleCache: () => {},
+      settingsPath,
+    });
+    await engine2.start();
+    expect(
+      listPermissionRules(db).find((r) => r.raw === 'Bash(rm -rf *)')?.decision,
+    ).toBe('deny');
+    engine2.stop();
+  });
+
+  it('leaves target raws already at decision=ask untouched', async () => {
+    upsertPermissionRule(db, {
+      decision: 'ask',
+      tool: 'Bash',
+      pattern: 'rm -rf *',
+      raw: 'Bash(rm -rf *)',
+      source: 'local',
+    });
+    writeSettings(settingsPath, {});
+    await engine.start();
+    const row = listPermissionRules(db).find((r) => r.raw === 'Bash(rm -rf *)');
+    expect(row?.decision).toBe('ask');
+    expect(row?.source).toBe('local');
+    engine.stop();
+  });
+
+  it('push after migration strips flipped raws from settings.json', async () => {
+    // File mirrors what Claude Code would see before the migration:
+    // all 7 as denies. Seed DB with the same state so the migration
+    // has something to flip.
+    for (const raw of TARGET_RAWS) {
+      const pattern = raw.slice('Bash('.length, -1);
+      upsertPermissionRule(db, {
+        decision: 'deny',
+        tool: 'Bash',
+        pattern,
+        raw,
+        source: 'claude-code',
+      });
+    }
+    writeSettings(settingsPath, { deny: [...TARGET_RAWS] });
+    await engine.start();
+    const p = readPerms(settingsPath);
+    for (const raw of TARGET_RAWS) {
+      expect(p.deny).not.toContain(raw);
+      expect(p.ask).not.toContain(raw);
+      expect(p.allow).not.toContain(raw);
+    }
+    engine.stop();
+  });
+
+  it('persists the marker even when no rows match, so a later-added deny is not retroactively flipped', async () => {
+    // User has none of the target raws. The migration has nothing to
+    // do right now, but we still mark it applied so a deny added
+    // tomorrow (manually or from settings.json) is preserved as-is.
+    upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: 'evil *',
+      raw: 'Bash(evil *)',
+      source: 'local',
+    });
+    writeSettings(settingsPath, {});
+    await engine.start();
+    const marker = db
+      .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+      .get('wildcard_denies_to_ask_v1') as { ok: number } | undefined;
+    expect(marker?.ok).toBe(1);
+    engine.stop();
+
+    // Now add a target raw as deny and restart. The migration is
+    // already applied, so the new deny must stay as deny.
+    upsertPermissionRule(db, {
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: 'rm -rf *',
+      raw: 'Bash(rm -rf *)',
+      source: 'local',
+    });
+    const engine2 = createClaudeSyncEngine({
+      db,
+      ipcServer: makeIpcStub(),
+      invalidateRuleCache: () => {},
+      settingsPath,
+    });
+    await engine2.start();
+    expect(
+      listPermissionRules(db).find((r) => r.raw === 'Bash(rm -rf *)')?.decision,
+    ).toBe('deny');
+    engine2.stop();
+  });
+});

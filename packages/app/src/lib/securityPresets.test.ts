@@ -24,15 +24,29 @@ describe('PRESETS', () => {
     expect(PRESETS.low.settings.toolPermissionsEnabled).toBe(false);
   });
 
-  it('medium profile ships a targeted deny list with no allow rules', () => {
+  it('medium profile ships ask+deny rules with no allow rules', () => {
     const hasAllow = PRESETS.medium.rules.some((r) => r.decision === 'allow');
     expect(hasAllow).toBe(false);
     expect(PRESETS.medium.rules.length).toBeGreaterThan(5);
     expect(PRESETS.medium.settings.toolPermissionDefaultAction).toBe('allow');
-    // Must include the obvious foot-guns.
-    const raws = PRESETS.medium.rules.map((r) => `${r.tool}(${r.pattern ?? ''})`);
-    expect(raws).toContain('Bash(rm -rf *)');
-    expect(raws).toContain('Bash(sudo *)');
+    // Both decision tiers must be represented: ask for broad Bash wildcards,
+    // deny for resource-specific protections.
+    const decisions = new Set(PRESETS.medium.rules.map((r) => r.decision));
+    expect(decisions.has('ask')).toBe(true);
+    expect(decisions.has('deny')).toBe(true);
+    // The obvious foot-guns are ask rules so users can approve legitimate
+    // one-offs instead of having them silently blocked.
+    const byRaw = new Map(
+      PRESETS.medium.rules.map((r) => [`${r.tool}(${r.pattern ?? ''})`, r] as const),
+    );
+    expect(byRaw.get('Bash(rm -rf *)')?.decision).toBe('ask');
+    expect(byRaw.get('Bash(sudo *)')?.decision).toBe('ask');
+    expect(byRaw.get('Bash(chmod 777 *)')?.decision).toBe('ask');
+    expect(byRaw.get('Bash(curl * | bash)')?.decision).toBe('ask');
+    expect(byRaw.get('Bash(wget * | sh)')?.decision).toBe('ask');
+    // Resource guards stay as deny.
+    expect(byRaw.get('Write(~/.ssh/**)')?.decision).toBe('deny');
+    expect(byRaw.get('Read(~/.aws/credentials)')?.decision).toBe('deny');
   });
 
   it('high profile is default-deny with an explicit allow list plus shared denies', () => {

@@ -52,20 +52,30 @@ function toRaw(tool: string, pattern: string | null): string {
   return pattern ? `${tool}(${pattern})` : tool;
 }
 
-// ─── Deny rules shared by Medium and High ─────────────────────────────────
-const SHARED_DENY_RULES: PresetRule[] = [
-  { decision: 'deny', tool: 'Bash', pattern: 'rm -rf *', note: 'Irreversible recursive delete.' },
-  { decision: 'deny', tool: 'Bash', pattern: 'sudo *', note: 'Privilege escalation.' },
+// ─── Ask rules shared by Medium and High ──────────────────────────────────
+// Broad Bash wildcards where a flat deny is too blunt: the model may have a
+// legitimate reason (e.g. rm -rf /tmp/build-output). Surfaced through
+// Sentinel's approval UI instead. ask rules are Sentinel-only: they never
+// appear in ~/.claude/settings.json after the sync engine's push.
+const SHARED_ASK_RULES: PresetRule[] = [
+  { decision: 'ask', tool: 'Bash', pattern: 'rm -rf *', note: 'Irreversible recursive delete.' },
+  { decision: 'ask', tool: 'Bash', pattern: 'sudo *', note: 'Privilege escalation.' },
   {
-    decision: 'deny',
+    decision: 'ask',
     tool: 'Bash',
     pattern: 'chmod 777 *',
     note: 'World-writable perms are rarely intentional.',
   },
-  { decision: 'deny', tool: 'Bash', pattern: 'curl * | bash', note: 'Remote script execution.' },
-  { decision: 'deny', tool: 'Bash', pattern: 'curl * | sh', note: 'Remote script execution.' },
-  { decision: 'deny', tool: 'Bash', pattern: 'wget * | bash', note: 'Remote script execution.' },
-  { decision: 'deny', tool: 'Bash', pattern: 'wget * | sh', note: 'Remote script execution.' },
+  { decision: 'ask', tool: 'Bash', pattern: 'curl * | bash', note: 'Remote script execution.' },
+  { decision: 'ask', tool: 'Bash', pattern: 'curl * | sh', note: 'Remote script execution.' },
+  { decision: 'ask', tool: 'Bash', pattern: 'wget * | bash', note: 'Remote script execution.' },
+  { decision: 'ask', tool: 'Bash', pattern: 'wget * | sh', note: 'Remote script execution.' },
+];
+
+// ─── Deny rules shared by Medium and High ─────────────────────────────────
+// Resource-specific protections that should never fire interactively: SSH
+// keys, AWS credentials, and known exfiltration surfaces.
+const SHARED_DENY_RULES: PresetRule[] = [
   { decision: 'deny', tool: 'Write', pattern: '~/.ssh/**', note: 'Protect SSH keys.' },
   { decision: 'deny', tool: 'Edit', pattern: '~/.ssh/**', note: 'Protect SSH keys.' },
   { decision: 'deny', tool: 'Read', pattern: '~/.ssh/id_*', note: 'Private SSH keys.' },
@@ -156,7 +166,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
     highlights: [
       'Blocks HIGH-severity outbound findings (with approve-and-hold)',
       'Scanner covers secrets + risky tool use',
-      'Targeted deny list: rm -rf, sudo, SSH/AWS keys, exfil surfaces',
+      'Asks before rm -rf, sudo, chmod 777, curl|bash; denies SSH/AWS keys, exfil surfaces',
     ],
     settings: {
       securityScanEnabled: true,
@@ -171,7 +181,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       toolPermissionDefaultAction: 'allow' as PermissionDecision,
       toolPermissionSkipInAutoMode: true,
     },
-    rules: SHARED_DENY_RULES,
+    rules: [...SHARED_ASK_RULES, ...SHARED_DENY_RULES],
   },
   high: {
     profile: 'high',
@@ -196,7 +206,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       toolPermissionDefaultAction: 'deny' as PermissionDecision,
       toolPermissionSkipInAutoMode: false,
     },
-    rules: [...SHARED_DENY_RULES, ...HIGH_ALLOW_RULES],
+    rules: [...SHARED_ASK_RULES, ...SHARED_DENY_RULES, ...HIGH_ALLOW_RULES],
   },
 };
 
