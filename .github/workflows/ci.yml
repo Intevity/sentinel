@@ -48,6 +48,14 @@ jobs:
       - name: Build shared (emits dist/ for daemon typecheck)
         run: pnpm --filter @claude-sentinel/shared run build
 
+      # Same rule as shared above: test-harness exposes types via dist/
+      # (package.json `types` → ./dist/index.d.ts). Daemon's
+      # *.integration.test.ts files import from @claude-sentinel/test-harness,
+      # so the daemon typecheck step below will fail with TS2307 unless dist
+      # exists on disk.
+      - name: Build test-harness (emits dist/ for daemon typecheck)
+        run: pnpm --filter @claude-sentinel/test-harness run build
+
       - name: Typecheck daemon
         run: pnpm --filter @claude-sentinel/daemon exec tsc --noEmit
 
@@ -59,9 +67,6 @@ jobs:
 
       - name: Mock budget check
         run: node scripts/mock-budget.mjs
-
-      - name: Build test-harness (needed for integration tests)
-        run: pnpm --filter @claude-sentinel/test-harness run build
 
       - name: Fake API contract check
         run: pnpm exec vitest run packages/test-harness/src/fake-anthropic.contract.test.ts
