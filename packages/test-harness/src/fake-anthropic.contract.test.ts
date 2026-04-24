@@ -417,6 +417,24 @@ describe('fake Anthropic contract', () => {
     expect(res.status).toBe(401);
   });
 
+  it('handleProfile respects queueResponse status+body override and pops FIFO', async () => {
+    fake.queueResponse('/api/oauth/profile', { status: 500, body: 'boom' });
+    const first = await fetch(`${fake.origin}/api/oauth/profile`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(first.status).toBe(500);
+    expect(await first.text()).toBe('boom');
+
+    // After the queued override is consumed, subsequent requests get the
+    // default shape built from the token's registered profile.
+    const second = await fetch(`${fake.origin}/api/oauth/profile`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(second.status).toBe(200);
+    const body = (await second.json()) as { account: { email: string } };
+    expect(body.account.email).toBe('test@example.com');
+  });
+
   it('handleRunBudget body override survives null-valued limit/used', async () => {
     fake.queueResponse('/v1/code/routines/run-budget', {
       status: 200,

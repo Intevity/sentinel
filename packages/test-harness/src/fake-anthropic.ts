@@ -403,26 +403,32 @@ export async function startFakeAnthropic(init: { scenario?: ScenarioName } = {})
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
     }
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        account: {
-          uuid: profile.uuid,
-          email: profile.email,
-          display_name: profile.display_name,
-          has_claude_max: profile.has_claude_max,
-        },
-        organization: {
-          uuid: profile.org_uuid,
-          name: profile.org_name,
-          organization_type: profile.org_type,
-          rate_limit_tier: profile.rate_limit_tier,
-          organization_role: profile.organization_role,
-          workspace_role: null,
-          has_extra_usage_enabled: profile.has_extra_usage_enabled,
-        },
-      }),
-    );
+    const override = popOverride('/api/oauth/profile');
+    const status = override?.status ?? 200;
+    const defaultBody = {
+      account: {
+        uuid: profile.uuid,
+        email: profile.email,
+        display_name: profile.display_name,
+        has_claude_max: profile.has_claude_max,
+      },
+      organization: {
+        uuid: profile.org_uuid,
+        name: profile.org_name,
+        organization_type: profile.org_type,
+        rate_limit_tier: profile.rate_limit_tier,
+        organization_role: profile.organization_role,
+        workspace_role: null,
+        has_extra_usage_enabled: profile.has_extra_usage_enabled,
+      },
+    };
+    const finalHeaders: Record<string, string> = {
+      'content-type': 'application/json',
+      ...(override?.extraHeaders ?? {}),
+    };
+    const bodyBuffer = serializeBody(override?.body ?? defaultBody);
+    res.writeHead(status, finalHeaders);
+    res.end(bodyBuffer);
   }
 
   function handleUsage(req: IncomingMessage, res: ServerResponse): void {

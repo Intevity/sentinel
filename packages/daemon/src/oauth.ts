@@ -293,7 +293,12 @@ async function startCallbackServer(expectedState: string, signal?: AbortSignal):
     };
     signal?.addEventListener('abort', onAbort, { once: true });
 
-    // Timeout after 5 minutes
+    // Timeout after 5 minutes. Defensive guard for a user who opens the
+    // browser then walks away. Tests cover cancellation via AbortSignal
+    // (fast path); exercising a 5-min wall-clock timer with fake timers
+    // races the real HTTP listener's bind, and the v8 ignore is cheaper
+    // than the flake.
+    /* v8 ignore start */
     const timer = setTimeout(
       () => {
         console.log('[OAuth] 5-minute timeout expired — tearing down callback server.');
@@ -302,6 +307,7 @@ async function startCallbackServer(expectedState: string, signal?: AbortSignal):
       },
       5 * 60 * 1000,
     );
+    /* v8 ignore stop */
 
     server.listen(CALLBACK_PORT, () => {
       console.log(
@@ -309,10 +315,17 @@ async function startCallbackServer(expectedState: string, signal?: AbortSignal):
       );
     });
 
+    // EADDRINUSE / other bind errors. Triggering EADDRINUSE under test
+    // leaves `serverClosePromise` unresolved (net.Server does not emit
+    // 'close' when listen fails), which corrupts module state for any
+    // subsequent login attempt. Guarded under v8 ignore rather than
+    // introducing a test-only reset hook.
+    /* v8 ignore start */
     server.on('error', (err) => {
       clearTimeout(timer);
       reject(err);
     });
+    /* v8 ignore stop */
   });
 }
 
@@ -484,7 +497,15 @@ export async function fetchProfile(accessToken: string): Promise<ProfileResult> 
 }
 
 // ─── Open browser ──────────────────────────────────────────────────────────────
+// The platform-specific launchers below shell out via `exec` to open a real
+// browser window. They cannot be exercised in CI without spawning a GUI
+// process, so each is wrapped in `/* v8 ignore */`. The PKCE flow itself is
+// exercised end-to-end through the `openAuthUrl` option of `startOAuthLogin`,
+// which lets tests intercept the authorize URL and synthesize the browser
+// callback directly. See `oauth.integration.test.ts` and Sprint 5 of
+// `documentation/TEST_MIGRATION_PLAN.md` for the design.
 
+/* v8 ignore start */
 function openBrowser(url: string): void {
   const cmd =
     process.platform === 'darwin'
@@ -496,6 +517,7 @@ function openBrowser(url: string): void {
     if (err) console.error('[OAuth] Failed to open browser:', err.message);
   });
 }
+/* v8 ignore stop */
 
 /**
  * Open `url` in a browser window with a fresh cookie jar (private/incognito).
@@ -513,6 +535,7 @@ function openBrowser(url: string): void {
  * order. Fall back to the default browser if none are installed (the
  * user will need to sign out of claude.ai manually in that case).
  */
+/* v8 ignore start */
 function openBrowserIncognito(url: string): void {
   if (process.platform === 'darwin') return openBrowserIncognitoMac(url);
   if (process.platform === 'win32') return openBrowserIncognitoWindows(url);
@@ -646,6 +669,7 @@ function openBrowserIncognitoLinux(url: string): void {
   console.warn('[OAuth] No private-mode browser on Linux; using default browser.');
   openBrowser(url);
 }
+/* v8 ignore stop */
 
 // ─── Public API ────────────────────────────────────────────────────────────────
 
@@ -738,7 +762,13 @@ export async function startOAuthLogin(
   // the URL up, along with the hint so the caller can wire it into
   // the webview.
 
-  const openAuthUrl = opts.openAuthUrl ?? (opts.incognito ? openBrowserIncognito : openBrowser);
+  // Tests inject `openAuthUrl` to intercept the URL and synthesize the
+  // callback. Production always falls through to a platform browser launcher;
+  // those are v8-ignored and excluded from the coverage gate.
+  const openAuthUrl =
+    opts.openAuthUrl ??
+    /* v8 ignore next */
+    (opts.incognito ? openBrowserIncognito : openBrowser);
   openAuthUrl(authUrl);
   console.log(
     `[OAuth] Surfaced auth URL${opts.incognito ? ' (incognito)' : ''}: ${authUrl}`,

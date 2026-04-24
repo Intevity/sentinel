@@ -26,9 +26,6 @@ export default defineConfig({
         // Extracted from index.ts into its own file to avoid a circular import
         // with usage-probe.ts; inherits index.ts's coverage exemption.
         'packages/daemon/src/rate-limit-probe.ts',
-        // OAuth orchestration: opens browser, spins up local HTTP server, and
-        // makes external API calls: better covered by integration tests.
-        'packages/daemon/src/oauth.ts',
         // Inlined base64 app icon consumed by oauth.ts's callback page.
         // No runtime logic, just a data-URL constant.
         'packages/daemon/src/logo.ts',
