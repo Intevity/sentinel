@@ -54,6 +54,9 @@ jobs:
       - name: Lint
         run: pnpm exec eslint packages/daemon/src packages/shared/src
 
+      - name: Mock budget check
+        run: node scripts/mock-budget.mjs
+
       - name: Build test-harness (needed for integration tests)
         run: pnpm --filter @claude-sentinel/test-harness run build
 

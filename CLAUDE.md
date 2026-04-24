@@ -94,11 +94,63 @@ open "/Applications/Claude Sentinel.app"
 
 ## Tests
 
+### Running tests
+
 ```sh
-npx vitest run --coverage
+pnpm test                  # full suite with coverage + verbose reporter (canonical)
+pnpm mock:budget           # verify no mock-floor regressions (runs in CI)
+pnpm mock:budget:update    # only after intentionally adding a mock; defend it in the PR
+pnpm exec vitest run <path-glob>   # single file / dir
 ```
 
-The project requires **≥95% coverage** across statements, branches, functions, and lines.
+Use `pnpm test` — not `vitest run` — as the completion signal. `vitest run` without `--coverage` passes PRs that break the CI gate.
+
+### Coverage thresholds (non-negotiable)
+
+Lines / functions / statements ≥ **95**, branches ≥ **93**. Configured in `vitest.config.ts`; CI fails on regression.
+
+**Before declaring complete any change touching `packages/daemon/src/` or `packages/app/src/lib/`:** run `pnpm test` and confirm all four thresholds pass in the output summary. Type-check + tests-pass is not enough — coverage is a distinct signal and the agent must verify it.
+
+If coverage regresses, write the missing test. **Do not:**
+- lower thresholds in `vitest.config.ts`
+- add files to the coverage `exclude` list
+- sprinkle `/* v8 ignore */` to hit the number
+
+`/* v8 ignore */` is for genuinely CI-unreachable code (platform-specific branches like `openBrowserIncognitoMac`, defensive coalesces the type system already rules out). Each ignore block needs a one-line justification inline. A bare ignore is a review-blocker.
+
+### Test against real code, not mocks
+
+HTTP, OAuth, keychain, and DB paths run against real listeners via the fake-Anthropic harness (`packages/test-harness/src/fake-anthropic.ts`). Wire-shape drift fails the contract test (`fake-anthropic.contract.test.ts`) loudly rather than being silently absorbed by a stale mock. Required seams for new tests at these boundaries:
+
+- **HTTP to Anthropic**: `startFakeAnthropic()` + `ANTHROPIC_UPSTREAM_URL`. Reuse `startProxyWithFake()` (`proxy.test-helpers.ts`) or `startTestDaemon()` (`index.test-helpers.ts`).
+- **OAuth endpoints**: `OAUTH_TOKEN_URL`, `OAUTH_AUTH_URL` pointed at the fake; `openAuthUrl` option for callback synthesis.
+- **Keychain**: `CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE` + `writeSentinelCredentials` / `writeClaudeCodeCredentials`.
+- **Settings**: `CLAUDE_SENTINEL_TEST_SETTINGS_FILE`.
+- **SQLite**: `CLAUDE_SENTINEL_TEST_DB_FILE`, `CLAUDE_SENTINEL_TEST_REQUEST_LOG_DB_FILE`.
+- **IPC / port**: `CLAUDE_SENTINEL_TEST_IPC_SOCKET`, `CLAUDE_SENTINEL_TEST_DAEMON_PORT`.
+
+Production defaults are unchanged when these env vars are unset.
+
+### Forbidden mock patterns (enforced by `pnpm mock:budget`)
+
+`.mock-budget.json` at repo root locks today's floor at 143 sites across 21 files. Any PR that raises a file's count — or adds mocks to a previously-clean file — fails CI unless the same PR runs `pnpm mock:budget:update` with a written justification in the PR body. Specifically prohibited:
+
+- `vi.mock('https')`, `vi.mock(import('node:http'))` — use the fake.
+- `global.fetch = vi.fn(...)`, `vi.stubGlobal('fetch', ...)` — use the fake's real listener.
+- `vi.mock('./<daemon-src-module>.js')` — the migration's whole point was to stop mocking our own modules. There is almost certainly an env seam or helper; if not, ask before adding one.
+- `vi.spyOn(accounts, 'readSentinelCredentials' | 'readActiveCredentials')` — write real credentials via the test-keychain adapter.
+
+Narrow scoped exceptions are legitimate: `vi.fn()` as a subscriber stub, `vi.spyOn(console, ...)` suppressing intentional log noise around one assertion. See existing integration tests for the shape.
+
+### Tests must actually test
+
+A test that still passes when the feature is broken is not a test. Every new test must have at least one assertion that **fails on regression** — a specific value, a specific shape, a specific error message. These alone are not sufficient:
+
+- `expect(x).toBeDefined()` / `toBeTruthy()` without a companion specific assertion
+- `await expect(...).resolves.not.toThrow()` without asserting on the resolved value
+- `expect(mock).toHaveBeenCalled()` without `toHaveBeenCalledWith(...)`
+
+If a code path can't be exercised by a real scenario against the harness, the honest answers are (in order): integration-test it end-to-end, delete the unreachable branch, or escalate the design question to the user. Reaching for `/* v8 ignore */` or a shallow assertion to hit the coverage number is not one of the answers.
 
 ## Logs
 

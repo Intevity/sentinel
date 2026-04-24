@@ -16,7 +16,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "security:test": "node scripts/security-test.mjs",
-    "alerts:test": "node scripts/alerts-test.mjs"
+    "alerts:test": "node scripts/alerts-test.mjs",
+    "mock:budget": "node scripts/mock-budget.mjs",
+    "mock:budget:update": "node scripts/mock-budget.mjs --update"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
