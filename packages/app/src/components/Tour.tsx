@@ -31,6 +31,7 @@ export default function Tour({ onFinish, onStepEnter }: TourProps): React.ReactE
   const step = TOUR_STEPS[index];
   const [rect, setRect] = useState<Rect | null>(null);
   const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight });
+  const [cardHeight, setCardHeight] = useState<number | null>(null);
 
   // Fire the step-enter callback on every index change. Intentionally
   // excludes onStepEnter from deps — it may be redefined on every parent
@@ -117,8 +118,8 @@ export default function Tour({ onFinish, onStepEnter }: TourProps): React.ReactE
   }, [next, back, skip]);
 
   const cardPosition = useMemo(
-    () => computeCardPosition(step, rect, viewport),
-    [step, rect, viewport],
+    () => computeCardPosition(step, rect, viewport, cardHeight),
+    [step, rect, viewport, cardHeight],
   );
 
   if (!step) return null;
@@ -211,6 +212,14 @@ export default function Tour({ onFinish, onStepEnter }: TourProps): React.ReactE
         <motion.div
           key={`card-${index}`}
           className="absolute pointer-events-auto"
+          ref={(el) => {
+            // Measured height replaces the 150px fallback in computeCardPosition
+            // so the clamp and placement-flip logic reason about the real card
+            // (the long round-robin step renders ~270px, not 150). The window
+            // itself is held at max via App's data-expand-max while the tour
+            // is running, which is what guarantees the card always has room.
+            if (el) setCardHeight(el.offsetHeight);
+          }}
           style={{
             top: cardPosition.top,
             left: cardPosition.left,
@@ -270,11 +279,16 @@ function computeCardPosition(
   step: TourStep | undefined,
   rect: Rect | null,
   viewport: { w: number; h: number },
+  measuredCardHeight: number | null,
 ): { top: number; left: number } {
-  const estimatedCardHeight = 150;
+  // Use the measured height once the card has rendered. The 150 fallback
+  // only applies on the very first paint of each step, before the callback
+  // ref fires — the subsequent state update re-runs this with the real
+  // height and the card repositions in the same frame.
+  const cardHeight = measuredCardHeight ?? 150;
   if (!step || !rect) {
     return {
-      top: Math.max(40, viewport.h / 2 - estimatedCardHeight / 2),
+      top: Math.max(40, viewport.h / 2 - cardHeight / 2),
       left: Math.max(12, viewport.w / 2 - CARD_WIDTH / 2),
     };
   }
@@ -290,19 +304,19 @@ function computeCardPosition(
   const spaceBelow = viewport.h - (rect.top + rect.height);
   let placement = step.placement;
   if (placement === 'auto') {
-    placement = spaceBelow >= estimatedCardHeight + CARD_GAP ? 'bottom' : 'top';
+    placement = spaceBelow >= cardHeight + CARD_GAP ? 'bottom' : 'top';
   }
-  if (placement === 'top' && spaceAbove < estimatedCardHeight + CARD_GAP) {
+  if (placement === 'top' && spaceAbove < cardHeight + CARD_GAP) {
     placement = 'bottom';
   }
-  if (placement === 'bottom' && spaceBelow < estimatedCardHeight + CARD_GAP) {
+  if (placement === 'bottom' && spaceBelow < cardHeight + CARD_GAP) {
     placement = 'top';
   }
 
   const top =
     placement === 'top'
-      ? Math.max(12, rect.top - estimatedCardHeight - CARD_GAP)
-      : Math.min(viewport.h - estimatedCardHeight - 12, rect.top + rect.height + CARD_GAP);
+      ? Math.max(12, rect.top - cardHeight - CARD_GAP)
+      : Math.min(viewport.h - cardHeight - 12, rect.top + rect.height + CARD_GAP);
 
   return { top, left };
 }

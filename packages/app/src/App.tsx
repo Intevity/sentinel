@@ -506,7 +506,13 @@ export default function App(): React.ReactElement {
               <div
                 ref={contentRef}
                 className={activeTab === 'logs' ? 'flex-1 min-h-0 flex flex-col' : undefined}
-                data-expand-max={activeTab === 'logs' ? '' : undefined}
+                // Expand the tray to its max height while the tour is running.
+                // The tour's coach-mark card is `position: fixed` and the hook
+                // can't measure it through the natural content-height path;
+                // rather than wire a conditional popover signal, we simply give
+                // the tour the full 628px to work within. Shrinks back to
+                // content height as soon as the tour closes.
+                data-expand-max={activeTab === 'logs' || tourOpen ? '' : undefined}
               >
                 <AnimatePresence mode="wait" initial={false}>
                   <motion.div
