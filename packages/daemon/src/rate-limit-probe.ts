@@ -1,5 +1,5 @@
 import { request as httpRequest } from 'http';
-import { DAEMON_PORT } from './proxy.js';
+import { getDaemonPort } from './proxy.js';
 import type { IpcServer } from './ipc.js';
 import { isOAuthForbiddenBodyString } from './claude-ai-usage.js';
 
@@ -56,7 +56,7 @@ export function probeRateLimits(accountId: string, ipcServer?: IpcServer, token?
   const req = httpRequest(
     {
       hostname: '127.0.0.1',
-      port: DAEMON_PORT,
+      port: getDaemonPort(),
       // `?beta=true` mirrors Claude Code's production request. The path-prefix
       // match in the proxy (ANTHROPIC_PATHS.some(p => url.startsWith(p)))
       // tolerates it.

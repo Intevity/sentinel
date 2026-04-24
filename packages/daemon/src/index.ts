@@ -1975,6 +1975,18 @@ export async function startDaemon(): Promise<DaemonHandle> {
         // Respond immediately — the login is async and we broadcast when done
         respond({ requestType: 'start_login', success: true });
 
+        // E2E seam: when CLAUDE_SENTINEL_TEST_OAUTH_ECHO is set, intercept
+        // the authorize URL and broadcast it so the Playwright harness can
+        // extract the PKCE state and POST a synthetic callback to the
+        // loopback callback server. Off by default — production falls
+        // through to the platform browser launcher inside oauth.ts.
+        /* v8 ignore next 5 */
+        const testOauthEcho = process.env.CLAUDE_SENTINEL_TEST_OAUTH_ECHO === '1'
+          ? (url: string): void => {
+              ipcServer.broadcast({ type: 'test_oauth_url_opened', url });
+            }
+          : undefined;
+
         startOAuthLogin({
           signal: abortController.signal,
           ...(msg.orgUuidHint ? { orgUuidHint: msg.orgUuidHint } : {}),
@@ -1986,6 +1998,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
           // default browser that already has a live sessionKey. A
           // fresh cookie jar lets the user complete the flow cleanly.
           ...(msg.incognito ? { incognito: true } : {}),
+          ...(testOauthEcho ? { openAuthUrl: testOauthEcho } : {}),
         })
           .then((result) => {
             loginAbortController = null;

@@ -1,6 +1,10 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Resolve the version string shown in the app footer.
 //   1. On a tagged CI build, GitHub Actions sets GITHUB_REF_TYPE=tag and
@@ -41,10 +45,20 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
   },
-  // Resolve workspace packages
+  // Resolve workspace packages.
+  //
+  // The alias must be an ABSOLUTE path. A bare relative string like
+  // '../shared/src/index.ts' is handed to @rollup/plugin-alias which
+  // resolves it relative to the IMPORTING file, not the project root —
+  // so every deeper import (e.g. src/components/SettingsPanel.tsx) ends
+  // up pointing at src/components/../shared/... which does not exist.
+  // The symptom is a Vite overlay on `page.goto('/')` complaining
+  // "Failed to resolve import @claude-sentinel/shared". Tauri-mode
+  // builds never hit this because Tauri pre-bundles through pnpm's
+  // workspace link, but plain Vite dev (used by E2E) does.
   resolve: {
     alias: {
-      '@claude-sentinel/shared': '../shared/src/index.ts',
+      '@claude-sentinel/shared': resolve(__dirname, '../shared/src/index.ts'),
     },
   },
 });

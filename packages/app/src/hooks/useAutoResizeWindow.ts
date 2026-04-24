@@ -178,6 +178,14 @@ export function useAutoResizeWindow(): AutoResizeRefs {
     const main = content.parentElement;
     if (!main) return;
 
+    // In E2E mode (Playwright driving plain Vite, no Tauri sidecar),
+    // `getCurrentWindow()` throws because there's no __TAURI_INTERNALS__
+    // global on the page. The auto-resize loop is a Tauri-tray feature
+    // and is irrelevant when the browser viewport is managed by
+    // Playwright itself — noop and unmount cleanly. Production builds
+    // never set VITE_E2E.
+    if (import.meta.env.VITE_E2E === 'true') return;
+
     const appWindow = getCurrentWindow();
     let rafId: number | null = null;
     let inFlight = false;

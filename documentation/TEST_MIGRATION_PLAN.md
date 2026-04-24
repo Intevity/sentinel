@@ -719,33 +719,181 @@ No changes to `accounts.ts`, `settings.ts`, `hosts.ts`, `oauth.ts`, `token-refre
 
 ---
 
-## Sprint 7 — Expand Playwright suite
+## Sprint 7 — Expand Playwright suite (DONE)
 
 **Target:** fill in the three `test.fixme` placeholders in
 `packages/app/e2e/smoke.spec.ts` and add regression coverage for every
 critical UI flow identified in the original survey.
 
-Flows to cover:
-1. **add-account OAuth (happy path)** — click "+" in AccountSwitcher,
-   intercept `start_login`, synthesize the callback via
-   `fake.authUrl + ?code=X&state=Y`, verify account row appears.
-2. **switch-account** — seed two accounts, click the inactive one,
-   verify `~/.claude.json` (mocked via HOME) and the daemon-broadcast
-   `account_switched` event.
-3. **configure alert and trigger** — open Alerts tab, create 90%
-   threshold alert for an account, switch fake to `5h-warning` scenario,
-   fire a request through the proxy, verify `alert_triggered` broadcast.
-4. **round-robin pool toggle** — flip to round-robin mode, verify
-   `settings_changed` broadcast and rotator pool reflects the change.
-5. **view usage metrics** — probe triggers, drain meter updates.
+**Delivered:**
+
+- Five new spec files under `packages/app/e2e/`, each with its own
+  fresh daemon + fake + bridge + Vite harness in `beforeAll` and a
+  clean teardown in `afterAll`. `workers: 1` keeps them serial so port
+  47285 (OAuth callback), the daemon IPC socket, and Vite's 5173 never
+  collide across specs:
+  - `add-account.spec.ts` — OAuth happy path. Daemon runs with
+    `CLAUDE_SENTINEL_TEST_OAUTH_ECHO=1`; spec subscribes to
+    `test_oauth_url_opened`, extracts PKCE `state`, POSTs a synthetic
+    callback to `http://127.0.0.1:47285/callback?code=fake-code&state=...`,
+    awaits `login_complete`, asserts the new account row renders.
+  - `switch-account.spec.ts` — seed two accounts (A active, B inactive).
+    Click B's "Switch" pill, await `account_switched` broadcast,
+    verify `~/.claude.json` rewrite + `get_accounts` active-flag flip.
+  - `alert-trigger.spec.ts` — navigate to Alerts tab, click
+    "Add alert", accept the default 90% threshold, save. Fire
+    `dev_trigger_alert_event` (scenario `usage-account`) via the
+    bridge, await `alert_triggered` broadcast, assert `list_alerts`
+    reflects the row.
+  - `round-robin.spec.ts` — click the Round-robin radio in the
+    `switching-mode` QuickSegmented, await `settings_changed`
+    broadcast, assert `get_settings` persisted the mode, and the
+    header's `Round-Robin` pill is visible.
+  - `usage-metrics.spec.ts` — render 5h utilization from startup probe
+    (`healthy-account`), flip fake to `5h-warning`, probe via
+    `probe_rate_limits` IPC, click UI Refresh, assert the new
+    utilization text ("92.0% of quota consumed") lands. Documents the
+    two-path store update semantics (claude.ai sync on startup vs.
+    proxy header probe) right in the spec.
+
+- **Infrastructure: daemon → browser broadcast wiring (SSE).**
+  `packages/app/e2e/helpers/ipc-http-bridge.mjs` gained a `GET /events`
+  endpoint that holds a persistent Unix socket to the daemon, splits
+  newline-framed JSON, routes broadcasts (frames lacking
+  `requestType`) to the stream as `text/event-stream` `data:` frames.
+  The daemon socket is opened BEFORE the SSE headers flush so the
+  subscriber's readiness signal is "bridge is registered as a daemon
+  client" — not "bridge started writing bytes". Without that
+  ordering, `waitForBroadcast` routinely missed broadcasts fired in
+  the window between SSE headers and the bridge's upstream connect.
+  The existing `POST /` path gained an empty-line skip and a
+  `requestType`-or-skip discriminator so broadcasts that happen to
+  land on the request socket never poison the round-trip.
+
+- **Infrastructure: browser EventSource singleton.**
+  `packages/app/src/lib/ipc.ts`'s `onDaemonMessage` grew an E2E branch
+  that subscribes to the bridge's `/events`. The first caller opens
+  one `EventSource`; every subsequent call attaches its handler to
+  the shared set. Without a singleton, each app hook that calls
+  `onDaemonMessage` (useDaemon, useNotifications, useSettings, …)
+  opened its own SSE, saturating Chromium's 6-per-origin HTTP/1.1
+  connection limit and hanging every subsequent `fetch()` from the
+  same origin — the spec timeouts we debugged through before finding
+  this. Production Tauri path (`listen('daemon-message', …)`) is
+  untouched.
+
+- **Infrastructure: OAuth URL echo seam.**
+  `packages/daemon/src/index.ts`'s `start_login` handler now threads
+  an `openAuthUrl` thunk that broadcasts `test_oauth_url_opened` with
+  the authorize URL when `CLAUDE_SENTINEL_TEST_OAUTH_ECHO=1`. Gated
+  by an env var; production path is unchanged and the branch is
+  `/* v8 ignore */` so it doesn't drag coverage down. The new
+  broadcast variant (`TestOAuthUrlOpenedMessage`) was added to
+  `DaemonToAppMessage` in `packages/shared/src/ipc-messages.ts`.
+
+- **Infrastructure: `test-daemon.ts` overhaul.**
+  - Ephemeral daemon port via `CLAUDE_SENTINEL_TEST_DAEMON_PORT` so
+    the test daemon doesn't fight the user's live desktop app for
+    port 47284. Fixed a missed Sprint 6 seam: `rate-limit-probe.ts`
+    was still importing the hardcoded `DAEMON_PORT` constant — now
+    uses `getDaemonPort()`.
+  - Full `DEFAULT_SETTINGS` pre-seed via
+    `CLAUDE_SENTINEL_TEST_SETTINGS_FILE`, with `tourCompleted: true`
+    and `securitySetupCompleted: true` flipped so the first-run modals
+    never mount.
+  - `~/.claude.json` pre-seed when the caller names `seedActiveId`
+    (workdir-relative, picked up via `HOME=workDir`). Populates the
+    full `OAuthAccount` shape so the daemon's startup credential
+    verifier recognizes the seeded identity as in-sync.
+  - Multi-account SQLite pre-seed. The daemon's startup only
+    upserts the single active account from `~/.claude.json`; any
+    additional seeds were invisible. Test-daemon now opens the
+    daemon's SQLite DB (better-sqlite3 in WAL mode) post-boot and
+    inserts all non-active rows directly. Added `better-sqlite3` +
+    `@types/better-sqlite3` as `packages/app` devDependencies.
+  - Token registration fix: seed accounts always stamp `org_uuid` on
+    the fake-registered profile, defaulting to the seed id. Without
+    this the daemon's startup drift-realign path "soft-removes" the
+    seeded row because the fake's DEFAULT_PROFILE org_uuid doesn't
+    match the seeded `~/.claude.json`'s `organizationUuid`.
+  - `waitForBroadcast<T extends DaemonToAppMessage['type']>(type,
+    predicate?, timeoutMs?)` helper that opens its own `fetch`
+    stream against `/events`, scans SSE frames, resolves on the
+    first matching broadcast. Type narrowing via `Extract<...>`
+    lets specs read variant-specific fields without casts.
+  - `startAppHarness(bridgeUrl)` factored out of the old inline
+    `smoke.spec.ts` block. Spawns Vite directly via
+    `node_modules/.bin/vite` (not `pnpm exec`) so SIGTERM reaches
+    the actual child. Strips ANSI escape codes from Vite's ready
+    banner before matching ("localhost:5173" is split by color
+    codes). Binds Vite to `127.0.0.1` explicitly so Playwright's
+    baseURL hits an IPv4 listener.
+  - `stop()` waits up to 3s for the daemon to exit before returning,
+    so port 47285 and the ephemeral daemon port are released before
+    the next spec file's `beforeAll` fires.
+
+- **Frontend: E2E-only guard on `useAutoResizeWindow`.**
+  `packages/app/src/hooks/useAutoResizeWindow.ts` early-returns from
+  its main effect when `import.meta.env.VITE_E2E === 'true'`.
+  Production builds never see this branch; in the test harness the
+  Tauri `getCurrentWindow()` throws (there's no `__TAURI_INTERNALS__`
+  on a plain Vite page) and crashes React into the ErrorBoundary
+  before any spec can run. Noop under Playwright is the right
+  behavior anyway — the viewport is Playwright-managed, not tray-sized.
+
+- **Frontend: Vite alias fix (pre-existing latent bug).**
+  `packages/app/vite.config.ts`'s `@claude-sentinel/shared` alias was
+  a bare relative string `'../shared/src/index.ts'`, which
+  `@rollup/plugin-alias` resolves relative to the IMPORTING file
+  rather than the project root. Deep imports (e.g.
+  `src/components/SettingsPanel.tsx`) pointed the alias at
+  `src/components/../shared/...`, which doesn't exist. Tauri-mode
+  production builds didn't hit this because Tauri bundles through
+  pnpm's workspace link, but plain Vite dev (used by E2E) did.
+  Changed to `resolve(__dirname, '../shared/src/index.ts')`.
+
+- **Mock-count delta:** **0**. Zero `vi.mock`, `vi.fn`, `vi.spyOn`,
+  `vi.stubGlobal` across all of `packages/app/e2e/`. Playwright
+  specs are outside the `vitest.config.ts` include globs — they
+  don't affect branch-coverage thresholds (still 93 post-Sprint 6).
+
+- **Test counts:**
+  - Playwright: **6 specs, 6 tests pass** (smoke + 5 new flow
+    specs), 0 `test.fixme` remaining. Total runtime ~10s on a local
+    Mac.
+  - Vitest (daemon): **1568 tests across 65 files still pass**,
+    unchanged from Sprint 6. Coverage: statements 96.06 /
+    branches 93.28 / functions 97.69 / lines 96.06 — all above
+    thresholds.
+
+**Why:** Sprint 7 is the first sprint whose target is the Tauri app
+rather than daemon unit tests. With these five flows in CI, a
+silent contract change between React and daemon — an IPC rename, a
+broadcast shape drift, a missed startup rehydration — fails a spec
+loudly on the next PR instead of surviving to release. The SSE
+broadcast wiring also pays forward: future E2E work against the
+Alerts, Security, or Metrics tabs inherits a real-time data channel
+from the daemon with zero per-spec plumbing. Sprint 8 (mock-count CI
+budget) now has the entire daemon and the five critical app flows
+behind a zero-mock contract.
 
 Files touched:
-- `packages/app/e2e/*.spec.ts` — five new/updated specs.
-- `packages/app/e2e/helpers/test-daemon.ts` — expand scenarios.
-
-Expected mock-count delta: **0** (greenfield UI coverage).
-
-Est. time: 4 days.
+- `packages/shared/src/ipc-messages.ts` — +`TestOAuthUrlOpenedMessage`.
+- `packages/daemon/src/index.ts` — env-gated `openAuthUrl` echo in `start_login`.
+- `packages/daemon/src/rate-limit-probe.ts` — `DAEMON_PORT` → `getDaemonPort()`.
+- `packages/app/src/lib/ipc.ts` — E2E `EventSource` singleton in `onDaemonMessage`.
+- `packages/app/src/hooks/useAutoResizeWindow.ts` — E2E early-return.
+- `packages/app/vite.config.ts` — absolute-path shared alias.
+- `packages/app/package.json` — +`better-sqlite3`, +`@types/better-sqlite3`.
+- `packages/app/e2e/helpers/ipc-http-bridge.mjs` — SSE `/events` endpoint.
+- `packages/app/e2e/helpers/test-daemon.ts` — settings / claude.json / SQLite pre-seed, `waitForBroadcast`, `startAppHarness`, ephemeral daemon port, ANSI-safe Vite matcher.
+- `packages/app/e2e/smoke.spec.ts` — removed `test.fixme` block.
+- `packages/app/e2e/add-account.spec.ts` — new.
+- `packages/app/e2e/switch-account.spec.ts` — new.
+- `packages/app/e2e/alert-trigger.spec.ts` — new.
+- `packages/app/e2e/round-robin.spec.ts` — new.
+- `packages/app/e2e/usage-metrics.spec.ts` — new.
+- `documentation/TEST_MIGRATION_PLAN.md` — this section.
 
 ---
 

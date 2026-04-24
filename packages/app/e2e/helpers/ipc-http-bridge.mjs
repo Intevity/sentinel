@@ -7,12 +7,15 @@
  * Vite dev server) that path doesn't exist, so packages/app/src/lib/ipc.ts
  * switches to `fetch()` against this bridge when VITE_E2E=true.
  *
- * This script:
- *   1. Listens on HTTP at a port specified by BRIDGE_PORT or 0 (ephemeral).
- *   2. On POST /, reads JSON body (AppToDaemonMessage shape).
- *   3. Forwards it to the daemon's Unix socket (DAEMON_SOCKET env var).
- *   4. Reads the newline-terminated JSON response.
- *   5. Returns it as the HTTP response body.
+ * Two endpoints:
+ *   POST /           — request/response round-trip. Short-lived socket.
+ *   GET  /events     — SSE stream of daemon broadcasts. Persistent socket.
+ *
+ * The daemon's IPC protocol newline-frames every JSON message. Request
+ * responses carry a `requestType` field; broadcasts (DaemonToAppMessage)
+ * do not. That discriminator is how /events routes incoming frames:
+ * anything without `requestType` is treated as a broadcast and streamed
+ * to subscribed clients.
  *
  * CORS is open so the Vite dev server on :5173 can talk to any port here.
  */
@@ -29,7 +32,7 @@ if (!DAEMON_SOCKET) {
 
 const server = createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
@@ -38,9 +41,14 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && req.url && req.url.startsWith('/events')) {
+    handleSse(req, res);
+    return;
+  }
+
   if (req.method !== 'POST') {
     res.writeHead(405);
-    res.end('POST only');
+    res.end('POST or GET /events only');
     return;
   }
 
@@ -73,21 +81,105 @@ function forwardToDaemon(msg) {
     sock.setEncoding('utf8');
     sock.on('data', (chunk) => {
       buffer += chunk;
-      const newline = buffer.indexOf('\n');
-      if (newline !== -1) {
+      // The daemon may interleave broadcasts on the same socket before
+      // the actual response arrives. Scan every complete line and take
+      // the first one that looks like an IpcResponse (has `requestType`).
+      // Broadcasts that land here during a request are dropped — /events
+      // subscribers get their own persistent socket and don't need them.
+      let newline = buffer.indexOf('\n');
+      while (newline !== -1) {
         const line = buffer.slice(0, newline);
-        sock.end();
-        try {
-          resolve(JSON.parse(line));
-        } catch (err) {
-          reject(new Error(`bridge: bad JSON from daemon: ${err.message}`));
+        buffer = buffer.slice(newline + 1);
+        if (!line.trim()) {
+          newline = buffer.indexOf('\n');
+          continue;
         }
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed && typeof parsed === 'object' && 'requestType' in parsed) {
+            sock.end();
+            resolve(parsed);
+            return;
+          }
+        } catch {
+          // Drop malformed frames instead of failing the whole request —
+          // a stray broadcast with non-JSON payload should not poison
+          // the round-trip for a well-formed response that follows.
+        }
+        newline = buffer.indexOf('\n');
       }
     });
     sock.on('error', reject);
     sock.on('connect', () => {
       sock.write(JSON.stringify(msg) + '\n');
     });
+  });
+}
+
+/**
+ * Handle a GET /events subscription. Opens its own persistent connection
+ * to the daemon and streams every broadcast (JSON line without a
+ * `requestType` field) to the subscriber as an SSE `data:` frame.
+ * Request/response frames that happen to land here are ignored — the
+ * POST path opens its own short-lived socket for those.
+ */
+function handleSse(req, res) {
+  // Open the daemon socket BEFORE writing SSE headers. The headers serve
+  // as the readiness signal for the consumer: once they arrive, the
+  // bridge is already registered as a client on the daemon's IpcServer
+  // and any subsequent broadcast will be forwarded. Without this
+  // ordering, subscribers routinely miss broadcasts fired in the small
+  // window between "SSE flushed" and "daemon socket connected" — which
+  // manifested as every usage-metrics spec timing out on the first
+  // `rate_limits_updated` after a freshly-issued `probe_rate_limits`.
+  const sock = connect(DAEMON_SOCKET);
+  sock.once('connect', () => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      // Repeat CORS headers since the preflight path didn't handle GET.
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.flushHeaders();
+    res.write(': connected\n\n');
+  });
+  let buffer = '';
+  sock.setEncoding('utf8');
+  sock.on('data', (chunk) => {
+    buffer += chunk;
+    let newline = buffer.indexOf('\n');
+    while (newline !== -1) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (!line) {
+        newline = buffer.indexOf('\n');
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === 'object' && !('requestType' in parsed)) {
+          res.write(`data: ${line}\n\n`);
+        }
+      } catch {
+        // Malformed frame — drop.
+      }
+      newline = buffer.indexOf('\n');
+    }
+  });
+  sock.on('error', () => {
+    try {
+      res.end();
+    } catch {
+      // Socket already torn down.
+    }
+  });
+  req.on('close', () => {
+    try {
+      sock.end();
+    } catch {
+      // Already ended.
+    }
   });
 }
 

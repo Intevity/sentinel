@@ -392,6 +392,18 @@ export interface RequestLogsClearedMessage {
   deleted: number;
 }
 
+/** Test-only broadcast emitted by `start_login` when the daemon env has
+ *  `CLAUDE_SENTINEL_TEST_OAUTH_ECHO=1`. Carries the authorize URL the
+ *  daemon would normally hand off to a browser launcher, so the E2E
+ *  harness can extract the PKCE `state` and POST a synthetic callback
+ *  to the daemon's loopback callback server. Never fires in production
+ *  (the env var is off); listed in the union so the test-side type
+ *  narrows cleanly through `onDaemonMessage`. */
+export interface TestOAuthUrlOpenedMessage {
+  type: 'test_oauth_url_opened';
+  url: string;
+}
+
 export type DaemonToAppMessage =
   | OverageEnteredMessage
   | OverageExitedMessage
@@ -426,7 +438,8 @@ export type DaemonToAppMessage =
   | DaemonLogsClearedMessage
   | RequestLogsClearedMessage
   | PermissionRulesChangedMessage
-  | PermissionsStatusMessage;
+  | PermissionsStatusMessage
+  | TestOAuthUrlOpenedMessage;
 
 // ─── App → Daemon messages ────────────────────────────────────────────────────
 
