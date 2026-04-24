@@ -7,6 +7,8 @@ import { useSettings } from '../hooks/useSettings.js';
 import NotificationHistory from './NotificationHistory.js';
 import AccountColorDot from './AccountColorDot.js';
 import { accountColor } from '../lib/accountColor.js';
+import { describeAlertsSummary } from '../lib/alertsSummary.js';
+import { SettingsCard } from './settings/primitives.js';
 
 interface AlertsEditorProps {
   activeAccount: OAuthAccount | null;
@@ -99,92 +101,123 @@ export default function AlertsEditor({
         </div>
       )}
 
+      {/* Alert sections are wrapped in SettingsCard accordions so the whole
+          Alerts tab fits within the default 540×628 tray window. Each card
+          renders its state in the collapsed header (count + thresholds) so
+          the user can see what's configured without expanding. Same pattern
+          as SecurityPanel's Scanning card. */}
+
       {/* ── Pooled alerts (round-robin only) ───────────────────── */}
       {isRoundRobin && (
-        <AlertList
+        <SettingsCard
           title="Pooled alerts"
-          emptyCopy="No pool alerts yet. Add one to get notified when pool-wide 5-hour usage (averaged across every account in the pool) crosses a threshold."
-          rowSuffix="of pool average"
-          alerts={pool.alerts}
-          loading={pool.loading}
-          error={pool.error}
-          available={true}
-          rowColor={null}
-          create={pool.create}
-          update={pool.update}
-          toggle={pool.toggle}
-          remove={pool.remove}
-        />
+          summary={describeAlertsSummary(pool.alerts, true)}
+          defaultOpen={false}
+        >
+          <AlertList
+            emptyCopy="No pool alerts yet. Add one to get notified when pool-wide 5-hour usage (averaged across every account in the pool) crosses a threshold."
+            rowSuffix="of pool average"
+            alerts={pool.alerts}
+            loading={pool.loading}
+            error={pool.error}
+            available={true}
+            rowColor={null}
+            create={pool.create}
+            update={pool.update}
+            toggle={pool.toggle}
+            remove={pool.remove}
+          />
+        </SettingsCard>
       )}
 
       {/* ── Pooled weekly alerts (round-robin only) ────────────── */}
       {isRoundRobin && (
-        <AlertList
+        <SettingsCard
           title="Pooled weekly alerts"
-          emptyCopy="No pool weekly alerts yet. Add one to get notified when pool-wide 7-day usage (averaged across every account in the pool) crosses a threshold."
-          rowSuffix="of pool 7-day average"
-          alerts={poolWeekly.alerts}
-          loading={poolWeekly.loading}
-          error={poolWeekly.error}
-          available={true}
-          rowColor={null}
-          create={poolWeekly.create}
-          update={poolWeekly.update}
-          toggle={poolWeekly.toggle}
-          remove={poolWeekly.remove}
-        />
+          summary={describeAlertsSummary(poolWeekly.alerts, true)}
+          defaultOpen={false}
+        >
+          <AlertList
+            emptyCopy="No pool weekly alerts yet. Add one to get notified when pool-wide 7-day usage (averaged across every account in the pool) crosses a threshold."
+            rowSuffix="of pool 7-day average"
+            alerts={poolWeekly.alerts}
+            loading={poolWeekly.loading}
+            error={poolWeekly.error}
+            available={true}
+            rowColor={null}
+            create={poolWeekly.create}
+            update={poolWeekly.update}
+            toggle={poolWeekly.toggle}
+            remove={poolWeekly.remove}
+          />
+        </SettingsCard>
       )}
 
       {/* ── Per-account alerts ─────────────────────────────────── */}
-      <AlertList
-        title="Alerts"
-        emptyCopy="No alerts yet. Add one to get a native notification when usage crosses a threshold."
-        rowSuffix="of 5-hour usage"
-        unavailableCopy="Switch to an account to configure usage alerts."
-        alerts={perAccount.alerts}
-        loading={perAccount.loading}
-        error={perAccount.error}
-        available={hasAccountContext}
-        rowColor={rowInfo ? accountColor(rowInfo) : null}
-        create={perAccount.create}
-        update={perAccount.update}
-        toggle={perAccount.toggle}
-        remove={perAccount.remove}
-      />
+      <SettingsCard
+        title="5-Hour Alerts"
+        summary={describeAlertsSummary(perAccount.alerts, hasAccountContext)}
+        defaultOpen={false}
+      >
+        <AlertList
+          emptyCopy="No alerts yet. Add one to get a native notification when usage crosses a threshold."
+          rowSuffix="of 5-hour usage"
+          unavailableCopy="Switch to an account to configure usage alerts."
+          alerts={perAccount.alerts}
+          loading={perAccount.loading}
+          error={perAccount.error}
+          available={hasAccountContext}
+          rowColor={rowInfo ? accountColor(rowInfo) : null}
+          create={perAccount.create}
+          update={perAccount.update}
+          toggle={perAccount.toggle}
+          remove={perAccount.remove}
+        />
+      </SettingsCard>
 
       {/* ── Per-account Sonnet 7-day alerts ─────────────────────── */}
-      <AlertList
+      <SettingsCard
         title="Sonnet 7-day alerts"
-        emptyCopy="No Sonnet alerts yet. Add one to get notified before this account's Sonnet weekly quota spills into overage."
-        rowSuffix="of Sonnet 7-day usage"
-        unavailableCopy="Switch to an account to configure Sonnet alerts."
-        alerts={perAccountSonnet.alerts}
-        loading={perAccountSonnet.loading}
-        error={perAccountSonnet.error}
-        available={hasAccountContext}
-        rowColor={rowInfo ? accountColor(rowInfo) : null}
-        create={perAccountSonnet.create}
-        update={perAccountSonnet.update}
-        toggle={perAccountSonnet.toggle}
-        remove={perAccountSonnet.remove}
-      />
+        summary={describeAlertsSummary(perAccountSonnet.alerts, hasAccountContext)}
+        defaultOpen={false}
+      >
+        <AlertList
+          emptyCopy="No Sonnet alerts yet. Add one to get notified before this account's Sonnet weekly quota spills into overage."
+          rowSuffix="of Sonnet 7-day usage"
+          unavailableCopy="Switch to an account to configure Sonnet alerts."
+          alerts={perAccountSonnet.alerts}
+          loading={perAccountSonnet.loading}
+          error={perAccountSonnet.error}
+          available={hasAccountContext}
+          rowColor={rowInfo ? accountColor(rowInfo) : null}
+          create={perAccountSonnet.create}
+          update={perAccountSonnet.update}
+          toggle={perAccountSonnet.toggle}
+          remove={perAccountSonnet.remove}
+        />
+      </SettingsCard>
 
       {/* ── Per-account weekly (7-day) alerts ───────────────────── */}
-      <AlertList
+      <SettingsCard
         title="Weekly 7-day alerts"
-        emptyCopy="No weekly alerts yet. Add one to get notified before this account's general weekly quota saturates."
-        rowSuffix="of weekly 7-day usage"
-        unavailableCopy="Switch to an account to configure weekly alerts."
-        alerts={perAccountWeekly.alerts}
-        loading={perAccountWeekly.loading}
-        error={perAccountWeekly.error}
-        available={hasAccountContext}
-        rowColor={rowInfo ? accountColor(rowInfo) : null}
-        create={perAccountWeekly.create}
-        update={perAccountWeekly.update}
-        toggle={perAccountWeekly.toggle}
-        remove={perAccountWeekly.remove}
-      />
+        summary={describeAlertsSummary(perAccountWeekly.alerts, hasAccountContext)}
+        defaultOpen={false}
+      >
+        <AlertList
+          emptyCopy="No weekly alerts yet. Add one to get notified before this account's general weekly quota saturates."
+          rowSuffix="of weekly 7-day usage"
+          unavailableCopy="Switch to an account to configure weekly alerts."
+          alerts={perAccountWeekly.alerts}
+          loading={perAccountWeekly.loading}
+          error={perAccountWeekly.error}
+          available={hasAccountContext}
+          rowColor={rowInfo ? accountColor(rowInfo) : null}
+          create={perAccountWeekly.create}
+          update={perAccountWeekly.update}
+          toggle={perAccountWeekly.toggle}
+          remove={perAccountWeekly.remove}
+        />
+      </SettingsCard>
 
       {/* ── History ─────────────────────────────────────────── */}
       <div className="pt-2 border-t border-black/5 dark:border-white/5">
@@ -202,7 +235,6 @@ export default function AlertsEditor({
 }
 
 interface AlertListProps {
-  title: string;
   emptyCopy: string;
   /** Copy rendered next to the threshold pct in each row. Differs between
    *  per-account ("of 5-hour usage") and pool ("of pool average"). */
@@ -223,7 +255,6 @@ interface AlertListProps {
 }
 
 function AlertList({
-  title,
   emptyCopy,
   rowSuffix,
   available,
@@ -278,10 +309,9 @@ function AlertList({
   };
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <span className="section-label">{title}</span>
-        {!adding && available && (
+    <div className="px-3 py-3">
+      {!adding && available && (
+        <div className="flex justify-end mb-2">
           <button
             onClick={() => setAdding(true)}
             className="flex items-center gap-1 text-[11px] font-medium text-ios-blue hover:opacity-80 transition-opacity active:scale-95"
@@ -289,8 +319,8 @@ function AlertList({
             <Plus size={12} strokeWidth={2.5} />
             Add alert
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {!available && (
         <div className="glass-card px-4 py-8 text-center">
