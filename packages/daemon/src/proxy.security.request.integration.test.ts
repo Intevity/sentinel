@@ -8,11 +8,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import {
-  startProxyWithFake,
-  postThroughProxy,
-  type StartedProxy,
-} from './proxy.test-helpers.js';
+import { startProxyWithFake, postThroughProxy, type StartedProxy } from './proxy.test-helpers.js';
 
 // A high-severity AWS access key that is NOT in the detector's
 // KNOWN_EXAMPLE_VALUES allow set AND doesn't trip the placeholder /

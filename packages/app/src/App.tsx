@@ -580,8 +580,7 @@ export default function App(): React.ReactElement {
                         // The RR pool row joins it when round-robin is active
                         // AND the pool differs from the full account list
                         // (otherwise the two rows would be duplicates).
-                        const poolMemberCount =
-                          accounts.length - pickerPoolExcludedIds.length;
+                        const poolMemberCount = accounts.length - pickerPoolExcludedIds.length;
                         const metricsPoolOptions: PoolOption[] = [];
                         if (accounts.length > 1) {
                           metricsPoolOptions.push({

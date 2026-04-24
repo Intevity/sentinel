@@ -2,4 +2,7 @@ node_modules/
 dist/
 .pnpm-store/
 packages/app/src-tauri/
+packages/app/test-results/
+packages/test-harness/src/fixtures/
 *.lock
+pnpm-lock.yaml

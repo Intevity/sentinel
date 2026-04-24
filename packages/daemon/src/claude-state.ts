@@ -58,7 +58,10 @@ export function writeClaudeState(state: ClaudeState, filePath: string = getClaud
  * @param account - the account to make active
  * @param filePath - path to the claude.json file (defaults to ~/.claude.json)
  */
-export function setActiveAccount(account: OAuthAccount, filePath: string = getClaudeJsonPath()): void {
+export function setActiveAccount(
+  account: OAuthAccount,
+  filePath: string = getClaudeJsonPath(),
+): void {
   updateClaudeState({ oauthAccount: account }, filePath);
 }
 

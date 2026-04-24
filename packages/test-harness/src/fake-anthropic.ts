@@ -125,7 +125,15 @@ const DEFAULT_PROFILE: FakeProfile = {
   has_extra_usage_enabled: true,
 };
 
-type EndpointMatcher = '/v1/messages' | '/v1/oauth/token' | '/api/oauth/profile' | '/api/oauth/usage' | '/v1/code/routines/run-budget' | '/v1/models' | '/v1/count_tokens' | '/v1/complete';
+type EndpointMatcher =
+  | '/v1/messages'
+  | '/v1/oauth/token'
+  | '/api/oauth/profile'
+  | '/api/oauth/usage'
+  | '/v1/code/routines/run-budget'
+  | '/v1/models'
+  | '/v1/count_tokens'
+  | '/v1/complete';
 
 const CANNED_SSE_EVENTS: FakeSseEvent[] = [
   {
@@ -203,7 +211,9 @@ function buildLargeJsonBody(sizeBytes: number): string {
   return JSON.stringify(envelope);
 }
 
-export async function startFakeAnthropic(init: { scenario?: ScenarioName } = {}): Promise<FakeAnthropic> {
+export async function startFakeAnthropic(
+  init: { scenario?: ScenarioName } = {},
+): Promise<FakeAnthropic> {
   let activeScenario: ScenarioName = init.scenario ?? 'healthy-account';
   const tokens = new Map<string, FakeProfile>();
   const queuedOverrides = new Map<EndpointMatcher, FakeScenario[]>();
@@ -271,7 +281,13 @@ export async function startFakeAnthropic(init: { scenario?: ScenarioName } = {})
     if (path === '/v1/count_tokens') {
       if (!requireAuth(req, res)) return;
       res.writeHead(200, { 'content-type': 'application/json', 'request-id': randomUUID() });
-      res.end(JSON.stringify({ input_tokens: 42, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }));
+      res.end(
+        JSON.stringify({
+          input_tokens: 42,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        }),
+      );
       return;
     }
 
@@ -362,8 +378,7 @@ export async function startFakeAnthropic(init: { scenario?: ScenarioName } = {})
       // invalid_grant shape. Objects are JSON-stringified; strings are
       // written verbatim (for plain-text 5xx error payloads).
       const errBody = override?.body ?? scenario.tokenBody;
-      const contentType =
-        typeof errBody === 'string' ? 'text/plain' : 'application/json';
+      const contentType = typeof errBody === 'string' ? 'text/plain' : 'application/json';
       const payload =
         errBody === undefined
           ? JSON.stringify({

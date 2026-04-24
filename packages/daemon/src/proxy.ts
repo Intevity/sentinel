@@ -413,10 +413,7 @@ export function createProxyServer(
    * is forwarded into `proxyToAnthropic` via the final arg so it isn't
    * re-read downstream.
    */
-  const handleMessagesPost = async (
-    req: IncomingMessage,
-    res: ServerResponse,
-  ): Promise<void> => {
+  const handleMessagesPost = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const body = await readBody(req);
     const model = extractRequestModel(body);
     const isSonnet = isSonnetModel(model);
@@ -784,7 +781,12 @@ async function proxyToAnthropic(
     const existingBeta = req.headers['anthropic-beta'];
     const betaToken = 'extended-cache-ttl-2025-04-11';
     if (typeof existingBeta === 'string') {
-      if (!existingBeta.split(',').map((s) => s.trim()).includes(betaToken)) {
+      if (
+        !existingBeta
+          .split(',')
+          .map((s) => s.trim())
+          .includes(betaToken)
+      ) {
         req.headers['anthropic-beta'] = `${existingBeta}, ${betaToken}`;
       }
     } else if (Array.isArray(existingBeta)) {
@@ -1062,16 +1064,10 @@ async function proxyToAnthropic(
           // won't re-pick the account we just hit. If the provider returns
           // the same account (pool of one, or all others paused), fall
           // through to the normal forwarding path so the client sees 429.
-          if (
-            proxyRes.statusCode === 429 &&
-            retriesLeft > 0 &&
-            retryCredentialProvider
-          ) {
+          if (proxyRes.statusCode === 429 && retriesLeft > 0 && retryCredentialProvider) {
             const next = retryCredentialProvider(currentAccountId);
             if (next && next.accountId !== currentAccountId) {
-              console.log(
-                `[Proxy] 429 on ${currentRlKey} → retrying with ${next.accountId}`,
-              );
+              console.log(`[Proxy] 429 on ${currentRlKey} → retrying with ${next.accountId}`);
               proxyRes.resume();
               proxyRes.on('end', () => {
                 const nextHeaders = {
@@ -1145,122 +1141,119 @@ async function proxyToAnthropic(
      *  between the first-attempt and retry-attempt paths — the attempt
      *  that actually reaches here is the one whose status code will be
      *  seen by Claude Code. */
-    const forwardResponse = (
-      proxyRes: IncomingMessage,
-      currentRlKey: string,
-    ): void => {
-        // Forward response to Claude Code. When a security tap is active,
-        // we hand chunks to the client synchronously and also feed a
-        // non-blocking copy to the scanner. A slow tap can NEVER delay the
-        // client because we don't let its backpressure reach proxyRes.
-        /* v8 ignore next 1 */
-        res.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers);
-        const tap = securityScanner?.startResponseTap(currentRlKey, req.url) ?? null;
-        const encoding = proxyRes.headers['content-encoding'];
-        const tapActive = tap !== null && !encoding;
-        if (tap !== null && encoding) {
-          // Gzipped responses aren't scanned in v1 — keep parity honest.
-          tap.destroy();
+    const forwardResponse = (proxyRes: IncomingMessage, currentRlKey: string): void => {
+      // Forward response to Claude Code. When a security tap is active,
+      // we hand chunks to the client synchronously and also feed a
+      // non-blocking copy to the scanner. A slow tap can NEVER delay the
+      // client because we don't let its backpressure reach proxyRes.
+      /* v8 ignore next 1 */
+      res.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers);
+      const tap = securityScanner?.startResponseTap(currentRlKey, req.url) ?? null;
+      const encoding = proxyRes.headers['content-encoding'];
+      const tapActive = tap !== null && !encoding;
+      if (tap !== null && encoding) {
+        // Gzipped responses aren't scanned in v1 — keep parity honest.
+        tap.destroy();
+      }
+      // Permission interceptor — rewrites denied tool_use blocks in place.
+      // Only installed for SSE /v1/messages responses; gzip is ruled out
+      // at the request layer (accept-encoding was stripped).
+      const isSse = !encoding && req.url?.startsWith('/v1/messages') && req.method === 'POST';
+      const interceptor = isSse
+        ? (permissionsEnforcer?.createInterceptor(res, currentRlKey, req.headers) ?? null)
+        : null;
+
+      const captureChunk = (chunk: Buffer): void => {
+        if (!capture || !capture.captureResponse) return;
+        capture.responseBodySize += chunk.length;
+        if (capture.responseBodyTruncated) return;
+        const remaining = capture.maxBodyBytes - capture.responseStoredBytes;
+        if (remaining <= 0) {
+          capture.responseBodyTruncated = true;
+          return;
         }
-        // Permission interceptor — rewrites denied tool_use blocks in place.
-        // Only installed for SSE /v1/messages responses; gzip is ruled out
-        // at the request layer (accept-encoding was stripped).
-        const isSse = !encoding && req.url?.startsWith('/v1/messages') && req.method === 'POST';
-        const interceptor = isSse
-          ? (permissionsEnforcer?.createInterceptor(res, currentRlKey, req.headers) ?? null)
-          : null;
-
-        const captureChunk = (chunk: Buffer): void => {
-          if (!capture || !capture.captureResponse) return;
-          capture.responseBodySize += chunk.length;
-          if (capture.responseBodyTruncated) return;
-          const remaining = capture.maxBodyBytes - capture.responseStoredBytes;
-          if (remaining <= 0) {
-            capture.responseBodyTruncated = true;
-            return;
-          }
-          if (chunk.length <= remaining) {
-            capture.responseChunks.push(chunk);
-            capture.responseStoredBytes += chunk.length;
-          } else {
-            capture.responseChunks.push(chunk.subarray(0, remaining));
-            capture.responseStoredBytes += remaining;
-            capture.responseBodyTruncated = true;
-          }
-        };
-
-        if (interceptor !== null) {
-          proxyRes.on('data', (chunk: Buffer) => {
-            interceptor.push(chunk);
-            if (tapActive && tap !== null) tap.push(chunk);
-            captureChunk(chunk);
-            feedCacheTtl(chunk);
-          });
-          proxyRes.on('end', () => {
-            interceptor.flush();
-            res.end();
-            if (tapActive && tap !== null) tap.flush();
-            finalizeCapture();
-            resolve();
-          });
-          // Mid-stream upstream error in the permissions-interceptor path.
-          // The no-tap variant of this cleanup-and-reject pattern IS
-          // integration-tested (proxy-capture.test.ts line ~507 —
-          // "captures errorMessage on proxyRes 'error' when no tap /
-          // interceptor is installed"). Reproducing this exact combination
-          // through a real HTTP round-trip requires server-side RST
-          // mid-chunk — Node's http layer on the client absorbs that as
-          // 'aborted' rather than 'error' on most platforms, so ignoring
-          // here is strictly safer than a brittle flake.
-          /* v8 ignore start */
-          proxyRes.on('error', (err) => {
-            interceptor.destroy();
-            if (tap !== null) tap.destroy();
-            if (capture) capture.errorMessage = err.message;
-            finalizeCapture();
-            reject(err);
-          });
-          /* v8 ignore stop */
-        } else if (tapActive && tap !== null) {
-          proxyRes.on('data', (chunk: Buffer) => {
-            res.write(chunk);
-            tap.push(chunk);
-            captureChunk(chunk);
-            feedCacheTtl(chunk);
-          });
-          proxyRes.on('end', () => {
-            res.end();
-            tap.flush();
-            finalizeCapture();
-            resolve();
-          });
-          // Same rationale as the interceptor branch above — a near-
-          // duplicate of the no-tap error handler that's integration-tested
-          // in proxy-capture.test.ts.
-          /* v8 ignore start */
-          proxyRes.on('error', (err) => {
-            tap.destroy();
-            if (capture) capture.errorMessage = err.message;
-            finalizeCapture();
-            reject(err);
-          });
-          /* v8 ignore stop */
+        if (chunk.length <= remaining) {
+          capture.responseChunks.push(chunk);
+          capture.responseStoredBytes += chunk.length;
         } else {
-          proxyRes.on('data', (chunk: Buffer) => {
-            captureChunk(chunk);
-            feedCacheTtl(chunk);
-          });
-          proxyRes.pipe(res);
-          proxyRes.on('end', () => {
-            finalizeCapture();
-            resolve();
-          });
-          proxyRes.on('error', (err) => {
-            if (capture) capture.errorMessage = err.message;
-            finalizeCapture();
-            reject(err);
-          });
+          capture.responseChunks.push(chunk.subarray(0, remaining));
+          capture.responseStoredBytes += remaining;
+          capture.responseBodyTruncated = true;
         }
+      };
+
+      if (interceptor !== null) {
+        proxyRes.on('data', (chunk: Buffer) => {
+          interceptor.push(chunk);
+          if (tapActive && tap !== null) tap.push(chunk);
+          captureChunk(chunk);
+          feedCacheTtl(chunk);
+        });
+        proxyRes.on('end', () => {
+          interceptor.flush();
+          res.end();
+          if (tapActive && tap !== null) tap.flush();
+          finalizeCapture();
+          resolve();
+        });
+        // Mid-stream upstream error in the permissions-interceptor path.
+        // The no-tap variant of this cleanup-and-reject pattern IS
+        // integration-tested (proxy-capture.test.ts line ~507 —
+        // "captures errorMessage on proxyRes 'error' when no tap /
+        // interceptor is installed"). Reproducing this exact combination
+        // through a real HTTP round-trip requires server-side RST
+        // mid-chunk — Node's http layer on the client absorbs that as
+        // 'aborted' rather than 'error' on most platforms, so ignoring
+        // here is strictly safer than a brittle flake.
+        /* v8 ignore start */
+        proxyRes.on('error', (err) => {
+          interceptor.destroy();
+          if (tap !== null) tap.destroy();
+          if (capture) capture.errorMessage = err.message;
+          finalizeCapture();
+          reject(err);
+        });
+        /* v8 ignore stop */
+      } else if (tapActive && tap !== null) {
+        proxyRes.on('data', (chunk: Buffer) => {
+          res.write(chunk);
+          tap.push(chunk);
+          captureChunk(chunk);
+          feedCacheTtl(chunk);
+        });
+        proxyRes.on('end', () => {
+          res.end();
+          tap.flush();
+          finalizeCapture();
+          resolve();
+        });
+        // Same rationale as the interceptor branch above — a near-
+        // duplicate of the no-tap error handler that's integration-tested
+        // in proxy-capture.test.ts.
+        /* v8 ignore start */
+        proxyRes.on('error', (err) => {
+          tap.destroy();
+          if (capture) capture.errorMessage = err.message;
+          finalizeCapture();
+          reject(err);
+        });
+        /* v8 ignore stop */
+      } else {
+        proxyRes.on('data', (chunk: Buffer) => {
+          captureChunk(chunk);
+          feedCacheTtl(chunk);
+        });
+        proxyRes.pipe(res);
+        proxyRes.on('end', () => {
+          finalizeCapture();
+          resolve();
+        });
+        proxyRes.on('error', (err) => {
+          if (capture) capture.errorMessage = err.message;
+          finalizeCapture();
+          reject(err);
+        });
+      }
     };
 
     // Kick off the first attempt. `rlKey` is already set above from the

@@ -31,9 +31,12 @@ function writeSettings(
   );
 }
 
-function readPerms(
-  path: string,
-): { allow: string[]; deny: string[]; ask: string[]; raw: Record<string, unknown> } {
+function readPerms(path: string): {
+  allow: string[];
+  deny: string[];
+  ask: string[];
+  raw: Record<string, unknown>;
+} {
   const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
     permissions?: { allow?: string[]; deny?: string[]; ask?: string[] };
   } & Record<string, unknown>;
@@ -498,17 +501,13 @@ describe('claude-sync wildcard-to-ask migration', () => {
     });
     writeSettings(settingsPath, {});
     await engine.start();
-    expect(
-      listPermissionRules(db).find((r) => r.raw === 'Bash(rm -rf *)')?.decision,
-    ).toBe('ask');
+    expect(listPermissionRules(db).find((r) => r.raw === 'Bash(rm -rf *)')?.decision).toBe('ask');
     engine.stop();
 
     // User (or some other path) hand-flips the rule back to deny. On
     // the next start, the migration must NOT fire again — otherwise
     // the user's intent would be silently overridden every restart.
-    db.prepare("UPDATE permission_rules SET decision='deny' WHERE raw=?").run(
-      'Bash(rm -rf *)',
-    );
+    db.prepare("UPDATE permission_rules SET decision='deny' WHERE raw=?").run('Bash(rm -rf *)');
     const engine2 = createClaudeSyncEngine({
       db,
       ipcServer: makeIpcStub(),
@@ -516,9 +515,7 @@ describe('claude-sync wildcard-to-ask migration', () => {
       settingsPath,
     });
     await engine2.start();
-    expect(
-      listPermissionRules(db).find((r) => r.raw === 'Bash(rm -rf *)')?.decision,
-    ).toBe('deny');
+    expect(listPermissionRules(db).find((r) => r.raw === 'Bash(rm -rf *)')?.decision).toBe('deny');
     engine2.stop();
   });
 
@@ -598,9 +595,7 @@ describe('claude-sync wildcard-to-ask migration', () => {
       settingsPath,
     });
     await engine2.start();
-    expect(
-      listPermissionRules(db).find((r) => r.raw === 'Bash(rm -rf *)')?.decision,
-    ).toBe('deny');
+    expect(listPermissionRules(db).find((r) => r.raw === 'Bash(rm -rf *)')?.decision).toBe('deny');
     engine2.stop();
   });
 });

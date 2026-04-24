@@ -401,9 +401,7 @@ export function createClaudeSyncEngine(deps: CreateClaudeSyncDeps): ClaudeSyncEn
       if (res.changes > 0) {
         deps.invalidateRuleCache();
         await pushNow();
-        console.log(
-          `[ClaudeSync] wildcard-to-ask migration flipped ${res.changes} rule(s) to ask`,
-        );
+        console.log(`[ClaudeSync] wildcard-to-ask migration flipped ${res.changes} rule(s) to ask`);
       }
       return res.changes > 0;
     } catch (err) {

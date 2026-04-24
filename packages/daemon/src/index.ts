@@ -1981,11 +1981,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
         // loopback callback server. Off by default — production falls
         // through to the platform browser launcher inside oauth.ts.
         /* v8 ignore next 5 */
-        const testOauthEcho = process.env.CLAUDE_SENTINEL_TEST_OAUTH_ECHO === '1'
-          ? (url: string): void => {
-              ipcServer.broadcast({ type: 'test_oauth_url_opened', url });
-            }
-          : undefined;
+        const testOauthEcho =
+          process.env.CLAUDE_SENTINEL_TEST_OAUTH_ECHO === '1'
+            ? (url: string): void => {
+                ipcServer.broadcast({ type: 'test_oauth_url_opened', url });
+              }
+            : undefined;
 
         startOAuthLogin({
           signal: abortController.signal,
@@ -2265,9 +2266,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
         const acct = getAccount(db, accountId);
         if (!acct) return;
         inFlightAuthRefresh.add(accountId);
-        console.log(
-          `[Proxy] 401 from upstream for ${accountId} — forcing token refresh`,
-        );
+        console.log(`[Proxy] 401 from upstream for ${accountId} — forcing token refresh`);
         void refreshIfNeeded(
           { db, activeToken, activeAccountId, ipcServer, tokenRotator },
           accountId,

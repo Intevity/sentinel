@@ -28,9 +28,18 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
-import type { DaemonToAppMessage, Settings, AppToDaemonMessage, IpcResponse } from '@claude-sentinel/shared';
+import type {
+  DaemonToAppMessage,
+  Settings,
+  AppToDaemonMessage,
+  IpcResponse,
+} from '@claude-sentinel/shared';
 import type { Database } from 'better-sqlite3';
-import { startFakeAnthropic, type FakeAnthropic, type ScenarioName } from '@claude-sentinel/test-harness';
+import {
+  startFakeAnthropic,
+  type FakeAnthropic,
+  type ScenarioName,
+} from '@claude-sentinel/test-harness';
 import {
   createProxyServer,
   type ActiveAccountId,
@@ -94,9 +103,18 @@ export function listenEphemeral(server: Server): Promise<number> {
  *  the function shape `createProxyServer` wants. */
 export function buildRealOtelHandler(
   db: Database,
-  opts?: { activeAccountId?: ActiveAccountId; ipcServer?: IpcServer; requestAccountMap?: RequestAccountMap },
+  opts?: {
+    activeAccountId?: ActiveAccountId;
+    ipcServer?: IpcServer;
+    requestAccountMap?: RequestAccountMap;
+  },
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-  const receiver = new OtelReceiver(db, opts?.activeAccountId, opts?.ipcServer, opts?.requestAccountMap);
+  const receiver = new OtelReceiver(
+    db,
+    opts?.activeAccountId,
+    opts?.ipcServer,
+    opts?.requestAccountMap,
+  );
   return async (req, res) => {
     const url = req.url ?? '';
     if (url.startsWith('/v1/metrics')) {

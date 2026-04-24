@@ -344,5 +344,4 @@ describe('accounts', () => {
       expect(readActiveCredentials('test@example.com')).toBeNull();
     });
   });
-
 });

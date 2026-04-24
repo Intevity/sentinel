@@ -1132,7 +1132,12 @@ describe('account-sonnet alerts', () => {
     const store = new RateLimitStore();
     const ipc = ipcStub();
 
-    upsertAlert(db, { scope: 'account-sonnet', accountId: 'acc-a', thresholdPct: 80, enabled: true });
+    upsertAlert(db, {
+      scope: 'account-sonnet',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
     startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
     // 5-hour usage is high but irrelevant — we only care about Sonnet 7d.
@@ -1153,7 +1158,12 @@ describe('account-sonnet alerts', () => {
     const store = new RateLimitStore();
     const ipc = ipcStub();
 
-    upsertAlert(db, { scope: 'account-sonnet', accountId: 'acc-a', thresholdPct: 80, enabled: true });
+    upsertAlert(db, {
+      scope: 'account-sonnet',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
     startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
     updateSonnetWindow(store, 'acc-a', 0.85, 500);
@@ -1176,7 +1186,12 @@ describe('account-sonnet alerts', () => {
     const store = new RateLimitStore();
     const ipc = ipcStub();
 
-    upsertAlert(db, { scope: 'account-sonnet', accountId: 'acc-a', thresholdPct: 80, enabled: true });
+    upsertAlert(db, {
+      scope: 'account-sonnet',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
     startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
     updateSonnetWindow(store, 'acc-a', 0.9, 500);
@@ -1203,7 +1218,12 @@ describe('account-sonnet alerts', () => {
     const store = new RateLimitStore();
     const ipc = ipcStub();
 
-    upsertAlert(db, { scope: 'account-sonnet', accountId: 'acc-a', thresholdPct: 80, enabled: true });
+    upsertAlert(db, {
+      scope: 'account-sonnet',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
     startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
     updateSonnetWindow(store, 'acc-a', 0.9, 1_776_909_600);
@@ -1226,7 +1246,12 @@ describe('account-sonnet alerts', () => {
     const store = new RateLimitStore();
     const ipc = ipcStub();
 
-    upsertAlert(db, { scope: 'account-sonnet', accountId: 'acc-a', thresholdPct: 80, enabled: true });
+    upsertAlert(db, {
+      scope: 'account-sonnet',
+      accountId: 'acc-a',
+      thresholdPct: 80,
+      enabled: true,
+    });
     startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
     updateSonnetWindow(store, 'acc-a', 0.6, 500);
@@ -1781,9 +1806,7 @@ describe('pool-weekly alerts', () => {
     updateWeeklyWindow(store, 'acc-a', 0.9, 500 + 604_800);
     updateWeeklyWindow(store, 'acc-b', 0.9, 600 + 604_800);
 
-    expect(weeklyFires(ipc.broadcasts, 'pool-weekly').length).toBeGreaterThan(
-      firesAfterSameWindow,
-    );
+    expect(weeklyFires(ipc.broadcasts, 'pool-weekly').length).toBeGreaterThan(firesAfterSameWindow);
   });
 
   it('ignores disabled pool-weekly alerts', () => {

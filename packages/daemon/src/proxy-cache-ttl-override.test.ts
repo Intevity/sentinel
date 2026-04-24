@@ -129,7 +129,10 @@ function stubUpstream(): CapturedUpstream {
   return captured;
 }
 
-async function drive(server: ReturnType<typeof createProxyServer>, req: IncomingMessage): Promise<ServerResponse> {
+async function drive(
+  server: ReturnType<typeof createProxyServer>,
+  req: IncomingMessage,
+): Promise<ServerResponse> {
   const handler = (
     server as unknown as {
       listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;

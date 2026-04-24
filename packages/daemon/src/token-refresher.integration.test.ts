@@ -31,10 +31,7 @@ import {
   startTokenRefresher,
 } from './token-refresher.js';
 import { getDb, closeDb, upsertAccount } from './db.js';
-import {
-  readSentinelCredentials,
-  writeSentinelCredentials,
-} from './accounts.js';
+import { readSentinelCredentials, writeSentinelCredentials } from './accounts.js';
 import * as accounts from './accounts.js';
 import type { IpcServer } from './ipc.js';
 import type { ActiveToken, ActiveAccountId } from './proxy.js';

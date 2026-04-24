@@ -96,10 +96,7 @@ export async function verifyStartupActiveAccount(
  * them. Drift shows up as two rows with identical usage and the same plan
  * label in the tray UI; removing the orphaned row collapses the duplicate.
  */
-export async function healDriftedRows(
-  db: Database,
-  deps: CredentialVerifierDeps,
-): Promise<number> {
+export async function healDriftedRows(db: Database, deps: CredentialVerifierDeps): Promise<number> {
   const fetcher = deps.profileFetcher ?? fetchProfile;
   const log = deps.log ?? ((m: string) => console.warn(m));
 

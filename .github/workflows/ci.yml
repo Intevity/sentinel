@@ -54,6 +54,9 @@ jobs:
       - name: Lint
         run: pnpm exec eslint packages/daemon/src packages/shared/src
 
+      - name: Format check
+        run: pnpm run format:check
+
       - name: Mock budget check
         run: node scripts/mock-budget.mjs
 

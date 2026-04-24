@@ -7,11 +7,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import {
-  startProxyWithFake,
-  postThroughProxy,
-  type StartedProxy,
-} from './proxy.test-helpers.js';
+import { startProxyWithFake, postThroughProxy, type StartedProxy } from './proxy.test-helpers.js';
 import { OverageStateMachine } from './overage.js';
 
 describe('proxy overage transitions (real HTTP, scenario-driven headers)', () => {
@@ -29,9 +25,7 @@ describe('proxy overage transitions (real HTTP, scenario-driven headers)', () =>
     await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
     await new Promise((r) => setTimeout(r, 30));
 
-    expect(
-      ctx.ipcServer.broadcasts.some((m) => m.type === 'overage_entered'),
-    ).toBe(true);
+    expect(ctx.ipcServer.broadcasts.some((m) => m.type === 'overage_entered')).toBe(true);
   });
 
   it('fires overage_disabled and broadcasts when the upstream reports overage-status=disabled', async () => {
@@ -42,9 +36,7 @@ describe('proxy overage transitions (real HTTP, scenario-driven headers)', () =>
     await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
     await new Promise((r) => setTimeout(r, 30));
 
-    expect(
-      ctx.ipcServer.broadcasts.some((m) => m.type === 'overage_disabled'),
-    ).toBe(true);
+    expect(ctx.ipcServer.broadcasts.some((m) => m.type === 'overage_disabled')).toBe(true);
   });
 
   it('fires overage_exited when a prior in-use account observes allowed 5h with overage not in use', async () => {
@@ -67,9 +59,7 @@ describe('proxy overage transitions (real HTTP, scenario-driven headers)', () =>
     await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
     await new Promise((r) => setTimeout(r, 30));
 
-    expect(
-      ctx.ipcServer.broadcasts.some((m) => m.type === 'overage_exited'),
-    ).toBe(true);
+    expect(ctx.ipcServer.broadcasts.some((m) => m.type === 'overage_exited')).toBe(true);
   });
 
   it('fires overage_entered with resetsAt=null when no overage-reset header arrives', async () => {

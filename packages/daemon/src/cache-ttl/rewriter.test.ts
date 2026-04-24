@@ -108,10 +108,7 @@ describe('rewriteCacheControlTtl', () => {
   });
 
   it('is idempotent when re-run with the same target ttl', () => {
-    const once = rewriteCacheControlTtl(
-      buf({ cache_control: { type: 'ephemeral' } }),
-      '1h',
-    );
+    const once = rewriteCacheControlTtl(buf({ cache_control: { type: 'ephemeral' } }), '1h');
     const twice = rewriteCacheControlTtl(once, '1h');
     expect(twice).toBe(once);
   });

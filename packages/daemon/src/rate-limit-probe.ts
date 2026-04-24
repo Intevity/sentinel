@@ -84,9 +84,7 @@ export function probeRateLimits(accountId: string, ipcServer?: IpcServer, token?
           if (res.statusCode === 403) {
             const verdict = isOAuthForbiddenBodyString(fullBody);
             if (verdict.forbidden) {
-              console.warn(
-                `[RateLimit] OAuth-disabled org for ${accountId}: ${verdict.message}`,
-              );
+              console.warn(`[RateLimit] OAuth-disabled org for ${accountId}: ${verdict.message}`);
               ipcServer?.broadcast({
                 type: 'rate_limits_oauth_forbidden',
                 accountId,

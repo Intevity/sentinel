@@ -164,9 +164,7 @@ describe('proxy integration (real HTTP, real fake upstream)', () => {
       body: JSON.stringify({ messages: [] }),
     });
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
-    const overage = rateLimitStore
-      .getAll('acct-int')
-      .find((w) => w.name === 'unified-overage');
+    const overage = rateLimitStore.getAll('acct-int').find((w) => w.name === 'unified-overage');
     expect(overage?.inUse).toBe(true);
     expect(overage?.status).toBe('allowed');
   });

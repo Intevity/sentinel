@@ -36,8 +36,7 @@ const BUDGET_PATH = join(REPO_ROOT, '.mock-budget.json');
 const MOCK_PATTERN = /(?<![\w.])vi\.(mock|fn|spyOn|stubGlobal)\b/g;
 const TYPEOF_BEFORE = /typeof\s+$/;
 const MAX_SITES_PRINTED = 10;
-const BUDGET_COMMENT =
-  "Edit via 'pnpm mock:budget:update', not by hand. See Sprint 8.";
+const BUDGET_COMMENT = "Edit via 'pnpm mock:budget:update', not by hand. See Sprint 8.";
 
 const args = new Set(process.argv.slice(2));
 const MODE_UPDATE = args.has('--update');
@@ -143,7 +142,9 @@ function loadBudget() {
   for (const [k, v] of Object.entries(parsed)) {
     if (k === '_comment') continue;
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
-      console.error(`error: .mock-budget.json["${k}"] must be a non-negative integer (got ${JSON.stringify(v)})`);
+      console.error(
+        `error: .mock-budget.json["${k}"] must be a non-negative integer (got ${JSON.stringify(v)})`,
+      );
       process.exit(2);
     }
     budget[k] = v;
@@ -234,9 +235,7 @@ function main() {
   if (violationFileCount === 0) {
     if (!MODE_VERBOSE) {
       const total = Object.values(counts).reduce((a, b) => a + b, 0);
-      console.log(
-        `mock budget ok: ${total} sites across ${Object.keys(counts).length} files`,
-      );
+      console.log(`mock budget ok: ${total} sites across ${Object.keys(counts).length} files`);
     }
     process.exit(0);
   }
@@ -265,9 +264,7 @@ function main() {
       console.error(`  ${v.path}: ${v.count} mocks`);
       console.error(formatSites(v.path, sources[v.path], sites[v.path]));
     }
-    console.error(
-      '  run `pnpm mock:budget:update` if the new mocks are intentional',
-    );
+    console.error('  run `pnpm mock:budget:update` if the new mocks are intentional');
   }
 
   if (stale.length > 0) {

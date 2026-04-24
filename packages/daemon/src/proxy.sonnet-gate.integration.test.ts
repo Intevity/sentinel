@@ -7,11 +7,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import {
-  startProxyWithFake,
-  postThroughProxy,
-  type StartedProxy,
-} from './proxy.test-helpers.js';
+import { startProxyWithFake, postThroughProxy, type StartedProxy } from './proxy.test-helpers.js';
 
 function seedSonnet(
   store: import('./rate-limit-store.js').RateLimitStore,

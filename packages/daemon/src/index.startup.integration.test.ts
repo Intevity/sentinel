@@ -132,8 +132,9 @@ describe('startDaemon — shutdown', () => {
     const port = ctx.daemonPort;
     await ctx.handle.shutdown();
     // After shutdown, /health should no longer resolve.
-    await expect(fetch(`http://127.0.0.1:${port}/health`).catch((e) => Promise.reject(e))).rejects
-      .toThrow();
+    await expect(
+      fetch(`http://127.0.0.1:${port}/health`).catch((e) => Promise.reject(e)),
+    ).rejects.toThrow();
     // IPC socket no longer accepts new connections.
     await expect(
       new Promise<void>((resolve, reject) => {
@@ -226,7 +227,7 @@ describe('startDaemon — logger initialization', () => {
       type: 'get_daemon_logs',
     });
     expect(resp.success).toBe(true);
-    expect((resp.data?.length ?? 0)).toBeGreaterThan(0);
+    expect(resp.data?.length ?? 0).toBeGreaterThan(0);
   });
 });
 

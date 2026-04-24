@@ -10,11 +10,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import {
-  startProxyWithFake,
-  postThroughProxy,
-  type StartedProxy,
-} from './proxy.test-helpers.js';
+import { startProxyWithFake, postThroughProxy, type StartedProxy } from './proxy.test-helpers.js';
 
 describe('proxy security response tap (real HTTP, real SSE)', () => {
   let ctx: StartedProxy;

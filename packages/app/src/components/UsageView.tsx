@@ -174,13 +174,7 @@ interface OverageMeterRowProps {
   usage: ClaudeAiUsageSnapshot | null;
   /** Error discriminator from the latest fetch, or null on success. Drives
    *  the "Reconnect" CTA copy when the token's gone bad. */
-  usageError:
-    | 'missing_key'
-    | 'auth_expired'
-    | 'oauth_forbidden'
-    | 'network'
-    | 'parse'
-    | null;
+  usageError: 'missing_key' | 'auth_expired' | 'oauth_forbidden' | 'network' | 'parse' | null;
   /** User-configured Sentinel cap for the viewed account, or null if none
    *  is set. When null, the Sentinel sub-bar is suppressed. */
   sentinelCapUsd: number | null;
@@ -642,11 +636,7 @@ function SingleAccountUsageView({
   const hasRealData = windows.some(
     (w) => !HIDDEN_WINDOWS.has(w.name) && (w.utilization != null || w.limit != null),
   );
-  if (
-    hasRealData &&
-    hasSonnetQuota &&
-    !synthesized.some((w) => w.name === 'unified-7d_sonnet')
-  ) {
+  if (hasRealData && hasSonnetQuota && !synthesized.some((w) => w.name === 'unified-7d_sonnet')) {
     synthesized.push({
       name: 'unified-7d_sonnet',
       status: 'allowed',
@@ -699,39 +689,46 @@ function SingleAccountUsageView({
           `displayWindows` stays empty. The normal "No data yet" empty state
           misleads here (it invites the user to click Refresh, which will
           keep failing), so render a distinct explanatory panel instead. */}
-      {!busy && displayWindows.length === 0 && !error && claudeAiUsageError === 'oauth_forbidden' && (
-        <div className="glass-card px-4 py-5">
-          <p className="text-[13px] font-semibold text-black dark:text-white leading-tight">
-            OAuth access disabled
-          </p>
-          <p className="text-[11px] text-[#8E8E93] mt-1.5 leading-relaxed">
-            Your organization&apos;s admin has disabled OAuth API access for this account. Sentinel
-            can&apos;t read usage or rate limits until it&apos;s re-enabled. Re-authenticating
-            won&apos;t help; ask your admin to enable OAuth API access for the organization.
-          </p>
-        </div>
-      )}
+      {!busy &&
+        displayWindows.length === 0 &&
+        !error &&
+        claudeAiUsageError === 'oauth_forbidden' && (
+          <div className="glass-card px-4 py-5">
+            <p className="text-[13px] font-semibold text-black dark:text-white leading-tight">
+              OAuth access disabled
+            </p>
+            <p className="text-[11px] text-[#8E8E93] mt-1.5 leading-relaxed">
+              Your organization&apos;s admin has disabled OAuth API access for this account.
+              Sentinel can&apos;t read usage or rate limits until it&apos;s re-enabled.
+              Re-authenticating won&apos;t help; ask your admin to enable OAuth API access for the
+              organization.
+            </p>
+          </div>
+        )}
 
-      {!busy && displayWindows.length === 0 && !error && claudeAiUsageError !== 'oauth_forbidden' && (
-        <div className="glass-card px-4 py-10 text-center">
-          <p className="text-[13px] font-medium text-black dark:text-white">No data yet</p>
-          <p className="text-[11px] text-[#8E8E93] mt-1 leading-relaxed">
-            Rate limit data appears after your first API call through Sentinel,
-            <br />
-            or tap Refresh to probe claude.ai now.
-          </p>
-          <button
-            onClick={() => void handleRefreshClick()}
-            disabled={busy}
-            className="mt-4 inline-flex items-center gap-1.5 text-[11px] font-semibold text-white
+      {!busy &&
+        displayWindows.length === 0 &&
+        !error &&
+        claudeAiUsageError !== 'oauth_forbidden' && (
+          <div className="glass-card px-4 py-10 text-center">
+            <p className="text-[13px] font-medium text-black dark:text-white">No data yet</p>
+            <p className="text-[11px] text-[#8E8E93] mt-1 leading-relaxed">
+              Rate limit data appears after your first API call through Sentinel,
+              <br />
+              or tap Refresh to probe claude.ai now.
+            </p>
+            <button
+              onClick={() => void handleRefreshClick()}
+              disabled={busy}
+              className="mt-4 inline-flex items-center gap-1.5 text-[11px] font-semibold text-white
                        bg-ios-blue hover:opacity-90 active:scale-95 disabled:opacity-40
                        px-3 py-1.5 rounded-full transition-all duration-150"
-          >
-            <RefreshCw size={11} strokeWidth={2.5} className={busy ? 'animate-spin' : ''} />
-            Refresh
-          </button>
-        </div>
-      )}
+            >
+              <RefreshCw size={11} strokeWidth={2.5} className={busy ? 'animate-spin' : ''} />
+              Refresh
+            </button>
+          </div>
+        )}
 
       {busy && displayWindows.length === 0 && !error && (
         <div className="glass-card px-4 py-10 text-center">
@@ -956,15 +953,9 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
 
   const poolRows = rows.filter((r) => r.inPool);
   const poolSize = poolRows.length;
-  const fiveHUtils = poolRows
-    .map((r) => r.fiveH.util)
-    .filter((u): u is number => u != null);
-  const weeklyUtils = poolRows
-    .map((r) => r.weekly.util)
-    .filter((u): u is number => u != null);
-  const sonnetUtils = poolRows
-    .map((r) => r.sonnet.util)
-    .filter((u): u is number => u != null);
+  const fiveHUtils = poolRows.map((r) => r.fiveH.util).filter((u): u is number => u != null);
+  const weeklyUtils = poolRows.map((r) => r.weekly.util).filter((u): u is number => u != null);
+  const sonnetUtils = poolRows.map((r) => r.sonnet.util).filter((u): u is number => u != null);
 
   return (
     <div className="space-y-3 pt-1">
@@ -1003,9 +994,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
         <>
           {/* Pool averages */}
           <div className="glass-card px-4 py-4 space-y-3">
-            <span className="text-[12px] font-semibold text-black dark:text-white">
-              Pool Usage
-            </span>
+            <span className="text-[12px] font-semibold text-black dark:text-white">Pool Usage</span>
             <PoolMeterBlock
               label={windowLabel('unified-5h')}
               utils={fiveHUtils}
@@ -1022,8 +1011,8 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
               totalAccounts={poolSize}
             />
             <p className="text-[10px] text-[#8E8E93] leading-snug">
-              Averages across every account in the round-robin pool. Accounts with no data yet
-              for a given window are excluded from that window&apos;s average.
+              Averages across every account in the round-robin pool. Accounts with no data yet for a
+              given window are excluded from that window&apos;s average.
             </p>
           </div>
 

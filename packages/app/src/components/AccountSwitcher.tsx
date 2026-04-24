@@ -73,7 +73,10 @@ export default function AccountSwitcher({
   // /api/oauth/usage fetch is in flight, then a brief green check or red X.
   // Auto-clears after a short delay so the card settles back to its normal
   // 5h pill. Keyed by accountId; absence means the card is resting.
-  type CardRefreshStatus = { status: 'loading' } | { status: 'ok' } | { status: 'err'; error: string };
+  type CardRefreshStatus =
+    | { status: 'loading' }
+    | { status: 'ok' }
+    | { status: 'err'; error: string };
   const [cardRefreshStatus, setCardRefreshStatus] = useState<Record<string, CardRefreshStatus>>({});
   const cardRefreshTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 

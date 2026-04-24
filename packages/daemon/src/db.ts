@@ -1717,9 +1717,7 @@ export function upsertAlert(
   // Pool rows and budget-global rows store '' for the legacy NOT NULL column;
   // normalized back to null by rowToAlert when reading.
   const dbAccountId =
-    scope === 'pool' ||
-    scope === 'pool-weekly' ||
-    (scope === 'budget' && budgetScope === 'global')
+    scope === 'pool' || scope === 'pool-weekly' || (scope === 'budget' && budgetScope === 'global')
       ? ''
       : (input.accountId as string);
 

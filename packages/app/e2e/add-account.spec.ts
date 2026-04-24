@@ -13,7 +13,12 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { startAppHarness, startTestDaemon, type AppHarness, type TestDaemon } from './helpers/test-daemon.js';
+import {
+  startAppHarness,
+  startTestDaemon,
+  type AppHarness,
+  type TestDaemon,
+} from './helpers/test-daemon.js';
 
 let daemon: TestDaemon;
 let app: AppHarness;

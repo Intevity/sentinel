@@ -28,11 +28,7 @@ function loadFixture(name: string): Record<string, unknown> {
   return JSON.parse(raw) as Record<string, unknown>;
 }
 
-function structurallyMatches(
-  expected: unknown,
-  actual: unknown,
-  path = '$',
-): string[] {
+function structurallyMatches(expected: unknown, actual: unknown, path = '$'): string[] {
   const errors: string[] = [];
   if (expected === null) {
     if (actual !== null) errors.push(`${path}: expected null, got ${typeof actual}`);

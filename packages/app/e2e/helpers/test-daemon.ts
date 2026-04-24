@@ -188,9 +188,7 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
   if (init.seedActiveId) {
     const active = seeds.find((s) => s.id === init.seedActiveId);
     if (!active) {
-      throw new Error(
-        `seedActiveId=${init.seedActiveId} does not match any entry in seedAccounts`,
-      );
+      throw new Error(`seedActiveId=${init.seedActiveId} does not match any entry in seedAccounts`);
     }
     const oauthAccount: OAuthAccount = {
       accountUuid: active.id,
@@ -461,19 +459,15 @@ export interface AppHarness {
 export async function startAppHarness(bridgeUrl: string): Promise<AppHarness> {
   const appDir = resolve(REPO_ROOT, 'packages/app');
   const viteBin = resolve(appDir, 'node_modules/.bin/vite');
-  const vite = spawn(
-    viteBin,
-    ['--port', '5173', '--strictPort', '--host', '127.0.0.1'],
-    {
-      cwd: appDir,
-      env: {
-        ...process.env,
-        VITE_E2E: 'true',
-        VITE_E2E_BRIDGE_URL: bridgeUrl,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
+  const vite = spawn(viteBin, ['--port', '5173', '--strictPort', '--host', '127.0.0.1'], {
+    cwd: appDir,
+    env: {
+      ...process.env,
+      VITE_E2E: 'true',
+      VITE_E2E_BRIDGE_URL: bridgeUrl,
     },
-  );
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 
   try {
     const stdoutBuf: string[] = [];

@@ -175,12 +175,7 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
 
   ipcClient.onMessage((msg) => {
     // IpcResponse has { requestType, success }; broadcasts carry { type }.
-    if (
-      typeof msg === 'object' &&
-      msg !== null &&
-      'requestType' in msg &&
-      'success' in msg
-    ) {
+    if (typeof msg === 'object' && msg !== null && 'requestType' in msg && 'success' in msg) {
       const resp = msg as unknown as IpcResponse;
       const queue = pending.get(resp.requestType);
       if (queue && queue.length > 0) {
@@ -220,14 +215,13 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
     new Promise((resolve, reject) => {
       const type = (msg as { type: string }).type;
       const queue = pending.get(type) ?? [];
-      let timer: NodeJS.Timeout;
       const wrapped = (resp: IpcResponse) => {
         clearTimeout(timer);
         resolve(resp as IpcResponse<T>);
       };
       queue.push(wrapped);
       pending.set(type, queue);
-      timer = setTimeout(() => {
+      const timer = setTimeout(() => {
         const q = pending.get(type);
         if (q) {
           const idx = q.indexOf(wrapped);

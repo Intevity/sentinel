@@ -112,6 +112,7 @@ Lines / functions / statements ≥ **95**, branches ≥ **93**. Configured in `v
 **Before declaring complete any change touching `packages/daemon/src/` or `packages/app/src/lib/`:** run `pnpm test` and confirm all four thresholds pass in the output summary. Type-check + tests-pass is not enough — coverage is a distinct signal and the agent must verify it.
 
 If coverage regresses, write the missing test. **Do not:**
+
 - lower thresholds in `vitest.config.ts`
 - add files to the coverage `exclude` list
 - sprinkle `/* v8 ignore */` to hit the number

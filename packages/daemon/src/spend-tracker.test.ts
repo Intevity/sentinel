@@ -665,9 +665,7 @@ describe('SpendTracker', () => {
       expect(tracker.getPausedIds().has('a')).toBe(true);
       expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
 
-      const paused = ipc.broadcasts.find(
-        (b) => b.type === 'account_paused' && b.accountId === 'a',
-      );
+      const paused = ipc.broadcasts.find((b) => b.type === 'account_paused' && b.accountId === 'a');
       expect(paused).toMatchObject({
         reason: 'sentinel_weekly_rate_limit',
         resetsAt: 1_800_000_000,
@@ -833,9 +831,9 @@ describe('SpendTracker', () => {
 
       expect(tracker.getPauseReason('a')).toBe(null);
       expect(tracker.getPauseReason('b')).toBe('sentinel_weekly_rate_limit');
-      expect(
-        ipc.broadcasts.some((m) => m.type === 'account_unpaused' && m.accountId === 'a'),
-      ).toBe(true);
+      expect(ipc.broadcasts.some((m) => m.type === 'account_unpaused' && m.accountId === 'a')).toBe(
+        true,
+      );
     });
 
     it('sweepWeeklyResets ignores non-weekly pauses and missing-reset windows', () => {
@@ -866,9 +864,7 @@ describe('SpendTracker', () => {
       tracker.recompute();
       expect(tracker.getPauseReason('b')).toBe('sentinel_weekly_rate_limit');
 
-      (
-        tracker as unknown as { sweepWeeklyResets: () => void }
-      ).sweepWeeklyResets();
+      (tracker as unknown as { sweepWeeklyResets: () => void }).sweepWeeklyResets();
 
       // Budget pause untouched; weekly pause retained (no reset → skip).
       expect(tracker.getPauseReason('a')).toBe('sentinel_budget');
@@ -1049,9 +1045,9 @@ describe('SpendTracker', () => {
       expect(
         ipc.broadcasts.slice(broadcastsBefore).some((b) => b.type === 'account_unpaused'),
       ).toBe(false);
-      expect(
-        ipc.broadcasts.slice(broadcastsBefore).some((b) => b.type === 'account_paused'),
-      ).toBe(false);
+      expect(ipc.broadcasts.slice(broadcastsBefore).some((b) => b.type === 'account_paused')).toBe(
+        false,
+      );
     });
 
     it('does NOT clear a weekly pause on a threshold-sized reset jump if status is still blocked and the window is in the future', () => {
@@ -1146,9 +1142,7 @@ describe('SpendTracker', () => {
       tracker.recompute();
 
       expect(tracker.getPauseReason('a')).toBe(null);
-      expect(
-        ipc.broadcasts.some((b) => b.type === 'account_paused'),
-      ).toBe(false);
+      expect(ipc.broadcasts.some((b) => b.type === 'account_paused')).toBe(false);
     });
 
     it('pauses a weekly-blocked account when overage is allowed but the account is NOT opted in', () => {

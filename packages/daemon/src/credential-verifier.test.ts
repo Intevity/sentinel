@@ -3,11 +3,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { unlinkSync, existsSync } from 'fs';
 import type { ClaudeCodeCredentials, OAuthAccount } from '@claude-sentinel/shared';
-import {
-  verifyStartupActiveAccount,
-  healDriftedRows,
-  sentinelKey,
-} from './credential-verifier.js';
+import { verifyStartupActiveAccount, healDriftedRows, sentinelKey } from './credential-verifier.js';
 import { getDb, closeDb, upsertAccount, listAccounts } from './db.js';
 import type { ProfileResult } from './oauth.js';
 
@@ -156,8 +152,7 @@ describe('verifyStartupActiveAccount', () => {
     const ghost: OAuthAccount = { ...baseActive, organizationUuid: '' };
     const result = await verifyStartupActiveAccount(ghost, makeCreds('tok'), {
       readCredentials: () => null,
-      profileFetcher: async () =>
-        makeProfile({ orgUuid: 'org-real', accountUuid: 'acct-1' }),
+      profileFetcher: async () => makeProfile({ orgUuid: 'org-real', accountUuid: 'acct-1' }),
     });
     expect(result?.drifted).toBe(true);
     expect(result?.startupKey).toBe('org-real');
@@ -174,12 +169,7 @@ describe('healDriftedRows', () => {
     if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
   });
 
-  function seedRow(
-    id: string,
-    orgUuid: string,
-    orgName: string,
-    email = 'user@example.com',
-  ): void {
+  function seedRow(id: string, orgUuid: string, orgName: string, email = 'user@example.com'): void {
     upsertAccount(getDb(TEST_DB), {
       id,
       accountUuid: 'acct-1',

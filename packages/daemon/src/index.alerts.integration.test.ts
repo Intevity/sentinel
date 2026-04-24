@@ -147,7 +147,9 @@ describe('alerts — list + upsert against live DB', () => {
       enabled: true,
     });
     expect(up.success).toBe(true);
-    const listed = await ctx.request<Array<{ id: number; thresholdPct: number; accountId: string | null }>>({
+    const listed = await ctx.request<
+      Array<{ id: number; thresholdPct: number; accountId: string | null }>
+    >({
       type: 'list_alerts',
       accountId: accountKey,
     });

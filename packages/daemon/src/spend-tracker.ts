@@ -205,9 +205,7 @@ export class SpendTracker {
         );
         continue;
       }
-      const w = this.deps.rateLimitStore
-        .getAll(row.accountId)
-        .find((x) => x.name === windowName);
+      const w = this.deps.rateLimitStore.getAll(row.accountId).find((x) => x.name === windowName);
       // Rollover detection mirrors handleRateLimitUpdate: a jump of more
       // than the threshold means the window the pause was captured on has
       // been superseded while the daemon was off. If status is already
@@ -220,8 +218,7 @@ export class SpendTracker {
       const statusCleared = w?.status != null && w.status !== 'blocked';
       // If the reset is simply in the past and status is not blocked, the
       // window expired during downtime without us seeing a successor yet.
-      const expired =
-        w?.reset != null && w.reset <= nowSec && w.status !== 'blocked';
+      const expired = w?.reset != null && w.reset <= nowSec && w.status !== 'blocked';
       if (rollover || statusCleared || expired) {
         deletePausedAccount(this.deps.db, row.accountId);
         console.log(
@@ -418,10 +415,7 @@ export class SpendTracker {
     // in the paused set. Without the latter, a paused account that was
     // soft-deleted or never had a usage_events row would never reach the
     // cleanup branch below and the pause would stick forever.
-    const candidates = new Set<string>([
-      ...Object.keys(spend.perAccount),
-      ...this.paused.keys(),
-    ]);
+    const candidates = new Set<string>([...Object.keys(spend.perAccount), ...this.paused.keys()]);
     for (const accountId of candidates) {
       const accountCap = settings.budgetWeeklyUsdByAccount[accountId];
       const accountSpend = spend.perAccount[accountId];
@@ -517,8 +511,7 @@ export class SpendTracker {
       // doesn't undo the release.
       if (weekly.reset != null && weekly.reset <= nowSec) continue;
       const overage = windows.find((x) => x.name === 'unified-overage');
-      const canUseOverage =
-        overage?.status === 'allowed' && overageAllowed.has(acc.id);
+      const canUseOverage = overage?.status === 'allowed' && overageAllowed.has(acc.id);
       if (canUseOverage) continue;
       shouldPause.add(acc.id);
     }

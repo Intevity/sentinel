@@ -53,7 +53,10 @@ test('Create 90% alert, then trigger and verify broadcast + UI row', async ({ pa
   await page.locator('[data-tour-id="tab-notifications"]').click();
 
   // Click "Add alert". Threshold defaults to 90%, so we can save immediately.
-  await page.getByRole('button', { name: /Add alert/i }).first().click();
+  await page
+    .getByRole('button', { name: /Add alert/i })
+    .first()
+    .click();
   await page.getByRole('button', { name: /Save/i }).click();
 
   // Verify the daemon stored the alert.

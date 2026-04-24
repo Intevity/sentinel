@@ -10,7 +10,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { startProxyWithFake, postThroughProxy, getThroughProxy, type StartedProxy } from './proxy.test-helpers.js';
+import {
+  startProxyWithFake,
+  postThroughProxy,
+  getThroughProxy,
+  type StartedProxy,
+} from './proxy.test-helpers.js';
 
 describe('proxy routing + credential selection (real HTTP)', () => {
   let ctx: StartedProxy;
@@ -144,9 +149,9 @@ describe('proxy routing + credential selection (real HTTP)', () => {
     // Either 404 (fake default) or 200 — what matters is that the proxy forwarded
     // rather than refusing.
     expect([200, 404]).toContain(res.status);
-    expect(
-      ctx.fake.requests().some((r) => r.url.startsWith('/v1/some-future-endpoint')),
-    ).toBe(true);
+    expect(ctx.fake.requests().some((r) => r.url.startsWith('/v1/some-future-endpoint'))).toBe(
+      true,
+    );
   });
 
   it('returns 502 when the upstream connection fails', async () => {

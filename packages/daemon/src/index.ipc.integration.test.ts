@@ -213,7 +213,7 @@ describe('IPC — daemon status', () => {
     ctx = await startTestDaemon();
     const r1 = await ctx.request<unknown[]>({ type: 'get_daemon_logs' });
     expect(r1.success).toBe(true);
-    expect((r1.data?.length ?? 0)).toBeGreaterThan(0);
+    expect(r1.data?.length ?? 0).toBeGreaterThan(0);
     const r2 = await ctx.request<{ count: number }>({ type: 'clear_daemon_logs' });
     expect(r2.success).toBe(true);
     await ctx.waitForBroadcast((m) => m.type === 'daemon_logs_cleared');

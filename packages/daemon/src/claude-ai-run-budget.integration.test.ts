@@ -99,16 +99,12 @@ describe('claude-ai-run-budget integration (real fetch, fake endpoint)', () => {
 
   it('returns null for empty accessToken (short-circuits without a request)', async () => {
     expect(await fetchRunBudget('org-1', '   ')).toBeNull();
-    expect(
-      fake.requests().filter((r) => r.url === '/v1/code/routines/run-budget'),
-    ).toHaveLength(0);
+    expect(fake.requests().filter((r) => r.url === '/v1/code/routines/run-budget')).toHaveLength(0);
   });
 
   it('returns null for empty orgUuid (short-circuits without a request)', async () => {
     expect(await fetchRunBudget('', TOKEN)).toBeNull();
-    expect(
-      fake.requests().filter((r) => r.url === '/v1/code/routines/run-budget'),
-    ).toHaveLength(0);
+    expect(fake.requests().filter((r) => r.url === '/v1/code/routines/run-budget')).toHaveLength(0);
   });
 
   it('sends the required beta, version, and org-routing headers', async () => {

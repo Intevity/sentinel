@@ -472,8 +472,8 @@ export default function SettingsPanel({
                 <div className="px-3 pt-2.5 pb-1.5 space-y-1">
                   <p className="text-[11px] text-[#8E8E93] leading-snug">
                     Per-account overage controls and weekly caps. Sentinel reads dollar spend from
-                    Anthropic&apos;s OAuth usage endpoint using the sign-in you already completed
-                    on Add Account.
+                    Anthropic&apos;s OAuth usage endpoint using the sign-in you already completed on
+                    Add Account.
                   </p>
                 </div>
                 {accounts.map((a) => (

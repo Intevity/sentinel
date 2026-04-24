@@ -326,12 +326,7 @@ export default function AccountCard({
           {/* err with no prior pill data — still surface the failure. */}
           {refreshUsageStatus === 'err' && fiveHourPct == null && (
             <div className="relative group">
-              <X
-                size={12}
-                strokeWidth={3}
-                className="text-ios-red"
-                aria-label="Refresh failed"
-              />
+              <X size={12} strokeWidth={3} className="text-ios-red" aria-label="Refresh failed" />
               <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
                 <div className="bg-black/85 dark:bg-white/90 text-white dark:text-black text-[10px] font-medium px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
                   {refreshUsageError || 'Refresh failed'}

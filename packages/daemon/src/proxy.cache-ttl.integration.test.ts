@@ -11,11 +11,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import {
-  startProxyWithFake,
-  postThroughProxy,
-  type StartedProxy,
-} from './proxy.test-helpers.js';
+import { startProxyWithFake, postThroughProxy, type StartedProxy } from './proxy.test-helpers.js';
 
 describe('proxy cache-TTL capture (real HTTP, real SSE)', () => {
   let ctx: StartedProxy;
@@ -68,9 +64,9 @@ describe('proxy cache-TTL capture (real HTTP, real SSE)', () => {
     });
     await new Promise((r) => setTimeout(r, 60));
 
-    const rows = ctx.db
-      .prepare('SELECT * FROM cache_ttl_events')
-      .all() as Array<Record<string, unknown>>;
+    const rows = ctx.db.prepare('SELECT * FROM cache_ttl_events').all() as Array<
+      Record<string, unknown>
+    >;
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       account_id: 'acct-1',
@@ -108,9 +104,7 @@ describe('proxy cache-TTL capture (real HTTP, real SSE)', () => {
     });
     await new Promise((r) => setTimeout(r, 60));
 
-    const row = ctx.db
-      .prepare('SELECT COUNT(*) AS n FROM cache_ttl_events')
-      .get() as { n: number };
+    const row = ctx.db.prepare('SELECT COUNT(*) AS n FROM cache_ttl_events').get() as { n: number };
     expect(row.n).toBe(0);
   });
 
@@ -142,9 +136,7 @@ describe('proxy cache-TTL capture (real HTTP, real SSE)', () => {
     });
     await new Promise((r) => setTimeout(r, 60));
 
-    const row = ctx.db
-      .prepare('SELECT * FROM cache_ttl_events')
-      .get() as Record<string, unknown>;
+    const row = ctx.db.prepare('SELECT * FROM cache_ttl_events').get() as Record<string, unknown>;
     expect(row).toMatchObject({
       account_id: 'acct-3',
       session_id: 'sess-JSON',
@@ -167,9 +159,7 @@ describe('proxy cache-TTL capture (real HTTP, real SSE)', () => {
     await postThroughProxy(ctx.proxyPort, '/v1/messages/count_tokens', {});
     await new Promise((r) => setTimeout(r, 60));
 
-    const row = ctx.db
-      .prepare('SELECT COUNT(*) AS n FROM cache_ttl_events')
-      .get() as { n: number };
+    const row = ctx.db.prepare('SELECT COUNT(*) AS n FROM cache_ttl_events').get() as { n: number };
     expect(row.n).toBe(0);
   });
 

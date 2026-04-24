@@ -40,9 +40,7 @@ function ensureE2EEventSource(bridgeUrl: string): EventSource {
   return es;
 }
 
-function subscribeToE2EEvents(
-  handler: (msg: DaemonToAppMessage) => void,
-): () => void {
+function subscribeToE2EEvents(handler: (msg: DaemonToAppMessage) => void): () => void {
   ensureE2EEventSource(E2E_BRIDGE_URL as string);
   e2eHandlers.add(handler);
   return () => {

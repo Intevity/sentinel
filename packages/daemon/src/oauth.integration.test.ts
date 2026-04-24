@@ -77,16 +77,12 @@ describe('oauth integration (real fetch, fake token endpoint)', () => {
 
   it('throws REFRESH_TOKEN_EXPIRED when the endpoint returns 400', async () => {
     fake.setScenario('refresh-token-expired');
-    await expect(refreshAccessToken('revoked-token')).rejects.toThrowError(
-      REFRESH_TOKEN_EXPIRED,
-    );
+    await expect(refreshAccessToken('revoked-token')).rejects.toThrowError(REFRESH_TOKEN_EXPIRED);
   });
 
   it('throws REFRESH_TOKEN_EXPIRED when the endpoint returns 401', async () => {
     fake.setScenario('token-endpoint-401');
-    await expect(refreshAccessToken('unauth')).rejects.toThrowError(
-      REFRESH_TOKEN_EXPIRED,
-    );
+    await expect(refreshAccessToken('unauth')).rejects.toThrowError(REFRESH_TOKEN_EXPIRED);
   });
 
   it('throws a generic error on 5xx with the response body in the message', async () => {
@@ -101,9 +97,7 @@ describe('oauth integration (real fetch, fake token endpoint)', () => {
     // This test pins that contract: if either shape ever comes back as
     // something else, the test breaks loudly.
     fake.setScenario('token-endpoint-invalid-request');
-    await expect(refreshAccessToken('bad-body')).rejects.toThrowError(
-      REFRESH_TOKEN_EXPIRED,
-    );
+    await expect(refreshAccessToken('bad-body')).rejects.toThrowError(REFRESH_TOKEN_EXPIRED);
   });
 
   it('records the request against the fake so contract drift is visible', async () => {
@@ -383,9 +377,7 @@ describe('oauth login flow (PKCE end-to-end)', () => {
             error_description: 'user declined consent',
             state,
           });
-          void fetch(`http://localhost:47285/callback?${params.toString()}`).catch(
-            () => undefined,
-          );
+          void fetch(`http://localhost:47285/callback?${params.toString()}`).catch(() => undefined);
         },
       }),
     ).rejects.toThrow(/OAuth error: access_denied/);

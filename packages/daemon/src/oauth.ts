@@ -11,8 +11,9 @@
 
 import { createServer } from 'http';
 import { createHash, randomBytes } from 'crypto';
+import { statSync } from 'fs';
 
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import type { ClaudeCodeCredentials } from '@claude-sentinel/shared';
 import { SENTINEL_LOGO_DATA_URL } from './logo.js';
 import { getAnthropicOrigin, getOAuthAuthUrl, getOAuthTokenUrl } from './hosts.js';
@@ -97,9 +98,7 @@ async function startCallbackServer(expectedState: string, signal?: AbortSignal):
       // attempt doesn't complete.
       const referer = req.headers['referer'] ?? req.headers['referrer'] ?? 'none';
       const ua = (req.headers['user-agent'] ?? '').slice(0, 80);
-      console.log(
-        `[OAuth] HTTP ${req.method} ${req.url} — referer=${referer} ua="${ua}"`,
-      );
+      console.log(`[OAuth] HTTP ${req.method} ${req.url} — referer=${referer} ua="${ua}"`);
 
       // Silently ignore browser-initiated requests (favicon, etc.)
       if (url.pathname !== '/callback') {
@@ -554,7 +553,6 @@ function openBrowserIncognitoMac(url: string): void {
     { app: 'Firefox', flag: '--private-window' },
   ];
 
-  const statSync: typeof import('fs').statSync = require('fs').statSync;
   for (const { app, flag } of candidates) {
     try {
       statSync(`/Applications/${app}.app`);
@@ -610,12 +608,14 @@ function openBrowserIncognitoWindows(url: string): void {
     },
     {
       name: 'Firefox',
-      paths: [`${programFiles}\\Mozilla Firefox\\firefox.exe`, `${programFilesX86}\\Mozilla Firefox\\firefox.exe`],
+      paths: [
+        `${programFiles}\\Mozilla Firefox\\firefox.exe`,
+        `${programFilesX86}\\Mozilla Firefox\\firefox.exe`,
+      ],
       flag: '-private-window',
     },
   ];
 
-  const statSync: typeof import('fs').statSync = require('fs').statSync;
   for (const { name, paths, flag } of candidates) {
     for (const p of paths) {
       try {
@@ -651,7 +651,6 @@ function openBrowserIncognitoLinux(url: string): void {
     { bin: 'firefox', flag: '--private-window' },
   ];
 
-  const { execSync } = require('child_process') as typeof import('child_process');
   for (const { bin, flag } of candidates) {
     try {
       execSync(`command -v ${bin}`, { stdio: 'ignore' });
@@ -770,9 +769,7 @@ export async function startOAuthLogin(
     /* v8 ignore next */
     (opts.incognito ? openBrowserIncognito : openBrowser);
   openAuthUrl(authUrl);
-  console.log(
-    `[OAuth] Surfaced auth URL${opts.incognito ? ' (incognito)' : ''}: ${authUrl}`,
-  );
+  console.log(`[OAuth] Surfaced auth URL${opts.incognito ? ' (incognito)' : ''}: ${authUrl}`);
 
   // Wait for the auth code
   const code = await codePromise;

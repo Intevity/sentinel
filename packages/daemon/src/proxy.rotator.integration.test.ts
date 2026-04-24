@@ -9,11 +9,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import {
-  startProxyWithFake,
-  postThroughProxy,
-  type StartedProxy,
-} from './proxy.test-helpers.js';
+import { startProxyWithFake, postThroughProxy, type StartedProxy } from './proxy.test-helpers.js';
 
 describe('proxy 429 rotator retry (real HTTP)', () => {
   let ctx: StartedProxy;
@@ -166,9 +162,7 @@ describe('proxy rate_limits_updated broadcast (real HTTP)', () => {
     await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
     await new Promise((r) => setTimeout(r, 30));
 
-    const rlBroadcasts = ctx.ipcServer.broadcasts.filter(
-      (m) => m.type === 'rate_limits_updated',
-    );
+    const rlBroadcasts = ctx.ipcServer.broadcasts.filter((m) => m.type === 'rate_limits_updated');
     // First broadcast fired; second is inside the 2s debounce window and must be suppressed.
     expect(rlBroadcasts).toHaveLength(1);
   });

@@ -59,7 +59,9 @@ try {
   Database = require('better-sqlite3');
 } catch (err) {
   console.error('better-sqlite3 not installed in root; run from packages/daemon:');
-  console.error('  pnpm --filter @claude-sentinel/daemon exec node ../../scripts/record-fixtures.mjs --from-db');
+  console.error(
+    '  pnpm --filter @claude-sentinel/daemon exec node ../../scripts/record-fixtures.mjs --from-db',
+  );
   process.exit(1);
 }
 

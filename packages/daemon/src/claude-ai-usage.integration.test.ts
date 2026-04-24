@@ -21,16 +21,7 @@
  * exemption on `claude-ai-usage.ts`.
  */
 
-import {
-  describe,
-  it,
-  expect,
-  vi,
-  beforeAll,
-  afterAll,
-  beforeEach,
-  afterEach,
-} from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -95,8 +86,7 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
         body: {
           error: {
             type: 'permission_error',
-            message:
-              'OAuth authentication is currently not allowed for this organization.',
+            message: 'OAuth authentication is currently not allowed for this organization.',
           },
         },
       });
@@ -205,14 +195,11 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
         body: {
           error: {
             type: 'permission_error',
-            message:
-              'OAuth authentication is currently not allowed for this organization.',
+            message: 'OAuth authentication is currently not allowed for this organization.',
           },
         },
       });
-      const refreshCredential = vi.fn<
-        (id: string) => Promise<UsageStoreRefreshOutcome>
-      >();
+      const refreshCredential = vi.fn<(id: string) => Promise<UsageStoreRefreshOutcome>>();
       const store = new ClaudeAiUsageStore({
         ipcServer,
         getOrgUuid: () => 'org-1',
@@ -237,14 +224,14 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
       // popOverride runs, so a queued 401 override would get consumed by
       // the *retry* (with at-new registered), not the initial call.
       // Retry uses at-new (registered) → default 200 body.
-      const refreshCredential = vi.fn<
-        (id: string) => Promise<UsageStoreRefreshOutcome>
-      >().mockImplementation(async (acctId) => {
-        // Simulate a real refresh: rotate the stored credential to one
-        // the fake already has registered (at-new).
-        writeSentinelCredentials(acctId, makeCreds({ accessToken: 'at-new' }));
-        return { success: true };
-      });
+      const refreshCredential = vi
+        .fn<(id: string) => Promise<UsageStoreRefreshOutcome>>()
+        .mockImplementation(async (acctId) => {
+          // Simulate a real refresh: rotate the stored credential to one
+          // the fake already has registered (at-new).
+          writeSentinelCredentials(acctId, makeCreds({ accessToken: 'at-new' }));
+          return { success: true };
+        });
 
       const store = new ClaudeAiUsageStore({
         ipcServer,
@@ -265,9 +252,9 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
 
     it('records auth_expired without retrying when refresh reports needsReauth', async () => {
       writeSentinelCredentials('acct-1', makeCreds({ accessToken: 'stale' }));
-      const refreshCredential = vi.fn<
-        (id: string) => Promise<UsageStoreRefreshOutcome>
-      >().mockResolvedValue({ success: false, needsReauth: true });
+      const refreshCredential = vi
+        .fn<(id: string) => Promise<UsageStoreRefreshOutcome>>()
+        .mockResolvedValue({ success: false, needsReauth: true });
 
       const store = new ClaudeAiUsageStore({
         ipcServer,
@@ -286,9 +273,9 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
       writeSentinelCredentials('acct-1', makeCreds({ accessToken: 'stale' }));
       // refresh succeeds but doesn't actually rotate to a valid token, so
       // the retry hits 401 too. The store must NOT refresh again.
-      const refreshCredential = vi.fn<
-        (id: string) => Promise<UsageStoreRefreshOutcome>
-      >().mockResolvedValue({ success: true });
+      const refreshCredential = vi
+        .fn<(id: string) => Promise<UsageStoreRefreshOutcome>>()
+        .mockResolvedValue({ success: true });
 
       const store = new ClaudeAiUsageStore({
         ipcServer,
@@ -305,15 +292,15 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
 
     it('records auth_expired when refresh succeeds but credentials vanish before retry', async () => {
       writeSentinelCredentials('acct-1', makeCreds({ accessToken: 'stale' }));
-      const refreshCredential = vi.fn<
-        (id: string) => Promise<UsageStoreRefreshOutcome>
-      >().mockImplementation(async () => {
-        // refreshCredential claims success but the keychain has been wiped
-        // by the time we get to the retry (TOCTOU / race). Store must NOT
-        // retry with stale creds — fall through to auth_expired.
-        writeFileSync(keychainFile, '{}');
-        return { success: true };
-      });
+      const refreshCredential = vi
+        .fn<(id: string) => Promise<UsageStoreRefreshOutcome>>()
+        .mockImplementation(async () => {
+          // refreshCredential claims success but the keychain has been wiped
+          // by the time we get to the retry (TOCTOU / race). Store must NOT
+          // retry with stale creds — fall through to auth_expired.
+          writeFileSync(keychainFile, '{}');
+          return { success: true };
+        });
 
       const store = new ClaudeAiUsageStore({
         ipcServer,
@@ -428,8 +415,7 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
       const forbiddenBody = {
         error: {
           type: 'permission_error',
-          message:
-            'OAuth authentication is currently not allowed for this organization.',
+          message: 'OAuth authentication is currently not allowed for this organization.',
         },
       };
       fake.queueResponse('/api/oauth/usage', { status: 403, body: forbiddenBody });
@@ -445,8 +431,7 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
       // Poke the scheduler tick directly. `refresh()` always passes
       // force=true which bypasses backoff — we're specifically testing
       // the non-force path in `tick()`. Private method, typed via cast.
-      const poll = () =>
-        (store as unknown as { tick(): Promise<void> }).tick();
+      const poll = () => (store as unknown as { tick(): Promise<void> }).tick();
 
       await poll();
       expect(store.getLastError('acct-1')).toBe('oauth_forbidden');
@@ -459,17 +444,13 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
       await poll();
       await poll();
       await poll();
-      expect(
-        fake.requests().filter((r) => r.url === '/api/oauth/usage'),
-      ).toHaveLength(baseline);
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage')).toHaveLength(baseline);
 
       // Past the 24h backoff: the next tick refetches.
       fake.queueResponse('/api/oauth/usage', { status: 403, body: forbiddenBody });
       clock += 25 * 60 * 60 * 1000;
       await poll();
-      expect(
-        fake.requests().filter((r) => r.url === '/api/oauth/usage').length,
-      ).toBe(baseline + 1);
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage').length).toBe(baseline + 1);
     });
   });
 });
