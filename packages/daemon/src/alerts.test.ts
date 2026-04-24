@@ -352,6 +352,74 @@ describe('startAlertEvaluator (per-account)', () => {
     expect(ipc.broadcasts).toHaveLength(1);
   });
 
+  it('does not re-fire when reset drifts by half an hour within the same window', () => {
+    // Regression: the two data sources (proxy headers + claude.ai /api/oauth/usage poll)
+    // can return `reset` values that disagree by thousands of seconds for the same
+    // logical 5h window. Reproduces the user-reported triple-fire where one 95% alert
+    // produced three notifications at 98%, 98%, 103% — each accompanied by a reset
+    // advance past the old 300-second tolerance.
+    const db = getDb(dbPath);
+    upsertAlert(db, { scope: 'account', accountId: 'acc-a', thresholdPct: 95, enabled: true });
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    startAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    // t0: first crossing, 98%.
+    updateSessionWindow(store, 'acc-a', 0.98, 1_776_909_600);
+    // t1: same window, but the claude.ai sync reports reset 1800 s later.
+    updateSessionWindow(store, 'acc-a', 0.98, 1_776_911_400);
+    // t2: overage kicks in — header returns 103%, still same logical window.
+    updateSessionWindow(store, 'acc-a', 1.03, 1_776_909_600);
+
+    expect(ipc.broadcasts).toHaveLength(1);
+    expect((ipc.broadcasts[0] as { utilization: number }).utilization).toBeCloseTo(0.98);
+  });
+
+  it('still re-fires when reset advances past the per-scope tolerance (5h window)', () => {
+    // Defence against over-widening: a real rollover (5h = 18000 s advance) must still
+    // register as a new window. 10000 s is comfortably past the 9000 s 5-hour tolerance
+    // so the alert re-arms on the second update.
+    const db = getDb(dbPath);
+    upsertAlert(db, { scope: 'account', accountId: 'acc-a', thresholdPct: 75, enabled: true });
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    startAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateSessionWindow(store, 'acc-a', 0.85, 1_000_000);
+    updateSessionWindow(store, 'acc-a', 0.85, 1_010_000);
+
+    expect(ipc.broadcasts).toHaveLength(2);
+  });
+
+  it('appends "(overage in use)" to the body when utilization is over 100%', () => {
+    const db = getDb(dbPath);
+    upsertAlert(db, { scope: 'account', accountId: 'acc-a', thresholdPct: 95, enabled: true });
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    startAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateSessionWindow(store, 'acc-a', 1.03, 1_776_909_600);
+
+    const notifs = listNotifications(db, {});
+    expect(notifs).toHaveLength(1);
+    expect(notifs[0]?.body).toContain('103.0%');
+    expect(notifs[0]?.body).toContain('(overage in use)');
+  });
+
+  it('does not mention overage when utilization is at or below 100%', () => {
+    const db = getDb(dbPath);
+    upsertAlert(db, { scope: 'account', accountId: 'acc-a', thresholdPct: 95, enabled: true });
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    startAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+
+    updateSessionWindow(store, 'acc-a', 0.98, 1_776_909_600);
+
+    const notifs = listNotifications(db, {});
+    expect(notifs).toHaveLength(1);
+    expect(notifs[0]?.body).not.toContain('overage');
+  });
+
   it('ignores disabled alerts', () => {
     const db = getDb(dbPath);
     upsertAlert(db, { scope: 'account', accountId: 'acc-a', thresholdPct: 75, enabled: false });
@@ -604,8 +672,34 @@ describe('startPoolAlertEvaluator', () => {
 
     // Flip a's reset by 1 sec (cross-source skew) — min(reset) flips to
     // 1_776_909_601 or stays at 1_776_909_600 depending on ordering. Either
-    // way, the advance is < 300 sec so dedup holds.
+    // way, the advance is well inside the 5h tolerance so dedup holds.
     updateSessionWindow(store, 'a', 0.9, 1_776_909_601);
+    expect(ipc.broadcasts).toHaveLength(1);
+  });
+
+  it('does not re-fire the pool alert when min(reset) drifts by half an hour', () => {
+    // Parallel regression to the per-account drift test: real-world `reset`
+    // drift between header and sync sources can be thousands of seconds.
+    const db = getDb(dbPath);
+    seedAccount(db, 'a');
+    seedAccount(db, 'b');
+    upsertAlert(db, { scope: 'pool', accountId: null, thresholdPct: 60, enabled: true });
+    const store = new RateLimitStore();
+    const ipc = ipcStub();
+    startPoolAlertEvaluator({
+      db,
+      rateLimitStore: store,
+      ipcServer: ipc as never,
+      getSettings: () => rrSettings(),
+    });
+
+    updateSessionWindow(store, 'a', 0.9, 1_776_909_600);
+    updateSessionWindow(store, 'b', 0.4, 1_776_909_900); // mean = 0.65 → fires once
+    expect(ipc.broadcasts).toHaveLength(1);
+
+    // Advance a's reset by 1800 s (past the old 300 s tolerance, still well
+    // inside the 5h-window 9000 s tolerance). Must not re-fire.
+    updateSessionWindow(store, 'a', 0.9, 1_776_911_400);
     expect(ipc.broadcasts).toHaveLength(1);
   });
 
@@ -1086,10 +1180,10 @@ describe('account-sonnet alerts', () => {
     startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
     updateSonnetWindow(store, 'acc-a', 0.9, 500);
-    // Window rolls over — new reset timestamp. Must be far enough past
-    // the first reset to clear the dedup tolerance (a real 7-day rollover
-    // advances the reset by 604800 sec, so 9999 is plenty).
-    updateSonnetWindow(store, 'acc-a', 0.9, 9_999);
+    // Window rolls over — new reset timestamp. A real 7-day rollover
+    // advances the reset by 604800 sec; anything past the 7-day dedup
+    // tolerance (302400 sec) counts as a new window.
+    updateSonnetWindow(store, 'acc-a', 0.9, 500 + 604_800);
 
     const fires = ipc.broadcasts.filter(
       (m): m is { scope: string } =>
@@ -1341,7 +1435,8 @@ describe('account-weekly alerts', () => {
     startWeeklyAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
     updateWeeklyWindow(store, 'acc-a', 0.9, 500);
-    updateWeeklyWindow(store, 'acc-a', 0.9, 9_999);
+    // A real 7-day rollover advances reset by 604800 sec.
+    updateWeeklyWindow(store, 'acc-a', 0.9, 500 + 604_800);
 
     expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(2);
   });
@@ -1683,8 +1778,8 @@ describe('pool-weekly alerts', () => {
     const firesAfterSameWindow = weeklyFires(ipc.broadcasts, 'pool-weekly').length;
     // Advance BOTH members so min(reset) moves forward well past the
     // dedup tolerance. A genuine 7-day rollover bumps reset by 604800.
-    updateWeeklyWindow(store, 'acc-a', 0.9, 10_000);
-    updateWeeklyWindow(store, 'acc-b', 0.9, 10_001);
+    updateWeeklyWindow(store, 'acc-a', 0.9, 500 + 604_800);
+    updateWeeklyWindow(store, 'acc-b', 0.9, 600 + 604_800);
 
     expect(weeklyFires(ipc.broadcasts, 'pool-weekly').length).toBeGreaterThan(
       firesAfterSameWindow,

@@ -22,13 +22,20 @@ const WEEKLY_WINDOW = 'unified-7d';
  *  re-fires. The rate-limit store merges two data sources (proxy
  *  response headers and the claude.ai usage sync) that both describe
  *  the same logical 5h/7d window reset, but their timestamps can
- *  disagree by ±1 second due to ISO-string rounding — strict equality
- *  on `resetTs` would treat every flip between sources as a new
- *  window and re-fire the alert on every header update while
- *  utilization stayed above threshold. 300 sec is well below any
- *  legitimate window length (5h = 18000, 7d_sonnet = 604800), so a
- *  genuine rollover still re-arms the alert. */
-const WINDOW_DEDUP_TOLERANCE_SEC = 300;
+ *  disagree — initially by ±1 second due to ISO-string rounding, and
+ *  in practice by much more: Anthropic's two endpoints (proxy headers
+ *  vs `/api/oauth/usage`) return `reset` values that drift by
+ *  thousands of seconds inside the same window, so a small tolerance
+ *  lets a single crossing fire the alert multiple times as the
+ *  stored `reset` flips between sources.
+ *
+ *  Dedup tolerance is set to half the window length: any advance less
+ *  than that is intra-window drift; a genuine rollover advances by a
+ *  full window (5h = 18000 s, 7d = 604800 s) and still re-arms the
+ *  alert. Keyed by window so the 5-hour and 7-day evaluators don't
+ *  share a single too-tight or too-loose threshold. */
+const WINDOW_DEDUP_TOLERANCE_SEC_5H = 9000;
+const WINDOW_DEDUP_TOLERANCE_SEC_7D = 302400;
 
 export interface AlertEvaluatorDeps {
   db: Database;
@@ -97,14 +104,15 @@ export function startAlertEvaluator(deps: AlertEvaluatorDeps): void {
       if (
         alert.lastTriggeredResetTs != null &&
         resetTs > 0 &&
-        resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC
+        resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC_5H
       ) {
         continue;
       }
 
       const email = deps.getEmailForAccount?.(accountId) ?? accountId;
       const title = `Sentinel: ${alert.thresholdPct}% usage reached`;
-      const body = `${email} has used ${utilPct.toFixed(1)}% of its 5-hour window.`;
+      const overageSuffix = utilPct > 100 ? ' (overage in use)' : '';
+      const body = `${email} has used ${utilPct.toFixed(1)}% of its 5-hour window${overageSuffix}.`;
 
       insertNotification(deps.db, {
         ts: Date.now(),
@@ -190,7 +198,7 @@ export function evaluatePoolOnce(deps: PoolAlertEvaluatorDeps): void {
     if (
       alert.lastTriggeredResetTs != null &&
       snapshot.resetTs > 0 &&
-      snapshot.resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC
+      snapshot.resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC_5H
     ) {
       continue;
     }
@@ -261,7 +269,7 @@ export function evaluateWeeklyPoolOnce(deps: PoolAlertEvaluatorDeps): void {
     if (
       alert.lastTriggeredResetTs != null &&
       snapshot.resetTs > 0 &&
-      snapshot.resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC
+      snapshot.resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC_7D
     ) {
       continue;
     }
@@ -334,14 +342,15 @@ export function startSonnetAlertEvaluator(deps: AlertEvaluatorDeps): void {
       if (
         alert.lastTriggeredResetTs != null &&
         resetTs > 0 &&
-        resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC
+        resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC_7D
       ) {
         continue;
       }
 
       const email = deps.getEmailForAccount?.(accountId) ?? accountId;
       const title = `Sentinel: ${alert.thresholdPct}% Sonnet usage reached`;
-      const body = `${email} has used ${utilPct.toFixed(1)}% of its Sonnet 7-day window.`;
+      const overageSuffix = utilPct > 100 ? ' (overage in use)' : '';
+      const body = `${email} has used ${utilPct.toFixed(1)}% of its Sonnet 7-day window${overageSuffix}.`;
 
       insertNotification(deps.db, {
         ts: Date.now(),
@@ -401,14 +410,15 @@ export function startWeeklyAlertEvaluator(deps: AlertEvaluatorDeps): void {
       if (
         alert.lastTriggeredResetTs != null &&
         resetTs > 0 &&
-        resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC
+        resetTs - alert.lastTriggeredResetTs < WINDOW_DEDUP_TOLERANCE_SEC_7D
       ) {
         continue;
       }
 
       const email = deps.getEmailForAccount?.(accountId) ?? accountId;
       const title = `Sentinel: ${alert.thresholdPct}% weekly usage reached`;
-      const body = `${email} has used ${utilPct.toFixed(1)}% of its weekly 7-day window.`;
+      const overageSuffix = utilPct > 100 ? ' (overage in use)' : '';
+      const body = `${email} has used ${utilPct.toFixed(1)}% of its weekly 7-day window${overageSuffix}.`;
 
       insertNotification(deps.db, {
         ts: Date.now(),
