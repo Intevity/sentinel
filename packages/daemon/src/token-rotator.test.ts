@@ -1,16 +1,62 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { join } from 'path';
-import { tmpdir } from 'os';
-import { existsSync, unlinkSync } from 'fs';
+/**
+ * TokenRotator unit tests.
+ *
+ * Credential resolution runs through the REAL `readSentinelCredentials` /
+ * `readActiveCredentials` code paths via the test-keychain adapter
+ * (`CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE`). No spies on `accounts.*` — the
+ * rotator walks the same `readCredentialBlob` call stack it uses in
+ * production and picks up whatever the test wrote to the per-test tmp
+ * JSON file. Sprint 4 of TEST_MIGRATION_PLAN.md.
+ *
+ * Hand-seeded `store.update(...)` calls with real Anthropic header
+ * strings remain — the store's parser is not mocked and every header
+ * string here is the exact wire shape the fake Anthropic server emits.
+ * Scenario-driven coverage against a real proxy lives in
+ * `token-rotator.integration.test.ts` and `rate-limit-store.integration.test.ts`.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { existsSync, unlinkSync } from 'node:fs';
 import { getDb, closeDb, upsertAccount } from './db.js';
 import { RateLimitStore } from './rate-limit-store.js';
 import { TokenRotator } from './token-rotator.js';
-import * as accounts from './accounts.js';
+import { writeSentinelCredentials, writeClaudeCodeCredentials } from './accounts.js';
 
-const TEST_DB = () =>
-  join(tmpdir(), `sentinel-rotator-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+const TEST_DB = (): string =>
+  join(tmpdir(), `sentinel-rotator-test-${Date.now()}-${randomUUID()}.db`);
 
+/** Upsert an account row AND write its Sentinel credential to the
+ *  test-keychain file. The rotator's real `readSentinelCredentials`
+ *  picks these up through the adapter — no spy required. */
 function seed(db: ReturnType<typeof getDb>, id: string, email: string): void {
+  upsertAccount(db, {
+    id,
+    accountUuid: id,
+    email,
+    displayName: email,
+    orgUuid: '',
+    orgName: '',
+    planType: 'max',
+    isActive: false,
+    createdAt: Date.now(),
+    color: null,
+  });
+  writeSentinelCredentials(id, {
+    accessToken: `tok-${id}`,
+    refreshToken: '',
+    expiresAt: 0,
+    scopes: [],
+  });
+}
+
+/** Upsert an account row WITHOUT writing any credential. The rotator's
+ *  real code path sees `readSentinelCredentials(id) === null` and — for
+ *  the non-active account case — `readActiveCredentials(id, active) ===
+ *  null` too, so the account drops out of the pool. Used by the
+ *  "excludes accounts with no credentials" test. */
+function seedNoCreds(db: ReturnType<typeof getDb>, id: string, email: string): void {
   upsertAccount(db, {
     id,
     accountUuid: id,
@@ -25,24 +71,30 @@ function seed(db: ReturnType<typeof getDb>, id: string, email: string): void {
   });
 }
 
+function useTestKeychain(): string {
+  const keychainFile = join(tmpdir(), `sentinel-rotator-kc-${randomUUID()}.json`);
+  process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainFile;
+  return keychainFile;
+}
+
+function cleanupKeychain(file: string): void {
+  delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+  if (existsSync(file)) unlinkSync(file);
+}
+
 describe('TokenRotator', () => {
   let dbPath: string;
+  let keychainFile: string;
 
   beforeEach(() => {
     dbPath = TEST_DB();
-    // Mock credential reads — the real ones hit the OS keychain.
-    vi.spyOn(accounts, 'readSentinelCredentials').mockImplementation((key: string) => {
-      // Every account in the DB is assumed to have creds — return a token derived
-      // from the key so tests can assert which one was picked.
-      return { accessToken: `tok-${key}`, refreshToken: '', expiresAt: 0, scopes: [] };
-    });
-    vi.spyOn(accounts, 'readActiveCredentials').mockReturnValue(null);
+    keychainFile = useTestKeychain();
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
     closeDb();
     if (existsSync(dbPath)) unlinkSync(dbPath);
+    cleanupKeychain(keychainFile);
   });
 
   it('returns null when the pool is empty', () => {
@@ -128,10 +180,6 @@ describe('TokenRotator', () => {
   });
 
   it('re-admits a previously 7d-blocked account once its status returns to allowed', () => {
-    // Complements the prior test: after Anthropic lifts the block (status
-    // flips back to 'allowed' on a 7d rollover), the rotator must pick the
-    // account up again. The RateLimitStore's merge semantics preserve the
-    // rest of the window state, so overwriting status alone is enough.
     const db = getDb(dbPath);
     seed(db, 'a', 'a@x');
     seed(db, 'b', 'b@x');
@@ -189,10 +237,12 @@ describe('TokenRotator', () => {
 
   it('falls back to readActiveCredentials for the active account', () => {
     const db = getDb(dbPath);
-    seed(db, 'active', 'a@x');
-    // Sentinel store doesn't have creds for this key.
-    vi.spyOn(accounts, 'readSentinelCredentials').mockReturnValue(null);
-    vi.spyOn(accounts, 'readActiveCredentials').mockReturnValue({
+    // Sentinel store doesn't have creds for this key (seedNoCreds skips the
+    // Sentinel write). The Claude Code keychain slot does — that's the
+    // `readActiveCredentials` fallback path. `activeId === accountId` so
+    // the fallback fires.
+    seedNoCreds(db, 'active', 'a@x');
+    writeClaudeCodeCredentials({
       accessToken: 'active-tok',
       refreshToken: '',
       expiresAt: 0,
@@ -207,11 +257,10 @@ describe('TokenRotator', () => {
   it('excludes accounts that have no credentials anywhere', () => {
     const db = getDb(dbPath);
     seed(db, 'a', 'a@x');
-    seed(db, 'b', 'b@x');
-    vi.spyOn(accounts, 'readSentinelCredentials').mockImplementation((key: string) =>
-      key === 'a' ? { accessToken: 'tok-a', refreshToken: '', expiresAt: 0, scopes: [] } : null,
-    );
-    vi.spyOn(accounts, 'readActiveCredentials').mockReturnValue(null);
+    // `b` has an account row but no Sentinel entry and the active ref is
+    // `a`, so `readActiveCredentials('b', 'a')` short-circuits to null —
+    // `b` drops from the pool.
+    seedNoCreds(db, 'b', 'b@x');
     const store = new RateLimitStore();
     const rotator = new TokenRotator(db, store, { value: 'a' });
     expect(rotator.size()).toBe(1);
@@ -328,22 +377,17 @@ describe('TokenRotator', () => {
 
 describe('TokenRotator (earliest-reset strategy)', () => {
   let dbPath: string;
+  let keychainFile: string;
 
   beforeEach(() => {
     dbPath = TEST_DB();
-    vi.spyOn(accounts, 'readSentinelCredentials').mockImplementation((key: string) => ({
-      accessToken: `tok-${key}`,
-      refreshToken: '',
-      expiresAt: 0,
-      scopes: [],
-    }));
-    vi.spyOn(accounts, 'readActiveCredentials').mockReturnValue(null);
+    keychainFile = useTestKeychain();
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
     closeDb();
     if (existsSync(dbPath)) unlinkSync(dbPath);
+    cleanupKeychain(keychainFile);
   });
 
   function setResetAndUtil(
@@ -508,22 +552,17 @@ describe('TokenRotator (earliest-reset strategy)', () => {
 
 describe('TokenRotator overage gate', () => {
   let dbPath: string;
+  let keychainFile: string;
 
   beforeEach(() => {
     dbPath = TEST_DB();
-    vi.spyOn(accounts, 'readSentinelCredentials').mockImplementation((key: string) => ({
-      accessToken: `tok-${key}`,
-      refreshToken: '',
-      expiresAt: 0,
-      scopes: [],
-    }));
-    vi.spyOn(accounts, 'readActiveCredentials').mockReturnValue(null);
+    keychainFile = useTestKeychain();
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
     closeDb();
     if (existsSync(dbPath)) unlinkSync(dbPath);
+    cleanupKeychain(keychainFile);
   });
 
   function setSession(store: RateLimitStore, id: string, util: number, reset = 1_000): void {

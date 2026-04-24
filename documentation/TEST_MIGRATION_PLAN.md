@@ -368,23 +368,138 @@ coverage), `accounts.ts`, `hosts.ts`, `index.ts`, or `scenarios.ts`.
 
 ---
 
-## Sprint 4 — Migrate `token-rotator.test.ts` + `rate-limit-store.test.ts`
+## Sprint 4 — Migrate `token-rotator.test.ts` + add `rate-limit-store` integration layer (DONE)
 
 **Target:** replace hand-seeded `store.update({...})` calls with scenario
-traffic through a real proxy (the pattern demonstrated in
-`token-rotator.integration.test.ts`).
+traffic through a real proxy, and retire the `vi.spyOn(accounts, ...)`
+credential-resolution shim in favor of the test-keychain adapter.
+
+**Delivered:**
+
+- `token-rotator.test.ts`: 10 mock sites → 0. Every `vi.spyOn(accounts,
+  'readSentinelCredentials')` and `vi.spyOn(accounts, 'readActiveCredentials')`
+  anchor was removed, along with the chained `mockImplementation` /
+  `mockReturnValue` calls and the `vi.restoreAllMocks()` cleanup. Credential
+  resolution now flows through the real `readSentinelCredentials` /
+  `readActiveCredentials` code paths, backed by a per-test tmp JSON file
+  via `CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE` and `writeSentinelCredentials`
+  / `writeClaudeCodeCredentials`. Pattern is the same one Sprint 2
+  established in `token-refresher.integration.test.ts`. All 49 tests
+  retained; no test logic changed beyond the seeding helper.
+
+  The two fallback tests were ported without spies:
+    - "falls back to readActiveCredentials for the active account" now
+      writes to the real Claude Code keychain slot (CC_SERVICE) via
+      `writeClaudeCodeCredentials` and leaves the Sentinel slot empty.
+      The rotator's `readSentinelCredentials` returns null, falls
+      through to the CC slot per `activeId === accountId` guard, and
+      recovers the token.
+    - "excludes accounts that have no credentials anywhere" uses a
+      `seedNoCreds` helper that upserts the account row but writes no
+      credential. The real `readActiveCredentials('b', 'a')` short-
+      circuits to null (activeId mismatch) and the account drops.
+
+  Hand-seeded `store.update({...})` calls with real Anthropic header
+  strings were retained. They exercise the real `RateLimitStore.update`
+  parser (no mock) with the exact wire shape the fake emits. Creating
+  40 bespoke scenarios to drive every micro-state (blocked-at-util-0,
+  tie-band at 0.505, buffer clamps, etc.) would be scenario bloat with
+  no signal added — the integration layer (below) covers wire-shape
+  drift separately.
+
+- `token-rotator.integration.test.ts`: 6 mock sites → 0. Replaced the
+  `vi.spyOn(accounts, …)` pair with the test-keychain adapter.
+  Replaced the inline `makeMinimalIpc()` with 4 `vi.fn()` stubs by
+  importing `makeCapturingIpc` from `proxy.test-helpers.ts`, which
+  returns a real `IpcServer`-shaped object with zero mock sites and a
+  `.broadcasts` capture array available for future assertions.
+
+  Expanded from 2 → 5 tests. Three new scenario-driven cases cover
+  rotator branches the unit file doesn't reach through hand-seeded
+  headers alone:
+    1. `5h-warning` account with no overage window is skipped even
+       with opt-in (validates `canUseOverage` false when overageWindow
+       is undefined, at `token-rotator.ts:213-214`).
+    2. `sonnet-saturation` + `isSonnet: true` routes the account to
+       null (sonnet window at 0.95 trips `sonnetAtThreshold`); the
+       same account serves Opus / ctx-less traffic fine.
+    3. `overage-disabled` account is never selected even with opt-in
+       (validates `canUseOverage` requires `overage.status === 'allowed'`).
+
+  The SEED array now holds 5 accounts (healthy-account, 5h-warning,
+  overage-in-use, sonnet-saturation, overage-disabled). Existing
+  "drains fresh before overage" test still asserts against 3 of them
+  via pool exclusion so the original invariant reads crisply.
+
+- `rate-limit-store.integration.test.ts`: **new** (149 lines, 8 tests,
+  zero mock sites). Uses `startProxyWithFake()` to drive one request
+  per scenario and assert the store ends in the expected shape:
+  `healthy-account`, `5h-warning`, `overage-in-use`, `overage-entered-fresh`,
+  `overage-disabled`, `sonnet-saturation`, `sonnet-saturated-blocked`,
+  and `rate-limited-5h` (the 429 path proves headers still land in the
+  store on a non-2xx response — a regression guard from the bug where
+  the rotator retried the just-failed account because its blocked state
+  hadn't been recorded).
+
+- `rate-limit-store.test.ts`: **unchanged**. The file has 0 `vi.mock`,
+  0 `vi.spyOn`, 0 `vi.stubGlobal`. The 4 `vi.fn()` sites are subscriber
+  stubs for the `onUpdate` API — legitimate unit tests of the
+  subscription contract that cannot be replaced without losing the
+  assertion. Rewriting 38 passing pure-parser tests to run through an
+  HTTP round-trip would add startup time and obscure the parser's
+  branching semantics with no signal gain. The new integration
+  companion covers the wire-shape dimension.
+
+- **Mock-count delta:** **−16** (grep for `vi\.(mock|fn|spyOn|stubGlobal)`):
+  - `token-rotator.test.ts`: 10 → 0
+  - `token-rotator.integration.test.ts`: 6 → 0
+  - `rate-limit-store.test.ts`: 4 → 4 (unchanged — legitimate
+    subscriber stubs)
+  - `rate-limit-store.integration.test.ts`: — → 0 (new)
+
+  The plan's aspirational **−50** target counted chained
+  `.mockImplementation` / `.mockReturnValue` / `.mockReset` calls as
+  independent sites; that's reasonable bookkeeping but once the spyOn
+  anchors are gone the chains go with them. This is structurally the
+  same outcome Sprint 3 reported (target −30, actual −12).
+
+- **Test counts:** **1416 tests in 60 files pass**, up from 1405/59
+  pre-sprint. +11 tests (rate-limit-store integration +8, token-rotator
+  integration +3), +1 file.
+
+- **Coverage (v8):** statements 97.57 / branches 94.98 /
+  functions 97.26 / lines 97.57 — all above thresholds (95/94.5/95/95).
+  Branches ticked up from 94.94 → 94.98 with the new rotator branches
+  exercised end-to-end. Per-file for the two Sprint 4 targets:
+  - `token-rotator.ts`: 100 / 97.05 / 100 / 100 — the only uncovered
+    line (265) is the tie-break fallback in the earliest-reset sort
+    when `a.reset === b.reset` AND `a.util === b.util`, a 3-way tie
+    the integer-index last leg resolves deterministically but is
+    hard to reach through realistic headers.
+  - `rate-limit-store.ts`: 100 / 94.11 / 100 / 100. Uncovered branch
+    paths are narrow conditional-assignment edges in the header regex
+    switch (parseInt with null input at lines 63-64,67) that are
+    structurally the same short-circuit on the happy path.
+
+**Why:** Closes out the last cluster of `vi.spyOn(accounts, …)` in the
+daemon package. Every credential-path test — refresh (Sprint 2), usage
+(Sprint 3), now rotation (Sprint 4) — runs through the real keychain
+adapter. A rename or signature change on `readSentinelCredentials` would
+fail loudly across the test suite instead of being silently absorbed by
+spies. The new integration file also pins the rate-limit parser to the
+fake's wire contract, so Anthropic changing a header name (or the fake
+drifting from Anthropic) fails at the contract test plus a matching
+integration test — one failure surface, one fix.
 
 Files touched:
-- `packages/daemon/src/token-rotator.test.ts`
-- `packages/daemon/src/rate-limit-store.test.ts`
+- `packages/daemon/src/token-rotator.test.ts` — rewrite (mocks → keychain adapter).
+- `packages/daemon/src/token-rotator.integration.test.ts` — rewrite + 3 new tests.
+- `packages/daemon/src/rate-limit-store.integration.test.ts` — new.
 
-Expected mock-count delta: **–50** (rotator tests alone have
-`vi.spyOn(accounts, 'readSentinelCredentials')` everywhere — can use the
-test-keychain adapter instead).
-
-Coverage risk: low.
-
-Est. time: 2–3 days.
+No changes to production code (`token-rotator.ts`, `rate-limit-store.ts`,
+`accounts.ts`, `hosts.ts`, `settings.ts`, `vitest.config.ts`). No new
+scenarios or fake extensions. Contract test (29 assertions) unchanged
+and still green.
 
 ---
 
