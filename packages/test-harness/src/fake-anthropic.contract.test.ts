@@ -304,6 +304,46 @@ describe('fake Anthropic contract', () => {
     expect(buf.equals(raw)).toBe(true);
   });
 
+  it('token-endpoint-401 scenario returns 401 with default invalid_grant body', async () => {
+    fake.setScenario('token-endpoint-401');
+    const res = await fetch(`${fake.origin}/v1/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: 'x', client_id: 'y' }),
+    });
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('invalid_grant');
+    fake.setScenario('healthy-account');
+  });
+
+  it('token-endpoint-500 scenario returns 503 with a plain-text body', async () => {
+    fake.setScenario('token-endpoint-500');
+    const res = await fetch(`${fake.origin}/v1/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: 'x', client_id: 'y' }),
+    });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('content-type')).toBe('text/plain');
+    expect(await res.text()).toBe('maintenance');
+    fake.setScenario('healthy-account');
+  });
+
+  it('token-endpoint-invalid-request scenario returns 400 with invalid_request body', async () => {
+    fake.setScenario('token-endpoint-invalid-request');
+    const res = await fetch(`${fake.origin}/v1/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: 'x', client_id: 'y' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; error_description: string };
+    expect(body.error).toBe('invalid_request');
+    expect(body.error_description).toBe('bad body');
+    fake.setScenario('healthy-account');
+  });
+
   it('content-encoding: gzip in extraHeaders triggers automatic body gzipping', async () => {
     // Use a custom endpoint where we can inspect the raw bytes by explicitly
     // disabling fetch decompression — Node's undici decodes transparently,

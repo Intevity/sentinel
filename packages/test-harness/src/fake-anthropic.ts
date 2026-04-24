@@ -358,8 +358,23 @@ export async function startFakeAnthropic(init: { scenario?: ScenarioName } = {})
     const override = popOverride('/v1/oauth/token');
     const status = override?.status ?? scenario.tokenStatus ?? 200;
     if (status >= 400) {
-      res.writeHead(status, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'refresh token revoked' }));
+      // Precedence: queued override body → scenario preset body → default
+      // invalid_grant shape. Objects are JSON-stringified; strings are
+      // written verbatim (for plain-text 5xx error payloads).
+      const errBody = override?.body ?? scenario.tokenBody;
+      const contentType =
+        typeof errBody === 'string' ? 'text/plain' : 'application/json';
+      const payload =
+        errBody === undefined
+          ? JSON.stringify({
+              error: 'invalid_grant',
+              error_description: 'refresh token revoked',
+            })
+          : typeof errBody === 'string'
+            ? errBody
+            : JSON.stringify(errBody);
+      res.writeHead(status, { 'content-type': contentType });
+      res.end(payload);
       return;
     }
     let parsed: { client_id?: string; grant_type?: string } = {};

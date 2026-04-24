@@ -136,23 +136,89 @@ Acceptance:
 
 ---
 
-## Sprint 2 — Migrate `oauth.test.ts` + `token-refresher.test.ts`
+## Sprint 2 — Migrate `oauth.test.ts` + `token-refresher.test.ts` (DONE)
 
 **Target:** kill `global.fetch = vi.fn(...)` in both files.
 
+**Delivered:**
+- `oauth.test.ts`: **deleted** (93 lines, 7 mocks — 5× `global.fetch = vi.fn`
+  + 2× `vi.spyOn(console, ...)`). All 5 cases migrated to
+  `oauth.integration.test.ts`, which grew from 56 → 100 lines (3 → 7
+  tests). Every test drives the real `refreshAccessToken` code path
+  against the fake's `/v1/oauth/token` endpoint via `OAUTH_TOKEN_URL`.
+  The one dropped assertion (unit-test "tolerates `.text()` itself
+  failing") exercised a paranoid Response-object branch that cannot be
+  reproduced through a real HTTP round-trip — Node's undici rejects the
+  whole fetch when the socket closes mid-body. Left intact in
+  `oauth.ts` for runtime edge cases; `oauth.ts` is still in
+  `vitest.config.ts`'s coverage exclude (Sprint 5 lifts it and can add
+  a `/* v8 ignore */` marker then if needed).
+
+- `token-refresher.test.ts`: **deleted** (347 lines, ~47 mock call
+  sites — 3× `vi.mock` for `./oauth.js` / `./accounts.js` / `./db.js`,
+  5× `vi.fn()`, 2× `vi.spyOn(console)`, and ~37 further
+  `.mockReset/.mockResolvedValue/.mockReturnValue/.mockImplementation`
+  calls). Replaced by new `token-refresher.integration.test.ts`
+  (375 lines, 15 tests, **2 mocks total**):
+  - `vi.fn()` for the structural `tokenRotator.refresh` stub (same
+    pattern used in `proxy.rotator.integration.test.ts`).
+  - one-shot `vi.spyOn(accounts, 'writeClaudeCodeCredentials')` for the
+    "keychain busy, refresh still succeeds" test — the test-keychain
+    adapter writes to a JSON file and cannot simulate a platform-
+    specific keychain error; scoping the spy to one assertion is
+    narrower than adding a fault-injection toggle to `accounts.ts`.
+  All 15 cases exercise the real refresh path: fake server →
+  `refreshAccessToken` → keychain write via `CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE`
+  → `listAccounts` against an in-memory-ish tmp SQLite DB.
+
+- Three new scenarios in `packages/test-harness/src/scenarios.ts`:
+  - `token-endpoint-401` — 401 with default `invalid_grant` body.
+  - `token-endpoint-500` — 503 with plain-text `"maintenance"` body
+    (covers the `reason=unknown` branch in `token-refresher.ts`).
+  - `token-endpoint-invalid-request` — 400 with
+    `{error: 'invalid_request', error_description: 'bad body'}`
+    (covers the alternate 400 shape Anthropic's docs call out).
+- `FakeScenario` extended with an optional `tokenBody?: string | object`
+  field; `handleToken` in `fake-anthropic.ts` now emits scenario- or
+  override-provided bodies on `tokenStatus ≥ 400`, falling back to the
+  legacy `invalid_grant` shape when unset. String bodies land with
+  `content-type: text/plain` so the fake matches the shape of a real
+  5xx plain-text error.
+- Contract test (`fake-anthropic.contract.test.ts`) grew from 18 → 21
+  assertions: one assertion per new scenario (status + body shape).
+
+- **Mock-count delta:** **−45**
+  - `oauth.test.ts`: 7 → 0 (deleted)
+  - `oauth.integration.test.ts`: 0 → 0
+  - `token-refresher.test.ts`: ~47 → 0 (deleted)
+  - `token-refresher.integration.test.ts`: — → 2
+  - Net: **−45** (plan target: −40).
+
+- **Test counts:** **1381 tests in 57 files pass**, up from 1377/58
+  pre-sprint (+4 tests, −1 file net — deleted 2 unit files, added 1
+  integration file, added 3 contract assertions, added 4 oauth
+  integration tests).
+- **Coverage (v8):** statements 97.76 / branches 94.93 /
+  functions 97.54 / lines 97.76 — all above thresholds. No widening
+  of `vitest.config.ts` exclusions.
+
+**Why:** `proxy.test.ts` (Sprint 1) was the biggest file; `oauth.test.ts`
+and `token-refresher.test.ts` were the two remaining files that mocked
+the credential refresh path — the one place where a silently drifting
+mock breaks every long-running session. With these migrated, every
+daemon test that touches OAuth runs against the real wire shape.
+
 Files touched:
-- `packages/daemon/src/oauth.test.ts`
-- `packages/daemon/src/token-refresher.test.ts`
-- `packages/test-harness/src/scenarios.ts` — add scenarios for token-exchange
-  errors (invalid_request, server_error, malformed JSON body).
+- `packages/daemon/src/oauth.test.ts` — deleted.
+- `packages/daemon/src/token-refresher.test.ts` — deleted.
+- `packages/daemon/src/oauth.integration.test.ts` — expanded.
+- `packages/daemon/src/token-refresher.integration.test.ts` — new.
+- `packages/test-harness/src/scenarios.ts` — 3 new scenarios + `tokenBody`.
+- `packages/test-harness/src/fake-anthropic.ts` — `handleToken` rewrite.
+- `packages/test-harness/src/fake-anthropic.contract.test.ts` — 3 new assertions.
 
-Expected mock-count delta: **–40 or so**.
-
-Coverage risk: low. Both files already have integration-style seeds
-(`oauth.integration.test.ts` covers the happy path and the 400 case).
-Extend the integration test instead of rewriting the unit test.
-
-Est. time: 1 day.
+No changes to production code (`oauth.ts`, `token-refresher.ts`,
+`accounts.ts`, `hosts.ts`, `vitest.config.ts`).
 
 ---
 

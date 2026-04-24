@@ -26,7 +26,10 @@ export type ScenarioName =
   | 'upstream-500'
   | 'upstream-unauth-401'
   | 'gzipped-json'
-  | 'refresh-token-expired';
+  | 'refresh-token-expired'
+  | 'token-endpoint-401'
+  | 'token-endpoint-500'
+  | 'token-endpoint-invalid-request';
 
 export interface ScenarioHeaderSet {
   [header: string]: string;
@@ -49,6 +52,10 @@ export interface Scenario {
   messagesStatus?: number;
   /** Override status code for /v1/oauth/token. Default 200. */
   tokenStatus?: number;
+  /** Custom body for /v1/oauth/token error responses (tokenStatus >= 400).
+   *  Object → JSON.stringify; string → written verbatim (for plain-text 5xx
+   *  bodies). When unset, the fake emits the default `invalid_grant` shape. */
+  tokenBody?: string | Record<string, unknown>;
   /** Short description for test assertions / logging. */
   label: string;
 }
@@ -205,6 +212,23 @@ export const SCENARIOS: Record<ScenarioName, Scenario> = {
     label: 'token endpoint returns 400 (refresh token revoked)',
     messagesHeaders: {},
     tokenStatus: 400,
+  },
+  'token-endpoint-401': {
+    label: 'token endpoint returns 401 (distinct from 400 invalid_grant)',
+    messagesHeaders: {},
+    tokenStatus: 401,
+  },
+  'token-endpoint-500': {
+    label: 'token endpoint returns 5xx with a plain-text error body',
+    messagesHeaders: {},
+    tokenStatus: 503,
+    tokenBody: 'maintenance',
+  },
+  'token-endpoint-invalid-request': {
+    label: 'token endpoint returns 400 with invalid_request error shape',
+    messagesHeaders: {},
+    tokenStatus: 400,
+    tokenBody: { error: 'invalid_request', error_description: 'bad body' },
   },
 };
 
