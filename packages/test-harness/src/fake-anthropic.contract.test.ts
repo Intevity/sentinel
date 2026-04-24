@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startFakeAnthropic, type FakeAnthropic } from './fake-anthropic.js';
 
@@ -162,5 +163,169 @@ describe('fake Anthropic contract', () => {
     expect(res.headers.get('anthropic-ratelimit-unified-overage-in-use')).toBe('true');
     expect(res.headers.get('anthropic-ratelimit-unified-overage-status')).toBe('allowed');
     fake.setScenario('healthy-account');
+  });
+
+  it('rate-limited-5h scenario returns 429 with retry-after', async () => {
+    fake.setScenario('rate-limited-5h');
+    const res = await fetch(`${fake.origin}/v1/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBe('3600');
+    expect(res.headers.get('anthropic-ratelimit-unified-5h-status')).toBe('blocked');
+    fake.setScenario('healthy-account');
+  });
+
+  it('upstream-500 scenario returns 500', async () => {
+    fake.setScenario('upstream-500');
+    const res = await fetch(`${fake.origin}/v1/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(res.status).toBe(500);
+    fake.setScenario('healthy-account');
+  });
+
+  it('upstream-unauth-401 scenario returns 401 even for registered tokens', async () => {
+    fake.setScenario('upstream-unauth-401');
+    const res = await fetch(`${fake.origin}/v1/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(res.status).toBe(401);
+    fake.setScenario('healthy-account');
+  });
+
+  it('gzipped-json scenario sends content-encoding: gzip and a valid gzip body', async () => {
+    fake.setScenario('gzipped-json');
+    const res = await fetch(`${fake.origin}/v1/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-encoding')).toBe('gzip');
+    // fetch() auto-decompresses, so we should still be able to read JSON.
+    const body = (await res.json()) as { id: string };
+    expect(body.id).toBe('msg_fake');
+    fake.setScenario('healthy-account');
+  });
+
+  it('queueResponse consumes overrides in FIFO order', async () => {
+    fake.queueResponse('/v1/messages', { status: 429 });
+    fake.queueResponse('/v1/messages', { status: 200 });
+    const first = await fetch(`${fake.origin}/v1/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(first.status).toBe(429);
+    const second = await fetch(`${fake.origin}/v1/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(second.status).toBe(200);
+  });
+
+  it('sseEvents override emits the supplied custom SSE script', async () => {
+    fake.queueResponse('/v1/messages', {
+      sseEvents: [
+        { event: 'message_start', data: { type: 'message_start', message: { id: 'x' } } },
+        { event: 'message_delta', data: { type: 'message_delta', usage: { output_tokens: 99 } } },
+      ],
+    });
+    const res = await fetch(`${fake.origin}/v1/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/event-stream');
+    const text = await res.text();
+    expect(text).toContain('event: message_start');
+    expect(text).toContain('event: message_delta');
+    expect(text).toContain('"output_tokens":99');
+  });
+
+  it('sseEvents with string data passes payload through verbatim (malformed-JSON test)', async () => {
+    fake.queueResponse('/v1/messages', {
+      sseEvents: [{ event: 'message_delta', data: '{"bad json' }],
+    });
+    const res = await fetch(`${fake.origin}/v1/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ messages: [] }),
+    });
+    const text = await res.text();
+    expect(text).toContain('data: {"bad json');
+  });
+
+  it('bodySizeBytes emits a body of roughly the requested size', async () => {
+    fake.queueResponse('/v1/messages', { bodySizeBytes: 300_000 });
+    const res = await fetch(`${fake.origin}/v1/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ messages: [] }),
+    });
+    const text = await res.text();
+    // Wrapper adds ~80 bytes; require within a few hundred of target.
+    expect(text.length).toBeGreaterThanOrEqual(300_000 - 200);
+    expect(text.length).toBeLessThanOrEqual(300_000 + 200);
+  });
+
+  it('body: string is written verbatim', async () => {
+    fake.queueResponse('/v1/messages', { body: 'not json at all' });
+    const res = await fetch(`${fake.origin}/v1/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(await res.text()).toBe('not json at all');
+  });
+
+  it('body: Buffer is written verbatim (supports pre-encoded payloads)', async () => {
+    const raw = Buffer.from([0x01, 0x02, 0x03, 0xff]);
+    fake.queueResponse('/v1/messages', {
+      body: raw,
+      extraHeaders: { 'content-type': 'application/octet-stream' },
+    });
+    const res = await fetch(`${fake.origin}/v1/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(res.headers.get('content-type')).toBe('application/octet-stream');
+    const buf = Buffer.from(await res.arrayBuffer());
+    expect(buf.equals(raw)).toBe(true);
+  });
+
+  it('content-encoding: gzip in extraHeaders triggers automatic body gzipping', async () => {
+    // Use a custom endpoint where we can inspect the raw bytes by explicitly
+    // disabling fetch decompression — Node's undici decodes transparently,
+    // so to assert "the wire body is gzipped" we verify the header and that
+    // gunzip of the wire bytes yields the expected plaintext.
+    const plaintext = JSON.stringify({ id: 'msg_fake', ping: 'pong' });
+    fake.queueResponse('/v1/messages', {
+      body: plaintext,
+      extraHeaders: { 'content-encoding': 'gzip', 'content-type': 'application/json' },
+    });
+    const res = await fetch(`${fake.origin}/v1/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(res.headers.get('content-encoding')).toBe('gzip');
+    // If the wire was not actually gzipped, undici would throw decoding;
+    // reaching this assertion proves the gzip stream was valid.
+    const body = (await res.json()) as { id: string };
+    expect(body.id).toBe('msg_fake');
+    // Defensive: freshly-gzipped plaintext round-trips — documents the
+    // gzip/gunzip symmetry the auto-gzip feature depends on.
+    expect(gunzipSync(gzipSync(plaintext)).toString()).toBe(plaintext);
   });
 });

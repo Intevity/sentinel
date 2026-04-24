@@ -11,7 +11,17 @@ import type {
   PermissionDecision,
 } from '@claude-sentinel/shared';
 
+/** Default settings-file path. Tests can override via
+ *  `CLAUDE_SENTINEL_TEST_SETTINGS_FILE` so they don't pick up the running
+ *  user's real settings (mirrors the keychain and upstream-URL overrides
+ *  delivered in Sprint 0). Resolved per-call via `currentSettingsPath()`
+ *  so the env can be set after module import. Production ignores the env
+ *  var; default remains `~/.claude-sentinel/settings.json`. */
 export const SETTINGS_PATH = join(homedir(), '.claude-sentinel', 'settings.json');
+
+function currentSettingsPath(): string {
+  return process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE ?? SETTINGS_PATH;
+}
 
 export const DEFAULT_SETTINGS: Settings = {
   launchAtLogin: true,
@@ -328,10 +338,11 @@ function coerce(raw: unknown): Settings {
  * Read settings from disk. Creates no file — returns DEFAULT_SETTINGS when
  * the file is absent so the caller can detect a first run.
  */
-export function loadSettings(path: string = SETTINGS_PATH): Settings {
-  if (!existsSync(path)) return { ...DEFAULT_SETTINGS };
+export function loadSettings(path?: string): Settings {
+  const p = path ?? currentSettingsPath();
+  if (!existsSync(p)) return { ...DEFAULT_SETTINGS };
   try {
-    const contents = readFileSync(path, 'utf-8');
+    const contents = readFileSync(p, 'utf-8');
     return coerce(JSON.parse(contents));
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -342,17 +353,18 @@ export function loadSettings(path: string = SETTINGS_PATH): Settings {
  * Persist a full Settings object atomically (write + rename). Creates the
  * parent directory if needed.
  */
-export function saveSettings(settings: Settings, path: string = SETTINGS_PATH): void {
-  const dir = dirname(path);
+export function saveSettings(settings: Settings, path?: string): void {
+  const p = path ?? currentSettingsPath();
+  const dir = dirname(p);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const tmp = `${path}.tmp`;
+  const tmp = `${p}.tmp`;
   writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
   // Atomic rename on POSIX; fall back to a direct write on Windows if rename fails.
   try {
-    renameSync(tmp, path);
+    renameSync(tmp, p);
   } catch {
     /* v8 ignore next 1 */
-    writeFileSync(path, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
+    writeFileSync(p, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
   }
 }
 
@@ -361,9 +373,10 @@ export function saveSettings(settings: Settings, path: string = SETTINGS_PATH): 
  * Returns the new full Settings object. Invalid fields are silently dropped
  * by coerce() so callers can round-trip user-supplied JSON safely.
  */
-export function updateSettings(patch: Partial<Settings>, path: string = SETTINGS_PATH): Settings {
-  const current = loadSettings(path);
+export function updateSettings(patch: Partial<Settings>, path?: string): Settings {
+  const p = path ?? currentSettingsPath();
+  const current = loadSettings(p);
   const merged = coerce({ ...current, ...patch });
-  saveSettings(merged, path);
+  saveSettings(merged, p);
   return merged;
 }

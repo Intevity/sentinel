@@ -16,17 +16,47 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { AddressInfo } from 'node:net';
+import { gzipSync } from 'node:zlib';
 import { SCENARIOS, scenarioHeaders, type ScenarioName } from './scenarios.js';
+
+export interface FakeSseEvent {
+  /** Optional SSE event name. Omit for a data-only event. */
+  event?: string;
+  /** Event payload. Objects are JSON-stringified; strings are written verbatim
+   *  so callers can test malformed-JSON handling. */
+  data: unknown | string;
+}
 
 export interface FakeScenario {
   /** Override status code for the next response. */
   status?: number;
-  /** Override JSON body. If omitted, a default body is synthesized per endpoint. */
-  body?: unknown;
+  /** Override response body.
+   *  - `object` → JSON-stringified (legacy behavior).
+   *  - `string` → written verbatim (for malformed-JSON tests).
+   *  - `Buffer` → written verbatim (for pre-gzipped / binary payloads). */
+  body?: unknown | string | Buffer;
   /** Extra headers to inject on top of scenario-preset headers. */
   extraHeaders?: Record<string, string>;
-  /** Emit a Server-Sent Events stream instead of a JSON body (for /v1/messages). */
+  /** Emit the canned 4-event SSE script (message_start / content_block_delta /
+   *  message_delta / message_stop). Ignored when `sseEvents` is set. */
   sse?: boolean;
+  /** Emit a fully custom SSE event stream. Implies SSE content-type. Each entry
+   *  becomes `event: <event>\ndata: <serialized>\n\n`. */
+  sseEvents?: FakeSseEvent[];
+  /** Controls how the SSE stream is split across `res.write()` calls:
+   *   - `'whole'`: one write for the entire script.
+   *   - `'per-event'` (default): one write per event block.
+   *   - `'byte-split'`: one byte per write, exercises chunk-boundary handling. */
+  sseChunking?: 'whole' | 'per-event' | 'byte-split';
+  /** Generate a JSON body of roughly N bytes (16 KiB write chunks). Useful for
+   *  exercising the proxy's response-body truncation path. Clamped [64, 4 MiB]. */
+  bodySizeBytes?: number;
+  /** When true, write the first SSE event then destroy the underlying TCP
+   *  socket instead of closing the response cleanly. Simulates an upstream
+   *  connection dropping mid-stream, exercising the proxy's tap /
+   *  interceptor / default error-handler branches. Only meaningful with
+   *  `sseEvents`; ignored otherwise. */
+  abortAfterFirstEvent?: boolean;
 }
 
 export interface TokenRecord {
@@ -96,6 +126,82 @@ const DEFAULT_PROFILE: FakeProfile = {
 };
 
 type EndpointMatcher = '/v1/messages' | '/v1/oauth/token' | '/api/oauth/profile' | '/api/oauth/usage' | '/v1/code/routines/run-budget' | '/v1/models' | '/v1/count_tokens' | '/v1/complete';
+
+const CANNED_SSE_EVENTS: FakeSseEvent[] = [
+  {
+    event: 'message_start',
+    data: {
+      type: 'message_start',
+      message: {
+        id: 'msg_fake',
+        model: 'claude-opus-4-7',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      },
+    },
+  },
+  {
+    event: 'content_block_delta',
+    data: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'ok' } },
+  },
+  { event: 'message_delta', data: { type: 'message_delta', usage: { output_tokens: 1 } } },
+  { event: 'message_stop', data: { type: 'message_stop' } },
+];
+
+function encodeSseEvent(ev: FakeSseEvent): string {
+  const dataStr = typeof ev.data === 'string' ? ev.data : JSON.stringify(ev.data);
+  const prefix = ev.event ? `event: ${ev.event}\n` : '';
+  return `${prefix}data: ${dataStr}\n\n`;
+}
+
+function writeSse(
+  res: ServerResponse,
+  events: FakeSseEvent[],
+  chunking: 'whole' | 'per-event' | 'byte-split',
+): void {
+  const blocks = events.map(encodeSseEvent);
+  if (chunking === 'whole') {
+    res.write(blocks.join(''));
+    return;
+  }
+  if (chunking === 'per-event') {
+    for (const b of blocks) res.write(b);
+    return;
+  }
+  // byte-split: one byte per write. Exercises the proxy's chunk-boundary
+  // buffer-accumulation branch in SseUsageExtractor.
+  const joined = Buffer.from(blocks.join(''), 'utf8');
+  for (let i = 0; i < joined.length; i++) {
+    res.write(joined.subarray(i, i + 1));
+  }
+}
+
+function serializeBody(body: unknown | string | Buffer): Buffer {
+  if (Buffer.isBuffer(body)) return body;
+  if (typeof body === 'string') return Buffer.from(body, 'utf8');
+  return Buffer.from(JSON.stringify(body), 'utf8');
+}
+
+function maybeGzip(headers: Record<string, string>, body: Buffer): Buffer {
+  const enc = headers['content-encoding'];
+  if (enc === 'gzip') return gzipSync(body);
+  return body;
+}
+
+function buildLargeJsonBody(sizeBytes: number): string {
+  // Emit a valid JSON object whose `padding` string field inflates the body
+  // to the requested size. Not a 1:1 byte match — the wrapper adds ~80 bytes
+  // — but well within tolerance for truncation-cap tests.
+  const envelope = { id: 'msg_fake', type: 'message', padding: '' };
+  const wrapperLen = JSON.stringify(envelope).length;
+  const padLen = Math.max(0, sizeBytes - wrapperLen);
+  envelope.padding = '_'.repeat(padLen);
+  return JSON.stringify(envelope);
+}
 
 export async function startFakeAnthropic(init: { scenario?: ScenarioName } = {}): Promise<FakeAnthropic> {
   let activeScenario: ScenarioName = init.scenario ?? 'healthy-account';
@@ -190,12 +296,38 @@ export async function startFakeAnthropic(init: { scenario?: ScenarioName } = {})
       ...(override?.extraHeaders ?? {}),
     };
 
-    if (override?.sse) {
+    // SSE path: either custom event list (`sseEvents`) or canned script (`sse: true`).
+    if (override?.sseEvents || override?.sse) {
+      const events: FakeSseEvent[] = override.sseEvents ?? CANNED_SSE_EVENTS;
+      const chunking = override.sseChunking ?? 'per-event';
       res.writeHead(status, { 'content-type': 'text/event-stream', ...headers });
-      res.write('event: message_start\ndata: {"type":"message_start","message":{"id":"msg_fake","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n\n');
-      res.write('event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n');
-      res.write('event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":1}}\n\n');
-      res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+      if (override.abortAfterFirstEvent && events.length > 0) {
+        // Write the first event only, then destroy the socket to simulate
+        // a mid-stream connection drop. The proxy's `proxyRes.on('error')`
+        // branches fire on the client side.
+        res.write(encodeSseEvent(events[0]!));
+        res.socket?.destroy();
+        return;
+      }
+      writeSse(res, events, chunking);
+      res.end();
+      return;
+    }
+
+    // Size-driven body: generate padded JSON of the requested byte count and
+    // emit it in 16 KiB writes so the proxy's response-truncation branch
+    // actually sees multiple chunks cross its cap.
+    if (override?.bodySizeBytes !== undefined) {
+      const clamped = Math.max(64, Math.min(4 * 1024 * 1024, override.bodySizeBytes));
+      const finalHeaders = { 'content-type': 'application/json', ...headers };
+      const payload = buildLargeJsonBody(clamped);
+      const bodyBuffer = Buffer.from(payload, 'utf8');
+      const outBuffer = maybeGzip(finalHeaders, bodyBuffer);
+      res.writeHead(status, finalHeaders);
+      const CHUNK = 16 * 1024;
+      for (let off = 0; off < outBuffer.length; off += CHUNK) {
+        res.write(outBuffer.subarray(off, Math.min(off + CHUNK, outBuffer.length)));
+      }
       res.end();
       return;
     }
@@ -214,8 +346,11 @@ export async function startFakeAnthropic(init: { scenario?: ScenarioName } = {})
         cache_read_input_tokens: 0,
       },
     };
-    res.writeHead(status, { 'content-type': 'application/json', ...headers });
-    res.end(JSON.stringify(override?.body ?? defaultBody));
+    const finalHeaders = { 'content-type': 'application/json', ...headers };
+    const bodyBuffer = serializeBody(override?.body ?? defaultBody);
+    const outBuffer = maybeGzip(finalHeaders, bodyBuffer);
+    res.writeHead(status, finalHeaders);
+    res.end(outBuffer);
   }
 
   function handleToken(res: ServerResponse, body: string): void {
