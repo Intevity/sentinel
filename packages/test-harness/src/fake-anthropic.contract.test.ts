@@ -344,6 +344,98 @@ describe('fake Anthropic contract', () => {
     fake.setScenario('healthy-account');
   });
 
+  it('handleUsage respects queueResponse status override', async () => {
+    fake.queueResponse('/api/oauth/usage', { status: 403 });
+    const res = await fetch(`${fake.origin}/api/oauth/usage`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('handleUsage respects queueResponse body override (object)', async () => {
+    fake.queueResponse('/api/oauth/usage', {
+      status: 403,
+      body: {
+        error: {
+          type: 'permission_error',
+          message: 'OAuth authentication is currently not allowed for this organization.',
+        },
+      },
+    });
+    const res = await fetch(`${fake.origin}/api/oauth/usage`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { type: string; message: string } };
+    expect(body.error.type).toBe('permission_error');
+    expect(body.error.message).toMatch(/oauth authentication is currently not allowed/i);
+  });
+
+  it('handleUsage respects queueResponse body override (string, malformed JSON)', async () => {
+    fake.queueResponse('/api/oauth/usage', { status: 200, body: 'not json' });
+    const res = await fetch(`${fake.origin}/api/oauth/usage`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('not json');
+  });
+
+  it('handleUsage returns 401 when Authorization header is absent', async () => {
+    const res = await fetch(`${fake.origin}/api/oauth/usage`);
+    expect(res.status).toBe(401);
+  });
+
+  it('handleRunBudget respects queueResponse status override', async () => {
+    fake.queueResponse('/v1/code/routines/run-budget', { status: 403 });
+    const res = await fetch(`${fake.origin}/v1/code/routines/run-budget`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('handleRunBudget respects queueResponse body override (string limit/used)', async () => {
+    fake.queueResponse('/v1/code/routines/run-budget', {
+      status: 200,
+      body: { limit: '99.50', used: '12.25', unified_billing_enabled: false },
+    });
+    const res = await fetch(`${fake.origin}/v1/code/routines/run-budget`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      limit: string;
+      used: string;
+      unified_billing_enabled: boolean;
+    };
+    expect(body.limit).toBe('99.50');
+    expect(body.used).toBe('12.25');
+    expect(body.unified_billing_enabled).toBe(false);
+  });
+
+  it('handleRunBudget returns 401 when Authorization header is absent', async () => {
+    const res = await fetch(`${fake.origin}/v1/code/routines/run-budget`);
+    expect(res.status).toBe(401);
+  });
+
+  it('handleRunBudget body override survives null-valued limit/used', async () => {
+    fake.queueResponse('/v1/code/routines/run-budget', {
+      status: 200,
+      body: { limit: null, used: null, unified_billing_enabled: true },
+    });
+    const res = await fetch(`${fake.origin}/v1/code/routines/run-budget`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      limit: number | null;
+      used: number | null;
+      unified_billing_enabled: boolean;
+    };
+    expect(body.limit).toBeNull();
+    expect(body.used).toBeNull();
+    expect(body.unified_billing_enabled).toBe(true);
+  });
+
   it('content-encoding: gzip in extraHeaders triggers automatic body gzipping', async () => {
     // Use a custom endpoint where we can inspect the raw bytes by explicitly
     // disabling fetch decompression — Node's undici decodes transparently,

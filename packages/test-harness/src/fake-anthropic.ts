@@ -427,40 +427,51 @@ export async function startFakeAnthropic(init: { scenario?: ScenarioName } = {})
 
   function handleUsage(req: IncomingMessage, res: ServerResponse): void {
     if (!requireAuth(req, res)) return;
-    // Shape matches claude-ai-usage.ts RawUsageResponse
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        five_hour: {
-          utilization: 0.1,
-          resets_at: new Date(Date.now() + 3600_000).toISOString(),
-        },
-        seven_day: {
-          utilization: 0.2,
-          resets_at: new Date(Date.now() + 7 * 86400_000).toISOString(),
-        },
-        seven_day_sonnet: {
-          utilization: 0.05,
-          resets_at: new Date(Date.now() + 7 * 86400_000).toISOString(),
-        },
-        extra_usage: {
-          is_enabled: true,
-          utilization_pct: 0,
-        },
-      }),
-    );
+    const override = popOverride('/api/oauth/usage');
+    const status = override?.status ?? 200;
+    const defaultBody = {
+      five_hour: {
+        utilization: 0.1,
+        resets_at: new Date(Date.now() + 3600_000).toISOString(),
+      },
+      seven_day: {
+        utilization: 0.2,
+        resets_at: new Date(Date.now() + 7 * 86400_000).toISOString(),
+      },
+      seven_day_sonnet: {
+        utilization: 0.05,
+        resets_at: new Date(Date.now() + 7 * 86400_000).toISOString(),
+      },
+      extra_usage: {
+        is_enabled: true,
+        utilization_pct: 0,
+      },
+    };
+    const finalHeaders: Record<string, string> = {
+      'content-type': 'application/json',
+      ...(override?.extraHeaders ?? {}),
+    };
+    const bodyBuffer = serializeBody(override?.body ?? defaultBody);
+    res.writeHead(status, finalHeaders);
+    res.end(bodyBuffer);
   }
 
   function handleRunBudget(req: IncomingMessage, res: ServerResponse): void {
     if (!requireAuth(req, res)) return;
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        limit: 10_000,
-        used: 1_234,
-        unified_billing_enabled: true,
-      }),
-    );
+    const override = popOverride('/v1/code/routines/run-budget');
+    const status = override?.status ?? 200;
+    const defaultBody = {
+      limit: 10_000,
+      used: 1_234,
+      unified_billing_enabled: true,
+    };
+    const finalHeaders: Record<string, string> = {
+      'content-type': 'application/json',
+      ...(override?.extraHeaders ?? {}),
+    };
+    const bodyBuffer = serializeBody(override?.body ?? defaultBody);
+    res.writeHead(status, finalHeaders);
+    res.end(bodyBuffer);
   }
 
   function popOverride(endpoint: EndpointMatcher): FakeScenario | undefined {

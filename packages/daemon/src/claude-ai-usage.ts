@@ -94,6 +94,9 @@ async function isOAuthForbiddenBody(resp: Response): Promise<boolean> {
   let body: string;
   try {
     body = await resp.text();
+    /* v8 ignore next 3 -- Paranoid guard. Node's undici doesn't reject
+     * `.text()` on a cleanly-closed 403 body; reproducing this branch
+     * would require a harness that destroys the socket mid-body. */
   } catch {
     return false;
   }

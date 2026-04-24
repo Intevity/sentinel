@@ -29,11 +29,6 @@ export default defineConfig({
         // OAuth orchestration: opens browser, spins up local HTTP server, and
         // makes external API calls: better covered by integration tests.
         'packages/daemon/src/oauth.ts',
-        // Claude.ai usage + run-budget endpoints: authenticated HTTP calls
-        // against undocumented claude.ai endpoints; same exemption rationale
-        // as oauth.ts.
-        'packages/daemon/src/claude-ai-usage.ts',
-        'packages/daemon/src/claude-ai-run-budget.ts',
         // Inlined base64 app icon consumed by oauth.ts's callback page.
         // No runtime logic, just a data-URL constant.
         'packages/daemon/src/logo.ts',
