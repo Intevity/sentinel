@@ -26,6 +26,21 @@ import { rewriteCacheControlTtl } from './cache-ttl/rewriter.js';
 import type { PauseReason } from '@claude-sentinel/shared';
 
 export const DAEMON_PORT = 47284;
+
+/**
+ * Returns the port the daemon HTTP server listens on. Respects
+ * CLAUDE_SENTINEL_TEST_DAEMON_PORT so integration tests can bind an ephemeral
+ * port and avoid colliding with the user's live daemon on 47284. Production
+ * reads return 47284 unchanged (env var unset).
+ */
+export function getDaemonPort(): number {
+  const env = process.env.CLAUDE_SENTINEL_TEST_DAEMON_PORT;
+  if (env) {
+    const n = Number(env);
+    if (Number.isInteger(n) && n > 0 && n < 65536) return n;
+  }
+  return DAEMON_PORT;
+}
 export const ANTHROPIC_HOST = 'api.anthropic.com';
 
 // Paths that should be proxied to Anthropic

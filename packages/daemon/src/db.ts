@@ -346,7 +346,9 @@ let _db: Database.Database | null = null;
 /**
  * Open (or reuse) the singleton SQLite connection.
  */
-export function getDb(dbPath: string = DB_PATH): Database.Database {
+export function getDb(
+  dbPath: string = process.env.CLAUDE_SENTINEL_TEST_DB_FILE ?? DB_PATH,
+): Database.Database {
   if (_db) return _db;
 
   const dir = dirname(dbPath);

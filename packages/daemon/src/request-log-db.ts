@@ -61,7 +61,9 @@ export class RequestLogStore {
   private insertStmt: Database.Statement;
   private closed = false;
 
-  constructor(dbPath: string = REQUEST_LOG_DB_PATH) {
+  constructor(
+    dbPath: string = process.env.CLAUDE_SENTINEL_TEST_REQUEST_LOG_DB_FILE ?? REQUEST_LOG_DB_PATH,
+  ) {
     const dir = dirname(dbPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 

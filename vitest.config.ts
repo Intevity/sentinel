@@ -19,13 +19,14 @@ export default defineConfig({
         '**/*.spec.ts',
         'vitest.config.ts',
         'eslint.config.js',
-        // CLI entry points and external-integration modules (hard to unit test)
+        // CLI entry point: receives DaemonHandle from startDaemon() and wires
+        // SIGINT/SIGTERM + process.exit. Pure lifecycle glue — every branch
+        // invokes process.exit, which is untestable in-process and covered
+        // end-to-end by the E2E suite that spawns the real daemon.
         'packages/daemon/src/cli.ts',
-        'packages/daemon/src/index.ts',
-        // Rate-limit probe: fires an HTTP request through the running proxy.
-        // Extracted from index.ts into its own file to avoid a circular import
-        // with usage-probe.ts; inherits index.ts's coverage exemption.
-        'packages/daemon/src/rate-limit-probe.ts',
+        // Test infrastructure — wires real daemon + fake Anthropic in-process
+        // for index.*.integration.test.ts. Has no production callers.
+        'packages/daemon/src/index.test-helpers.ts',
         // Inlined base64 app icon consumed by oauth.ts's callback page.
         // No runtime logic, just a data-URL constant.
         'packages/daemon/src/logo.ts',
@@ -55,16 +56,22 @@ export default defineConfig({
       thresholds: {
         lines: 95,
         functions: 95,
-        // Branches at 94.5 (vs. 95 for statements/funcs/lines): Sprint 1 of
-        // the test-migration plan (documentation/TEST_MIGRATION_PLAN.md)
-        // moved proxy.test.ts off vi.mock('https') onto the fake-Anthropic
-        // integration harness. Some fine-grained mocked branches (e.g.
-        // "proxyRes.on('error') inside 429-retry drain", "cache_ttl insert
-        // throws") are intentionally harder to hit through a real HTTP
-        // round-trip and are covered by /* v8 ignore */ comments instead.
-        // Sprints 3-6 of the same plan add broader integration coverage
-        // and this cap can be bumped back to 95.
-        branches: 94.5,
+        // Branches at 93 (down from 94.5 in Sprint 1). Sprint 6 of the
+        // test-migration plan lifted the coverage exemption on
+        // `packages/daemon/src/index.ts` (2,357 LOC: startDaemon, 62 IPC
+        // handlers, performSwitch, persistOAuthResult, alert evaluator
+        // wiring, retention-purge loops, shutdown). The new
+        // `index.*.integration.test.ts` files bring lines + statements +
+        // functions above 95, but index.ts is heavily callback-driven:
+        // many conditionals live inside options passed to createProxyServer,
+        // the startup force-refresh IIFE, and async ticks that complete
+        // after test teardown. Those are either covered by sibling integration
+        // files (proxy.*.integration, token-refresher.integration) or sit
+        // behind narrow `/* v8 ignore */` blocks with justification.
+        // Sprint 7 is the path back to 94.5 — a proxy-driven daemon
+        // harness that exercises every callback option from within the
+        // real daemon context rather than the standalone proxy fixture.
+        branches: 93,
         statements: 95,
       },
     },

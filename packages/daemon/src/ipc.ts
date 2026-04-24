@@ -27,7 +27,7 @@ export class IpcServer {
     this.messageHandlers.push(handler);
   }
 
-  start(socketPath: string = IPC_PATH): void {
+  start(socketPath: string = process.env.CLAUDE_SENTINEL_TEST_IPC_SOCKET ?? IPC_PATH): void {
     // Clean up stale socket file on Unix
     /* v8 ignore next 3 */
     if (process.platform !== 'win32' && existsSync(socketPath)) {
@@ -144,7 +144,7 @@ export class IpcClient {
     this.errorListeners.push(handler);
   }
 
-  connect(socketPath: string = IPC_PATH): void {
+  connect(socketPath: string = process.env.CLAUDE_SENTINEL_TEST_IPC_SOCKET ?? IPC_PATH): void {
     this.socket = connect(socketPath, () => {
       this.connectListeners.forEach((h) => h());
     });
