@@ -580,7 +580,14 @@ describe('IPC — probes and purges', () => {
 describe('IPC — scan benchmark', () => {
   it('run_scan_benchmark completes and persists a result', async () => {
     ctx = await startTestDaemon();
-    const r = await ctx.request<{ recommendedMb: number }>({ type: 'run_scan_benchmark' });
+    // CPU-heavy: sweeps 5 payload sizes (1/2/4/8/16 MB) with a per-size
+    // safety cap of ~2 s, so worst case is ~10 s. Ubuntu CI runners under
+    // v8 coverage routinely exceed the 5 s default IPC timeout; raise the
+    // request ceiling well below the 30 s vitest test timeout.
+    const r = await ctx.request<{ recommendedMb: number }>(
+      { type: 'run_scan_benchmark' },
+      { timeoutMs: 25_000 },
+    );
     expect(r.success).toBe(true);
     expect(typeof r.data?.recommendedMb).toBe('number');
   }, 30_000);

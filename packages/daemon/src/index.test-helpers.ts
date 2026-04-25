@@ -64,8 +64,14 @@ export interface TestDaemon {
   broadcasts: DaemonToAppMessage[];
   /** Send an `AppToDaemonMessage` and await the matching `IpcResponse`. Uses
    *  FIFO-by-requestType correlation; tests should not issue two in-flight
-   *  requests of the same type against a single test daemon. */
-  request: <T = unknown>(msg: AppToDaemonMessage) => Promise<IpcResponse<T>>;
+   *  requests of the same type against a single test daemon. `timeoutMs`
+   *  defaults to 5000; raise it for CPU-heavy handlers (e.g. the scan
+   *  benchmark, which sweeps 5 payload sizes and can exceed 5 s on
+   *  CI runners under v8 coverage). */
+  request: <T = unknown>(
+    msg: AppToDaemonMessage,
+    opts?: { timeoutMs?: number },
+  ) => Promise<IpcResponse<T>>;
   /** Wait up to `timeoutMs` for at least one broadcast matching `predicate`.
    *  Returns the matched broadcast, or rejects on timeout. */
   waitForBroadcast: <T extends DaemonToAppMessage = DaemonToAppMessage>(
@@ -211,7 +217,10 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
     ipcClient.connect(socketPath);
   });
 
-  const request = <T = unknown>(msg: AppToDaemonMessage): Promise<IpcResponse<T>> =>
+  const request = <T = unknown>(
+    msg: AppToDaemonMessage,
+    opts: { timeoutMs?: number } = {},
+  ): Promise<IpcResponse<T>> =>
     new Promise((resolve, reject) => {
       const type = (msg as { type: string }).type;
       const queue = pending.get(type) ?? [];
@@ -229,7 +238,7 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
           if (q.length === 0) pending.delete(type);
         }
         reject(new Error(`IPC request timeout: ${type}`));
-      }, 5000);
+      }, opts.timeoutMs ?? 5000);
       ipcClient.send(msg);
     });
 
