@@ -351,6 +351,7 @@ export default function App(): React.ReactElement {
               }}
               className="inline-flex items-center justify-center hover:opacity-80 transition-opacity transform-gpu p-0.5 -m-0.5 flex-shrink-0 leading-none"
               aria-label="Security"
+              data-tour-id="tour-permissions"
             >
               <SecurityShield
                 scanOn={settings?.securityScanEnabled ?? false}
@@ -425,7 +426,13 @@ export default function App(): React.ReactElement {
           />
         )}
 
-        {tourOpen && <Tour onFinish={finishTour} onStepEnter={handleTourStepEnter} />}
+        {tourOpen && (
+          <Tour
+            onFinish={finishTour}
+            onStepEnter={handleTourStepEnter}
+            replayMode={tourForceOpen}
+          />
+        )}
 
         {/* ── Startup splash: shown until the first successful IPC round-trip,
              so child components never get a chance to render their own

@@ -1,0 +1,9 @@
+export { default as WelcomeIllustration } from './Welcome.js';
+export { default as AccountsIllustration } from './Accounts.js';
+export { default as RoundRobinIllustration } from './RoundRobin.js';
+export { default as SecurityIllustration } from './Security.js';
+export { default as AlertsIllustration } from './Alerts.js';
+export { default as PermissionsIllustration } from './Permissions.js';
+export { default as BudgetIllustration } from './Budget.js';
+export { default as MetricsIllustration } from './Metrics.js';
+export { default as ReplayIllustration } from './Replay.js';

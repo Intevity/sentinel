@@ -1,3 +1,47 @@
+import type { ComponentType } from 'react';
+import type { LucideIcon } from 'lucide-react';
+import {
+  Sparkles,
+  Users,
+  Shuffle,
+  ShieldCheck,
+  BellRing,
+  ShieldAlert,
+  Wallet,
+  BarChart3,
+  HelpCircle,
+} from 'lucide-react';
+import {
+  WelcomeIllustration,
+  AccountsIllustration,
+  RoundRobinIllustration,
+  SecurityIllustration,
+  AlertsIllustration,
+  PermissionsIllustration,
+  BudgetIllustration,
+  MetricsIllustration,
+  ReplayIllustration,
+} from './tourIllustrations/index.js';
+
+/** Accent palette resolved by the Tour component into hex values for the
+ *  hero gradient and the icon badge tint. Tailwind's content-only theme
+ *  doesn't ship the full palette, so we keep colors localized here. */
+export type TourAccent =
+  | 'indigo'
+  | 'blue'
+  | 'teal'
+  | 'red'
+  | 'orange'
+  | 'violet'
+  | 'green'
+  | 'sky'
+  | 'gray';
+
+/** A "core" step is shown to every user; "power" steps are shown only when
+ *  the user explicitly opts in (via the See more CTA on the last core step
+ *  on first run, or by clicking the help icon to replay the full tour). */
+export type TourTrack = 'core' | 'power';
+
 export interface TourStep {
   /** `data-tour-id` attribute on the target element, or `null` for a
    *  centered welcome/finale card. */
@@ -11,45 +55,113 @@ export interface TourStep {
   /** Preferred placement for the coach mark relative to the target. `auto`
    *  flips to the side with more space. Ignored when `targetId` is null. */
   placement: 'auto' | 'top' | 'bottom';
+  /** Lucide icon rendered in the small badge that overlaps the hero image. */
+  icon: LucideIcon;
+  /** Color theme for the hero gradient and icon badge. */
+  accent: TourAccent;
+  /** SVG illustration component rendered in the card's hero area. */
+  illustration: ComponentType<{ className?: string }>;
+  /** Which track this step belongs to: 'core' for the default first-run
+   *  walkthrough, 'power' for the opt-in deep dive. */
+  track: TourTrack;
 }
 
 export const TOUR_STEPS: TourStep[] = [
   {
     targetId: null,
     title: 'Welcome to Sentinel',
-    body: 'A 30-second tour of the highlights: round-robin account pooling, live usage, security scanning, and threshold alerts.',
+    body: 'Pool your Claude accounts, watch usage in real time, scan requests for risky content, and get pinged before you hit the wall.',
     placement: 'auto',
+    icon: Sparkles,
+    accent: 'indigo',
+    illustration: WelcomeIllustration,
+    track: 'core',
   },
   {
     targetId: 'add-account',
     tab: 'accounts',
     title: 'Add every account you own',
-    body: 'Sentinel pools Claude Pro, Max, Team, and Enterprise accounts. Add them here and they all show up on the Accounts tab with live 5-hour utilization.',
+    body: 'Sentinel pools Claude Pro, Max, Team, and Enterprise accounts. Each one gets a card with live 5-hour utilization, plan type, and reset countdown.',
     placement: 'auto',
+    icon: Users,
+    accent: 'blue',
+    illustration: AccountsIllustration,
+    track: 'core',
   },
   {
     targetId: 'switching-mode',
     tab: 'accounts',
-    title: 'Combine them with round-robin',
-    body: 'Flip on round-robin and Sentinel rotates the OAuth token on every request across your pool. Two strategies: Balance drains every account evenly so they all hit their 5-hour reset together; Earliest reset hard-targets the account whose window resets soonest so fresh quota is used first. Flip round-robin off for classic one-at-a-time switching.',
+    title: 'Round-robin across your pool',
+    body: 'Flip on round-robin and Sentinel rotates the OAuth token on every request. Balance drains accounts evenly so they all hit reset together; Earliest reset drains the soonest-resetting account first to use up fresh quota.',
     placement: 'auto',
+    icon: Shuffle,
+    accent: 'teal',
+    illustration: RoundRobinIllustration,
+    track: 'core',
   },
   {
     targetId: 'tab-security',
-    title: 'Security is built in',
-    body: 'Sentinel scans outbound requests and model responses for secrets, prompt injection, and risky tool calls; it also lets you gate Claude Code tools with allow/deny rules you control.',
+    title: 'Security scanning, built in',
+    body: 'Sentinel inspects outbound requests and model responses for secrets, prompt injection, and risky tool calls. Pick observe-only or block on high or medium severity; OS notifications are gated to the levels you care about.',
     placement: 'bottom',
+    icon: ShieldCheck,
+    accent: 'red',
+    illustration: SecurityIllustration,
+    track: 'core',
   },
   {
     targetId: 'tab-notifications',
     title: 'Alerts before you hit the wall',
-    body: 'Set a threshold on your 5-hour window (per-account or pool-wide) and get a native OS notification the moment you cross it.',
+    body: 'Set thresholds on the 5-hour or weekly window: per-account or pool-wide. Sentinel fires a native OS notification the moment you cross.',
     placement: 'bottom',
+    icon: BellRing,
+    accent: 'orange',
+    illustration: AlertsIllustration,
+    track: 'core',
+  },
+  {
+    targetId: 'tour-permissions',
+    title: 'Tool permission rules',
+    body: 'Allow or deny specific Claude Code tools by name and arguments. Held blocks surface a 60-second approval banner with approve, deny, or always-allow. Rules sync both ways with Claude Code’s settings.json.',
+    placement: 'bottom',
+    icon: ShieldAlert,
+    accent: 'violet',
+    illustration: PermissionsIllustration,
+    track: 'power',
+  },
+  {
+    targetId: null,
+    title: 'Weekly budget caps',
+    body: 'Set a rolling 7-day USD cap per account or globally across the pool. Crossed caps auto-pause the account from rotation; spend ages out and the cap clears itself. Configure in Settings: Accounts.',
+    placement: 'auto',
+    icon: Wallet,
+    accent: 'green',
+    illustration: BudgetIllustration,
+    track: 'power',
+  },
+  {
+    targetId: 'tab-metrics',
+    title: 'Metrics from Claude Code',
+    body: 'Sentinel auto-receives OpenTelemetry from Claude Code: tokens, cost, cache hit rate and TTL, tool accept rates, and API errors over 7, 14, or 30 day windows.',
+    placement: 'bottom',
+    icon: BarChart3,
+    accent: 'sky',
+    illustration: MetricsIllustration,
+    track: 'power',
   },
   {
     targetId: 'tour-replay',
     title: 'Replay any time',
-    body: 'Click this icon in the header to replay the tour whenever you want. You can dive into Settings then Security to fine-tune what Sentinel protects you from.',
+    body: 'Click this icon in the header to replay the tour. Open Settings to fine-tune scan severity, retention windows, the overage buffer, and more.',
     placement: 'bottom',
+    icon: HelpCircle,
+    accent: 'gray',
+    illustration: ReplayIllustration,
+    track: 'power',
   },
 ];
+
+/** Number of steps in the core (always-shown) track. The first `CORE_STEP_COUNT`
+ *  entries of `TOUR_STEPS` are the core track; the remainder are the power-user
+ *  deep dive shown only on opt-in. */
+export const CORE_STEP_COUNT = TOUR_STEPS.filter((s) => s.track === 'core').length;
