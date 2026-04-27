@@ -7,6 +7,7 @@ import type {
   OAuthAccount,
   AccountInfo,
   ClaudeAiUsageSnapshot,
+  PauseReason,
 } from '@claude-sentinel/shared';
 import { useSettings } from '../hooks/useSettings.js';
 import {
@@ -21,7 +22,7 @@ import {
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { usePausedAccounts, type PausedState } from '../hooks/usePausedAccounts.js';
 import { DUR, EASE_OUT } from '../lib/motion.js';
-import InfoTooltip from './InfoTooltip.js';
+import InfoTooltip, { InfoTooltipRich } from './InfoTooltip.js';
 import ResetCountdown from './ResetCountdown.js';
 
 /** Why the Usage percentages can differ from claude.ai by up to 1 point —
@@ -779,6 +780,20 @@ function utilToPct(util: number | null): number | null {
   return Math.min(100, Math.round(util * 100));
 }
 
+// Short, lowercase phrase for each pause cause. Used in the auto-excluded
+// caption tooltip so the user can see *why* an account was filtered out
+// (vs. the manual "Excluded" badge, which is always user-driven).
+function pauseReasonLabel(reason: PauseReason): string {
+  switch (reason) {
+    case 'sentinel_weekly_rate_limit':
+      return 'weekly limit';
+    case 'sentinel_budget':
+      return 'budget cap';
+    case 'anthropic_overage_disabled':
+      return 'overage disabled';
+  }
+}
+
 // Threshold ladder shared by every round-robin meter (bar + pct text color).
 function meterColors(pct: number | null): { bar: string; text: string } {
   if (pct == null) return { bar: 'bg-[#8E8E93]', text: 'text-[#8E8E93]' };
@@ -918,6 +933,7 @@ function PoolAccountRow({
 function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.ReactElement {
   const { byAccount, refetch } = useAllRateLimits();
   const { settings } = useSettings();
+  const paused = usePausedAccounts();
   const [poolRefreshStatus, setPoolRefreshStatus] = useState<{
     kind: 'ok' | 'err';
     text: string;
@@ -932,11 +948,19 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
     );
     poolRefreshTimerRef.current = setTimeout(() => setPoolRefreshStatus(null), 3000);
   }, [refetch]);
-  // Excluded accounts are sitting out of rotation, so they shouldn't
+  // Manually-excluded accounts are sitting out of rotation, so they shouldn't
   // contribute to the pool averages — the meters should reflect what's
   // actually rotating. Per-account rows still render them (dimmed) so
   // the user can still see their usage.
   const excludedIds = new Set(settings?.poolExcludedIds ?? []);
+
+  // Paused accounts (weekly cap / budget cap / overage disabled) are also
+  // not rotating: the TokenRotator already skips them, so including their
+  // 100%-style utilization in the pool average dragged the meters and the
+  // tray % up against accounts the user can't actually use. Filter them
+  // alongside manual exclusions so the displayed pool reflects the live
+  // working set.
+  const isAutoExcluded = (id: string): boolean => id in paused;
 
   // Precompute every window we render per account in a single pass so the
   // three per-account cards share the same row identities for React keys.
@@ -944,7 +968,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
     const w = byAccount[acct.id];
     return {
       account: acct,
-      inPool: !excludedIds.has(acct.id),
+      inPool: !excludedIds.has(acct.id) && !isAutoExcluded(acct.id),
       fiveH: { util: fiveHourUtilization(w), resetAt: fiveHourResetAt(w) },
       weekly: { util: weeklyUtilization(w), resetAt: weeklyResetAt(w) },
       sonnet: { util: weeklySonnetUtilization(w), resetAt: weeklySonnetResetAt(w) },
@@ -956,6 +980,14 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
   const fiveHUtils = poolRows.map((r) => r.fiveH.util).filter((u): u is number => u != null);
   const weeklyUtils = poolRows.map((r) => r.weekly.util).filter((u): u is number => u != null);
   const sonnetUtils = poolRows.map((r) => r.sonnet.util).filter((u): u is number => u != null);
+
+  // Accounts auto-excluded *only* because they're paused (not via the manual
+  // poolExcludedIds setting). Manually-excluded accounts already render the
+  // "Excluded" badge in their per-account row; surfacing them again here
+  // would double-count them in the caption.
+  const autoExcludedRows = rows.filter(
+    (r) => !excludedIds.has(r.account.id) && isAutoExcluded(r.account.id),
+  );
 
   return (
     <div className="space-y-3 pt-1">
@@ -1014,6 +1046,28 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
               Averages across every account in the round-robin pool. Accounts with no data yet for a
               given window are excluded from that window&apos;s average.
             </p>
+            {autoExcludedRows.length > 0 && (
+              <div className="flex items-start gap-1.5">
+                <p className="text-[10px] text-[#8E8E93] leading-snug">
+                  {autoExcludedRows.length === 1
+                    ? '1 account auto-excluded (paused).'
+                    : `${autoExcludedRows.length} accounts auto-excluded (paused).`}
+                </p>
+                <InfoTooltipRich placement="top">
+                  <p className="font-semibold mb-1">Excluded from pool average</p>
+                  <ul className="space-y-0.5">
+                    {autoExcludedRows.map((r) => {
+                      const state = paused[r.account.id] as PausedState;
+                      return (
+                        <li key={r.account.id}>
+                          {r.account.email} ({pauseReasonLabel(state.reason)})
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </InfoTooltipRich>
+              </div>
+            )}
           </div>
 
           {/* Per-account: 5-Hour Window */}

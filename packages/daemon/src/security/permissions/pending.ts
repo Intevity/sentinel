@@ -45,6 +45,11 @@ interface PendingPermissionEntry {
   detectorId: string;
   source: PendingBlockSource;
   toolName: string;
+  /** Optional pre-truncated scalar field map from the parsed tool_use
+   *  input. Populated only for `permissions_tool_use` callers; forwarded
+   *  verbatim into the `security_block_pending` snapshot. `null` for the
+   *  strip path (no specific call exists yet). */
+  toolInputFields: Record<string, string> | null;
   matchedRule: PermissionRule;
   expiresAt: number;
   timeoutHandle: ReturnType<typeof setTimeout>;
@@ -93,6 +98,10 @@ export interface PermissionsPendingRegistry {
     toolName: string;
     matchedRule: PermissionRule;
     source: 'permissions_strip' | 'permissions_tool_use';
+    /** Optional scalar field map for tool_use sources. Caller is
+     *  responsible for per-field truncation; the registry forwards
+     *  verbatim and omits the field from the snapshot when empty/absent. */
+    toolInputFields?: Record<string, string>;
   }): string;
   /** Resolve via `awaitPendingResolution(pendingId)` — returns a
    *  Promise that settles with 'approve' | 'deny' | 'timeout'. Safe
@@ -151,6 +160,12 @@ export function createPermissionsPendingRegistry(
     expiresAt: entry.expiresAt,
     source: entry.source,
     toolName: entry.toolName,
+    // Omit the field entirely when the caller didn't supply one or it
+    // collapsed to {}. Older clients and the strip path stay byte-
+    // identical to today.
+    ...(entry.toolInputFields && Object.keys(entry.toolInputFields).length > 0
+      ? { toolInputFields: entry.toolInputFields }
+      : {}),
   });
 
   const beginPending = (args: {
@@ -158,6 +173,7 @@ export function createPermissionsPendingRegistry(
     toolName: string;
     matchedRule: PermissionRule;
     source: 'permissions_strip' | 'permissions_tool_use';
+    toolInputFields?: Record<string, string>;
   }): string => {
     const id = randomUUID();
     const holdSec = Math.max(1, deps.getHoldSec());
@@ -229,6 +245,7 @@ export function createPermissionsPendingRegistry(
       detectorId: 'tool_permission_blocked',
       source: args.source,
       toolName: args.toolName,
+      toolInputFields: args.toolInputFields ?? null,
       matchedRule: args.matchedRule,
       expiresAt,
       timeoutHandle,

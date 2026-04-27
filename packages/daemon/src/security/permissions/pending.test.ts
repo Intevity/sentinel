@@ -82,6 +82,69 @@ describe('createPermissionsPendingRegistry', () => {
     expect(list[0]!.pendingId).toBe(id);
   });
 
+  it('beginPending forwards toolInputFields onto the broadcast snapshot and listPending', () => {
+    const deps = makeDeps();
+    const registry = createPermissionsPendingRegistry(deps);
+
+    const id = registry.beginPending({
+      accountId: 'acct-fields',
+      toolName: 'Bash',
+      matchedRule: makeRule({ raw: 'Bash(rm -rf *)' }),
+      source: 'permissions_tool_use',
+      toolInputFields: { command: 'rm -rf /tmp/cache', description: 'cleanup' },
+    });
+
+    const broadcasts = (deps.ipc.broadcast as ReturnType<typeof vi.fn>).mock.calls;
+    const pendingBroadcast = broadcasts.find((c) => c[0]?.type === 'security_block_pending');
+    expect(pendingBroadcast).toBeDefined();
+    expect(pendingBroadcast![0].pending.pendingId).toBe(id);
+    expect(pendingBroadcast![0].pending.toolInputFields).toEqual({
+      command: 'rm -rf /tmp/cache',
+      description: 'cleanup',
+    });
+
+    expect(registry.listPending()[0]!.toolInputFields).toEqual({
+      command: 'rm -rf /tmp/cache',
+      description: 'cleanup',
+    });
+  });
+
+  it('beginPending omits toolInputFields entirely when no map is supplied (strip path)', () => {
+    const deps = makeDeps();
+    const registry = createPermissionsPendingRegistry(deps);
+
+    registry.beginPending({
+      accountId: 'acct-strip',
+      toolName: 'WebFetch',
+      matchedRule: makeRule(),
+      source: 'permissions_strip',
+    });
+
+    const pending = (deps.ipc.broadcast as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c) => c[0]?.type === 'security_block_pending',
+    )![0].pending;
+    expect('toolInputFields' in pending).toBe(false);
+    expect('toolInputFields' in registry.listPending()[0]!).toBe(false);
+  });
+
+  it('beginPending omits toolInputFields when caller passes an empty object', () => {
+    const deps = makeDeps();
+    const registry = createPermissionsPendingRegistry(deps);
+
+    registry.beginPending({
+      accountId: 'acct-empty',
+      toolName: 'Custom',
+      matchedRule: makeRule(),
+      source: 'permissions_tool_use',
+      toolInputFields: {},
+    });
+
+    const pending = (deps.ipc.broadcast as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c) => c[0]?.type === 'security_block_pending',
+    )![0].pending;
+    expect('toolInputFields' in pending).toBe(false);
+  });
+
   it('resolvePending with approve fires onFinalized and broadcasts resolved', () => {
     const deps = makeDeps();
     const registry = createPermissionsPendingRegistry(deps);

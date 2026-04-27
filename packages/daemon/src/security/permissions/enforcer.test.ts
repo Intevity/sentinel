@@ -12,10 +12,12 @@ import {
   extractSessionInfo,
   summarizeToolInput,
   extractToolInputFields,
+  truncateToolInputFields,
   AUTO_MODE_FRESHNESS_MS,
   SESSION_HARD_TIMEOUT_MS,
 } from './enforcer.js';
 import type { Settings } from '@claude-sentinel/shared';
+import { TOOL_INPUT_FIELD_MAX_CHARS } from '@claude-sentinel/shared';
 
 const TEST_DB = (): string =>
   join(tmpdir(), `sentinel-enforcer-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -1339,8 +1341,34 @@ describe('PermissionsEnforcer — triggerTestScenario', () => {
     const pending = enforcer.listPending();
     expect(pending).toHaveLength(1);
     expect(pending[0]!.source).toBe('permissions_tool_use');
+    // Synthetic tool_use input is { url, method }; method is not in
+    // the recognised scalar list so only url surfaces in the field map.
+    expect(pending[0]!.toolInputFields).toEqual({
+      url: 'https://exfil.example.com/drop',
+    });
     // Resolve (deny) → event now recorded.
     expect(enforcer.resolvePending(pending[0]!.pendingId, 'deny')).toBe(true);
     expect(listSecurityEvents(db).length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('truncateToolInputFields', () => {
+  it('caps each field to TOOL_INPUT_FIELD_MAX_CHARS with an ellipsis suffix', () => {
+    const long = 'x'.repeat(TOOL_INPUT_FIELD_MAX_CHARS + 200);
+    const out = truncateToolInputFields({ command: long, file_path: '/tmp/short' });
+    expect(out.command!.length).toBe(TOOL_INPUT_FIELD_MAX_CHARS);
+    expect(out.command!.endsWith('…')).toBe(true);
+    expect(out.file_path).toBe('/tmp/short');
+  });
+
+  it('returns an empty object for an empty input map', () => {
+    expect(truncateToolInputFields({})).toEqual({});
+  });
+
+  it('preserves values at exactly the cap without appending an ellipsis', () => {
+    const exact = 'x'.repeat(TOOL_INPUT_FIELD_MAX_CHARS);
+    const out = truncateToolInputFields({ command: exact });
+    expect(out.command).toBe(exact);
+    expect(out.command!.endsWith('…')).toBe(false);
   });
 });

@@ -23,6 +23,7 @@ import type {
   SecuritySeverity,
   NotificationType,
 } from '@claude-sentinel/shared';
+import { TOOL_INPUT_FIELD_MAX_CHARS } from '@claude-sentinel/shared';
 import type { IpcServer } from '../../ipc.js';
 import { listPermissionRules } from '../../db.js';
 import {
@@ -853,12 +854,24 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
         matchedRule,
         accountId: acc,
       }) => {
-        const pendingId = pendingRegistry.beginPending({
+        // Build the IPC-bound field map up-front: extract recognised
+        // scalars, truncate per-field so a 50KB pasted prompt can't
+        // bloat the broadcast. extractToolInputFields returns {} for
+        // null / non-object / unparseable inputs, so the empty-object
+        // guard below covers those cases.
+        const truncatedFields = truncateToolInputFields(
+          extractToolInputFields(toolName, toolInput),
+        );
+        const beginArgs: Parameters<typeof pendingRegistry.beginPending>[0] = {
           accountId: acc,
           toolName,
           matchedRule,
           source: 'permissions_tool_use',
-        });
+        };
+        if (Object.keys(truncatedFields).length > 0) {
+          beginArgs.toolInputFields = truncatedFields;
+        }
+        const pendingId = pendingRegistry.beginPending(beginArgs);
         // Stash the parsed tool input so the onFinalized hook can
         // persist a full snippet into the Security history.
         pendingToolInputs.set(pendingId, toolInput);
@@ -908,12 +921,19 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
         : null;
 
     if (scenario === 'permissions-tool-use-pending') {
-      const pendingId = pendingRegistry.beginPending({
+      const truncatedFields = truncateToolInputFields(
+        extractToolInputFields(syntheticRule.tool, syntheticInput),
+      );
+      const beginArgs: Parameters<typeof pendingRegistry.beginPending>[0] = {
         accountId,
         toolName: syntheticRule.tool,
         matchedRule: syntheticRule,
         source: 'permissions_tool_use',
-      });
+      };
+      if (Object.keys(truncatedFields).length > 0) {
+        beginArgs.toolInputFields = truncatedFields;
+      }
+      const pendingId = pendingRegistry.beginPending(beginArgs);
       pendingToolInputs.set(pendingId, syntheticInput);
       return;
     }
@@ -1003,5 +1023,21 @@ export function extractToolInputFields(
   }
   // Tool-specific niceties — future extensions land here.
   void toolName;
+  return out;
+}
+
+/**
+ * Per-field truncate to {@link TOOL_INPUT_FIELD_MAX_CHARS}. Run on the
+ * daemon side before IPC broadcast so a single huge value (a 50KB pasted
+ * prompt, a generated SQL blob) can't bloat every connected client's
+ * pending snapshot. Returns a fresh object; the input map is untouched.
+ */
+export function truncateToolInputFields(
+  fields: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    out[k] = truncate(v, TOOL_INPUT_FIELD_MAX_CHARS);
+  }
   return out;
 }

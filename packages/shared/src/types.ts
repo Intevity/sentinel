@@ -582,7 +582,20 @@ export interface PendingSecurityBlock {
   /** Present only for permission-block sources. The tool name that was
    *  blocked (e.g. "Bash"); the banner surfaces this alongside the rule raw. */
   toolName?: string;
+  /** Present only for `permissions_tool_use` blocks, where we have a
+   *  parsed tool_use input. Map of recognised scalar fields (e.g.
+   *  `command`, `url`, `file_path`) to their string values, each
+   *  truncated daemon-side to {@link TOOL_INPUT_FIELD_MAX_CHARS}. The
+   *  banner renders these as labelled monospace rows so the user can
+   *  see exactly what Claude was about to invoke before approving. The
+   *  `permissions_strip` path has no specific input, and `scanner`
+   *  blocks have no toolInput, so the field is absent for both. */
+  toolInputFields?: Record<string, string>;
 }
+
+/** Per-field character cap for {@link PendingSecurityBlock.toolInputFields}.
+ *  Truncated daemon-side before broadcast, with `…` suffix when applied. */
+export const TOOL_INPUT_FIELD_MAX_CHARS = 500;
 
 export type SecuritySeverity = 'low' | 'medium' | 'high';
 

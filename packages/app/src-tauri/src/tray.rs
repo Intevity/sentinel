@@ -44,6 +44,15 @@ pub struct TrayState {
     /// enrolled account. Synced from the `poolExcludedIds` field of
     /// `settings_changed` broadcasts. Ignored in Off mode.
     pool_excluded_ids: HashSet<String>,
+    /// Sentinel ids the daemon has paused (weekly rate limit, budget cap,
+    /// or overage disabled). Treated like pool exclusions for the RR mean:
+    /// the TokenRotator already skips them, so a paused account at 100%
+    /// utilization shouldn't drag the displayed % up against accounts the
+    /// user can actually use. Seeded via `get_paused_accounts` and updated
+    /// by `account_paused` / `account_unpaused` broadcasts. Ignored in Off
+    /// mode (the active-account % comes straight from utilizations, not
+    /// from a pool aggregate).
+    paused_ids: HashSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -150,6 +159,7 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         active_email: None,
         utilizations: HashMap::new(),
         pool_excluded_ids: HashSet::new(),
+        paused_ids: HashSet::new(),
     }));
     app.manage(state);
 
@@ -176,6 +186,10 @@ pub async fn seed(app: &AppHandle) {
         .await
         .ok()
         .and_then(|r| r.data);
+    let paused = ipc::send_internal(serde_json::json!({"type": "get_paused_accounts"}))
+        .await
+        .ok()
+        .and_then(|r| r.data);
 
     let mut guard = state.lock().await;
     if let Some(s) = settings.as_ref() {
@@ -186,6 +200,9 @@ pub async fn seed(app: &AppHandle) {
     }
     if let Some(r) = all_rl.as_ref() {
         guard.apply_all_rate_limits(r);
+    }
+    if let Some(p) = paused.as_ref() {
+        guard.apply_paused_accounts(p);
     }
     guard.apply();
 }
@@ -241,6 +258,22 @@ pub async fn handle_daemon_message(value: Value, app: AppHandle) {
             // the new account id and its initial rate-limit windows.
             seed(&app).await;
         }
+        "account_paused" => {
+            if let Some(id) = value.get("accountId").and_then(Value::as_str) {
+                let Some(state) = app.try_state::<SharedTrayState>() else { return };
+                let mut guard = state.inner().clone().lock_owned().await;
+                guard.paused_ids.insert(id.to_string());
+                guard.apply();
+            }
+        }
+        "account_unpaused" => {
+            if let Some(id) = value.get("accountId").and_then(Value::as_str) {
+                let Some(state) = app.try_state::<SharedTrayState>() else { return };
+                let mut guard = state.inner().clone().lock_owned().await;
+                guard.paused_ids.remove(id);
+                guard.apply();
+            }
+        }
         _ => {}
     }
 }
@@ -284,12 +317,13 @@ impl TrayState {
                 }
             }
         }
-        // Prune utilizations + exclusion set for accounts that no longer
-        // exist. Without the second retain, a removed account's id could
-        // stay in pool_excluded_ids forever — harmless today (the filter
-        // ignores missing ids) but slowly grows the set.
+        // Prune utilizations + exclusion set + paused set for accounts that
+        // no longer exist. Without the retains, a removed account's id
+        // could linger forever — harmless today (the filters ignore
+        // missing ids) but slowly grows the sets.
         self.utilizations.retain(|k, _| live_ids.contains(k));
         self.pool_excluded_ids.retain(|k| live_ids.contains(k));
+        self.paused_ids.retain(|k| live_ids.contains(k));
         if arr.is_empty() {
             self.active_id = None;
             self.active_email = None;
@@ -302,6 +336,18 @@ impl TrayState {
             self.utilizations
                 .insert(account_id.clone(), extract_5h_util(windows));
         }
+    }
+
+    fn apply_paused_accounts(&mut self, paused_json: &Value) {
+        // `get_paused_accounts` returns an array of
+        // { accountId, reason, resetsAt } — we only need the ids for the
+        // round-robin filter. Replace (don't merge) so a freshly-cleared
+        // pause set doesn't leave stale ids around.
+        let Some(arr) = paused_json.as_array() else { return };
+        self.paused_ids = arr
+            .iter()
+            .filter_map(|v| v.get("accountId").and_then(Value::as_str).map(str::to_string))
+            .collect();
     }
 
     fn apply_active_from_oauth_account(&mut self, to: &Value) {
@@ -337,12 +383,16 @@ fn compute_display(state: &TrayState) -> Option<u8> {
     match state.switching_mode {
         SwitchingMode::RoundRobin => {
             // Only accounts actually rotating contribute to the pool mean.
-            // An excluded account at 100% used to drag the displayed %
-            // upwards even though its traffic was zero — that's the bug.
+            // An excluded or paused account at 100% used to drag the
+            // displayed % upwards even though its traffic was zero — both
+            // sets are filtered the same way for the same reason.
             let known: Vec<f32> = state
                 .utilizations
                 .iter()
-                .filter(|(id, _)| !state.pool_excluded_ids.contains(*id))
+                .filter(|(id, _)| {
+                    !state.pool_excluded_ids.contains(*id)
+                        && !state.paused_ids.contains(*id)
+                })
                 .filter_map(|(_, v)| *v)
                 .collect();
             if known.is_empty() {
@@ -381,12 +431,16 @@ fn format_status_text(state: &TrayState, pct: Option<u8>) -> String {
     match state.switching_mode {
         SwitchingMode::RoundRobin => {
             // Count only rotating members so the "pool" label agrees with
-            // the percentage (which is already filtered). An excluded-only
-            // view shows "Claude Sentinel" rather than a stale pool count.
+            // the percentage (which is already filtered). An excluded- or
+            // paused-only view shows "Claude Sentinel" rather than a stale
+            // pool count.
             let pool_size = state
                 .utilizations
                 .keys()
-                .filter(|k| !state.pool_excluded_ids.contains(*k))
+                .filter(|k| {
+                    !state.pool_excluded_ids.contains(*k)
+                        && !state.paused_ids.contains(*k)
+                })
                 .count();
             if pool_size == 0 {
                 "Claude Sentinel".to_string()
@@ -487,6 +541,7 @@ mod tests {
         active_id: Option<String>,
         utilizations: HashMap<String, Option<f32>>,
         pool_excluded_ids: HashSet<String>,
+        paused_ids: HashSet<String>,
     }
 
     impl StateMirror {
@@ -496,6 +551,7 @@ mod tests {
                 active_id: None,
                 utilizations: HashMap::new(),
                 pool_excluded_ids: HashSet::new(),
+                paused_ids: HashSet::new(),
             }
         }
     }
@@ -507,7 +563,9 @@ mod tests {
                 let known: Vec<f32> = s
                     .utilizations
                     .iter()
-                    .filter(|(id, _)| !s.pool_excluded_ids.contains(*id))
+                    .filter(|(id, _)| {
+                        !s.pool_excluded_ids.contains(*id) && !s.paused_ids.contains(*id)
+                    })
                     .filter_map(|(_, v)| *v)
                     .collect();
                 if known.is_empty() {
@@ -592,5 +650,67 @@ mod tests {
         assert_eq!(SwitchingMode::from_str("off"), SwitchingMode::Off);
         assert_eq!(SwitchingMode::from_str("round-robin"), SwitchingMode::RoundRobin);
         assert_eq!(SwitchingMode::from_str("garbage"), SwitchingMode::Off);
+    }
+
+    #[test]
+    fn compute_display_round_robin_excludes_paused_ids() {
+        // A weekly-capped account stays at 100% util but stops rotating —
+        // including it in the pool mean made the tray % look way worse than
+        // the accounts the user could actually use. Filter same as
+        // pool_excluded_ids: 12% + 100% (paused) → 12%, not 56%.
+        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        s.utilizations.insert("rotating".to_string(), Some(0.12));
+        s.utilizations.insert("paused".to_string(), Some(1.00));
+        s.paused_ids.insert("paused".to_string());
+        assert_eq!(compute_mirror(&s), Some(12));
+    }
+
+    #[test]
+    fn compute_display_round_robin_excludes_pool_excluded_and_paused() {
+        // Both filters apply: only the lone rotating account contributes.
+        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        s.utilizations.insert("rotating".to_string(), Some(0.30));
+        s.utilizations.insert("manual_excl".to_string(), Some(0.95));
+        s.utilizations.insert("paused".to_string(), Some(1.00));
+        s.pool_excluded_ids.insert("manual_excl".to_string());
+        s.paused_ids.insert("paused".to_string());
+        assert_eq!(compute_mirror(&s), Some(30));
+    }
+
+    #[test]
+    fn compute_display_round_robin_all_paused_returns_none() {
+        // If every known account is paused there's nothing to display.
+        // Mirrors the all-excluded case so the icon goes gray rather than
+        // showing an arbitrary number from a stale value.
+        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        s.utilizations.insert("a".to_string(), Some(0.5));
+        s.utilizations.insert("b".to_string(), Some(0.8));
+        s.paused_ids.insert("a".to_string());
+        s.paused_ids.insert("b".to_string());
+        assert_eq!(compute_mirror(&s), None);
+    }
+
+    #[test]
+    fn apply_paused_accounts_replaces_state() {
+        // The IPC payload shape: array of objects with accountId. Reason
+        // and resetsAt are present in the daemon response but the tray
+        // doesn't need them — only the id set drives filtering.
+        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        s.paused_ids.insert("stale".to_string());
+        // Inline the parse logic (apply_paused_accounts is on TrayState
+        // proper, not StateMirror — but the contract is "replace").
+        let payload = json!([
+            { "accountId": "fresh-a", "reason": "sentinel_weekly_rate_limit", "resetsAt": 1 },
+            { "accountId": "fresh-b", "reason": "sentinel_budget", "resetsAt": null },
+        ]);
+        s.paused_ids = payload
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.get("accountId").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        assert!(!s.paused_ids.contains("stale"));
+        assert!(s.paused_ids.contains("fresh-a"));
+        assert!(s.paused_ids.contains("fresh-b"));
     }
 }

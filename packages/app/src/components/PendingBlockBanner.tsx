@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Shield, ShieldAlert, ShieldX, ShieldCheck, X } from 'lucide-react';
 import type { PendingSecurityBlock, SecuritySeverity } from '@claude-sentinel/shared';
 import { usePendingSecurityBlocks } from '../hooks/usePendingSecurityBlocks.js';
+import { orderedToolInputRows } from '../lib/toolInputFields.js';
 
 const SEVERITY_ICON: Record<SecuritySeverity, typeof Shield> = {
   low: Shield,
@@ -124,6 +125,20 @@ function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): R
             <code className="inline-block mt-1.5 text-[10px] font-mono bg-black/5 dark:bg-white/10 px-1.5 py-0.5 rounded">
               {entry.matchMask}
             </code>
+          )}
+          {entry.toolInputFields && (
+            <div className="mt-1.5 space-y-1">
+              {orderedToolInputRows(entry.toolInputFields).map(({ key, value }) => (
+                <div key={key} className="flex items-start gap-1.5 text-[10px] font-mono">
+                  <span className="flex-shrink-0 text-black/50 dark:text-white/45 select-none">
+                    {key}
+                  </span>
+                  <span className="flex-1 min-w-0 bg-black/5 dark:bg-white/10 px-1.5 py-0.5 rounded break-all whitespace-pre-wrap">
+                    {value}
+                  </span>
+                </div>
+              ))}
+            </div>
           )}
         </div>
         {/* Quick-dismiss X — same effect as letting the timer expire,
