@@ -7,12 +7,7 @@ export default function WelcomeIllustration({
   className?: string;
 }): React.ReactElement {
   return (
-    <svg
-      viewBox="0 0 200 80"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden
-    >
+    <svg viewBox="0 0 200 80" xmlns="http://www.w3.org/2000/svg" className={className} aria-hidden>
       <defs>
         <linearGradient id="welcome-shield" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="currentColor" stopOpacity="0.95" />

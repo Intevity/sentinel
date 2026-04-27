@@ -1032,9 +1032,7 @@ export function extractToolInputFields(
  * prompt, a generated SQL blob) can't bloat every connected client's
  * pending snapshot. Returns a fresh object; the input map is untouched.
  */
-export function truncateToolInputFields(
-  fields: Record<string, string>,
-): Record<string, string> {
+export function truncateToolInputFields(fields: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(fields)) {
     out[k] = truncate(v, TOOL_INPUT_FIELD_MAX_CHARS);

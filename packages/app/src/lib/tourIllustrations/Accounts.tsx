@@ -9,12 +9,7 @@ export default function AccountsIllustration({
   className?: string;
 }): React.ReactElement {
   return (
-    <svg
-      viewBox="0 0 200 80"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden
-    >
+    <svg viewBox="0 0 200 80" xmlns="http://www.w3.org/2000/svg" className={className} aria-hidden>
       {AVATAR_COLORS.map((color, i) => (
         <motion.g
           key={color}

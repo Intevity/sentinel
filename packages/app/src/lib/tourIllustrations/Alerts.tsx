@@ -7,12 +7,7 @@ export default function AlertsIllustration({
   className?: string;
 }): React.ReactElement {
   return (
-    <svg
-      viewBox="0 0 200 80"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden
-    >
+    <svg viewBox="0 0 200 80" xmlns="http://www.w3.org/2000/svg" className={className} aria-hidden>
       {/* Pulsing radial waves */}
       {[0, 0.6, 1.2].map((delay, i) => (
         <motion.circle
@@ -43,10 +38,7 @@ export default function AlertsIllustration({
         />
         <circle cx={100} cy={20} r={2.5} fill="currentColor" />
         {/* Clapper */}
-        <path
-          d="M96 50 C96 53 98 55 100 55 C102 55 104 53 104 50 Z"
-          fill="currentColor"
-        />
+        <path d="M96 50 C96 53 98 55 100 55 C102 55 104 53 104 50 Z" fill="currentColor" />
       </motion.g>
     </svg>
   );

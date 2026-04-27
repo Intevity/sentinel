@@ -14,12 +14,7 @@ export default function BudgetIllustration({
   const circumference = 2 * Math.PI * r;
   const fillFraction = 0.7;
   return (
-    <svg
-      viewBox="0 0 200 80"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden
-    >
+    <svg viewBox="0 0 200 80" xmlns="http://www.w3.org/2000/svg" className={className} aria-hidden>
       {/* Track */}
       <circle
         cx={cx}

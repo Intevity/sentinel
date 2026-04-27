@@ -10,12 +10,7 @@ export default function ReplayIllustration({
   const cy = 42;
   const r = 18;
   return (
-    <svg
-      viewBox="0 0 200 80"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden
-    >
+    <svg viewBox="0 0 200 80" xmlns="http://www.w3.org/2000/svg" className={className} aria-hidden>
       {/* Background pulse */}
       <motion.circle
         cx={cx}

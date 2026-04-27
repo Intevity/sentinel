@@ -16,12 +16,7 @@ export default function RoundRobinIllustration({
   const cy = 42;
   const r = 22;
   return (
-    <svg
-      viewBox="0 0 200 80"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden
-    >
+    <svg viewBox="0 0 200 80" xmlns="http://www.w3.org/2000/svg" className={className} aria-hidden>
       {/* Rotating dashed orbit */}
       <motion.g
         style={{ originX: `${cx}px`, originY: `${cy}px` }}
