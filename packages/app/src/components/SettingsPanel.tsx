@@ -256,6 +256,9 @@ export default function SettingsPanel({
   const setClaudeCodeSyncEnabled = (v: boolean): void => {
     void update({ claudeCodeSyncEnabled: v }).catch(() => undefined);
   };
+  const setIncidentReplayEnabled = (v: boolean): void => {
+    void update({ securityIncidentReplay: v }).catch(() => undefined);
+  };
   const setOversizedThresholdMb = (n: number): void => {
     void update({ securityOversizedThresholdMb: n }).catch(() => undefined);
   };
@@ -897,6 +900,12 @@ export default function SettingsPanel({
                       checked={settings.securityPersistSnippet}
                       onChange={setPersistSnippet}
                     />
+                    <ToggleRow
+                      label="Capture forensic incident replay"
+                      description="When a high-severity event blocks a request, snapshot the recent tool-use messages from that session to help reconstruct what happened. Privacy-sensitive: messages persist until retention sweeps them. Off by default."
+                      checked={settings.securityIncidentReplay}
+                      onChange={setIncidentReplayEnabled}
+                    />
                     <div className="px-3 py-2.5">
                       <div className="flex items-center justify-between text-[11px] text-[#8E8E93] mb-1">
                         <span>Event retention</span>
@@ -907,7 +916,7 @@ export default function SettingsPanel({
                       <input
                         type="range"
                         min={1}
-                        max={365}
+                        max={3650}
                         step={1}
                         value={settings.securityEventRetentionDays}
                         onChange={(e) => setRetentionDays(Number(e.target.value))}

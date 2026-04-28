@@ -404,6 +404,23 @@ export interface TestOAuthUrlOpenedMessage {
   url: string;
 }
 
+/** Sprint 8 audit log integrity: the daemon's chain walker found a
+ *  break in `security_events` (a row whose `payload_hash` doesn't match
+ *  what the chain says it should be, OR a row whose `prev_hash` doesn't
+ *  point to the previous row's `payload_hash`). Emitted on startup and
+ *  every 24h. Surfaces in the UI as a permanent banner: integrity-broken
+ *  audit logs cannot be silently re-keyed without notifying the user. */
+export interface AuditLogTamperedMessage {
+  type: 'audit_log_tampered';
+  /** Row id of the first chain break. For tooling: the verifier walks
+   *  oldest → newest and stops at the first mismatch, so this is the
+   *  earliest broken row. */
+  brokenAtRowId: number;
+  /** Human-readable description of what mismatched, e.g.
+   *  "payload_hash mismatch" or "prev_hash does not link to id 17". */
+  reason: string;
+}
+
 /** Sprint 2 anti-tamper: the daemon detected that `settings.json` (or its
  *  sidecar `settings.json.sig`) was modified by something other than the
  *  daemon itself. Emitted on startup and on every reload that fails the
@@ -457,6 +474,7 @@ export type DaemonToAppMessage =
   | PermissionRulesChangedMessage
   | PermissionsStatusMessage
   | SettingsTamperDetectedMessage
+  | AuditLogTamperedMessage
   | TestOAuthUrlOpenedMessage;
 
 // ─── App → Daemon messages ────────────────────────────────────────────────────
@@ -764,6 +782,27 @@ export interface RemovePermissionBypassMessage {
   id: number;
 }
 
+/** Sprint 8 forensics: fetch the captured tool-use messages for a
+ *  security event id. Returns null when no replay was captured for
+ *  that event (default — replay is opt-in via `securityIncidentReplay`). */
+export interface GetIncidentReplayMessage {
+  type: 'get_incident_replay';
+  eventId: number;
+}
+
+/** Sprint 8 forensics: produce a self-contained signed snapshot of the
+ *  full audit log (security_events + chain summary rows) for offline
+ *  analysis. Optional filters scope the export. The integrity tip hash
+ *  is included so a downstream verifier can confirm chain continuity. */
+export interface ExportAuditLogSignedMessage {
+  type: 'export_audit_log_signed';
+  /** When set, only events for this account id. Summary rows are scoped
+   *  globally; downstream tools can ignore them when filtering. */
+  accountId?: string;
+  /** Lower bound on event timestamp (ms epoch). Inclusive. */
+  sinceTs?: number;
+}
+
 /** Force a one-shot pull from Claude Code's settings.json into
  *  Sentinel. Used by the Settings "Import now" button when the user
  *  wants to reconcile without toggling the engine on/off. Applies
@@ -1059,6 +1098,8 @@ export type AppToDaemonMessage =
   | RemoveSecurityAllowlistMessage
   | GetPermissionBypassesMessage
   | RemovePermissionBypassMessage
+  | GetIncidentReplayMessage
+  | ExportAuditLogSignedMessage
   | RunScanBenchmarkMessage
   | ClaudeSyncPullMessage
   | ClaudeSyncPushMessage

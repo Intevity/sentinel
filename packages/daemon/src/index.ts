@@ -41,6 +41,9 @@ import {
   clearSecurityEvents,
   purgeSecurityEventsOlderThan,
   purgeTelemetryOlderThan,
+  walkChain,
+  listIncidentReplay,
+  listAuditExport,
   addSecurityAllowlist,
   removeSecurityAllowlist,
   listSecurityAllowlist,
@@ -81,6 +84,8 @@ import {
 } from './alerts.js';
 import { createSecurityScanner } from './security/scanner.js';
 import { createPermissionsEnforcer } from './security/permissions/enforcer.js';
+import { createIncidentReplayRecorder } from './security/incident-replay.js';
+import { redactSecretsInString } from './security/detectors.js';
 import { createClaudeSyncEngine } from './security/permissions/claude-sync.js';
 import { runScanBenchmark } from './security/scanner-benchmark.js';
 import { parseRule as parsePermissionRule } from './security/permissions/parser.js';
@@ -1554,6 +1559,47 @@ export async function startDaemon(): Promise<DaemonHandle> {
         break;
       }
 
+      case 'get_incident_replay': {
+        try {
+          const replay = listIncidentReplay(db, msg.eventId);
+          respond({ requestType: 'get_incident_replay', success: true, data: replay });
+          /* v8 ignore next 4 */
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          respond({ requestType: 'get_incident_replay', success: false, error: message });
+        }
+        break;
+      }
+
+      case 'export_audit_log_signed': {
+        try {
+          const opts: { accountId?: string; sinceTs?: number } = {};
+          if (msg.accountId !== undefined) opts.accountId = msg.accountId;
+          if (msg.sinceTs !== undefined) opts.sinceTs = msg.sinceTs;
+          const entries = listAuditExport(db, opts);
+          const tipPayloadHash = entries.length > 0 ? entries[entries.length - 1]!.payloadHash : '';
+          const exportPayload = {
+            integrity: {
+              algorithm: 'sha256',
+              tipPayloadHash,
+              count: entries.length,
+              generatedAt: Date.now(),
+            },
+            entries,
+          };
+          respond({
+            requestType: 'export_audit_log_signed',
+            success: true,
+            data: exportPayload,
+          });
+          /* v8 ignore next 4 */
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          respond({ requestType: 'export_audit_log_signed', success: false, error: message });
+        }
+        break;
+      }
+
       case 'claude_sync_pull': {
         // Honour the caller's initial-merge preference for first-enable.
         // Subsequent manual pulls default to 'merge' which leaves
@@ -2188,20 +2234,58 @@ export async function startDaemon(): Promise<DaemonHandle> {
     );
   });
 
-  // Purge stale security events per the retention window. Runs once at
-  // startup; rows continue to accumulate between restarts.
-  try {
-    const cutoff = Date.now() - currentSettings.securityEventRetentionDays * 24 * 60 * 60 * 1000;
-    const purged = purgeSecurityEventsOlderThan(db, cutoff);
-    if (purged > 0) {
-      console.log(
-        `[Security] Purged ${purged} security event(s) older than ${currentSettings.securityEventRetentionDays} days`,
-      );
+  // Purge stale security events per the retention window. Sprint 8
+  // upgrades this from a one-shot to a 24h timer to match telemetry
+  // retention's cadence, and the underlying purge now writes summary
+  // bridge rows so the audit log chain stays internally consistent
+  // across the gap. Without that, walkChain would flag a chain break
+  // every time retention deleted a row.
+  const runSecurityEventPurge = (): void => {
+    try {
+      const cutoff = Date.now() - currentSettings.securityEventRetentionDays * 24 * 60 * 60 * 1000;
+      const purged = purgeSecurityEventsOlderThan(db, cutoff);
+      if (purged > 0) {
+        console.log(
+          `[Security] Purged ${purged} security event(s) older than ${currentSettings.securityEventRetentionDays} days`,
+        );
+      }
+      /* v8 ignore next 3 */
+    } catch (err) {
+      console.error('[Security] retention purge failed:', err);
     }
-    /* v8 ignore next 3 */
-  } catch (err) {
-    console.error('[Security] retention purge failed:', err);
-  }
+  };
+  runSecurityEventPurge();
+  const securityEventPurgeTimer = setInterval(runSecurityEventPurge, 24 * 60 * 60 * 1000);
+
+  // Sprint 8 audit log integrity: walk the chain at startup and once
+  // per 24h. A break means either retention got out of sync (bug) or
+  // someone tampered directly with the SQLite file out of band. Either
+  // way the user needs to know — broadcast `audit_log_tampered` so the
+  // UI can render a banner.
+  const runChainIntegrityCheck = (): void => {
+    try {
+      const result = walkChain(db);
+      if (result.ok) {
+        console.log(
+          `[Security] audit chain OK (${result.eventCount} event(s), ${result.summaryCount} bridge row(s), tip=${result.tipPayloadHash.slice(0, 12)}…)`,
+        );
+        return;
+      }
+      console.error(
+        `[Security] audit chain BROKEN at row id=${result.brokenAtRowId}: ${result.reason}`,
+      );
+      ipcServer.broadcast({
+        type: 'audit_log_tampered',
+        brokenAtRowId: result.brokenAtRowId,
+        reason: result.reason,
+      });
+      /* v8 ignore next 3 */
+    } catch (err) {
+      console.error('[Security] chain integrity check failed:', err);
+    }
+  };
+  runChainIntegrityCheck();
+  const chainIntegrityTimer = setInterval(runChainIntegrityCheck, 24 * 60 * 60 * 1000);
 
   // Purge stale OTEL telemetry (usage_events, tool_events, api_errors,
   // activity_events) per the retention window. Runs once at startup and
@@ -2246,6 +2330,18 @@ export async function startDaemon(): Promise<DaemonHandle> {
   runRequestLogPurge();
   const requestLogPurgeTimer = setInterval(runRequestLogPurge, 24 * 60 * 60 * 1000);
 
+  // Sprint 8 forensic incident replay recorder. Built once and shared
+  // with both scanner + enforcer so the same in-memory ring buffer is
+  // captured regardless of which subsystem fires the security event.
+  // The recorder's redact function is the secret-detector pipeline so
+  // any secrets in tool-use messages are masked at push time, not at
+  // capture time — a buffer leak via memory dump reveals only the
+  // masked form.
+  const incidentReplay = createIncidentReplayRecorder({
+    db,
+    redact: redactSecretsInString,
+  });
+
   // Build the security scanner. Settings getter is passed as a thunk so the
   // scanner re-reads toggles and enforcement-mode on every request without
   // needing a restart.
@@ -2253,6 +2349,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     db,
     ipcServer,
     getSettings: () => currentSettings,
+    incidentReplay,
   });
 
   // Build the permission enforcer. Compiled rule cache is invalidated on
@@ -2261,6 +2358,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     db,
     ipcServer,
     getSettings: () => currentSettings,
+    incidentReplay,
   });
 
   // Claude Code auto-sync engine. Owns the file watcher lifecycle.
@@ -2535,6 +2633,8 @@ export async function startDaemon(): Promise<DaemonHandle> {
     claudeAiUsageStore.stop();
     clearInterval(telemetryPurgeTimer);
     clearInterval(requestLogPurgeTimer);
+    clearInterval(securityEventPurgeTimer);
+    clearInterval(chainIntegrityTimer);
     spendTracker.stop();
     permissionsEnforcer.shutdown();
     ipcServer.close();

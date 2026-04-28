@@ -37,6 +37,7 @@ import {
 } from './settings/primitives.js';
 import InfoTooltip from './InfoTooltip.js';
 import { describeScanSummary } from '../lib/securityScanSummary.js';
+import { sendToSentinel } from '../lib/ipc.js';
 
 /** Inline two-click confirm: first click transitions into `pending`
  *  state which reverts after `timeoutMs`. Second click while pending
@@ -1141,6 +1142,7 @@ function SecurityRow({
             <code className="text-[10px] font-mono text-[#8E8E93]">{event.detectorId}</code>{' '}
             <span className="text-[#8E8E93]">(conf {event.confidence.toFixed(2)})</span>
           </div>
+          <ReplayContextSection eventId={event.id} />
           <div className="pt-1.5 flex items-center justify-between gap-2">
             {isSynthetic ? (
               <>
@@ -1188,6 +1190,94 @@ function SecurityRow({
               </>
             )}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Sprint 8 — surface the captured forensic incident replay (if any)
+ *  for an expanded security event. Lazy-loads the row from the daemon
+ *  on first render; renders nothing if no capture exists, which is the
+ *  common case (the setting is off by default). */
+interface ReplayMessageRow {
+  ts: number;
+  role: string;
+  text: string;
+  tool?: string;
+}
+interface ReplayPayload {
+  eventId: number;
+  capturedAt: number;
+  messages: ReplayMessageRow[];
+}
+function ReplayContextSection({ eventId }: { eventId: number }): React.ReactElement | null {
+  const [state, setState] = useState<
+    | { status: 'idle' }
+    | { status: 'loading' }
+    | { status: 'empty' }
+    | { status: 'loaded'; data: ReplayPayload }
+    | { status: 'error'; message: string }
+  >({ status: 'idle' });
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ status: 'loading' });
+    void sendToSentinel({ type: 'get_incident_replay', eventId })
+      .then((res) => {
+        if (cancelled) return;
+        if (!res.success) {
+          setState({ status: 'error', message: res.error ?? 'replay fetch failed' });
+          return;
+        }
+        const payload = res.data as ReplayPayload | null | undefined;
+        if (!payload) {
+          setState({ status: 'empty' });
+          return;
+        }
+        setState({ status: 'loaded', data: payload });
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setState({
+          status: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [eventId]);
+
+  if (state.status === 'idle' || state.status === 'loading' || state.status === 'empty') {
+    return null;
+  }
+  if (state.status === 'error') return null;
+
+  const { data } = state;
+  return (
+    <div className="pt-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-[10px] font-semibold text-ios-blue hover:underline"
+      >
+        {open ? 'Hide' : 'Replay context'} ({data.messages.length} message
+        {data.messages.length === 1 ? '' : 's'})
+      </button>
+      {open && (
+        <div className="mt-1 space-y-1 border-l-2 border-ios-blue/30 pl-2">
+          {data.messages.map((m, i) => (
+            <div key={i} className="text-[10px] leading-snug">
+              <span className="text-[#8E8E93] font-mono">
+                {new Date(m.ts).toLocaleTimeString()}
+              </span>{' '}
+              <span className="font-semibold text-black dark:text-white">{m.role}</span>
+              {m.tool ? <span className="text-[#8E8E93]"> [{m.tool}]</span> : null}
+              <p className="text-black/80 dark:text-white/80 break-words font-mono">{m.text}</p>
+            </div>
+          ))}
         </div>
       )}
     </div>

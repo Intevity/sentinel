@@ -415,6 +415,16 @@ export interface Settings {
    *  the effective result. Default false. */
   cacheTtlForceOneHour: boolean;
 
+  /** When true, the daemon captures up to the last 10 tool-use messages
+   *  per session into an in-memory ring buffer. When a security_event
+   *  of severity ≥ medium fires under `block_high` or `block_medium_high`
+   *  enforcement, that buffer is snapshotted (with secrets redacted) into
+   *  the `incident_replays` table keyed by event id. The Security tab
+   *  surfaces a "Replay context" button on events that have a replay row.
+   *  Off by default for privacy: capturing message text, even redacted,
+   *  is more invasive than recording detector findings alone. */
+  securityIncidentReplay: boolean;
+
   // ─── Onboarding state ──────────────────────────────────────────────
   /** True once the user has either applied a risk-profile preset in the
    *  Security Setup Wizard or explicitly dismissed it. The wizard fires

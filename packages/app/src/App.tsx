@@ -42,6 +42,7 @@ import Tour from './components/Tour.js';
 import type { TourStep } from './lib/tourSteps.js';
 import LogsViewer from './components/LogsViewer.js';
 import PendingBlockBanner from './components/PendingBlockBanner.js';
+import AuditTamperBanner from './components/AuditTamperBanner.js';
 import Footer from './components/Footer.js';
 import { useAutoResizeWindow } from './hooks/useAutoResizeWindow.js';
 import { useDaemon } from './hooks/useDaemon.js';
@@ -448,6 +449,11 @@ export default function App(): React.ReactElement {
           </main>
         ) : (
           <>
+            {/* ── Sprint 8: audit-log integrity break ─────────────── */}
+            {/* Rendered first so a chain-tamper warning can't be missed
+              behind a stack of routine banners. */}
+            <AuditTamperBanner />
+
             {/* ── Security: pending block approval banner ──────────── */}
             {/* Rendered above the other banners so a blocked request can't be
               missed. Takes visual priority while any block is held. */}

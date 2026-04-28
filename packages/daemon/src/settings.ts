@@ -83,6 +83,7 @@ export const DEFAULT_SETTINGS: Settings = {
   securityMuteScanSkipped: false,
   lastScanBenchmark: null,
   claudeCodeSyncEnabled: false,
+  securityIncidentReplay: false,
   logLevel: 'info',
   requestLoggingEnabled: false,
   requestLogRetentionDays: 7,
@@ -222,7 +223,10 @@ function coerce(raw: unknown): Settings {
   }
   if (typeof obj['securityEventRetentionDays'] === 'number') {
     const n = Math.floor(obj['securityEventRetentionDays']);
-    if (n >= 1 && n <= 365) next.securityEventRetentionDays = n;
+    // Sprint 8 raised the cap from 365 → 3650 (10y) for compliance use cases
+    // that demand long-horizon audit retention. Default stays 30; the value
+    // is purely a user-configurable cap on retention sweep cutoffs.
+    if (n >= 1 && n <= 3650) next.securityEventRetentionDays = n;
   }
   if (typeof obj['securityBlockHoldEnabled'] === 'boolean') {
     next.securityBlockHoldEnabled = obj['securityBlockHoldEnabled'];
@@ -316,6 +320,9 @@ function coerce(raw: unknown): Settings {
   }
   if (typeof obj['claudeCodeSyncEnabled'] === 'boolean') {
     next.claudeCodeSyncEnabled = obj['claudeCodeSyncEnabled'];
+  }
+  if (typeof obj['securityIncidentReplay'] === 'boolean') {
+    next.securityIncidentReplay = obj['securityIncidentReplay'];
   }
   if (
     typeof obj['logLevel'] === 'string' &&

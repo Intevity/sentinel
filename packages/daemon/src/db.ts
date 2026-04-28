@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
@@ -32,6 +32,14 @@ import type {
 
 export const SENTINEL_DIR = join(homedir(), '.claude-sentinel');
 export const DB_PATH = join(SENTINEL_DIR, 'sentinel.db');
+
+/** Sprint 8 chain-write gate. Flipped to true by `withChainBridge`
+ *  while a sweep-time DELETE / chain-column UPDATE is in progress.
+ *  Read by the `is_sweep_active()` SQLite UDF that the append-only
+ *  triggers consult before deciding whether to RAISE(ABORT). Module
+ *  scope: the daemon's single connection sees a consistent value;
+ *  no concurrency since better-sqlite3 is single-writer. */
+let sweepActive = false;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
@@ -562,6 +570,121 @@ export function getDb(
     );
   }
 
+  // Sprint 8 — security_events_chain_v1: tamper-evident hash chain over
+  // every `security_events` row, append-only via triggers, with a
+  // separate summary table that bridges the chain across retention
+  // gaps and a TEMP-table sweep token that the trigger checks to
+  // permit deletes only when invoked from a sweep-aware path.
+  const chainApplied = _db
+    .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+    .get('security_events_chain_v1') as { ok: number } | undefined;
+  if (!chainApplied) {
+    const cols = _db.pragma('table_info(security_events)') as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'prev_hash')) {
+      _db.exec("ALTER TABLE security_events ADD COLUMN prev_hash    TEXT NOT NULL DEFAULT ''");
+    }
+    if (!cols.some((c) => c.name === 'payload_hash')) {
+      _db.exec("ALTER TABLE security_events ADD COLUMN payload_hash TEXT NOT NULL DEFAULT ''");
+    }
+    _db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sec_prev_hash    ON security_events(prev_hash);
+      CREATE INDEX IF NOT EXISTS idx_sec_payload_hash ON security_events(payload_hash);
+      CREATE TABLE IF NOT EXISTS security_events_daily_summary (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        day_ts               INTEGER NOT NULL,
+        count                INTEGER NOT NULL,
+        first_payload_hash   TEXT    NOT NULL,
+        last_payload_hash    TEXT    NOT NULL,
+        prev_hash            TEXT    NOT NULL,
+        payload_hash         TEXT    NOT NULL,
+        reason               TEXT    NOT NULL DEFAULT 'retention',
+        deleted_hashes_json  TEXT    NOT NULL DEFAULT '[]',
+        created_at           INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_sec_summary_day_ts      ON security_events_daily_summary(day_ts);
+      CREATE INDEX IF NOT EXISTS idx_sec_summary_prev_hash   ON security_events_daily_summary(prev_hash);
+      CREATE TABLE IF NOT EXISTS incident_replays (
+        event_id      INTEGER PRIMARY KEY,
+        captured_at   INTEGER NOT NULL,
+        messages_json TEXT    NOT NULL,
+        FOREIGN KEY (event_id) REFERENCES security_events(id) ON DELETE CASCADE
+      );
+    `);
+    _db
+      .prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)')
+      .run('security_events_chain_v1', Date.now());
+  }
+
+  // The sweep-active gate is a per-connection user-defined function.
+  // Triggers reference `is_sweep_active()` — when the value is 1, the
+  // trigger lets a chain-column UPDATE or a DELETE through; when 0, it
+  // RAISE(ABORT)s. External `sqlite3` CLI sessions don't have this
+  // function registered, so when they trigger an UPDATE/DELETE, SQLite
+  // raises "no such function" and the operation fails. (We previously
+  // tried a TEMP TABLE flag here, but SQLite triggers can't reference
+  // TEMP tables across schemas — `main`-attached triggers see only
+  // `main`-attached tables. The UDF works because it lives in the
+  // SQLite engine state of the registering connection.)
+  // Triggers are idempotent (CREATE TRIGGER IF NOT EXISTS), so
+  // re-applying on every getDb() open is safe.
+  _db.function('is_sweep_active', { deterministic: false }, () => (sweepActive ? 1 : 0));
+  // DROP + CREATE rather than CREATE IF NOT EXISTS so a daemon upgrade
+  // that changes trigger logic actually picks up the new definition.
+  // SQLite has no CREATE OR REPLACE TRIGGER; drop is the standard path.
+  _db.exec('DROP TRIGGER IF EXISTS trg_sec_no_update_chain');
+  _db.exec('DROP TRIGGER IF EXISTS trg_sec_no_delete');
+  // Trigger guards every column EXCEPT the bookkeeping ones the
+  // dedup path legitimately mutates without changing the row's
+  // detection identity: last_seen_ts, occurrences, acknowledged.
+  // `blocked` and `approved` are dispositions that dedup CAN flip
+  // (a repeat detection escalating to a block), so they're gated
+  // through the sweep-active check rather than freely mutable —
+  // external `UPDATE security_events SET blocked = 0` is still
+  // rejected (sweep is inactive), but internal dedup running under
+  // the sweep gate succeeds.
+  _db.exec(`
+    CREATE TRIGGER trg_sec_no_update_chain
+    BEFORE UPDATE ON security_events
+    WHEN (
+      is_sweep_active() = 0
+      AND (
+           OLD.id            != NEW.id
+        OR OLD.ts            != NEW.ts
+        OR OLD.account_id    != NEW.account_id
+        OR IFNULL(OLD.session_id,'')   != IFNULL(NEW.session_id,'')
+        OR OLD.direction     != NEW.direction
+        OR OLD.severity      != NEW.severity
+        OR OLD.kind          != NEW.kind
+        OR OLD.detector_id   != NEW.detector_id
+        OR OLD.confidence    != NEW.confidence
+        OR OLD.title         != NEW.title
+        OR OLD.reason        != NEW.reason
+        OR IFNULL(OLD.match_mask,'')   != IFNULL(NEW.match_mask,'')
+        OR OLD.match_hash    != NEW.match_hash
+        OR IFNULL(OLD.context_hash,'') != IFNULL(NEW.context_hash,'')
+        OR IFNULL(OLD.snippet,'')      != IFNULL(NEW.snippet,'')
+        OR IFNULL(OLD.source_hint,'')  != IFNULL(NEW.source_hint,'')
+        OR IFNULL(OLD.details_json,'') != IFNULL(NEW.details_json,'')
+        OR OLD.blocked       != NEW.blocked
+        OR OLD.approved      != NEW.approved
+        OR OLD.provenance    != NEW.provenance
+        OR OLD.prev_hash     != NEW.prev_hash
+        OR OLD.payload_hash  != NEW.payload_hash
+      )
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'security_events: chain columns are append-only');
+    END
+  `);
+  _db.exec(`
+    CREATE TRIGGER trg_sec_no_delete
+    BEFORE DELETE ON security_events
+    WHEN is_sweep_active() = 0
+    BEGIN
+      SELECT RAISE(ABORT, 'security_events: deletes only allowed during retention sweep');
+    END
+  `);
+
   return _db;
 }
 
@@ -663,7 +786,17 @@ export function purgeAccount(db: Database.Database, id: string): boolean {
   db.prepare('DELETE FROM overage_events  WHERE account_id = ?').run(id);
   db.prepare('DELETE FROM notifications   WHERE account_id = ?').run(id);
   db.prepare('DELETE FROM alerts          WHERE account_id = ?').run(id);
-  db.prepare('DELETE FROM security_events WHERE account_id = ?').run(id);
+  withChainBridge(db, 'account_purge', () => {
+    const rows = db
+      .prepare('SELECT payload_hash, ts FROM security_events WHERE account_id = ? ORDER BY id ASC')
+      .all(id) as Array<{ payload_hash: string; ts: number }>;
+    if (rows.length === 0) return { deletedHashes: [], deletedTs: [] };
+    db.prepare('DELETE FROM security_events WHERE account_id = ?').run(id);
+    return {
+      deletedHashes: rows.map((r) => r.payload_hash),
+      deletedTs: rows.map((r) => r.ts),
+    };
+  });
   db.prepare('DELETE FROM paused_accounts WHERE account_id = ?').run(id);
   // Mark as purged (removed = 2). If the row does not exist yet, insert a bare
   // tombstone so refresh_accounts cannot create a fresh removed = 0 row later.
@@ -1047,6 +1180,75 @@ export type InsertSecurityEvent = Omit<
  *  `occurrences` + `last_seen_ts` instead of creating a new row. */
 export const SECURITY_DEDUP_WINDOW_MS = 60 * 60 * 1000;
 
+/** Sprint 8 — set of column values that participate in a row's
+ *  `payload_hash`. The chain protects WHAT was detected (the immutable
+ *  detection content), not HOW the daemon responded.
+ *
+ *  Excluded from the hash:
+ *    - `id` (auto-assigned; excluding lets us hash pre-INSERT)
+ *    - `last_seen_ts`, `occurrences`, `acknowledged` (free-mutable
+ *      bookkeeping)
+ *    - `blocked`, `approved` (dispositions, not detections —
+ *      legitimately flipped by dedup when a repeat detection
+ *      escalates from observe to block, or by user approval).
+ *      These ARE protected by the append-only trigger via the sweep
+ *      gate, so external `UPDATE security_events SET blocked = 0` is
+ *      still rejected; dedup flips them under the sweep gate so the
+ *      chain stays consistent. */
+interface ChainPayload {
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  direction: string;
+  severity: string;
+  kind: string;
+  detectorId: string;
+  confidence: number;
+  title: string;
+  reason: string;
+  matchMask: string | null;
+  matchHash: string;
+  contextHash: string | null;
+  snippet: string | null;
+  sourceHint: string | null;
+  detailsJson: string | null;
+  provenance: string;
+  prevHash: string;
+}
+
+/** Compute the SHA-256 payload hash for a security_events row. The
+ *  field order is fixed (a JSON.stringify with sorted keys) so the
+ *  chain is deterministic across processes and language runtimes —
+ *  important because the export handler emits a portable hash. */
+export function computePayloadHash(payload: ChainPayload): string {
+  const sorted: Record<string, unknown> = {};
+  for (const k of Object.keys(payload).sort()) {
+    sorted[k] = (payload as unknown as Record<string, unknown>)[k];
+  }
+  return createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
+}
+
+/** Read the most-recent payload_hash from either `security_events` or
+ *  the `security_events_daily_summary` bridge table — whichever is
+ *  fresher. Used to seed the next insert's `prev_hash`. Returns ''
+ *  for an empty chain (first-ever insert). */
+function readChainTip(db: Database.Database): string {
+  const fromEvent = db
+    .prepare('SELECT payload_hash, ts FROM security_events ORDER BY id DESC LIMIT 1')
+    .get() as { payload_hash: string; ts: number } | undefined;
+  const fromSummary = db
+    .prepare(
+      'SELECT payload_hash, day_ts FROM security_events_daily_summary ORDER BY id DESC LIMIT 1',
+    )
+    .get() as { payload_hash: string; day_ts: number } | undefined;
+  if (fromEvent && fromSummary) {
+    return fromEvent.ts >= fromSummary.day_ts ? fromEvent.payload_hash : fromSummary.payload_hash;
+  }
+  if (fromEvent) return fromEvent.payload_hash;
+  if (fromSummary) return fromSummary.payload_hash;
+  return '';
+}
+
 /**
  * Insert a security event, deduping against rows with the same match_hash +
  * detector_id + account_id within the last hour. When an active dedup row is
@@ -1081,38 +1283,42 @@ export function insertSecurityEvent(
     // Propagate the block + approved flags on dedup. A repeat hit that
     // escalates an observe row to a block row (or approves one) needs to
     // flip the flag; silently bumping only occurrences loses that signal
-    // (v1.1 regression identified in testing).
-    db.prepare(
-      `UPDATE security_events
-       SET occurrences = occurrences + 1,
-           last_seen_ts = @lastSeenTs,
-           blocked  = CASE WHEN @blocked  = 1 THEN 1 ELSE blocked  END,
-           approved = CASE WHEN @approved = 1 THEN 1 ELSE approved END
-       WHERE id = @id`,
-    ).run({
-      lastSeenTs: event.ts,
-      blocked: event.blocked ? 1 : 0,
-      approved: event.approved ? 1 : 0,
-      id: existing.id,
-    });
+    // (v1.1 regression identified in testing). Both flags are
+    // chain-protected via the trigger, so the dedup UPDATE runs under
+    // the sweep gate — that lets the legitimate internal mutation
+    // through without weakening the protection against external
+    // `UPDATE security_events SET blocked = 0` tamper attempts.
+    sweepActive = true;
+    try {
+      db.prepare(
+        `UPDATE security_events
+         SET occurrences = occurrences + 1,
+             last_seen_ts = @lastSeenTs,
+             blocked  = CASE WHEN @blocked  = 1 THEN 1 ELSE blocked  END,
+             approved = CASE WHEN @approved = 1 THEN 1 ELSE approved END
+         WHERE id = @id`,
+      ).run({
+        lastSeenTs: event.ts,
+        blocked: event.blocked ? 1 : 0,
+        approved: event.approved ? 1 : 0,
+        id: existing.id,
+      });
+    } finally {
+      sweepActive = false;
+    }
     return { id: existing.id, isNew: false };
   }
 
-  const result = db
-    .prepare(
-      `INSERT INTO security_events (
-         ts, last_seen_ts, account_id, session_id, direction,
-         severity, kind, detector_id, confidence, title, reason,
-         match_mask, match_hash, context_hash, snippet, source_hint,
-         details_json, blocked, approved, provenance
-       ) VALUES (
-         @ts, @ts, @accountId, @sessionId, @direction,
-         @severity, @kind, @detectorId, @confidence, @title, @reason,
-         @matchMask, @matchHash, @contextHash, @snippet, @sourceHint,
-         @detailsJson, @blocked, @approved, @provenance
-       )`,
-    )
-    .run({
+  // Sprint 8 chain: compute payload_hash before the INSERT so we can
+  // write both prev_hash and payload_hash in one statement. Excludes
+  // the auto-assigned `id` from the hash so we don't need a post-insert
+  // chain-column UPDATE (which would require the sweep gate to be open
+  // per insert). The chain protects content integrity; row id is
+  // metadata. Walker recomputes without id.
+  const detailsJson = event.details ? JSON.stringify(event.details) : null;
+  const insertWithChain = db.transaction(() => {
+    const prevHash = readChainTip(db);
+    const payloadHash = computePayloadHash({
       ts: event.ts,
       accountId: event.accountId,
       sessionId: event.sessionId ?? null,
@@ -1128,16 +1334,57 @@ export function insertSecurityEvent(
       contextHash: event.contextHash ?? null,
       snippet: event.snippet ?? null,
       sourceHint: event.sourceHint ?? null,
-      detailsJson: event.details ? JSON.stringify(event.details) : null,
-      blocked: event.blocked ? 1 : 0,
-      approved: event.approved ? 1 : 0,
-      // Provenance is immutable after first insert — the dedup UPDATE
-      // above does not touch it, so the first observation's origin
-      // category stays authoritative.
+      detailsJson,
       provenance: event.provenance,
+      prevHash,
     });
+    const inserted = db
+      .prepare(
+        `INSERT INTO security_events (
+           ts, last_seen_ts, account_id, session_id, direction,
+           severity, kind, detector_id, confidence, title, reason,
+           match_mask, match_hash, context_hash, snippet, source_hint,
+           details_json, blocked, approved, provenance,
+           prev_hash, payload_hash
+         ) VALUES (
+           @ts, @ts, @accountId, @sessionId, @direction,
+           @severity, @kind, @detectorId, @confidence, @title, @reason,
+           @matchMask, @matchHash, @contextHash, @snippet, @sourceHint,
+           @detailsJson, @blocked, @approved, @provenance,
+           @prevHash, @payloadHash
+         )`,
+      )
+      .run({
+        ts: event.ts,
+        accountId: event.accountId,
+        sessionId: event.sessionId ?? null,
+        direction: event.direction,
+        severity: event.severity,
+        kind: event.kind,
+        detectorId: event.detectorId,
+        confidence: event.confidence,
+        title: event.title,
+        reason: event.reason,
+        matchMask: event.matchMask ?? null,
+        matchHash: event.matchHash,
+        contextHash: event.contextHash ?? null,
+        snippet: event.snippet ?? null,
+        sourceHint: event.sourceHint ?? null,
+        detailsJson,
+        blocked: event.blocked ? 1 : 0,
+        approved: event.approved ? 1 : 0,
+        // Provenance is immutable after first insert — the dedup UPDATE
+        // above does not touch it, so the first observation's origin
+        // category stays authoritative.
+        provenance: event.provenance,
+        prevHash,
+        payloadHash,
+      });
+    return Number(inserted.lastInsertRowid);
+  });
 
-  return { id: Number(result.lastInsertRowid), isNew: true };
+  const id = insertWithChain();
+  return { id, isNew: true };
 }
 
 export function listSecurityEvents(
@@ -1188,11 +1435,28 @@ export function acknowledgeAllSecurityEvents(db: Database.Database, accountId?: 
 }
 
 export function clearSecurityEvents(db: Database.Database, accountId?: string): number {
-  const result =
-    accountId !== undefined
-      ? db.prepare('DELETE FROM security_events WHERE account_id = ?').run(accountId)
-      : db.prepare('DELETE FROM security_events').run();
-  return result.changes;
+  return withChainBridge(db, accountId !== undefined ? 'clear_account' : 'clear_all', () => {
+    const rows =
+      accountId !== undefined
+        ? (db
+            .prepare(
+              'SELECT payload_hash, ts FROM security_events WHERE account_id = ? ORDER BY id ASC',
+            )
+            .all(accountId) as Array<{ payload_hash: string; ts: number }>)
+        : (db
+            .prepare('SELECT payload_hash, ts FROM security_events ORDER BY id ASC')
+            .all() as Array<{ payload_hash: string; ts: number }>);
+    if (rows.length === 0) return { deletedHashes: [], deletedTs: [] };
+    if (accountId !== undefined) {
+      db.prepare('DELETE FROM security_events WHERE account_id = ?').run(accountId);
+    } else {
+      db.prepare('DELETE FROM security_events').run();
+    }
+    return {
+      deletedHashes: rows.map((r) => r.payload_hash),
+      deletedTs: rows.map((r) => r.ts),
+    };
+  });
 }
 
 /** Delete OTEL-derived telemetry rows older than the retention window.
@@ -1209,11 +1473,328 @@ export function purgeTelemetryOlderThan(db: Database.Database, cutoffMs: number)
   return total;
 }
 
-/** Delete rows older than the retention window. Intended to run at daemon
- *  startup. Returns the number of rows removed. */
+/** Sprint 8 — wrap a destructive operation against `security_events` so
+ *  the trigger lets it through and the chain stays internally consistent.
+ *
+ *  Runs `deleteFn` inside a transaction with the sweep token set. The
+ *  `deleteFn` is responsible for SELECTing the rows it's about to remove
+ *  (we need their payload_hashes and timestamps to write the summary)
+ *  and then DELETE-ing them. After deletion this helper:
+ *    1. Writes one row to `security_events_daily_summary` recording
+ *       the deletion's chain-tip metadata.
+ *    2. Re-links every surviving event whose `prev_hash` pointed at a
+ *       just-deleted row to the new summary's payload_hash (so the
+ *       chain walker still sees a valid linkage). For retention this
+ *       is one row; for ad-hoc deletions (clear, allowlist consume,
+ *       account purge) it can be several. */
+function withChainBridge(
+  db: Database.Database,
+  reason: string,
+  deleteFn: () => { deletedHashes: string[]; deletedTs: number[] },
+): number {
+  const run = db.transaction(() => {
+    const prevTip = readChainTip(db);
+    sweepActive = true;
+    try {
+      const { deletedHashes, deletedTs } = deleteFn();
+      if (deletedHashes.length === 0) return 0;
+      const dayTs = Math.max(...deletedTs);
+      const first = deletedHashes[0] ?? '';
+      const last = deletedHashes[deletedHashes.length - 1] ?? '';
+      const deletedHashesJson = JSON.stringify(deletedHashes);
+      const summaryPayload = createHash('sha256')
+        .update(
+          JSON.stringify({
+            prevHash: prevTip,
+            firstPayloadHash: first,
+            lastPayloadHash: last,
+            deletedHashes,
+            count: deletedHashes.length,
+            dayTs,
+            reason,
+          }),
+        )
+        .digest('hex');
+      db.prepare(
+        `INSERT INTO security_events_daily_summary
+           (day_ts, count, first_payload_hash, last_payload_hash, prev_hash, payload_hash, reason, deleted_hashes_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        dayTs,
+        deletedHashes.length,
+        first,
+        last,
+        prevTip,
+        summaryPayload,
+        reason,
+        deletedHashesJson,
+        Date.now(),
+      );
+      // No re-linking. Survivors keep their original prev_hash (which
+      // points at a now-deleted payload_hash). The chain walker reads
+      // each summary's `deleted_hashes_json` and treats those hashes
+      // as still-known-to-the-chain — bridging every gap without
+      // having to mutate any survivor's payload_hash (which would
+      // cascade hashes through every downstream row).
+      return deletedHashes.length;
+    } finally {
+      sweepActive = false;
+    }
+  });
+  return run();
+}
+
+/** Test-only escape hatch. Lets the tamper-detection tests simulate an
+ *  external attacker that already wrote past the trigger (e.g. through
+ *  an out-of-band sqlite3 process). Production code should never call
+ *  this — `withChainBridge` is the only legitimate gate-flipper. */
+export function _setSweepActiveForTests(on: boolean): void {
+  sweepActive = on;
+}
+
+/** Delete rows older than the retention window, preserving chain
+ *  integrity by writing a summary row that captures the deleted range's
+ *  payload_hashes. Intended to run at daemon startup AND once per 24h.
+ *  Returns the number of rows removed. */
 export function purgeSecurityEventsOlderThan(db: Database.Database, cutoffMs: number): number {
-  const result = db.prepare('DELETE FROM security_events WHERE ts < ?').run(cutoffMs);
-  return result.changes;
+  return withChainBridge(db, 'retention', () => {
+    const rows = db
+      .prepare('SELECT payload_hash, ts FROM security_events WHERE ts < ? ORDER BY id ASC')
+      .all(cutoffMs) as Array<{ payload_hash: string; ts: number }>;
+    if (rows.length === 0) return { deletedHashes: [], deletedTs: [] };
+    db.prepare('DELETE FROM security_events WHERE ts < ?').run(cutoffMs);
+    return {
+      deletedHashes: rows.map((r) => r.payload_hash),
+      deletedTs: rows.map((r) => r.ts),
+    };
+  });
+}
+
+/** Walk the audit log chain from oldest to newest, recomputing each
+ *  row's payload_hash and verifying every prev_hash links to a known
+ *  chain element (event row OR summary row). Returns the first break
+ *  found, or `{ ok: true }` if the chain is intact. Does NOT throw —
+ *  the caller decides whether to log/broadcast/banner. */
+export function walkChain(
+  db: Database.Database,
+):
+  | { ok: true; eventCount: number; summaryCount: number; tipPayloadHash: string }
+  | { ok: false; brokenAtRowId: number; reason: string } {
+  // Build the lookup of every payload_hash the chain has ever
+  // contained: live event hashes, summary hashes, and the
+  // payload_hashes of events that were deleted but recorded in a
+  // summary's `deleted_hashes_json`. The walker treats any prev_hash
+  // pointing into this lookup as a satisfied linkage.
+  const eventHashes = new Set<string>();
+  const summaryHashes = new Set<string>();
+  type EventRow = DbSecurityEventRow & { prev_hash: string; payload_hash: string };
+  const events = db.prepare('SELECT * FROM security_events ORDER BY id ASC').all() as EventRow[];
+  for (const r of events) eventHashes.add(r.payload_hash);
+  const summaries = db
+    .prepare(
+      'SELECT id, prev_hash, payload_hash, deleted_hashes_json FROM security_events_daily_summary ORDER BY id ASC',
+    )
+    .all() as Array<{
+    id: number;
+    prev_hash: string;
+    payload_hash: string;
+    deleted_hashes_json: string;
+  }>;
+  for (const r of summaries) {
+    summaryHashes.add(r.payload_hash);
+    try {
+      const deleted = JSON.parse(r.deleted_hashes_json) as unknown;
+      if (Array.isArray(deleted)) {
+        for (const h of deleted) {
+          if (typeof h === 'string') summaryHashes.add(h);
+        }
+      }
+      /* v8 ignore next 3 */
+    } catch {
+      // Malformed JSON in deleted_hashes_json — treat as no recorded
+      // hashes. Walker will fall back to flagging any prev_hash
+      // referencing the missing range as an orphan.
+    }
+  }
+  for (const row of events) {
+    const expected = computePayloadHash({
+      ts: row.ts,
+      accountId: row.account_id,
+      sessionId: row.session_id,
+      direction: row.direction,
+      severity: row.severity,
+      kind: row.kind,
+      detectorId: row.detector_id,
+      confidence: row.confidence,
+      title: row.title,
+      reason: row.reason,
+      matchMask: row.match_mask,
+      matchHash: row.match_hash,
+      contextHash: row.context_hash,
+      snippet: row.snippet,
+      sourceHint: row.source_hint,
+      detailsJson: row.details_json,
+      provenance: row.provenance,
+      prevHash: row.prev_hash,
+    });
+    if (expected !== row.payload_hash) {
+      return {
+        ok: false,
+        brokenAtRowId: row.id,
+        reason: `payload_hash mismatch on event id=${row.id}`,
+      };
+    }
+    if (
+      row.prev_hash !== '' &&
+      !eventHashes.has(row.prev_hash) &&
+      !summaryHashes.has(row.prev_hash)
+    ) {
+      return {
+        ok: false,
+        brokenAtRowId: row.id,
+        reason: `prev_hash on event id=${row.id} does not link to any known chain element`,
+      };
+    }
+  }
+  for (const r of summaries) {
+    if (r.prev_hash !== '' && !eventHashes.has(r.prev_hash) && !summaryHashes.has(r.prev_hash)) {
+      return {
+        ok: false,
+        brokenAtRowId: r.id,
+        reason: `prev_hash on summary id=${r.id} does not link to any known chain element`,
+      };
+    }
+  }
+  const tip = readChainTip(db);
+  return {
+    ok: true,
+    eventCount: events.length,
+    summaryCount: summaries.length,
+    tipPayloadHash: tip,
+  };
+}
+
+/** Sprint 8 incident-replay storage. Writes a captured tool-use chain
+ *  to `incident_replays` keyed by event id. Overwrites on conflict so
+ *  a redundant capture (rare; would require dedup of the same event id
+ *  somehow) leaves the most-recent version. */
+export interface IncidentReplayMessage {
+  ts: number;
+  role: string;
+  text: string;
+  tool?: string;
+}
+export function insertIncidentReplay(
+  db: Database.Database,
+  eventId: number,
+  capturedAt: number,
+  messages: IncidentReplayMessage[],
+): void {
+  db.prepare(
+    `INSERT INTO incident_replays (event_id, captured_at, messages_json)
+     VALUES (?, ?, ?)
+     ON CONFLICT(event_id) DO UPDATE SET captured_at = excluded.captured_at, messages_json = excluded.messages_json`,
+  ).run(eventId, capturedAt, JSON.stringify(messages));
+}
+
+/** Read a captured replay by event id. Returns null when no capture
+ *  exists for that event (default — replay is opt-in via the
+ *  `securityIncidentReplay` setting). */
+export function listIncidentReplay(
+  db: Database.Database,
+  eventId: number,
+): { eventId: number; capturedAt: number; messages: IncidentReplayMessage[] } | null {
+  const row = db
+    .prepare('SELECT event_id, captured_at, messages_json FROM incident_replays WHERE event_id = ?')
+    .get(eventId) as { event_id: number; captured_at: number; messages_json: string } | undefined;
+  if (!row) return null;
+  let parsed: IncidentReplayMessage[];
+  try {
+    const j = JSON.parse(row.messages_json) as unknown;
+    parsed = Array.isArray(j) ? (j as IncidentReplayMessage[]) : [];
+  } catch {
+    parsed = [];
+  }
+  return { eventId: row.event_id, capturedAt: row.captured_at, messages: parsed };
+}
+
+/** Read every audit log entry (events + summary bridges) for export.
+ *  The export handler in `index.ts` streams these out and computes a
+ *  top-level integrity envelope. Optional filters scope what comes back. */
+export interface AuditExportEntry {
+  kind: 'event' | 'summary';
+  id: number;
+  ts: number;
+  prevHash: string;
+  payloadHash: string;
+  /** For 'event' entries: the full row (decoded). For 'summary': a
+   *  compact metadata block describing what was bridged. */
+  data: Record<string, unknown>;
+}
+export function listAuditExport(
+  db: Database.Database,
+  opts: { accountId?: string; sinceTs?: number } = {},
+): AuditExportEntry[] {
+  const params: Record<string, string | number> = {};
+  let eventSql = 'SELECT * FROM security_events';
+  const eventWhere: string[] = [];
+  if (opts.accountId !== undefined) {
+    eventWhere.push('account_id = @accountId');
+    params['accountId'] = opts.accountId;
+  }
+  if (opts.sinceTs !== undefined) {
+    eventWhere.push('ts >= @sinceTs');
+    params['sinceTs'] = opts.sinceTs;
+  }
+  if (eventWhere.length > 0) eventSql += ' WHERE ' + eventWhere.join(' AND ');
+  eventSql += ' ORDER BY id ASC';
+  const events = db.prepare(eventSql).all(params) as Array<
+    DbSecurityEventRow & { prev_hash: string; payload_hash: string }
+  >;
+  const summarySql =
+    opts.sinceTs !== undefined
+      ? 'SELECT * FROM security_events_daily_summary WHERE day_ts >= @sinceTs ORDER BY id ASC'
+      : 'SELECT * FROM security_events_daily_summary ORDER BY id ASC';
+  const summaries = db.prepare(summarySql).all(params) as Array<{
+    id: number;
+    day_ts: number;
+    count: number;
+    first_payload_hash: string;
+    last_payload_hash: string;
+    prev_hash: string;
+    payload_hash: string;
+    reason: string;
+    created_at: number;
+  }>;
+  const out: AuditExportEntry[] = [];
+  for (const r of events) {
+    out.push({
+      kind: 'event',
+      id: r.id,
+      ts: r.ts,
+      prevHash: r.prev_hash,
+      payloadHash: r.payload_hash,
+      data: rowToSecurityEvent(r) as unknown as Record<string, unknown>,
+    });
+  }
+  for (const r of summaries) {
+    out.push({
+      kind: 'summary',
+      id: r.id,
+      ts: r.day_ts,
+      prevHash: r.prev_hash,
+      payloadHash: r.payload_hash,
+      data: {
+        count: r.count,
+        firstPayloadHash: r.first_payload_hash,
+        lastPayloadHash: r.last_payload_hash,
+        reason: r.reason,
+        createdAt: r.created_at,
+      },
+    });
+  }
+  out.sort((a, b) => a.ts - b.ts || a.id - b.id);
+  return out;
 }
 
 /** Unread security event count, optionally scoped to an account. Drives the
@@ -1321,13 +1902,27 @@ export function addSecurityAllowlist(
     deletedNotifications += Number(res.changes);
   }
 
-  const delEvents = db
-    .prepare('DELETE FROM security_events WHERE match_hash = ? AND detector_id = ?')
-    .run(args.matchHash, args.detectorId);
+  let deletedEvents = 0;
+  withChainBridge(db, 'allowlist', () => {
+    const rows = db
+      .prepare(
+        'SELECT payload_hash, ts FROM security_events WHERE match_hash = ? AND detector_id = ? ORDER BY id ASC',
+      )
+      .all(args.matchHash, args.detectorId) as Array<{ payload_hash: string; ts: number }>;
+    if (rows.length === 0) return { deletedHashes: [], deletedTs: [] };
+    const res = db
+      .prepare('DELETE FROM security_events WHERE match_hash = ? AND detector_id = ?')
+      .run(args.matchHash, args.detectorId);
+    deletedEvents = Number(res.changes);
+    return {
+      deletedHashes: rows.map((r) => r.payload_hash),
+      deletedTs: rows.map((r) => r.ts),
+    };
+  });
 
   return {
     id: row.id,
-    deletedEvents: Number(delEvents.changes),
+    deletedEvents,
     deletedNotifications,
   };
 }

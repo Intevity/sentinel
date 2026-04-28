@@ -533,7 +533,7 @@ function countBase64BodyChars(text: string): number {
   return n;
 }
 
-function scanPrivateKeyBlocks(fullText: string, sourceHint: string | undefined): Finding[] {
+export function scanPrivateKeyBlocks(fullText: string, sourceHint: string | undefined): Finding[] {
   if (isAllowlistedPath(sourceHint)) return [];
   const findings: Finding[] = [];
   PRIVATE_KEY_HEADER_REGEX.lastIndex = 0;
@@ -575,13 +575,13 @@ function scanPrivateKeyBlocks(fullText: string, sourceHint: string | undefined):
       snippet: buildSnippet({ fullText, matchStart: start, matchEnd: end, kind: 'secret' }),
       sourceHint,
       provenance: classifyProvenance('secret', sourceHint),
-      details: { bodyChars, hasBody },
+      details: { bodyChars, hasBody, matchStart: start, matchEnd: end },
     });
   }
   return findings;
 }
 
-function scanSecretsIn(fullText: string, sourceHint: string | undefined): Finding[] {
+export function scanSecretsIn(fullText: string, sourceHint: string | undefined): Finding[] {
   if (isAllowlistedPath(sourceHint)) return [];
   const findings: Finding[] = [];
   for (const rule of SECRET_RULES) {
@@ -2004,4 +2004,61 @@ export function scanToolUseBlocks(
     }
   }
   return findings;
+}
+
+/** Splice every detected secret in `text` with a `[REDACTED:<detectorId>]`
+ *  marker. Used by Sprint 8 audit-log persistence so that tool_input
+ *  field values stored inside `details_json` never leak the very secret
+ *  the scanner just flagged in transit. Idempotent: a second call over
+ *  already-redacted text is a no-op (the marker contains no secret
+ *  shapes). Pass an `extraScanner` to layer additional detectors (e.g.
+ *  scanner-side env-file scanning); none is needed for tool_input. */
+export function redactSecretsInString(text: string): string {
+  if (!text) return text;
+  const findings: Finding[] = [
+    ...scanSecretsIn(text, undefined),
+    ...scanPrivateKeyBlocks(text, undefined),
+  ];
+  if (findings.length === 0) return text;
+  const ranges: { start: number; end: number; id: string }[] = [];
+  for (const f of findings) {
+    const d = f.details ?? {};
+    const start = typeof d['matchStart'] === 'number' ? (d['matchStart'] as number) : -1;
+    const end = typeof d['matchEnd'] === 'number' ? (d['matchEnd'] as number) : -1;
+    if (start < 0 || end <= start) continue;
+    ranges.push({ start, end, id: f.detectorId });
+  }
+  if (ranges.length === 0) return text;
+  // Splice descending so earlier ranges' indices stay valid.
+  ranges.sort((a, b) => b.start - a.start);
+  // Drop ranges that overlap a later (lower-start) range; the
+  // lower-start one wins because we apply it first in descending order.
+  // Without dedupe, two SECRET_RULES that match the same span would
+  // double-replace and produce `[REDACTED:x][REDACTED:y]`.
+  let lastStart = Number.POSITIVE_INFINITY;
+  let out = text;
+  for (const r of ranges) {
+    if (r.end > lastStart) continue;
+    out = out.slice(0, r.start) + `[REDACTED:${r.id}]` + out.slice(r.end);
+    lastStart = r.start;
+  }
+  return out;
+}
+
+/** Recursive variant of `redactSecretsInString` over arbitrary JSON-shaped
+ *  values. Strings are redacted in place; arrays and plain objects are
+ *  walked. Non-string scalars (numbers, booleans, null/undefined) and
+ *  non-plain objects pass through unchanged. Returns a new value rather
+ *  than mutating its input. */
+export function redactSecretsInValue(v: unknown): unknown {
+  if (typeof v === 'string') return redactSecretsInString(v);
+  if (Array.isArray(v)) return v.map(redactSecretsInValue);
+  if (v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) {
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      out[k] = redactSecretsInValue(val);
+    }
+    return out;
+  }
+  return v;
 }

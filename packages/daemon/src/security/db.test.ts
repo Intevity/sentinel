@@ -182,11 +182,20 @@ describe('security_events DB helpers', () => {
     expect(events[0]!.details).toEqual({ foo: 1, bar: [2, 3] });
   });
 
-  it('returns null details when JSON is corrupt', () => {
+  it('returns null details when JSON is corrupt', async () => {
     const db = getDb(dbPath);
     insertSecurityEvent(db, makeEvent());
-    // Corrupt the stored JSON directly to exercise the parse-error fallback.
-    db.prepare('UPDATE security_events SET details_json = ? WHERE id = 1').run('not json');
+    // Corrupt the stored JSON directly to exercise the parse-error
+    // fallback. Sprint 8 made `details_json` chain-protected, so the
+    // direct UPDATE has to flip the sweep gate (legitimate test-only
+    // bypass; production code never writes details_json post-insert).
+    const { _setSweepActiveForTests } = await import('../db.js');
+    _setSweepActiveForTests(true);
+    try {
+      db.prepare('UPDATE security_events SET details_json = ? WHERE id = 1').run('not json');
+    } finally {
+      _setSweepActiveForTests(false);
+    }
     expect(listSecurityEvents(db)[0]!.details).toBeNull();
   });
 });
@@ -309,6 +318,13 @@ describe('security_events — provenance column', () => {
     // the migration path should re-ADD the column with the default.
     const db = getDb(dbPath);
     insertSecurityEvent(db, makeEvent({ matchHash: 'legacy', provenance: 'file-read' }));
+    // Sprint 8's chain triggers reference `provenance`, so they have
+    // to be dropped first or the ALTER DROP COLUMN errors with
+    // "column referenced by trigger". Production code never drops
+    // a column on a live DB; this is purely a test-time simulation
+    // of a pre-migration schema.
+    db.exec('DROP TRIGGER IF EXISTS trg_sec_no_update_chain');
+    db.exec('DROP TRIGGER IF EXISTS trg_sec_no_delete');
     // Simulate a pre-migration schema: drop the column so the next open
     // has to ALTER it back in.
     db.exec('ALTER TABLE security_events DROP COLUMN provenance');

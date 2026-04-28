@@ -48,6 +48,10 @@ interface DaemonState {
    *  "Refresh failed" errors while waiting. Flips to false after the first
    *  successful refetch and stays false even if the daemon later disconnects. */
   initializing: boolean;
+  /** Sprint 8 — set when the daemon's chain integrity walker detects a
+   *  break. Surfaces in the UI as a permanent banner; cleared only by
+   *  the daemon broadcasting another check that comes back clean. */
+  auditTamper: { brokenAtRowId: number; reason: string } | null;
 }
 
 export function useDaemon(): DaemonState & { refetch: () => void } {
@@ -60,6 +64,7 @@ export function useDaemon(): DaemonState & { refetch: () => void } {
     overageVersion: 0,
     probingAccountId: null,
     initializing: true,
+    auditTamper: null,
   });
 
   const refetch = useCallback(async () => {
@@ -158,6 +163,11 @@ export function useDaemon(): DaemonState & { refetch: () => void } {
           prev.probingAccountId === msg.accountId ? { ...prev, probingAccountId: null } : prev,
         );
         clearProbeTimeout();
+      } else if (msg.type === 'audit_log_tampered') {
+        setState((prev) => ({
+          ...prev,
+          auditTamper: { brokenAtRowId: msg.brokenAtRowId, reason: msg.reason },
+        }));
       }
     })
       .then((fn) => {

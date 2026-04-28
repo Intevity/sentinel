@@ -805,7 +805,13 @@ async function proxyToAnthropic(
   //  - `block_immediate`: 403 fires without any hold (user disabled the
   //    hold feature).
   if (securityScanner && req.method === 'POST' && req.url?.startsWith('/v1/messages')) {
-    const decision = securityScanner.scanOutbound(body, rlKey);
+    // Extract sessionInfo so the scanner can populate the Sprint 8
+    // forensic incident-replay buffer when the user opted in. Cheap
+    // (single JSON.parse already paid by sessionInfo extraction in
+    // most paths); a parse failure here just yields null and the
+    // scanner skips replay capture for this request.
+    const replaySessionInfo = extractSessionInfo(body);
+    const decision = securityScanner.scanOutbound(body, rlKey, replaySessionInfo?.sessionId);
 
     const synthesize403 = (reason: string, tag: string): void => {
       const payload = JSON.stringify({

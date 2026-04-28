@@ -68,7 +68,7 @@ Apply these in every sprint:
 | 5   | Bash matcher edges and filesystem boundaries | ✅ done       | 2026-04-28 |           |
 | 6   | Environment-variable hardening               | ✅ done       | 2026-04-28 |           |
 | 7   | Indirect prompt-injection scanning           | ✅ done       | 2026-04-28 |           |
-| 8   | Audit log integrity and forensics            | ☐ not started |            |           |
+| 8   | Audit log integrity and forensics            | ✅ done       | 2026-04-28 |           |
 | 9   | UX, presets, observability                   | ☐ not started |            |           |
 | 10  | Resource limits and race-condition pinning   | ☐ not started |            |           |
 

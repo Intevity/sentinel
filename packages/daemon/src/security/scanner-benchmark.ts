@@ -109,6 +109,7 @@ function benchSettings(): Settings {
     securityMuteScanSkipped: true,
     lastScanBenchmark: null,
     claudeCodeSyncEnabled: false,
+    securityIncidentReplay: false,
     logLevel: 'info',
     requestLoggingEnabled: false,
     requestLogRetentionDays: 7,

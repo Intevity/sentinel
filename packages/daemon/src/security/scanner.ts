@@ -20,9 +20,11 @@ import {
 import {
   scanRequestBody,
   scanToolUseBlocks,
+  redactSecretsInValue,
   type Finding,
   type DetectorOptions,
 } from './detectors.js';
+import type { IncidentReplayRecorder } from './incident-replay.js';
 import { ResponseTap, DEFAULT_TAP_BUDGET_BYTES } from './response-tap.js';
 import { hashText } from './redact.js';
 
@@ -35,6 +37,12 @@ export interface ScannerDeps {
   /** Pulled on every call so toggles take effect immediately without
    *  restarting the proxy. */
   getSettings: () => Settings;
+  /** Sprint 8 forensic capture. Optional — when omitted (e.g. in
+   *  scanner tests that don't exercise the replay path) the scanner
+   *  silently skips the capture step. The recorder snapshots the
+   *  in-memory per-session ring buffer into `incident_replays` when a
+   *  block-mode security event of severity ≥ medium fires. */
+  incidentReplay?: IncidentReplayRecorder;
 }
 
 /** Returned by `scanOutbound`. Discriminated by `action`:
@@ -107,8 +115,14 @@ export interface SecurityScanner {
   /** Synchronous scan of a JSON request body. Returns an allow/block
    *  decision. When block-hold is enabled and the decision is `pending`,
    *  the proxy must call `awaitPendingResolution(pendingId)` to learn
-   *  whether the held request should be forwarded or 403'd. */
-  scanOutbound(body: Buffer, accountId: string): OutboundDecision;
+   *  whether the held request should be forwarded or 403'd.
+   *
+   *  Optional `sessionId` opts the request into the Sprint 8 forensic
+   *  incident replay buffer: when `securityIncidentReplay` is on, each
+   *  parsed user/tool message is pushed into the per-session ring
+   *  buffer (after redaction). The scanner is the natural choke point
+   *  because it already parses the body. */
+  scanOutbound(body: Buffer, accountId: string, sessionId?: string | null): OutboundDecision;
 
   /** Block until the user approves/denies the pending block or the hold
    *  timeout expires. Resolves with the outcome. Safe to call on an
@@ -180,6 +194,16 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     const blocked = flags.blocked === true;
     const approved = flags.approved === true;
 
+    // Sprint 8 redaction-at-write-time: every value going into
+    // `details_json` is run through the secret detectors and any
+    // matched substring is replaced with `[REDACTED:<id>]`. Without
+    // this, a tool_use field containing an API key the scanner just
+    // flagged would re-leak the same secret inside the audit log
+    // row's details — defeating the point of detecting it.
+    const redactedDetails =
+      finding.details !== undefined
+        ? (redactSecretsInValue(finding.details) as Record<string, unknown>)
+        : null;
     const event: InsertSecurityEvent = {
       ts: now,
       accountId,
@@ -196,7 +220,7 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
       contextHash: finding.contextHash,
       snippet: settings.securityPersistSnippet ? finding.snippet : null,
       sourceHint: finding.sourceHint ?? null,
-      details: finding.details ?? null,
+      details: redactedDetails,
       blocked,
       approved,
       provenance: finding.provenance,
@@ -246,6 +270,33 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
       });
     } catch (err) {
       console.error('[Security] broadcast failed:', err);
+    }
+
+    // Sprint 8 forensic incident replay: when enforcement is in a
+    // block-mode AND severity ≥ medium AND the user opted in, snapshot
+    // the most-recent session's tool-use buffer for this account into
+    // `incident_replays`. The recorder is responsible for finding the
+    // right session by accountId — the scanner's persistAndBroadcast
+    // does not see sessionInfo through its current API. Default off
+    // (privacy): captureForEventByAccount is a no-op when no session
+    // has been recorded for the account.
+    if (
+      deps.incidentReplay &&
+      settings.securityIncidentReplay === true &&
+      (settings.securityEnforcementMode === 'block_high' ||
+        settings.securityEnforcementMode === 'block_medium_high') &&
+      (finding.severity === 'medium' || finding.severity === 'high')
+    ) {
+      try {
+        deps.incidentReplay.captureForEventByAccount(accountId, result.id);
+        // captureForEventByAccount is sync over an in-process SQLite
+        // write; the catch is defensive and can't be naturally
+        // exercised without mocking the DB layer (forbidden by test
+        // policy).
+        /* v8 ignore next 3 */
+      } catch (err) {
+        console.error('[Security] captureForEventByAccount failed:', err);
+      }
     }
   };
 
@@ -345,7 +396,68 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     }
   };
 
-  const scanOutbound = (body: Buffer, accountId: string): OutboundDecision => {
+  /** Walk a parsed `/v1/messages` request body and feed each user /
+   *  tool message into the incident-replay ring buffer for the given
+   *  session. Called from `scanOutbound` once per request when the
+   *  caller supplied a session id and replay capture is on. Scanner
+   *  is the natural place because the body is already parsed for
+   *  detector scanning — re-parsing in the proxy would double the
+   *  JSON-decode cost. */
+  const recordRequestForReplay = (parsed: unknown, accountId: string, sessionId: string): void => {
+    if (!deps.incidentReplay || !parsed || typeof parsed !== 'object') return;
+    const obj = parsed as Record<string, unknown>;
+    const messages = obj['messages'];
+    if (!Array.isArray(messages)) return;
+    for (const m of messages) {
+      if (!m || typeof m !== 'object') continue;
+      const role = (m as Record<string, unknown>)['role'];
+      const content = (m as Record<string, unknown>)['content'];
+      if (typeof role !== 'string') continue;
+      if (typeof content === 'string') {
+        deps.incidentReplay.recordSessionMessage(sessionId, { role, text: content }, accountId);
+        continue;
+      }
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (!block || typeof block !== 'object') continue;
+        const b = block as Record<string, unknown>;
+        const type = b['type'];
+        if (type === 'text' && typeof b['text'] === 'string') {
+          deps.incidentReplay.recordSessionMessage(
+            sessionId,
+            { role, text: b['text'] as string },
+            accountId,
+          );
+        } else if (type === 'tool_use' && typeof b['name'] === 'string') {
+          deps.incidentReplay.recordSessionMessage(
+            sessionId,
+            {
+              role: 'tool_use',
+              text: JSON.stringify(b['input'] ?? {}),
+              tool: b['name'] as string,
+            },
+            accountId,
+          );
+        } else if (type === 'tool_result') {
+          const text =
+            typeof b['content'] === 'string'
+              ? (b['content'] as string)
+              : JSON.stringify(b['content'] ?? '');
+          deps.incidentReplay.recordSessionMessage(
+            sessionId,
+            { role: 'tool_result', text },
+            accountId,
+          );
+        }
+      }
+    }
+  };
+
+  const scanOutbound = (
+    body: Buffer,
+    accountId: string,
+    sessionId?: string | null,
+  ): OutboundDecision => {
     const settings = deps.getSettings();
     if (!settings.securityScanEnabled) {
       return { action: 'allow', findings: [] };
@@ -387,6 +499,15 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
       parsed = JSON.parse(body.toString('utf-8'));
     } catch {
       return { action: 'allow', findings: [] };
+    }
+
+    if (
+      settings.securityIncidentReplay === true &&
+      sessionId !== undefined &&
+      sessionId !== null &&
+      sessionId !== ''
+    ) {
+      recordRequestForReplay(parsed, accountId, sessionId);
     }
 
     const findings = scanRequestBody(parsed, options).filter(

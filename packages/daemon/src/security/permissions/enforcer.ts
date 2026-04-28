@@ -32,6 +32,7 @@ import {
   addPermissionBypass,
   isPermissionBypassed,
 } from '../../db.js';
+import { redactSecretsInValue } from '../detectors.js';
 import { hashText } from '../redact.js';
 import {
   compileRules,
@@ -56,6 +57,12 @@ export interface PermissionsEnforcerDeps {
   /** Pulled on every call so toggles take effect immediately without
    *  restarting the proxy. */
   getSettings: () => Settings;
+  /** Sprint 8 forensic capture. Optional — the recorder is null in
+   *  tests that don't exercise the replay path. When provided and the
+   *  user has `securityIncidentReplay` enabled, a high-severity tool
+   *  block triggers a snapshot of the most-recent session's tool-use
+   *  buffer for that account into `incident_replays`. */
+  incidentReplay?: import('../incident-replay.js').IncidentReplayRecorder;
 }
 
 /** How long a header-based auto-mode detection keeps the legacy freshness
@@ -547,7 +554,8 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
     const verb = approved ? 'approved' : 'blocked';
     const reason = `Sentinel permission rule ${matchedRule.raw} ${verb} ${toolName}${reasonDetail}`;
     const hashSource = `${toolName}:${matchedRule.id}:${direction}`;
-    const persistSnippet = deps.getSettings().securityPersistSnippet;
+    const settings = deps.getSettings();
+    const persistSnippet = settings.securityPersistSnippet;
     const inputSummary = summarizeToolInput(toolName, toolInput, direction, matchedRule.raw);
     const details: Record<string, unknown> = {
       matchedRuleId: matchedRule.id,
@@ -560,6 +568,11 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
       const fields = extractToolInputFields(toolName, toolInput);
       for (const [k, v] of Object.entries(fields)) details[k] = v;
     }
+    // Sprint 8 redaction-at-write-time: every value in `details` is
+    // run through the secret detectors so a tool_use field carrying
+    // an API key the scanner just flagged in a parallel pass doesn't
+    // re-leak the same secret inside this audit row's details_json.
+    const redactedDetails = redactSecretsInValue(details) as Record<string, unknown>;
     // Keep the row id so the broadcast can deep-link the Details
     // button into the right Security-tab row. When insertion fails
     // we fall back to null and the frontend omits the Details action.
@@ -581,7 +594,7 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
         contextHash: hashText(hashSource),
         snippet: persistSnippet ? inputSummary : null,
         sourceHint: toolName,
-        details,
+        details: redactedDetails,
         blocked,
         approved,
         provenance: direction === 'outbound' ? 'tool-use' : 'tool-use',
@@ -618,6 +631,30 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
         });
       } catch (err) {
         console.error('[Permissions] broadcast failed:', err);
+      }
+      // Sprint 8 forensic incident replay: snapshot the most-recent
+      // session's tool-use buffer for this account when the user
+      // opted in and a block-mode is active. Tool blocks are always
+      // severity=medium so they qualify under both block_high and
+      // block_medium_high; gate on the mode anyway so disabling
+      // enforcement also disables forensic capture.
+      if (
+        insertedEventId !== null &&
+        deps.incidentReplay &&
+        settings.securityIncidentReplay === true &&
+        (settings.securityEnforcementMode === 'block_high' ||
+          settings.securityEnforcementMode === 'block_medium_high')
+      ) {
+        try {
+          deps.incidentReplay.captureForEventByAccount(accountId, insertedEventId);
+          // captureForEventByAccount is sync over an in-process SQLite
+          // write; the catch is defensive and can't be naturally
+          // exercised without mocking the DB layer (forbidden by test
+          // policy).
+          /* v8 ignore next 3 */
+        } catch (err) {
+          console.error('[Permissions] captureForEventByAccount failed:', err);
+        }
       }
     }
   };

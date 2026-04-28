@@ -49,6 +49,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     securityMuteScanSkipped: false,
     lastScanBenchmark: null,
     claudeCodeSyncEnabled: false,
+    securityIncidentReplay: false,
     logLevel: 'info',
     requestLoggingEnabled: false,
     requestLogRetentionDays: 7,

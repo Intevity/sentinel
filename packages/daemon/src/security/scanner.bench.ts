@@ -81,6 +81,7 @@ function benchSettings(overrides: Partial<Settings> = {}): Settings {
     securityMuteScanSkipped: true,
     lastScanBenchmark: null,
     claudeCodeSyncEnabled: false,
+    securityIncidentReplay: false,
     logLevel: 'info',
     requestLoggingEnabled: false,
     requestLogRetentionDays: 7,
