@@ -51,6 +51,10 @@ import { RateLimitStore } from './rate-limit-store.js';
 import { RequestAccountMap } from './request-account-map.js';
 import { OtelReceiver } from './otel-receiver.js';
 import { createSecurityScanner, type SecurityScanner } from './security/scanner.js';
+import {
+  createPermissionsEnforcer,
+  type PermissionsEnforcer,
+} from './security/permissions/enforcer.js';
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from './settings.js';
 import type { IpcServer } from './ipc.js';
 import { OverageStateMachine } from './overage.js';
@@ -186,6 +190,12 @@ export interface StartProxyOpts {
   /** When true, wires a real SecurityScanner and includes it in proxy opts.
    *  Set this per-test when the test needs scanner behavior. */
   enableSecurityScanner?: boolean;
+  /** When true, wires a real PermissionsEnforcer and includes it in proxy
+   *  opts. Tests that need to assert on tool-permission outbound stripping
+   *  or response-side tool_use interception should set this. The enforcer
+   *  is exposed on the returned `StartedProxy` so tests can call
+   *  `enforcer.invalidate()` after seeding rules into the db. */
+  enablePermissionsEnforcer?: boolean;
   /** When set, overrides the default tokenProvider (round-robin). The
    *  helper's default tokenProvider returns null (fallback to activeToken). */
   tokenProvider?: (ctx?: { isSonnet: boolean }) => TokenSelection | null;
@@ -219,6 +229,10 @@ export interface StartedProxy {
   /** Present when `enableSecurityScanner: true` was passed. Tests that need
    *  to resolve pending held-blocks (approve/deny) reach for this. */
   scanner?: SecurityScanner;
+  /** Present when `enablePermissionsEnforcer: true` was passed. Tests
+   *  insert/upsert permission rules directly into `db` and then call
+   *  `enforcer.invalidate()` to refresh the compiled cache. */
+  enforcer?: PermissionsEnforcer;
   cleanup: () => Promise<void>;
 }
 
@@ -282,6 +296,10 @@ export async function startProxyWithFake(opts: StartProxyOpts = {}): Promise<Sta
     ? buildRealSecurityScanner(db, ipcServer, getSettings)
     : undefined;
 
+  const permissionsEnforcer: PermissionsEnforcer | undefined = opts.enablePermissionsEnforcer
+    ? createPermissionsEnforcer({ db, ipcServer, getSettings })
+    : undefined;
+
   const otelHandler = buildRealOtelHandler(db, {
     activeAccountId,
     ipcServer,
@@ -308,6 +326,7 @@ export async function startProxyWithFake(opts: StartProxyOpts = {}): Promise<Sta
   if (opts.overageMachine) proxyOpts.overageMachine = opts.overageMachine;
   if (opts.onUpstreamAuthFailure) proxyOpts.onUpstreamAuthFailure = opts.onUpstreamAuthFailure;
   if (securityScanner) proxyOpts.securityScanner = securityScanner;
+  if (permissionsEnforcer) proxyOpts.permissionsEnforcer = permissionsEnforcer;
 
   const proxy = createProxyServer(proxyOpts, otelHandler);
   const proxyPort = await listenEphemeral(proxy);
@@ -327,6 +346,9 @@ export async function startProxyWithFake(opts: StartProxyOpts = {}): Promise<Sta
     } catch {
       /* already closed */
     }
+    // Stop any timers the enforcer started (process-poll, auto-mode
+    // freshness deactivation) so the test runner exits cleanly.
+    permissionsEnforcer?.shutdown();
     closeDb();
     if (existsSync(dbPath)) unlinkSync(dbPath);
     cleanupSettings();
@@ -349,6 +371,7 @@ export async function startProxyWithFake(opts: StartProxyOpts = {}): Promise<Sta
     cleanup,
   };
   if (securityScanner) started.scanner = securityScanner;
+  if (permissionsEnforcer) started.enforcer = permissionsEnforcer;
   return started;
 }
 

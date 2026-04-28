@@ -714,5 +714,10 @@ describe('interceptor — async hold flow', () => {
     expect(out).toContain('"name":"Bash"');
     expect(out).toContain('rm -rf /');
     expect(out).toContain('"type":"ping"');
+    // No duplication: the bufferedRaw is flushed exactly once. A
+    // historical bug re-emitted it from the second-loop "orphan flush"
+    // path. Pin via occurrence count so a regression fails loudly.
+    expect(out.split('"name":"Bash"').length - 1).toBe(1);
+    expect(out.split('rm -rf /').length - 1).toBe(1);
   });
 });

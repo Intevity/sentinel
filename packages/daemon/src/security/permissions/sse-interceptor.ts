@@ -455,6 +455,13 @@ export function createPermissionsSseInterceptor(
       for (const state of blocks.values()) {
         if (state.mode === 'buffering' && state.bufferedRaw.length > 0) {
           for (const f of state.bufferedRaw) sink.write(f);
+          // Clear after the fail-open flush so the second loop below
+          // (which catches genuinely-orphaned partial frames) doesn't
+          // re-emit these. Without this, ask rules that hold past
+          // upstream-end produced a duplicated tool_use in the client
+          // body — exposed by the proxy.security.permissions.e2e tests.
+          state.bufferedRaw = [];
+          state.mode = 'passthrough';
         }
       }
       if (holdBuffer.length > 0) {

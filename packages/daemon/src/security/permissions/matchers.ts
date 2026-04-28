@@ -17,6 +17,7 @@
  */
 
 import { homedir } from 'os';
+import { posix as posixPath } from 'path';
 
 // ─── Glob → regex ────────────────────────────────────────────────────────────
 
@@ -40,7 +41,12 @@ export function globToRegex(pattern: string, opts: GlobOptions = { pathMode: fal
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i]!;
     if (ch === '\\' && i + 1 < pattern.length) {
-      out += '\\' + escapeRegex(pattern[++i]!);
+      // Backslash escapes the next char to be matched literally. The
+      // historical implementation prepended an extra `\\` here which
+      // turned `\[` into "literal-backslash-then-bracket" (and made
+      // bracket char classes leak through). Just regex-escape the
+      // following character — that already produces `\[`, `\.`, `\*` etc.
+      out += escapeRegex(pattern[++i]!);
       continue;
     }
     if (ch === '*') {
@@ -62,15 +68,22 @@ export function globToRegex(pattern: string, opts: GlobOptions = { pathMode: fal
 }
 
 function escapeRegex(s: string): string {
-  return s.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  // Includes `*` and `?` so the `\X` literal-escape branch in
+  // `globToRegex` produces the right output for glob meta chars too —
+  // the meta-handling branches above run before the fallthrough that
+  // also calls escapeRegex, so adding them here can't double-escape.
+  return s.replace(/[.+^${}()|[\]\\*?]/g, '\\$&');
 }
 
 // ─── Bash ────────────────────────────────────────────────────────────────────
 
 /** Process wrappers whose leading argv is stripped before matching so
  *  `timeout 30 npm test` matches `Bash(npm test)` etc. Extend with care —
- *  each addition lowers rule precision. */
-const WRAPPER_COMMANDS = new Set(['time', 'nohup']);
+ *  each addition lowers rule precision.
+ *  `eval` and `exec` are included because both pass their argv through
+ *  to be executed as a real command, so `eval rm -rf /` should match the
+ *  same rule a bare `rm -rf /` would. */
+const WRAPPER_COMMANDS = new Set(['time', 'nohup', 'eval', 'exec']);
 
 /** Wrappers that take a single numeric / named argument before the real
  *  command. Greedy — we strip `cmd ARG` as a pair. */
@@ -218,21 +231,140 @@ export function stripWrappers(cmd: string): string {
   return tokens.join(' ');
 }
 
+/** True when `flag` looks like a shell `-c`-style flag bundle. Accepts
+ *  the bare `-c` plus combinations like `-lc` (login + command),
+ *  `-ec` (errexit + command), `-Ec`, etc. — all of which still treat
+ *  the next argv as a script body. Long-form `--command` is also
+ *  accepted for completeness. */
+function isShellCommandFlag(flag: string): boolean {
+  if (flag === '-c' || flag === '--command') return true;
+  if (!flag.startsWith('-') || flag.startsWith('--')) return false;
+  // Short-flag bundle (e.g. `-lc`, `-eEuc`); look for `c` among the chars.
+  return flag.slice(1).includes('c');
+}
+
+/** Find every `$(...)` and backtick-subshell inside `cmd` and return the
+ *  inner command text. Honors single-quote regions (which suppress
+ *  expansion in real shells). Nested `$(...)` is supported with a depth
+ *  counter; backtick nesting is not (real shells require backslash-escaping
+ *  inner backticks, which we treat as a literal close).
+ *
+ *  Used by `expandBashCommand` so a rule like `Bash(rm:*)` catches
+ *  `echo $(rm -rf /)`. Exported so unit tests can assert the extraction
+ *  shape directly. */
+export function extractSubshells(cmd: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  let quote: '"' | "'" | null = null;
+  while (i < cmd.length) {
+    const ch = cmd[i]!;
+    if (quote) {
+      // Single quotes suppress every expansion, including command
+      // substitution. Stay inside until the closing quote.
+      if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      // Double quotes still permit `$(...)` expansion in real shells
+      // — only single quotes suppress it. Track the active quote so
+      // single-quoted runs are skipped wholesale.
+      if (ch === "'") quote = ch;
+      i++;
+      continue;
+    }
+    if (ch === '$' && cmd[i + 1] === '(') {
+      let depth = 1;
+      let j = i + 2;
+      while (j < cmd.length && depth > 0) {
+        const cj = cmd[j]!;
+        if (cj === '(') depth++;
+        else if (cj === ')') depth--;
+        if (depth === 0) break;
+        j++;
+      }
+      if (depth === 0) {
+        const inner = cmd.slice(i + 2, j).trim();
+        if (inner) out.push(inner);
+        i = j + 1;
+        continue;
+      }
+      // Unmatched `$(` — bail; treat the rest of the string as opaque.
+      break;
+    }
+    if (ch === '`') {
+      const j = cmd.indexOf('`', i + 1);
+      if (j > i) {
+        const inner = cmd.slice(i + 1, j).trim();
+        if (inner) out.push(inner);
+        i = j + 1;
+        continue;
+      }
+      // Unbalanced backtick — bail.
+      break;
+    }
+    i++;
+  }
+  return out;
+}
+
+/** Find heredoc bodies inside `cmd`. Bash heredoc syntax is
+ *  `<<DELIM` or `<<-DELIM`, with optional quoting around DELIM. The
+ *  body runs from the next line up to a line equal to DELIM. We treat
+ *  the body lines as additional command-segment candidates because a
+ *  heredoc fed to `bash` (or `sh -c "$(cat)"` patterns) effectively
+ *  executes those lines.
+ *
+ *  Returns the body text per heredoc (each as one segment, which the
+ *  caller can further pipeline-split). */
+export function extractHeredocs(cmd: string): string[] {
+  const out: string[] = [];
+  // Multi-line, non-greedy match. Delimiter capture group permits
+  // optional surrounding quotes (`<<'EOF'` and `<<"EOF"` both behave
+  // the same for our purposes — quotes suppress expansion of the body
+  // but not whether commands inside would run).
+  const re = /<<-?\s*['"]?(\w+)['"]?\r?\n([\s\S]*?)\r?\n\1\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cmd)) !== null) {
+    const body = m[2]?.trim();
+    if (body) out.push(body);
+  }
+  return out;
+}
+
 /**
  * Expand `-c` shells so a rule can match the inner command directly. A
  * `sh -c "npm test && npm lint"` call becomes two logical segments —
  * `npm test` and `npm lint` — alongside the outer `sh` so rules can target
- * either layer.
+ * either layer. Also expands command substitutions (`$(...)`,
+ * backticks) and heredoc bodies — each of those is itself an inner
+ * command that real shells execute.
  */
 export function expandBashCommand(cmd: string): string[] {
   const results: string[] = [];
+  const seen = new Set<string>();
   const enqueue = (c: string): void => {
     const trimmed = c.trim();
     if (!trimmed) return;
+    if (seen.has(trimmed)) return;
+    seen.add(trimmed);
     results.push(trimmed);
     const tokens = tokenize(stripWrappers(trimmed));
-    if (tokens.length >= 3 && SHELLS_WITH_DASH_C.has(tokens[0]!) && tokens[1] === '-c') {
+    if (
+      tokens.length >= 3 &&
+      SHELLS_WITH_DASH_C.has(tokens[0]!) &&
+      isShellCommandFlag(tokens[1]!)
+    ) {
       const inner = tokens.slice(2).join(' ');
+      for (const seg of splitPipeline(inner)) enqueue(seg);
+    }
+    // Subshell substitutions and heredocs inside this segment also
+    // become candidates. Each one feeds back through enqueue so its own
+    // `-c` / nested-substitution layers expand recursively.
+    for (const inner of extractSubshells(trimmed)) {
+      for (const seg of splitPipeline(inner)) enqueue(seg);
+    }
+    for (const inner of extractHeredocs(trimmed)) {
       for (const seg of splitPipeline(inner)) enqueue(seg);
     }
   };
@@ -297,22 +429,41 @@ function normalizePatternToAbsolute(pattern: string): string {
   return pattern;
 }
 
+/** Collapse `..` segments in an absolute POSIX path. Returns the input
+ *  unchanged for non-absolute paths (the basename matcher handles those).
+ *  Symlinks are NOT resolved — that would require a stat call on every
+ *  rule check, which is too slow for the hot path; document the limit
+ *  rather than fix it. */
+function normalizePathForMatch(raw: string): string {
+  if (!raw.startsWith('/')) return raw;
+  const collapsed = posixPath.normalize(raw);
+  // posix.normalize leaves a trailing slash on directory-style inputs;
+  // preserve only the trailing slash that was on the original.
+  if (raw.endsWith('/') && !collapsed.endsWith('/')) return collapsed + '/';
+  return collapsed;
+}
+
 /** Match a path tool_use against a path rule pattern.
  *  - `//abs/**`   : absolute path glob
  *  - `~/**`       : home-relative glob
  *  - `/x/**`      : treated as an absolute path for v1 (no project-root)
  *  - `x`          : glob matched against the basename OR anywhere in the path
+ *
+ *  The path is normalized through `posixPath.normalize` before matching
+ *  so traversal via `..` segments cannot escape an `**` boundary
+ *  (`/safe/../etc/passwd` matches `Read(//etc/**)`).
  */
 export function matchPath(pattern: string, input: unknown): boolean {
   const raw = pickPath(input);
   if (!raw) return false;
+  const normalizedRaw = normalizePathForMatch(raw);
   const normalizedPattern = normalizePatternToAbsolute(pattern);
   const regex = globToRegex(normalizedPattern, { pathMode: true });
-  if (regex.test(raw)) return true;
+  if (regex.test(normalizedRaw)) return true;
   // For bare patterns without an anchoring slash, also try matching against
   // the basename so `*.env` works without the user remembering to prefix **.
   if (!normalizedPattern.startsWith('/')) {
-    const base = raw.split('/').pop() ?? raw;
+    const base = normalizedRaw.split('/').pop() ?? normalizedRaw;
     if (regex.test(base)) return true;
   }
   return false;
