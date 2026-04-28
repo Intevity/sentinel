@@ -9,7 +9,7 @@
  * difference is that this harness starts the entire daemon (not just the
  * proxy) and connects a real IPC client instead of stubbing it.
  */
-import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { chmodSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -131,9 +131,12 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   // plus a UUID prefix leave limited room.
   const socketPath = join(workdir, 'd.sock');
 
-  // Seed files BEFORE the daemon reads them.
+  // Seed files BEFORE the daemon reads them. Sprint 2: settings.json is
+  // signed with HMAC-SHA256 (sidecar settings.json.sig) and must be mode
+  // 0o600 to avoid the loose-mode tamper-detection check. The keychain
+  // env var has to be set BEFORE we sign so getOrCreateSettingsHmacKey
+  // reads the test keychain instead of the real OS keychain.
   writeFileSync(claudeJsonPath, JSON.stringify(opts.claudeState ?? {}, null, 2));
-  writeFileSync(settingsPath, JSON.stringify(opts.settings ?? {}, null, 2));
   const keychain: TestKeychain = {};
   if (opts.sentinelCredentials) {
     keychain['Claude Sentinel-credentials'] = {};
@@ -148,6 +151,19 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
     }
   }
   writeFileSync(keychainPath, JSON.stringify(keychain, null, 2));
+  // Route the HMAC keychain entry through this test keychain file
+  // before signing so we don't pollute the developer's real keychain.
+  process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
+  // Drop any cached HMAC key from a prior test in the same vitest worker —
+  // each test gets its own keychain file, so the in-memory key from
+  // worker-level state would not match the on-disk key for this run.
+  const { resetSettingsHmacKeyCache, signSettings } = await import('./settings-integrity.js');
+  resetSettingsHmacKeyCache();
+  const settingsBytes = JSON.stringify(opts.settings ?? {}, null, 2);
+  writeFileSync(settingsPath, settingsBytes);
+  writeFileSync(`${settingsPath}.sig`, signSettings(settingsBytes));
+  chmodSync(settingsPath, 0o600);
+  chmodSync(`${settingsPath}.sig`, 0o600);
 
   const daemonPort = await pickFreePort();
 

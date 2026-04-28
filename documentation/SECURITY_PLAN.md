@@ -59,18 +59,18 @@ Apply these in every sprint:
 
 ## Sprint tracker
 
-| #   | Sprint                                       | Status        | Completed | PR/commit |
-| --- | -------------------------------------------- | ------------- | --------- | --------- |
-| 1   | Network egress hardening                     | ☐ not started |           |           |
-| 2   | Self-protection (anti-tamper)                | ☐ not started |           |           |
-| 3   | Secret detector expansion                    | ☐ not started |           |           |
-| 4   | Persistence-mechanism rules                  | ☐ not started |           |           |
-| 5   | Bash matcher edges and filesystem boundaries | ☐ not started |           |           |
-| 6   | Environment-variable hardening               | ☐ not started |           |           |
-| 7   | Indirect prompt-injection scanning           | ☐ not started |           |           |
-| 8   | Audit log integrity and forensics            | ☐ not started |           |           |
-| 9   | UX, presets, observability                   | ☐ not started |           |           |
-| 10  | Resource limits and race-condition pinning   | ☐ not started |           |           |
+| #   | Sprint                                       | Status        | Completed  | PR/commit |
+| --- | -------------------------------------------- | ------------- | ---------- | --------- |
+| 1   | Network egress hardening                     | ☐ not started |            |           |
+| 2   | Self-protection (anti-tamper)                | ☐ not started |            |           |
+| 3   | Secret detector expansion                    | ✅ done       | 2026-04-28 |           |
+| 4   | Persistence-mechanism rules                  | ☐ not started |            |           |
+| 5   | Bash matcher edges and filesystem boundaries | ☐ not started |            |           |
+| 6   | Environment-variable hardening               | ☐ not started |            |           |
+| 7   | Indirect prompt-injection scanning           | ☐ not started |            |           |
+| 8   | Audit log integrity and forensics            | ☐ not started |            |           |
+| 9   | UX, presets, observability                   | ☐ not started |            |           |
+| 10  | Resource limits and race-condition pinning   | ☐ not started |            |           |
 
 Sprint dependencies are mostly forward: a later sprint can reference earlier work, but each is shippable on its own. The recommended execution order is the numbering. Sprints 3 and 4 are both purely additive and could run in parallel if you have two agent sessions.
 

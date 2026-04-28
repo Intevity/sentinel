@@ -73,6 +73,78 @@ const SHARED_ASK_RULES: PresetRule[] = [
   { decision: 'ask', tool: 'Bash', pattern: 'wget * | sh', note: 'Remote script execution.' },
 ];
 
+// ─── Self-protection rules applied to ALL presets ────────────────────────
+// Sprint 2: an agent that can write to ~/.claude/settings.json or anywhere
+// under ~/.claude-sentinel/ can disable Sentinel. Treat config-path writes
+// as a self-protection invariant, not a policy choice; deny in low/medium/
+// high alike. The Bash detector `config-path-write` is the second layer
+// for shell redirects that don't route through the Write/Edit/MultiEdit
+// tools.
+//
+// Scope is intentionally narrow on the ~/.claude side: ~/.claude/plans/,
+// ~/.claude/projects/, and ~/.claude/todos/ are workspace dirs that Claude
+// Code writes to constantly during plan-mode and session bookkeeping. A
+// blanket ~/.claude/** deny would break those flows. The high-value
+// targets are settings.json (permission rules) and CLAUDE.md (user-level
+// memory steering Claude's behavior). Credentials/oauth_token already
+// have dedicated detector rules in detectors.ts.
+const SHARED_CONFIG_PROTECTION_RULES: PresetRule[] = [
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '~/.claude/settings.json',
+    note: 'Protect Claude Code permission rules.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '~/.claude/settings.json',
+    note: 'Protect Claude Code permission rules.',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '~/.claude/settings.json',
+    note: 'Protect Claude Code permission rules.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '~/.claude/CLAUDE.md',
+    note: 'Protect user-level memory.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '~/.claude/CLAUDE.md',
+    note: 'Protect user-level memory.',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '~/.claude/CLAUDE.md',
+    note: 'Protect user-level memory.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '~/.claude-sentinel/**',
+    note: 'Protect Sentinel state and settings.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '~/.claude-sentinel/**',
+    note: 'Protect Sentinel state and settings.',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '~/.claude-sentinel/**',
+    note: 'Protect Sentinel state and settings.',
+  },
+];
+
 // ─── Deny rules shared by Medium and High ─────────────────────────────────
 // Resource-specific protections that should never fire interactively: SSH
 // keys, AWS credentials, and known exfiltration surfaces.
@@ -168,7 +240,8 @@ export const PRESETS: Record<RiskProfile, Preset> = {
     highlights: [
       'Scanner observes secrets only',
       'No OS notifications below HIGH severity',
-      'Tool permissions disabled',
+      'Tool permissions disabled, except self-protection',
+      'Blocks tampering with Claude Code permissions and Sentinel state',
     ],
     settings: {
       securityScanEnabled: true,
@@ -179,12 +252,15 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       securityOsNotifyThreshold: 'high' as SecurityOsNotifyThreshold,
       securityBlockHoldEnabled: false,
       securityApproveHoldSec: 60,
-      toolPermissionsEnabled: false,
+      // Even in Low we keep tool permissions on so the config-protection
+      // denies fire. The default-action is still allow, so nothing else
+      // changes for the user.
+      toolPermissionsEnabled: true,
       toolPermissionDefaultAction: 'allow' as PermissionDecision,
       toolPermissionSkipInAutoMode: true,
       denyPrivateNetworkByDefault: false,
     },
-    rules: [],
+    rules: [...SHARED_CONFIG_PROTECTION_RULES],
   },
   medium: {
     profile: 'medium',
@@ -194,6 +270,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       'Blocks HIGH-severity outbound findings (with approve-and-hold)',
       'Scanner covers secrets + risky tool use',
       'Asks before rm -rf, sudo, chmod 777, curl|bash; denies SSH/AWS keys, exfil surfaces',
+      'Blocks tampering with Claude Code permissions and Sentinel state',
     ],
     settings: {
       securityScanEnabled: true,
@@ -209,7 +286,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       toolPermissionSkipInAutoMode: true,
       denyPrivateNetworkByDefault: false,
     },
-    rules: [...SHARED_ASK_RULES, ...SHARED_DENY_RULES],
+    rules: [...SHARED_CONFIG_PROTECTION_RULES, ...SHARED_ASK_RULES, ...SHARED_DENY_RULES],
   },
   high: {
     profile: 'high',
@@ -221,6 +298,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       'Default-deny permissions with an explicit allow list',
       'Auto-mode bypass disabled; Sentinel still enforces',
       'Denies cloud-metadata and private network egress by default',
+      'Blocks tampering with Claude Code permissions and Sentinel state',
     ],
     settings: {
       securityScanEnabled: true,
@@ -237,6 +315,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       denyPrivateNetworkByDefault: true,
     },
     rules: [
+      ...SHARED_CONFIG_PROTECTION_RULES,
       ...SHARED_ASK_RULES,
       ...SHARED_DENY_RULES,
       ...HIGH_NETWORK_DENY_RULES,

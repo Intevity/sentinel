@@ -19,9 +19,52 @@ describe('PRESETS', () => {
     expect(PRESETS.high.settings.securityEnforcementMode).toBe('block_medium_high');
   });
 
-  it('low profile has no permission rules', () => {
-    expect(PRESETS.low.rules).toHaveLength(0);
-    expect(PRESETS.low.settings.toolPermissionsEnabled).toBe(false);
+  it('low profile carries only the self-protection rules and keeps default-action allow', () => {
+    // Sprint 2: Low gets the SHARED_CONFIG_PROTECTION_RULES so an
+    // agent can't disable Sentinel even on the most permissive
+    // preset. toolPermissionsEnabled flipped from false → true so
+    // those rules can fire; toolPermissionDefaultAction stays allow,
+    // so nothing else is blocked.
+    expect(PRESETS.low.settings.toolPermissionsEnabled).toBe(true);
+    expect(PRESETS.low.settings.toolPermissionDefaultAction).toBe('allow');
+    expect(PRESETS.low.rules.length).toBeGreaterThan(0);
+    const decisions = new Set(PRESETS.low.rules.map((r) => r.decision));
+    // Low has ONLY denies (no asks, no allows) — they are the
+    // self-protection invariant carried into every preset.
+    expect(decisions).toEqual(new Set(['deny']));
+  });
+
+  it('every preset (low/medium/high) denies tool-based config writes', () => {
+    const required = [
+      'Write(~/.claude/settings.json)',
+      'Edit(~/.claude/settings.json)',
+      'MultiEdit(~/.claude/settings.json)',
+      'Write(~/.claude/CLAUDE.md)',
+      'Edit(~/.claude/CLAUDE.md)',
+      'MultiEdit(~/.claude/CLAUDE.md)',
+      'Write(~/.claude-sentinel/**)',
+      'Edit(~/.claude-sentinel/**)',
+      'MultiEdit(~/.claude-sentinel/**)',
+    ];
+    for (const profile of ['low', 'medium', 'high'] as const) {
+      const byRaw = new Map<string, (typeof PRESETS)[typeof profile]['rules'][number]>(
+        PRESETS[profile].rules.map((r) => [`${r.tool}(${r.pattern ?? ''})`, r]),
+      );
+      for (const raw of required) {
+        const rule = byRaw.get(raw);
+        expect(rule, `${profile} preset must include ${raw}`).toBeDefined();
+        expect(rule!.decision).toBe('deny');
+      }
+    }
+  });
+
+  it('every preset highlights the new self-protection coverage', () => {
+    for (const profile of ['low', 'medium', 'high'] as const) {
+      const present = PRESETS[profile].highlights.some((h) =>
+        h.toLowerCase().includes('claude code permissions'),
+      );
+      expect(present, `${profile} highlights should mention self-protection`).toBe(true);
+    }
   });
 
   it('medium profile ships ask+deny rules with no allow rules', () => {

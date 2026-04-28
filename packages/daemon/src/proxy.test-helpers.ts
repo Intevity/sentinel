@@ -137,21 +137,42 @@ export function buildRealOtelHandler(
 
 /** Write a settings file to an isolated tmp path and point the settings
  *  module at it for the lifetime of the test. Returns the settings path
- *  and a cleanup that restores the previous env. */
+ *  and a cleanup that restores the previous env.
+ *
+ *  Sprint 2: also routes the HMAC keychain entry to an isolated tmp file
+ *  if the caller hasn't set one already, so `saveSettings` (which signs)
+ *  doesn't pollute the developer's real keychain. */
 export function seedTestSettings(overrides: Partial<Settings> = {}): {
   settingsPath: string;
   cleanup: () => void;
 } {
   const settingsPath = join(tmpdir(), `sentinel-settings-${randomUUID()}.json`);
-  saveSettings({ ...DEFAULT_SETTINGS, ...overrides }, settingsPath);
-  const previous = process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE;
+  const previousSettings = process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE;
   process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE = settingsPath;
+
+  // Set up keychain seam if not already set so HMAC key generation
+  // doesn't hit the real OS keychain. Don't overwrite an existing
+  // keychain seam — the parent harness (e.g. startTestDaemon) may have
+  // already configured one with seeded credentials.
+  const previousKeychain = process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+  let keychainPath: string | null = null;
+  if (!previousKeychain) {
+    keychainPath = join(tmpdir(), `sentinel-keychain-${randomUUID()}.json`);
+    process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
+  }
+
+  saveSettings({ ...DEFAULT_SETTINGS, ...overrides }, settingsPath);
   return {
     settingsPath,
     cleanup: () => {
-      if (previous === undefined) delete process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE;
-      else process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE = previous;
+      if (previousSettings === undefined) delete process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE;
+      else process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE = previousSettings;
       if (existsSync(settingsPath)) unlinkSync(settingsPath);
+      if (existsSync(`${settingsPath}.sig`)) unlinkSync(`${settingsPath}.sig`);
+      if (keychainPath !== null) {
+        delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+        if (existsSync(keychainPath)) unlinkSync(keychainPath);
+      }
     },
   };
 }

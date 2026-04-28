@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import type {
@@ -10,6 +19,7 @@ import type {
   LogLevel,
   PermissionDecision,
 } from '@claude-sentinel/shared';
+import { signSettings, verifySettings } from './settings-integrity.js';
 
 /** Default settings-file path. Tests can override via
  *  `CLAUDE_SENTINEL_TEST_SETTINGS_FILE` so they don't pick up the running
@@ -338,37 +348,222 @@ function coerce(raw: unknown): Settings {
   return next;
 }
 
+/** Why a `loadSettingsWithTamper` call returned defaults instead of the
+ *  on-disk value. `null` means the file was loaded cleanly (or simply
+ *  absent — first-run is not tampering). */
+export type SettingsTamperReason = 'loose_mode' | 'missing_sig' | 'sig_mismatch';
+
+export interface LoadSettingsResult {
+  settings: Settings;
+  tamperDetected: boolean;
+  reason: SettingsTamperReason | null;
+  /** Absolute path of the settings.json that was checked. Useful for the
+   *  IPC broadcast payload and for log lines. */
+  path: string;
+}
+
+/** Path of the HMAC sidecar derived from a settings.json path. */
+function sigPath(p: string): string {
+  return `${p}.sig`;
+}
+
+/**
+ * Read settings from disk and report whether the integrity check passed.
+ * The boot path uses this so it can broadcast `settings_tamper_detected`;
+ * everything else goes through the simpler `loadSettings()` which silently
+ * falls back to defaults on any tamper signal.
+ *
+ * Tamper detection rules:
+ *   - File mode has any group/other bits set → `loose_mode`.
+ *   - Sidecar `.sig` is missing while `.json` exists → `missing_sig`.
+ *   - HMAC verification fails → `sig_mismatch`.
+ *
+ * A genuinely-fresh install (neither file present) is NOT tamper. The
+ * caller should run `saveSettings(...)` once, which establishes both
+ * files together.
+ */
+export function loadSettingsWithTamper(path?: string): LoadSettingsResult {
+  const p = path ?? currentSettingsPath();
+  const empty: LoadSettingsResult = {
+    settings: { ...DEFAULT_SETTINGS },
+    tamperDetected: false,
+    reason: null,
+    path: p,
+  };
+  if (!existsSync(p)) return empty;
+
+  // Mode check first — a loose-permissions file could have been written
+  // by something other than the daemon, so don't trust its contents even
+  // if the sig somehow verifies.
+  if (process.platform !== 'win32') {
+    try {
+      const mode = statSync(p).mode & 0o777;
+      if ((mode & 0o077) !== 0) {
+        console.warn(
+          `[Settings] Insecure file mode ${mode.toString(8)} on ${p} — falling back to defaults`,
+        );
+        return {
+          settings: { ...DEFAULT_SETTINGS },
+          tamperDetected: true,
+          reason: 'loose_mode',
+          path: p,
+        };
+      }
+    } catch {
+      /* v8 ignore next 2 */
+      // statSync racing a concurrent rename — fall through to the read attempt.
+    }
+  }
+
+  let bytes: string;
+  try {
+    bytes = readFileSync(p, 'utf-8');
+  } catch {
+    return empty;
+  }
+
+  // Sidecar check. `.sig` absent on a `.json` that exists is suspicious:
+  // saveSettings() writes both atomically, so the only ways to land here
+  // are hand-deletion of the sidecar or a previous-version daemon (pre-
+  // Sprint 2) that didn't sign at all. Treat both as tamper — the user
+  // sees the banner, sets the desired settings via UI, and saveSettings
+  // writes a fresh signed pair.
+  const sp = sigPath(p);
+  if (!existsSync(sp)) {
+    console.warn(`[Settings] Missing signature file ${sp} — falling back to defaults`);
+    return {
+      settings: { ...DEFAULT_SETTINGS },
+      tamperDetected: true,
+      reason: 'missing_sig',
+      path: p,
+    };
+  }
+  let expectedSig: string;
+  try {
+    expectedSig = readFileSync(sp, 'utf-8').trim();
+  } catch {
+    /* v8 ignore next 2 */
+    return {
+      settings: { ...DEFAULT_SETTINGS },
+      tamperDetected: true,
+      reason: 'missing_sig',
+      path: p,
+    };
+  }
+
+  if (!verifySettings(bytes, expectedSig)) {
+    console.error(`[Settings] HMAC mismatch on ${p} — falling back to defaults`);
+    return {
+      settings: { ...DEFAULT_SETTINGS },
+      tamperDetected: true,
+      reason: 'sig_mismatch',
+      path: p,
+    };
+  }
+
+  try {
+    return {
+      settings: coerce(JSON.parse(bytes)),
+      tamperDetected: false,
+      reason: null,
+      path: p,
+    };
+  } catch {
+    // Coerce already swallows malformed JSON, but the JSON.parse can
+    // throw — fall back silently.
+    /* v8 ignore next */
+    return empty;
+  }
+}
+
 /**
  * Read settings from disk. Creates no file — returns DEFAULT_SETTINGS when
- * the file is absent so the caller can detect a first run.
+ * the file is absent so the caller can detect a first run, and also when
+ * the integrity check fails (silent fallback). Use `loadSettingsWithTamper`
+ * for the boot path that needs to surface tamper to the UI.
  */
 export function loadSettings(path?: string): Settings {
-  const p = path ?? currentSettingsPath();
-  if (!existsSync(p)) return { ...DEFAULT_SETTINGS };
-  try {
-    const contents = readFileSync(p, 'utf-8');
-    return coerce(JSON.parse(contents));
-  } catch {
-    return { ...DEFAULT_SETTINGS };
-  }
+  return loadSettingsWithTamper(path).settings;
 }
 
 /**
  * Persist a full Settings object atomically (write + rename). Creates the
  * parent directory if needed.
+ *
+ * Sprint 2: the parent dir is chmod 0o700, the settings file is chmod
+ * 0o600, and a sidecar `.sig` (HMAC-SHA256, hex) is written next to it
+ * — also 0o600. Both files are written before fsync-equivalent return so
+ * a subsequent `loadSettings` on the same boot can verify.
  */
 export function saveSettings(settings: Settings, path?: string): void {
   const p = path ?? currentSettingsPath();
   const dir = dirname(p);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  // Tighten directory perms idempotently — protects against an attacker
+  // who set o+w between writes.
+  if (process.platform !== 'win32') {
+    try {
+      chmodSync(dir, 0o700);
+    } catch {
+      /* v8 ignore next */
+      // non-fatal
+    }
+  }
+
+  const bytes = JSON.stringify(settings, null, 2) + '\n';
   const tmp = `${p}.tmp`;
-  writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
-  // Atomic rename on POSIX; fall back to a direct write on Windows if rename fails.
+  writeFileSync(tmp, bytes, 'utf-8');
   try {
     renameSync(tmp, p);
   } catch {
-    /* v8 ignore next 1 */
-    writeFileSync(p, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
+    /* v8 ignore next */
+    writeFileSync(p, bytes, 'utf-8');
+  }
+  if (process.platform !== 'win32') {
+    try {
+      chmodSync(p, 0o600);
+    } catch {
+      /* v8 ignore next */
+      // non-fatal
+    }
+  }
+
+  // Sign and persist the sidecar. Order matters: write+rename+chmod the
+  // .json first so a reader who races us either sees the old pair or the
+  // new pair, never the new .json with the old .sig.
+  const sig = signSettings(bytes);
+  const sp = sigPath(p);
+  const sigTmp = `${sp}.tmp`;
+  writeFileSync(sigTmp, sig, 'utf-8');
+  try {
+    renameSync(sigTmp, sp);
+  } catch {
+    /* v8 ignore next */
+    writeFileSync(sp, sig, 'utf-8');
+  }
+  if (process.platform !== 'win32') {
+    try {
+      chmodSync(sp, 0o600);
+    } catch {
+      /* v8 ignore next */
+      // non-fatal
+    }
+  }
+}
+
+/**
+ * Remove the settings file and its sidecar. Used by the uninstall / reset
+ * flow; not called during normal operation. No-ops on missing files.
+ */
+export function deleteSettingsFiles(path?: string): void {
+  const p = path ?? currentSettingsPath();
+  for (const target of [p, sigPath(p)]) {
+    try {
+      if (existsSync(target)) unlinkSync(target);
+    } catch {
+      /* v8 ignore next 2 */
+      // ignore
+    }
   }
 }
 

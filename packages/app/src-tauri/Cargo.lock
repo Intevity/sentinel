@@ -487,10 +487,12 @@ name = "claude-sentinel"
 version = "0.1.0"
 dependencies = [
  "block2",
+ "hex",
  "image",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "tauri",

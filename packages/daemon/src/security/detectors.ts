@@ -96,6 +96,10 @@ const ALLOWLIST_CONTEXT_WORDS = [
 const KNOWN_EXAMPLE_VALUES = new Set([
   'AKIAIOSFODNN7EXAMPLE',
   'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+  // jwt.io demo token: appears in countless tutorials, blog posts, and
+  // copy-pasted examples. Suppressing it preserves a lower FP rate while
+  // genuine JWTs (with real cryptographic body parts) still fire.
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c',
 ]);
 
 function isAllowlistedPath(sourceHint: string | undefined): boolean {
@@ -208,6 +212,26 @@ function computeConfidenceDrop(
   return { drop, reasons };
 }
 
+// ─── Entropy helper ───────────────────────────────────────────────────────
+
+/** Shannon entropy in bits/char. Used by the keyword-gated detectors and
+ *  the .env-file line scanner to filter human-readable values out of the
+ *  long tail of "looks like 32 hex chars near the word api_key" matches.
+ *
+ *  Random base64 ≈ 5.7 bits/char; lowercase English ≈ 4.0; "aaaa…" → 0.
+ *  Threshold of 4.5 picks up real secrets while letting prose through. */
+export function shannonEntropy(s: string): number {
+  if (s.length === 0) return 0;
+  const counts = new Map<string, number>();
+  for (const ch of s) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  let h = 0;
+  for (const c of counts.values()) {
+    const p = c / s.length;
+    h -= p * Math.log2(p);
+  }
+  return h;
+}
+
 // ─── Secret detectors ─────────────────────────────────────────────────────
 
 interface SecretRule {
@@ -216,6 +240,12 @@ interface SecretRule {
   reason: string;
   regex: RegExp;
   confidence: number;
+  /** Optional explicit base severity. Used when the spec assigns a
+   *  severity that doesn't line up with confidence-only thresholds
+   *  (e.g., mailgun MEDIUM at confidence 0.85, ssh-public-key LOW at
+   *  0.6). When omitted, severity is derived from adjusted confidence
+   *  via the legacy thresholds (≥0.85=high, ≥0.6=medium, else low). */
+  severity?: SecuritySeverity;
 }
 
 const SECRET_RULES: SecretRule[] = [
@@ -324,6 +354,143 @@ const SECRET_RULES: SecretRule[] = [
     confidence: 0.75,
     regex: /\b1\/\/0[A-Za-z0-9_-]{40,}\b/g,
   },
+  // ─── Sprint 3: database connection strings with embedded passwords ──
+  {
+    id: 'postgres-conn-string',
+    title: 'Postgres connection string with password',
+    reason: 'postgres(ql)://user:password@host shape',
+    confidence: 0.95,
+    regex: /\bpostgres(?:ql)?:\/\/[^:\s/]+:[^@\s]+@[^/\s]+/g,
+  },
+  {
+    id: 'mysql-conn-string',
+    title: 'MySQL connection string with password',
+    reason: 'mysql://user:password@host shape',
+    confidence: 0.95,
+    regex: /\bmysql:\/\/[^:\s/]+:[^@\s]+@[^/\s]+/g,
+  },
+  {
+    id: 'mongodb-conn-string',
+    title: 'MongoDB connection string with password',
+    reason: 'mongodb(+srv)://user:password@host shape',
+    confidence: 0.95,
+    regex: /\bmongodb(?:\+srv)?:\/\/[^:\s/]+:[^@\s]+@[^/\s]+/g,
+  },
+  {
+    id: 'redis-conn-string',
+    title: 'Redis connection string with password',
+    reason: 'redis://[user:]password@host shape',
+    confidence: 0.9,
+    regex: /\bredis:\/\/(?:[^:@\s/]+:)?[^@\s/]+@[^/\s]+/g,
+  },
+  {
+    id: 'amqp-conn-string',
+    title: 'AMQP connection string with password',
+    reason: 'amqp://user:password@host shape',
+    confidence: 0.85,
+    severity: 'medium',
+    regex: /\bamqp:\/\/[^:\s/]+:[^@\s]+@[^/\s]+/g,
+  },
+  {
+    id: 'jdbc-conn-string',
+    title: 'JDBC connection string with credentials',
+    reason: 'jdbc:<driver>://host?...user=...|password=... shape',
+    confidence: 0.85,
+    severity: 'medium',
+    // Anchor the alternative branch with `(?:^|&)` so the `[^?\s]*?`
+    // span doesn't collide with `(?:.*&)?` from the original spec —
+    // that combination was the textbook catastrophic-backtracking shape
+    // (Sprint 10 ReDoS class). This rewrite keeps linear time.
+    regex: /\bjdbc:[a-z]+:\/\/[^?\s]+\?[^?\s]*?(?:^|&)(?:user|password)=[^&\s]+/g,
+  },
+  // ─── Sprint 3: JWT ───────────────────────────────────────────────────
+  {
+    id: 'jwt-token',
+    title: 'JWT token',
+    reason: 'eyJ.eyJ.* base64url triple — JOSE header + payload + signature',
+    confidence: 0.85,
+    regex: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
+  },
+  // ─── Sprint 3: Azure ─────────────────────────────────────────────────
+  {
+    id: 'azure-storage-key',
+    title: 'Azure storage account key',
+    reason: 'DefaultEndpointsProtocol=…AccountKey=…; connection-string shape',
+    confidence: 0.95,
+    regex: /DefaultEndpointsProtocol=https?;AccountName=[a-z0-9]+;AccountKey=[A-Za-z0-9+/=]{60,};/g,
+  },
+  {
+    id: 'azure-sas-url',
+    title: 'Azure SAS URL',
+    reason: '*.core.windows.net SAS URL with sig= parameter',
+    confidence: 0.85,
+    regex:
+      /https:\/\/[a-z0-9]+\.(?:blob|queue|table|file)\.core\.windows\.net\/[^?\s]+\?[^"'\s]*sig=[^"'\s&]+/g,
+  },
+  // ─── Sprint 3: Discord ───────────────────────────────────────────────
+  {
+    id: 'discord-bot-token',
+    title: 'Discord bot token',
+    reason: 'Discord bot token base64-encoded user-id . timestamp . hmac shape',
+    confidence: 0.9,
+    regex:
+      /\b(?:Bot\s+)?(?:MT|Mz|N[T-Z]|O[T-W])[A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b/g,
+  },
+  {
+    id: 'discord-webhook-url',
+    title: 'Discord webhook URL',
+    reason: 'discord.com/api/webhooks/<id>/<token> shape',
+    confidence: 0.85,
+    regex: /https:\/\/discord(?:app)?\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+/g,
+  },
+  // ─── Sprint 3: SendGrid / Mailgun ───────────────────────────────────
+  {
+    id: 'sendgrid-api-key',
+    title: 'SendGrid API key',
+    reason: 'SG.<22>.<43> dotted-base64 shape',
+    confidence: 0.95,
+    regex: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/g,
+  },
+  {
+    id: 'mailgun-api-key',
+    title: 'Mailgun API key',
+    reason: 'key- prefix with 32 hex characters',
+    confidence: 0.85,
+    severity: 'medium',
+    regex: /\bkey-[a-f0-9]{32}\b/g,
+  },
+  // ─── Sprint 3: Cloudflare ────────────────────────────────────────────
+  {
+    id: 'cloudflare-api-token',
+    title: 'Cloudflare API token',
+    reason: 'v1.0-<32hex>-<120+hex> shape',
+    confidence: 0.95,
+    regex: /\bv1\.0-[a-f0-9]{32}-[a-f0-9]{120,}\b/g,
+  },
+  // ─── Sprint 3: SSH public key (LOW, mostly informational) ────────────
+  {
+    id: 'ssh-public-key',
+    title: 'SSH public key',
+    reason: 'ssh-<algo> AAAA<base64> shape — not a secret but useful for fingerprinting',
+    confidence: 0.6,
+    severity: 'low',
+    regex: /\bssh-(?:rsa|ed25519|dss|ecdsa-sha2-[a-z0-9-]+)\s+AAAA[A-Za-z0-9+/=]{100,}\b/g,
+  },
+  // ─── Sprint 3: Google service-account JSON (correlated regex) ────────
+  // Lookahead-based form: requires both `"type":"service_account"` AND
+  // `"private_key":"-----BEGIN` within the same {} block. Anchored
+  // with `\{` first so V8 only runs the lookaheads at brace
+  // boundaries — keeps scan-time on prose-heavy bodies near linear
+  // (otherwise lookaheads would run at every position over 16MB
+  // payloads, blowing the security-scanner microbenchmark).
+  {
+    id: 'google-service-account-json',
+    title: 'Google service account JSON',
+    reason: '{"type":"service_account",…,"private_key":"-----BEGIN…"} structural shape',
+    confidence: 0.95,
+    regex:
+      /\{(?=[\s\S]{0,4096}"type"\s*:\s*"service_account")(?=[\s\S]{0,4096}"private_key"\s*:\s*"-----BEGIN)[\s\S]{0,4096}\}/g,
+  },
 ];
 
 /** Private-key PEM blocks get a dedicated scan that distinguishes a real
@@ -429,9 +596,23 @@ function scanSecretsIn(fullText: string, sourceHint: string | undefined): Findin
           : rule.reason;
       // Severity reflects the adjusted confidence so block-mode + OS
       // notifications treat a dropped finding the same as a legitimately
-      // medium one.
+      // medium one. When the rule pins an explicit base severity (e.g.,
+      // mailgun MEDIUM at confidence 0.85), use BashRule's degrade
+      // ladder: keep the base severity at full confidence, demote one
+      // step on a moderate drop, demote to LOW on a heavy drop.
+      // For rules without explicit severity, every existing detector's
+      // base confidence is >= 0.75 → 'medium' is the floor, no LOW
+      // base severity to worry about.
+      const baseSeverity: SecuritySeverity =
+        rule.severity ?? (rule.confidence >= 0.85 ? 'high' : 'medium');
       const severity: SecuritySeverity =
-        adjustedConfidence >= 0.85 ? 'high' : adjustedConfidence >= 0.6 ? 'medium' : 'low';
+        adjustedConfidence >= 0.85
+          ? baseSeverity
+          : adjustedConfidence >= 0.6
+            ? baseSeverity === 'high'
+              ? 'medium'
+              : baseSeverity
+            : 'low';
 
       findings.push({
         detectorId: rule.id,
@@ -446,8 +627,331 @@ function scanSecretsIn(fullText: string, sourceHint: string | undefined): Findin
         snippet: buildSnippet({ fullText, matchStart: start, matchEnd: end, kind: 'secret' }),
         sourceHint,
         provenance: classifyProvenance('secret', sourceHint),
+        details: { matchStart: start, matchEnd: end },
       });
     }
+  }
+  // Sprint 3: keyword-gated detectors run after SECRET_RULES so
+  // span-dedup can drop generic-high-entropy findings that overlap a
+  // specific provider-shape finding (postgres connection string also
+  // matches generic-high-entropy near `password=…`).
+  findings.push(...scanKeywordGated(fullText, sourceHint));
+  return dedupOverlapping(findings);
+}
+
+// ─── Span dedup ───────────────────────────────────────────────────────────
+
+/** Drop generic-high-entropy findings that overlap a more-specific
+ *  provider-shape finding by ≥50% of either span. The specific finding
+ *  always wins. Span coordinates are read from `details.matchStart` /
+ *  `details.matchEnd` populated at finding-creation time. */
+function dedupOverlapping(findings: Finding[]): Finding[] {
+  if (findings.length < 2) return findings;
+  // Caller invariant: every Finding produced by SECRET_RULES,
+  // KEYWORD_GATED_RULES, and scanKeywordGated populates
+  // `details.matchStart` / `details.matchEnd` with non-negative
+  // numbers and matchEnd > matchStart. We type-assert to one branch
+  // per access (instead of three nested guards) so coverage reflects
+  // real behavior, not defensive dead branches.
+  const spans = findings.map(
+    (f) => f.details as { matchStart: number; matchEnd: number } | undefined,
+  );
+  const dropped = new Set<number>();
+  for (let i = 0; i < findings.length; i++) {
+    if (findings[i]!.detectorId !== 'generic-high-entropy-token') continue;
+    const a = spans[i]!;
+    const aLen = a.matchEnd - a.matchStart;
+    for (let j = 0; j < findings.length; j++) {
+      if (i === j || findings[j]!.detectorId === 'generic-high-entropy-token') continue;
+      const b = spans[j]!;
+      const bLen = b.matchEnd - b.matchStart;
+      const overlap = Math.max(
+        0,
+        Math.min(a.matchEnd, b.matchEnd) - Math.max(a.matchStart, b.matchStart),
+      );
+      if (overlap / aLen >= 0.5 || overlap / bLen >= 0.5) {
+        dropped.add(i);
+        break;
+      }
+    }
+  }
+  if (dropped.size === 0) return findings;
+  return findings.filter((_, i) => !dropped.has(i));
+}
+
+// ─── Keyword-gated compound detectors ────────────────────────────────────
+
+interface KeywordGatedRule {
+  id: string;
+  title: string;
+  reason: string;
+  /** Primary anchor regex — the easy-to-find half (the SID for Twilio,
+   *  the literal keyword for Datadog/PagerDuty/generic). */
+  anchorRegex: RegExp;
+  /** Char window around each anchor in which to look for the candidate. */
+  windowChars: number;
+  /** Shape the secret value must match within the window. */
+  candidateRegex: RegExp;
+  /** Optional gate (entropy threshold etc.) applied to the candidate. */
+  gate?: (candidate: string) => boolean;
+  confidence: number;
+  severity: SecuritySeverity;
+  /** When set, AND when both anchor and a window-candidate are present,
+   *  upgrade to this confidence/severity. Used by Twilio for the
+   *  SID-paired-with-auth-token shape. When omitted, the anchor alone
+   *  fires only if a candidate is in-window (falls back to the
+   *  candidate shape filter). */
+  paired?: { confidence: number; severity: SecuritySeverity; titleSuffix: string };
+  /** When true, the anchor alone fires (without a paired candidate)
+   *  using the base confidence/severity. Twilio uses this so a SID
+   *  surfaces a MEDIUM event even without an adjacent auth token. */
+  fireOnAnchorAlone?: boolean;
+}
+
+const KEYWORD_GATED_RULES: KeywordGatedRule[] = [
+  // Twilio: SID is the anchor (very specific 34-char prefix). An
+  // adjacent 32-hex auth-token-shape upgrades to HIGH; SID alone
+  // surfaces as MEDIUM.
+  {
+    id: 'twilio-credentials',
+    title: 'Twilio credentials',
+    reason: 'AC-prefixed 32-hex Twilio SID',
+    anchorRegex: /\bAC[0-9a-f]{32}\b/g,
+    windowChars: 200,
+    candidateRegex: /\b[a-f0-9]{32}\b/g,
+    confidence: 0.7,
+    severity: 'medium',
+    paired: {
+      confidence: 0.9,
+      severity: 'high',
+      titleSuffix: ' (paired with auth-token shape)',
+    },
+    fireOnAnchorAlone: true,
+  },
+  {
+    id: 'datadog-api-key',
+    title: 'Datadog API key',
+    reason: '32-hex string adjacent to dd_api_key/datadog keyword',
+    anchorRegex: /\b(?:dd[_-]?api[_-]?key|datadog)\b/gi,
+    windowChars: 80,
+    candidateRegex: /\b[a-f0-9]{32}\b/g,
+    confidence: 0.7,
+    severity: 'medium',
+  },
+  {
+    id: 'pagerduty-token',
+    title: 'PagerDuty token',
+    reason: '20-char token adjacent to pagerduty/pd_token keyword',
+    anchorRegex: /\b(?:pagerduty|pd[_-]?token)\b/gi,
+    windowChars: 80,
+    candidateRegex: /\b[a-zA-Z0-9_-]{20}\b/g,
+    confidence: 0.65,
+    severity: 'low',
+  },
+  // Generic: any 32+ char alnum-ish token with high Shannon entropy
+  // within 80 chars of a credential-keyword. Confidence-gated so it
+  // only surfaces MEDIUM, never HIGH; specific provider rules win
+  // via span dedup.
+  {
+    id: 'generic-high-entropy-token',
+    title: 'High-entropy token near credential keyword',
+    reason: 'Long alphanumeric string with high Shannon entropy near api_key/secret/token/etc.',
+    anchorRegex: /\b(?:api[_-]?key|secret|token|password|credential|auth)\b/gi,
+    windowChars: 80,
+    candidateRegex: /\b[A-Za-z0-9_-]{32,}\b/g,
+    gate: (c) => shannonEntropy(c) >= 4.5,
+    confidence: 0.7,
+    severity: 'medium',
+  },
+];
+
+function scanKeywordGated(fullText: string, sourceHint: string | undefined): Finding[] {
+  if (isAllowlistedPath(sourceHint)) return [];
+  const findings: Finding[] = [];
+  for (const rule of KEYWORD_GATED_RULES) {
+    rule.anchorRegex.lastIndex = 0;
+    let am: RegExpExecArray | null;
+    while ((am = rule.anchorRegex.exec(fullText)) !== null) {
+      const anchorStart = am.index;
+      const anchorEnd = anchorStart + am[0].length;
+      const winStart = Math.max(0, anchorStart - rule.windowChars);
+      const winEnd = Math.min(fullText.length, anchorEnd + rule.windowChars);
+      const window = fullText.slice(winStart, winEnd);
+
+      // Find candidates inside the window. Each candidate's index is
+      // relative to the window slice; convert back to fullText coords.
+      const candidates: Array<{ value: string; start: number; end: number }> = [];
+      const candidateRe = new RegExp(rule.candidateRegex.source, rule.candidateRegex.flags);
+      candidateRe.lastIndex = 0;
+      let cm: RegExpExecArray | null;
+      while ((cm = candidateRe.exec(window)) !== null) {
+        const value = cm[0];
+        const cStart = winStart + cm.index;
+        const cEnd = cStart + value.length;
+        // Skip the anchor itself when it would also match the candidate
+        // shape (e.g., Twilio SID matches `[a-f0-9]{32}` after the AC).
+        if (cStart >= anchorStart && cEnd <= anchorEnd) continue;
+        if (rule.gate && !rule.gate(value)) continue;
+        candidates.push({ value, start: cStart, end: cEnd });
+      }
+
+      // Decide what to emit. With `paired` and at least one candidate:
+      // upgrade. With `fireOnAnchorAlone` and no candidate: emit the
+      // anchor span at base severity. Otherwise, emit one finding per
+      // candidate at base severity.
+      const firstCandidate = candidates[0];
+      if (rule.paired && firstCandidate) {
+        const finalEnd = firstCandidate.end > anchorEnd ? firstCandidate.end : anchorEnd;
+        const matched = fullText.slice(anchorStart, finalEnd);
+        emitKeywordGatedFinding(
+          findings,
+          fullText,
+          sourceHint,
+          rule,
+          matched,
+          anchorStart,
+          finalEnd,
+          /* paired */ true,
+        );
+        continue;
+      }
+      if (candidates.length > 0) {
+        for (const c of candidates) {
+          emitKeywordGatedFinding(
+            findings,
+            fullText,
+            sourceHint,
+            rule,
+            c.value,
+            c.start,
+            c.end,
+            /* paired */ false,
+          );
+        }
+        continue;
+      }
+      if (rule.fireOnAnchorAlone) {
+        emitKeywordGatedFinding(
+          findings,
+          fullText,
+          sourceHint,
+          rule,
+          am[0],
+          anchorStart,
+          anchorEnd,
+          /* paired */ false,
+        );
+      }
+    }
+  }
+  return findings;
+}
+
+function emitKeywordGatedFinding(
+  out: Finding[],
+  fullText: string,
+  sourceHint: string | undefined,
+  rule: KeywordGatedRule,
+  matched: string,
+  start: number,
+  end: number,
+  paired: boolean,
+): void {
+  if (hasAllowlistedContext(fullText, start, end)) return;
+  // Caller invariant: `paired` is only true when this rule has
+  // `rule.paired` set (the scanKeywordGated dispatch enforces this).
+  // Type-assert with `!` so the reader sees one branch, not two.
+  const baseConfidence = paired ? rule.paired!.confidence : rule.confidence;
+  const baseSeverity = paired ? rule.paired!.severity : rule.severity;
+  const { drop, reasons } = computeConfidenceDrop(fullText, start, end, matched);
+  const adjustedConfidence = Math.max(0.1, baseConfidence - drop);
+  const severity: SecuritySeverity =
+    adjustedConfidence >= 0.85
+      ? baseSeverity
+      : adjustedConfidence >= 0.6
+        ? baseSeverity === 'high'
+          ? 'medium'
+          : baseSeverity
+        : 'low';
+  const title = paired ? rule.title + rule.paired!.titleSuffix : rule.title;
+  const reasonBase = rule.reason;
+  const adjustedReason =
+    reasons.length > 0 ? `${reasonBase} (confidence reduced: ${reasons.join(', ')})` : reasonBase;
+  out.push({
+    detectorId: rule.id,
+    kind: 'secret',
+    severity,
+    confidence: adjustedConfidence,
+    title,
+    reason: adjustedReason,
+    matchMask: maskSecret(matched),
+    matchHash: hashText(matched),
+    contextHash: contextHashOf(fullText, start, end),
+    snippet: buildSnippet({ fullText, matchStart: start, matchEnd: end, kind: 'secret' }),
+    sourceHint,
+    provenance: classifyProvenance('secret', sourceHint),
+    details: { matchStart: start, matchEnd: end, paired },
+  });
+}
+
+// ─── .env-file line scanner (provenance-aware) ───────────────────────────
+
+/** Match `.env`, `.env.local`, `.env.production`, `.envrc`, `prod.env`. */
+const ENV_FILE_PATH_REGEX = /(?:^|\/)(?:\.env(?:\.[a-z][a-z0-9._-]*)?|\.envrc|[^/]+\.env)$/i;
+
+function isEnvFilePath(sourceHint: string | undefined): boolean {
+  if (!sourceHint) return false;
+  return ENV_FILE_PATH_REGEX.test(sourceHint);
+}
+
+/** Scan a Read-tool_result body whose source is a `.env` file. Each
+ *  `KEY=value` line whose value clears the entropy threshold raises a
+ *  MEDIUM `env-file-line-secret` finding. The other detectors still run
+ *  in parallel against the same text — this catches the long tail that
+ *  none of the provider-shape detectors would identify. */
+function scanEnvFileLines(text: string, sourceHint: string): Finding[] {
+  const findings: Finding[] = [];
+  const lineRegex = /^([A-Z_][A-Z0-9_]*)=([^\n]{20,})$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = lineRegex.exec(text)) !== null) {
+    // m[1] and m[2] are guaranteed by the regex: both groups are
+    // mandatory and non-empty for a successful match.
+    const varName = m[1] as string;
+    const value = m[2] as string;
+    if (shannonEntropy(value) < 4.0) continue;
+    const valueStart = m.index + varName.length + 1;
+    const valueEnd = valueStart + value.length;
+    if (hasAllowlistedContext(text, valueStart, valueEnd)) continue;
+    const { drop, reasons } = computeConfidenceDrop(text, valueStart, valueEnd, value);
+    // Base confidence is fixed at 0.7 (entropy gate already filters
+    // human-readable values), so the severity space is only
+    // {medium, low} — no need for the high-tier branch.
+    const baseConfidence = 0.7;
+    const adjustedConfidence = Math.max(0.1, baseConfidence - drop);
+    const severity: SecuritySeverity = adjustedConfidence >= 0.6 ? 'medium' : 'low';
+    const reasonBase = `High-entropy value on line ${varName}=… in .env-shaped file`;
+    const adjustedReason =
+      reasons.length > 0 ? `${reasonBase} (confidence reduced: ${reasons.join(', ')})` : reasonBase;
+    findings.push({
+      detectorId: 'env-file-line-secret',
+      kind: 'secret',
+      severity,
+      confidence: adjustedConfidence,
+      title: 'Likely secret on .env line',
+      reason: adjustedReason,
+      matchMask: maskSecret(value),
+      matchHash: hashText(value),
+      contextHash: contextHashOf(text, valueStart, valueEnd),
+      snippet: buildSnippet({
+        fullText: text,
+        matchStart: valueStart,
+        matchEnd: valueEnd,
+        kind: 'secret',
+      }),
+      sourceHint,
+      provenance: classifyProvenance('secret', sourceHint),
+      details: { matchStart: valueStart, matchEnd: valueEnd, varName },
+    });
   }
   return findings;
 }
@@ -632,6 +1136,21 @@ const BASH_RULES: BashRule[] = [
     regex: />>?\s*~?\/?\.aws\/credentials/g,
   },
   {
+    id: 'config-path-write',
+    title: 'Write to Claude Code or Sentinel config path',
+    reason:
+      'Bash command writes to ~/.claude/settings.json, ~/.claude/CLAUDE.md, or ~/.claude-sentinel/* — subverts permission rules or self-protection.',
+    confidence: 0.9,
+    severity: 'high',
+    // Matches redirect (>, >>), tee, sed -i, cp, mv, install where the
+    // target path is settings.json or CLAUDE.md under ~/.claude (anchored
+    // so .claudish doesn't false-fire) OR anything under ~/.claude-sentinel.
+    // The lookahead consumes the operator-then-args prefix in one alternation
+    // so we don't have to repeat the path branch four times.
+    regex:
+      /(?:>>?|\btee\b(?:\s+-[aA])?|\bsed\b\s+-[a-zA-Z]*i[a-zA-Z]*|\bcp\b|\bmv\b|\binstall\b)\s+[^\n|;&]*?(?:~|\$HOME|\/Users\/[^/\s]+|\/home\/[^/\s]+)\/?(?:\.claude\/(?:settings\.json|CLAUDE\.md)|\.claude-sentinel(?:\/[^\s]*)?)\b/g,
+  },
+  {
     id: 'cron-install',
     title: 'Write to system cron',
     reason: '/etc/cron* is a persistence mechanism',
@@ -809,6 +1328,14 @@ const RISKY_WRITE_HIGH: RegExp[] = [
   /(^|\/)\.claude\/credentials(\.[a-z]+)?$/,
   /(^|\/)\.claude-sentinel\/credentials(\.[a-z]+)?$/,
   /(^|\/)\.claude\/oauth_token(\.[a-z]+)?$/,
+  // Sprint 2 self-protection: tampering with Claude Code permission
+  // rules or user-level memory directly subverts the agent. Sentinel's
+  // entire state dir is off-limits — agents have no legitimate reason
+  // to touch it. Specific paths only on the .claude side; see
+  // securityPresets.ts SHARED_CONFIG_PROTECTION_RULES for rationale.
+  /(^|\/)\.claude\/settings\.json$/,
+  /(^|\/)\.claude\/CLAUDE\.md$/,
+  /(^|\/)\.claude-sentinel(\/|$)/,
   /^\/etc\/sudoers/,
   /(^|\/)\.bashrc$/,
   /(^|\/)\.zshrc$/,
@@ -952,6 +1479,14 @@ export function scanRequestBody(body: unknown, options: DetectorOptions): Findin
     if (options.scanSecrets) {
       findings.push(...scanSecretsIn(text, sourceHint));
       findings.push(...scanPrivateKeyBlocks(text, sourceHint));
+      // Provenance-aware: when the source path looks like a `.env`
+      // file, run the per-line entropy scanner alongside the regex
+      // pipeline. The other detectors continue to fire as well — this
+      // catches the long tail (custom tokens, app-specific creds) that
+      // wouldn't match any provider-specific shape.
+      if (isEnvFilePath(sourceHint)) {
+        findings.push(...scanEnvFileLines(text, sourceHint));
+      }
     }
     findings.push(...scanInjectionIn(text, sourceHint, options));
   };
@@ -1065,6 +1600,9 @@ export function scanToolUseBlocks(
           const contentHint = typeof fp === 'string' ? fp : sourceHint;
           findings.push(...scanSecretsIn(content, contentHint));
           findings.push(...scanPrivateKeyBlocks(content, contentHint));
+          if (isEnvFilePath(contentHint)) {
+            findings.push(...scanEnvFileLines(content, contentHint));
+          }
         }
         break;
       }

@@ -768,6 +768,213 @@ describe('risky-write path narrowing', () => {
     expect(w).toBeDefined();
     expect(w!.severity).toBe('high');
   });
+
+  // Sprint 2 anti-tamper: writes to ~/.claude/settings.json,
+  // ~/.claude/CLAUDE.md, and anywhere under ~/.claude-sentinel/ are
+  // HIGH severity — the agent has no business touching the permission
+  // rules, the user-level memory, or Sentinel's state dir.
+  it('DOES flag writes to ~/.claude/settings.json (HIGH)', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Write',
+          input: { file_path: '/Users/me/.claude/settings.json', content: '{}' },
+        },
+      ],
+      ALL_OPTS,
+    );
+    const w = findings.find((f) => f.kind === 'risky_write');
+    expect(w).toBeDefined();
+    expect(w!.severity).toBe('high');
+  });
+
+  it('DOES flag writes to ~/.claude/CLAUDE.md (HIGH)', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Write',
+          input: { file_path: '/Users/me/.claude/CLAUDE.md', content: 'override' },
+        },
+      ],
+      ALL_OPTS,
+    );
+    const w = findings.find((f) => f.kind === 'risky_write');
+    expect(w).toBeDefined();
+    expect(w!.severity).toBe('high');
+  });
+
+  it('DOES flag writes anywhere under ~/.claude-sentinel/ (HIGH)', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Write',
+          input: {
+            file_path: '/Users/me/.claude-sentinel/runtime/anything.json',
+            content: 'x',
+          },
+        },
+      ],
+      ALL_OPTS,
+    );
+    const w = findings.find((f) => f.kind === 'risky_write');
+    expect(w).toBeDefined();
+    expect(w!.severity).toBe('high');
+  });
+
+  it('does NOT flag writes to ~/.claudish/foo (suffix-confusion guard)', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Write',
+          input: { file_path: '/Users/me/.claudish/settings.json', content: '{}' },
+        },
+      ],
+      ALL_OPTS,
+    );
+    expect(findings.find((f) => f.kind === 'risky_write')).toBeUndefined();
+  });
+});
+
+describe('config-path-write Bash detector', () => {
+  it('flags `tee ~/.claude/settings.json`', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Bash',
+          input: { command: 'echo "{}" | tee ~/.claude/settings.json' },
+        },
+      ],
+      ALL_OPTS,
+    );
+    const f = findings.find((x) => x.detectorId === 'config-path-write');
+    expect(f).toBeDefined();
+    expect(f!.severity).toBe('high');
+  });
+
+  it('flags `>> ~/.claude-sentinel/settings.json`', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Bash',
+          input: { command: 'echo evil >> ~/.claude-sentinel/settings.json' },
+        },
+      ],
+      ALL_OPTS,
+    );
+    const f = findings.find((x) => x.detectorId === 'config-path-write');
+    expect(f).toBeDefined();
+    expect(f!.severity).toBe('high');
+  });
+
+  it('flags `sed -i ~/.claude/settings.json -e ...`', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Bash',
+          input: {
+            command: "sed -i '' ~/.claude/settings.json -e 's/foo/bar/'",
+          },
+        },
+      ],
+      ALL_OPTS,
+    );
+    const f = findings.find((x) => x.detectorId === 'config-path-write');
+    expect(f).toBeDefined();
+  });
+
+  it('flags `cp tmp.json ~/.claude/settings.json`', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Bash',
+          input: { command: 'cp tmp.json ~/.claude/settings.json' },
+        },
+      ],
+      ALL_OPTS,
+    );
+    const f = findings.find((x) => x.detectorId === 'config-path-write');
+    expect(f).toBeDefined();
+  });
+
+  it('flags `mv tmp ~/.claude-sentinel/foo`', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Bash',
+          input: { command: 'mv tmp ~/.claude-sentinel/runtime/foo' },
+        },
+      ],
+      ALL_OPTS,
+    );
+    const f = findings.find((x) => x.detectorId === 'config-path-write');
+    expect(f).toBeDefined();
+  });
+
+  it('flags absolute-path forms: > /Users/me/.claude/settings.json', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Bash',
+          input: { command: 'printf "{}" > /Users/me/.claude/settings.json' },
+        },
+      ],
+      ALL_OPTS,
+    );
+    const f = findings.find((x) => x.detectorId === 'config-path-write');
+    expect(f).toBeDefined();
+  });
+
+  it('does NOT flag `git diff > .claude_diff.txt` (substring-confusion guard)', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Bash',
+          input: { command: 'git diff > .claude_diff.txt' },
+        },
+      ],
+      ALL_OPTS,
+    );
+    expect(findings.find((x) => x.detectorId === 'config-path-write')).toBeUndefined();
+  });
+
+  it('does NOT flag `tee /tmp/foo.json` (different path)', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Bash',
+          input: { command: 'echo {} | tee /tmp/foo.json' },
+        },
+      ],
+      ALL_OPTS,
+    );
+    expect(findings.find((x) => x.detectorId === 'config-path-write')).toBeUndefined();
+  });
+
+  it('does NOT flag writes to ~/.claude/plans/foo.md (workspace dir)', () => {
+    const findings = scanToolUseBlocks(
+      [
+        {
+          index: 0,
+          name: 'Bash',
+          input: { command: 'echo notes > ~/.claude/plans/my-plan.md' },
+        },
+      ],
+      ALL_OPTS,
+    );
+    expect(findings.find((x) => x.detectorId === 'config-path-write')).toBeUndefined();
+  });
 });
 
 describe('allowlisting by path hint', () => {

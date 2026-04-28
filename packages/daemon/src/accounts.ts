@@ -151,8 +151,14 @@ export function writeClaudeCodeCredentials(creds: ClaudeCodeCredentials): void {
 }
 
 // ─── Low-level keychain helpers ──────────────────────────────────────────────
+//
+// `readCredentialBlob` / `writeCredentialBlob` / `deleteCredentialBlob` are
+// exported so other daemon modules can reuse the same OS-keychain plumbing
+// (and the same `CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE` test seam) for storing
+// non-credential secrets keyed by their own service name. Sprint 2 uses
+// this for `Claude Sentinel-settings-hmac` (settings-integrity.ts).
 
-function readCredentialBlob(service: string, account: string): string | null {
+export function readCredentialBlob(service: string, account: string): string | null {
   if (testKeychainPath()) {
     const data = readTestKeychain();
     return data[service]?.[account] ?? null;
@@ -167,7 +173,7 @@ function readCredentialBlob(service: string, account: string): string | null {
   }
 }
 
-function writeCredentialBlob(service: string, account: string, blob: string): void {
+export function writeCredentialBlob(service: string, account: string, blob: string): void {
   if (testKeychainPath()) {
     const data = readTestKeychain();
     if (!data[service]) data[service] = {};
@@ -188,7 +194,7 @@ function writeCredentialBlob(service: string, account: string, blob: string): vo
 }
 
 /* v8 ignore next 14 */
-function deleteCredentialBlob(service: string, account: string): void {
+export function deleteCredentialBlob(service: string, account: string): void {
   if (testKeychainPath()) {
     const data = readTestKeychain();
     if (data[service]) {

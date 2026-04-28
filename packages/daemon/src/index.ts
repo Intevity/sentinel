@@ -52,7 +52,11 @@ import {
   getCacheTtlByDayModel,
   getCacheTtlBySession,
 } from './db.js';
-import { loadSettings, updateSettings as writeSettings } from './settings.js';
+import {
+  loadSettings,
+  loadSettingsWithTamper,
+  updateSettings as writeSettings,
+} from './settings.js';
 import { IpcServer } from './ipc.js';
 import { OtelReceiver } from './otel-receiver.js';
 import { RequestAccountMap } from './request-account-map.js';
@@ -201,6 +205,64 @@ let loginAbortController: AbortController | null = null;
 // dependency with ./usage-probe.ts, which imports it.
 
 /**
+ * Sprint 2 anti-tamper: read the IPC handshake token that the Tauri parent
+ * writes to the daemon's stdin during `Command::spawn`. The first line of
+ * stdin (terminated by `\n`) is the token; we consume up to that point and
+ * leave the rest of stdin untouched.
+ *
+ * Behaviour:
+ *   - Tauri-spawned daemon: stdin is a piped fd, the token arrives within
+ *     ms, and this resolves with the trimmed token string.
+ *   - `pnpm --filter @claude-sentinel/daemon run start` (dev CLI): stdin is
+ *     a TTY or empty; after `graceMs` we resolve null and the IPC server
+ *     starts in unauthenticated mode (the dev needs to talk to it).
+ *   - `CLAUDE_SENTINEL_TEST_IPC_TOKEN` set: skip stdin entirely; the env
+ *     value short-circuits the IPC handshake check.
+ *
+ * Reading from `process.stdin` with `'data'` listeners flips it into
+ * flowing mode; we pause it again after the read so any stdin writes from
+ * the parent that happen later (currently none, but safer) don't get
+ * silently consumed.
+ */
+function readHandshakeTokenFromStdin(graceMs: number = 250): Promise<string | null> {
+  if (process.env.CLAUDE_SENTINEL_TEST_IPC_TOKEN !== undefined) return Promise.resolve(null);
+  return new Promise<string | null>((resolve) => {
+    let buffer = '';
+    let done = false;
+    const finish = (token: string | null): void => {
+      if (done) return;
+      done = true;
+      process.stdin.removeListener('data', onData);
+      process.stdin.removeListener('end', onEnd);
+      process.stdin.pause();
+      clearTimeout(timer);
+      resolve(token);
+    };
+    const onData = (chunk: Buffer | string): void => {
+      buffer += typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+      const newline = buffer.indexOf('\n');
+      if (newline !== -1) {
+        const token = buffer.slice(0, newline).trim();
+        finish(token.length > 0 ? token : null);
+      }
+    };
+    const onEnd = (): void => {
+      // Stream closed before we saw a newline — treat the whole buffer
+      // as the token if non-empty (shouldn't happen with well-behaved
+      // parents, but tolerated).
+      const token = buffer.trim();
+      finish(token.length > 0 ? token : null);
+    };
+    const timer = setTimeout(() => finish(null), graceMs);
+    /* v8 ignore next */
+    timer.unref?.();
+    process.stdin.on('data', onData);
+    process.stdin.on('end', onEnd);
+    if (typeof process.stdin.resume === 'function') process.stdin.resume();
+  });
+}
+
+/**
  * Start the sentinel daemon:
  *  1. Open SQLite database
  *  2. Start IPC server
@@ -218,6 +280,11 @@ export interface DaemonHandle {
 }
 
 export async function startDaemon(): Promise<DaemonHandle> {
+  // Read the IPC handshake token from stdin before any I/O so the parent's
+  // pipe write isn't lost if startup races. Tauri-spawned daemons see a
+  // value within ms; the dev CLI sees null after the grace window.
+  const ipcHandshakeToken = await readHandshakeTokenFromStdin();
+
   // Logger setup: level filtering + ring buffer + console monkey-patch. Done
   // here (not at module scope) so tests that set CLAUDE_SENTINEL_TEST_SETTINGS_FILE
   // between imports and startDaemon() see their tmp settings file. In
@@ -437,7 +504,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // In-memory mirror of settings — read at startup, updated on every
   // update_settings call so proxy/rotator paths can consult it without
   // re-reading the JSON file per request.
-  let currentSettings: Settings = loadSettings();
+  //
+  // Sprint 2: the boot path uses `loadSettingsWithTamper` so we can
+  // broadcast `settings_tamper_detected` to the UI when the file (or its
+  // sidecar) failed integrity. Tamper means the user's last-known-good
+  // settings have been replaced with DEFAULT_SETTINGS, so the UI banner is
+  // the only signal they have that something changed. Broadcast happens
+  // after IPC server starts (deferred via `setImmediate`); a synchronous
+  // broadcast here would land before any clients connect.
+  const initialLoad = loadSettingsWithTamper();
+  let currentSettings: Settings = initialLoad.settings;
 
   // Assigned after the proxy is listening — update_settings references it
   // via optional-chain so handler registration order doesn't matter.
@@ -2202,9 +2278,34 @@ export async function startDaemon(): Promise<DaemonHandle> {
     });
   }
 
-  // Start IPC server
-  ipcServer.start();
-  console.log('[Sentinel] IPC server started');
+  // Start IPC server. Sprint 2: when the Tauri parent piped a handshake
+  // token through stdin, we enforce it on every connection. When stdin
+  // produced nothing (dev CLI launches), the server runs unauthenticated
+  // — that's an explicit dev-mode opt-out, not a production code path.
+  ipcServer.start(undefined, ipcHandshakeToken);
+  if (ipcHandshakeToken) {
+    console.log(
+      `[Sentinel] IPC server started (handshake auth enabled, ${ipcHandshakeToken.length} byte token)`,
+    );
+  } else {
+    console.log('[Sentinel] IPC server started (UNAUTHENTICATED — dev mode)');
+  }
+
+  // Sprint 2: surface settings-file tamper to the UI as soon as a client
+  // connects. Defer the broadcast to the next tick so the IPC `clients`
+  // set has had a chance to populate.
+  if (initialLoad.tamperDetected) {
+    console.warn(
+      `[Sentinel] Settings tamper detected at startup (reason=${initialLoad.reason}); broadcasting to UI`,
+    );
+    setImmediate(() => {
+      ipcServer.broadcast({
+        type: 'settings_tamper_detected',
+        reason: initialLoad.reason ?? 'sig_mismatch',
+        path: initialLoad.path,
+      });
+    });
+  }
 
   // Tracks which accounts have an in-flight inline refresh triggered by a
   // proxy 401, so a burst of concurrent 401s (Claude Code running multiple

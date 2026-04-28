@@ -404,6 +404,23 @@ export interface TestOAuthUrlOpenedMessage {
   url: string;
 }
 
+/** Sprint 2 anti-tamper: the daemon detected that `settings.json` (or its
+ *  sidecar `settings.json.sig`) was modified by something other than the
+ *  daemon itself. Emitted on startup and on every reload that fails the
+ *  HMAC / mode check; the daemon falls back to DEFAULT_SETTINGS so the
+ *  user's last-known-good settings are NOT honoured. UI surfaces this as
+ *  a banner so the user knows their config was reset. */
+export interface SettingsTamperDetectedMessage {
+  type: 'settings_tamper_detected';
+  /** Why the integrity check failed. `loose_mode` = settings.json had
+   *  group/other permission bits; `missing_sig` = sidecar absent;
+   *  `sig_mismatch` = HMAC did not verify. */
+  reason: 'loose_mode' | 'missing_sig' | 'sig_mismatch';
+  /** Absolute path of the file that failed the check (settings.json,
+   *  not the sidecar; the user thinks of the JSON as the file they own). */
+  path: string;
+}
+
 export type DaemonToAppMessage =
   | OverageEnteredMessage
   | OverageExitedMessage
@@ -439,6 +456,7 @@ export type DaemonToAppMessage =
   | RequestLogsClearedMessage
   | PermissionRulesChangedMessage
   | PermissionsStatusMessage
+  | SettingsTamperDetectedMessage
   | TestOAuthUrlOpenedMessage;
 
 // ─── App → Daemon messages ────────────────────────────────────────────────────
