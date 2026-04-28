@@ -58,6 +58,62 @@ describe('PRESETS', () => {
     }
   });
 
+  it('Sprint 4: Medium and High presets deny HIGH-severity persistence vectors', () => {
+    // One canonical raw per vector. Triple-coverage (Write/Edit/MultiEdit)
+    // is verified separately below; this checks each vector's Write rule
+    // is present so we don't have to enumerate 27+ raws.
+    const required = [
+      'Write(~/Library/LaunchAgents/**)',
+      'Write(/Library/LaunchDaemons/**)',
+      'Write(/etc/systemd/system/**)',
+      'Write(~/.config/systemd/user/**)',
+      'Write(~/.gnupg/**)',
+      'Write(~/.docker/config.json)',
+      'Write(~/.kube/config)',
+      'Write(/etc/sudoers.d/**)',
+      'Write(/etc/sudoers)',
+      'Write(/etc/cron.d/**)',
+      'Write(/etc/cron.daily/**)',
+      'Write(**/.git/hooks/**)',
+    ];
+    for (const profile of ['medium', 'high'] as const) {
+      const byRaw = new Map<string, (typeof PRESETS)[typeof profile]['rules'][number]>(
+        PRESETS[profile].rules.map((r) => [`${r.tool}(${r.pattern ?? ''})`, r]),
+      );
+      for (const raw of required) {
+        const rule = byRaw.get(raw);
+        expect(rule, `${profile} preset must include ${raw}`).toBeDefined();
+        expect(rule!.decision).toBe('deny');
+      }
+      // Edit + MultiEdit triple-coverage spot-check on one path.
+      expect(byRaw.get('Edit(~/.gnupg/**)')?.decision).toBe('deny');
+      expect(byRaw.get('MultiEdit(~/.gnupg/**)')?.decision).toBe('deny');
+    }
+  });
+
+  it('Sprint 4: editor-config denies are High-only, absent from Medium', () => {
+    // FP rate is too high for Medium because users edit these files
+    // legitimately. High preset already runs default-deny so the rules
+    // are belt-and-suspenders there.
+    const editorRaws = [
+      'Write(~/.vimrc)',
+      'Write(~/.config/nvim/init.lua)',
+      'Write(~/.emacs.d/init.el)',
+      'Write(~/.config/Code/User/settings.json)',
+      'Write(~/.vscode/extensions/**)',
+    ];
+    const highByRaw = new Map<string, (typeof PRESETS)['high']['rules'][number]>(
+      PRESETS.high.rules.map((r) => [`${r.tool}(${r.pattern ?? ''})`, r]),
+    );
+    const mediumByRaw = new Map<string, (typeof PRESETS)['medium']['rules'][number]>(
+      PRESETS.medium.rules.map((r) => [`${r.tool}(${r.pattern ?? ''})`, r]),
+    );
+    for (const raw of editorRaws) {
+      expect(highByRaw.get(raw)?.decision, `high should deny ${raw}`).toBe('deny');
+      expect(mediumByRaw.get(raw), `medium must NOT include ${raw}`).toBeUndefined();
+    }
+  });
+
   it('every preset highlights the new self-protection coverage', () => {
     for (const profile of ['low', 'medium', 'high'] as const) {
       const present = PRESETS[profile].highlights.some((h) =>

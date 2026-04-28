@@ -64,7 +64,7 @@ Apply these in every sprint:
 | 1   | Network egress hardening                     | ☐ not started |            |           |
 | 2   | Self-protection (anti-tamper)                | ☐ not started |            |           |
 | 3   | Secret detector expansion                    | ✅ done       | 2026-04-28 |           |
-| 4   | Persistence-mechanism rules                  | ☐ not started |            |           |
+| 4   | Persistence-mechanism rules                  | ✅ done       | 2026-04-28 |           |
 | 5   | Bash matcher edges and filesystem boundaries | ☐ not started |            |           |
 | 6   | Environment-variable hardening               | ☐ not started |            |           |
 | 7   | Indirect prompt-injection scanning           | ☐ not started |            |           |

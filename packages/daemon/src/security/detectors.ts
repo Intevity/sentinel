@@ -1268,6 +1268,38 @@ const BASH_RULES: BashRule[] = [
     severity: 'medium',
     regex: /\bnode\s+-e\s+["'][^"']*require\(['"](http|https|net|dgram)['"]/g,
   },
+  {
+    id: 'crontab-edit',
+    title: 'Crontab edit (persistence)',
+    reason: 'Editing the crontab installs scheduled jobs that survive restart',
+    confidence: 0.85,
+    severity: 'high',
+    regex: /\bcrontab\s+(-e|-)(\s|$)/g,
+  },
+  {
+    id: 'git-hooks-redirect',
+    title: 'Redirect git hooks via core.hooksPath',
+    reason: 'Setting core.hooksPath redirects every git hook to a chosen directory',
+    confidence: 0.85,
+    severity: 'high',
+    regex: /\bgit\s+config\s+(?:--global\s+)?core\.hooksPath\b/g,
+  },
+  {
+    id: 'at-scheduled',
+    title: 'Schedule a one-shot job via at',
+    reason: 'The at command schedules deferred execution and is a persistence mechanism',
+    confidence: 0.75,
+    severity: 'medium',
+    regex: /\bat\s+(?:now|today|\+\d+\s+(?:min|hour))/g,
+  },
+  {
+    id: 'login-items-osascript',
+    title: 'Add login item via osascript',
+    reason: 'osascript can register a Login Item that survives restart',
+    confidence: 0.7,
+    severity: 'medium',
+    regex: /osascript[^\n|]*Add to Login Items/gi,
+  },
 ];
 
 function scanBash(command: string, sourceHint: string | undefined): Finding[] {
@@ -1341,9 +1373,35 @@ const RISKY_WRITE_HIGH: RegExp[] = [
   /(^|\/)\.zshrc$/,
   /(^|\/)\.profile$/,
   /(^|\/)\.bash_profile$/,
+  // Sprint 4 persistence vectors. Sudoers prefix above already covers
+  // /etc/sudoers.d/. Bash redirect forms for cron / launchd are handled
+  // separately by the cron-install / launch-daemon BASH_RULES.
+  /(^|\/)Library\/LaunchAgents\//,
+  /^\/Library\/LaunchDaemons\//,
+  /^\/etc\/systemd\/system\/[^/]+\.(service|timer)$/,
+  /(^|\/)\.config\/systemd\/user\//,
+  /(^|\/)\.gnupg(\/|$)/,
+  /(^|\/)\.docker\/config\.json$/,
+  /(^|\/)\.kube\/config$/,
+  /^\/etc\/cron\.[^/]+\//,
+  /(^|\/)\.git\/hooks\//,
 ];
 
-const RISKY_WRITE_MEDIUM: RegExp[] = [/(^|\/)\.npmrc$/, /(^|\/)\.netrc$/, /\.pem$/, /\.key$/];
+const RISKY_WRITE_MEDIUM: RegExp[] = [
+  /(^|\/)\.npmrc$/,
+  /(^|\/)\.netrc$/,
+  /\.pem$/,
+  /\.key$/,
+  // Sprint 4 editor-config persistence (init scripts / extension trees).
+  /(^|\/)\.vimrc$/,
+  /(^|\/)\.vim\//,
+  /(^|\/)\.config\/nvim\/init\.(lua|vim)$/,
+  /(^|\/)\.config\/nvim\/lua\//,
+  /(^|\/)\.emacs$/,
+  /(^|\/)\.emacs\.d\/init\.el$/,
+  /(^|\/)\.config\/Code\/User\/(settings|keybindings)\.json$/,
+  /(^|\/)\.vscode\/extensions\//,
+];
 
 function scanWriteTarget(filePath: string, sourceHint: string | undefined): Finding[] {
   const findings: Finding[] = [];

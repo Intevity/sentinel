@@ -170,6 +170,352 @@ const SHARED_DENY_RULES: PresetRule[] = [
   { decision: 'deny', tool: 'WebFetch', pattern: 'domain:ngrok.io', note: 'Common exfil surface.' },
 ];
 
+// ─── Persistence-mechanism denies (Medium + High) ────────────────────────
+// Sprint 4: HIGH-severity persistence vectors. An agent that can drop a
+// LaunchAgent plist, a systemd unit, a git hook, or a sudoers include
+// installs durable post-restart access. These paths have no legitimate
+// reason to be written by an LLM-driven agent, so deny everywhere from
+// Medium up. Bash redirects to /etc/cron* and ~/Library/Launch{Agents,
+// Daemons}/ are caught separately by the cron-install / launch-daemon
+// detectors in detectors.ts; these rules cover the Write/Edit/MultiEdit
+// path. Editor-config persistence (vim, nvim, emacs, vscode) is stricter
+// and lives in HIGH_EDITOR_CONFIG_DENY_RULES below: the FP rate is too
+// high for Medium since users edit those files routinely.
+const SHARED_PERSISTENCE_DENY_RULES: PresetRule[] = [
+  // macOS LaunchAgents (user)
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '~/Library/LaunchAgents/**',
+    note: 'macOS LaunchAgents persistence.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '~/Library/LaunchAgents/**',
+    note: 'macOS LaunchAgents persistence.',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '~/Library/LaunchAgents/**',
+    note: 'macOS LaunchAgents persistence.',
+  },
+  // macOS LaunchDaemons (system)
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '/Library/LaunchDaemons/**',
+    note: 'macOS LaunchDaemons persistence.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '/Library/LaunchDaemons/**',
+    note: 'macOS LaunchDaemons persistence.',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '/Library/LaunchDaemons/**',
+    note: 'macOS LaunchDaemons persistence.',
+  },
+  // Linux systemd (system)
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '/etc/systemd/system/**',
+    note: 'Linux systemd unit persistence.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '/etc/systemd/system/**',
+    note: 'Linux systemd unit persistence.',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '/etc/systemd/system/**',
+    note: 'Linux systemd unit persistence.',
+  },
+  // Linux systemd (user)
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '~/.config/systemd/user/**',
+    note: 'User systemd unit persistence.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '~/.config/systemd/user/**',
+    note: 'User systemd unit persistence.',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '~/.config/systemd/user/**',
+    note: 'User systemd unit persistence.',
+  },
+  // GnuPG agent
+  { decision: 'deny', tool: 'Write', pattern: '~/.gnupg/**', note: 'GnuPG agent state.' },
+  { decision: 'deny', tool: 'Edit', pattern: '~/.gnupg/**', note: 'GnuPG agent state.' },
+  { decision: 'deny', tool: 'MultiEdit', pattern: '~/.gnupg/**', note: 'GnuPG agent state.' },
+  // Docker credential helper
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '~/.docker/config.json',
+    note: 'Docker credential helper config.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '~/.docker/config.json',
+    note: 'Docker credential helper config.',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '~/.docker/config.json',
+    note: 'Docker credential helper config.',
+  },
+  // Kubernetes context
+  { decision: 'deny', tool: 'Write', pattern: '~/.kube/config', note: 'Kubernetes context.' },
+  { decision: 'deny', tool: 'Edit', pattern: '~/.kube/config', note: 'Kubernetes context.' },
+  { decision: 'deny', tool: 'MultiEdit', pattern: '~/.kube/config', note: 'Kubernetes context.' },
+  // sudoers includes + main file
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '/etc/sudoers.d/**',
+    note: 'sudoers include directory.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '/etc/sudoers.d/**',
+    note: 'sudoers include directory.',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '/etc/sudoers.d/**',
+    note: 'sudoers include directory.',
+  },
+  { decision: 'deny', tool: 'Write', pattern: '/etc/sudoers', note: 'sudoers main file.' },
+  { decision: 'deny', tool: 'Edit', pattern: '/etc/sudoers', note: 'sudoers main file.' },
+  { decision: 'deny', tool: 'MultiEdit', pattern: '/etc/sudoers', note: 'sudoers main file.' },
+  // Cron directories
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '/etc/cron.d/**',
+    note: 'Cron persistence (cron.d).',
+  },
+  { decision: 'deny', tool: 'Edit', pattern: '/etc/cron.d/**', note: 'Cron persistence (cron.d).' },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '/etc/cron.d/**',
+    note: 'Cron persistence (cron.d).',
+  },
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '/etc/cron.hourly/**',
+    note: 'Cron persistence (hourly).',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '/etc/cron.hourly/**',
+    note: 'Cron persistence (hourly).',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '/etc/cron.hourly/**',
+    note: 'Cron persistence (hourly).',
+  },
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '/etc/cron.daily/**',
+    note: 'Cron persistence (daily).',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '/etc/cron.daily/**',
+    note: 'Cron persistence (daily).',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '/etc/cron.daily/**',
+    note: 'Cron persistence (daily).',
+  },
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '/etc/cron.weekly/**',
+    note: 'Cron persistence (weekly).',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '/etc/cron.weekly/**',
+    note: 'Cron persistence (weekly).',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '/etc/cron.weekly/**',
+    note: 'Cron persistence (weekly).',
+  },
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '/etc/cron.monthly/**',
+    note: 'Cron persistence (monthly).',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '/etc/cron.monthly/**',
+    note: 'Cron persistence (monthly).',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '/etc/cron.monthly/**',
+    note: 'Cron persistence (monthly).',
+  },
+  // Per-repo git hooks
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '**/.git/hooks/**',
+    note: 'Git hooks persistence.',
+  },
+  { decision: 'deny', tool: 'Edit', pattern: '**/.git/hooks/**', note: 'Git hooks persistence.' },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '**/.git/hooks/**',
+    note: 'Git hooks persistence.',
+  },
+];
+
+// ─── Editor-config denies (High preset only) ─────────────────────────────
+// MEDIUM-severity vectors: editor init scripts and extension trees can
+// host persistence (vimscript autocmds, Lua require chains, Emacs init.el
+// hooks, VS Code extension manifests). Deny only in High because users
+// edit these legitimately and Medium aims to be unintrusive.
+const HIGH_EDITOR_CONFIG_DENY_RULES: PresetRule[] = [
+  // Vim
+  { decision: 'deny', tool: 'Write', pattern: '~/.vimrc', note: 'Vim init script.' },
+  { decision: 'deny', tool: 'Edit', pattern: '~/.vimrc', note: 'Vim init script.' },
+  { decision: 'deny', tool: 'MultiEdit', pattern: '~/.vimrc', note: 'Vim init script.' },
+  { decision: 'deny', tool: 'Write', pattern: '~/.vim/**', note: 'Vim runtime.' },
+  { decision: 'deny', tool: 'Edit', pattern: '~/.vim/**', note: 'Vim runtime.' },
+  { decision: 'deny', tool: 'MultiEdit', pattern: '~/.vim/**', note: 'Vim runtime.' },
+  // Neovim
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '~/.config/nvim/init.lua',
+    note: 'Neovim Lua init.',
+  },
+  { decision: 'deny', tool: 'Edit', pattern: '~/.config/nvim/init.lua', note: 'Neovim Lua init.' },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '~/.config/nvim/init.lua',
+    note: 'Neovim Lua init.',
+  },
+  { decision: 'deny', tool: 'Write', pattern: '~/.config/nvim/init.vim', note: 'Neovim init.' },
+  { decision: 'deny', tool: 'Edit', pattern: '~/.config/nvim/init.vim', note: 'Neovim init.' },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '~/.config/nvim/init.vim',
+    note: 'Neovim init.',
+  },
+  { decision: 'deny', tool: 'Write', pattern: '~/.config/nvim/lua/**', note: 'Neovim Lua tree.' },
+  { decision: 'deny', tool: 'Edit', pattern: '~/.config/nvim/lua/**', note: 'Neovim Lua tree.' },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '~/.config/nvim/lua/**',
+    note: 'Neovim Lua tree.',
+  },
+  // Emacs
+  { decision: 'deny', tool: 'Write', pattern: '~/.emacs', note: 'Emacs init.' },
+  { decision: 'deny', tool: 'Edit', pattern: '~/.emacs', note: 'Emacs init.' },
+  { decision: 'deny', tool: 'MultiEdit', pattern: '~/.emacs', note: 'Emacs init.' },
+  { decision: 'deny', tool: 'Write', pattern: '~/.emacs.d/init.el', note: 'Emacs init.el.' },
+  { decision: 'deny', tool: 'Edit', pattern: '~/.emacs.d/init.el', note: 'Emacs init.el.' },
+  { decision: 'deny', tool: 'MultiEdit', pattern: '~/.emacs.d/init.el', note: 'Emacs init.el.' },
+  // VS Code user config
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '~/.config/Code/User/settings.json',
+    note: 'VS Code user settings.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '~/.config/Code/User/settings.json',
+    note: 'VS Code user settings.',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '~/.config/Code/User/settings.json',
+    note: 'VS Code user settings.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '~/.config/Code/User/keybindings.json',
+    note: 'VS Code keybindings.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '~/.config/Code/User/keybindings.json',
+    note: 'VS Code keybindings.',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '~/.config/Code/User/keybindings.json',
+    note: 'VS Code keybindings.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Write',
+    pattern: '~/.vscode/extensions/**',
+    note: 'VS Code extensions tree.',
+  },
+  {
+    decision: 'deny',
+    tool: 'Edit',
+    pattern: '~/.vscode/extensions/**',
+    note: 'VS Code extensions tree.',
+  },
+  {
+    decision: 'deny',
+    tool: 'MultiEdit',
+    pattern: '~/.vscode/extensions/**',
+    note: 'VS Code extensions tree.',
+  },
+];
+
 // ─── Network egress denies (High preset) ─────────────────────────────────
 // Belt-and-suspenders alongside the synthetic default-deny in
 // matchers.ts: explicit rules surface in the rule list so the user can
@@ -271,6 +617,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       'Scanner covers secrets + risky tool use',
       'Asks before rm -rf, sudo, chmod 777, curl|bash; denies SSH/AWS keys, exfil surfaces',
       'Blocks tampering with Claude Code permissions and Sentinel state',
+      'Blocks persistence vectors (cron, launchd, systemd, git hooks, gpg/docker/kube)',
     ],
     settings: {
       securityScanEnabled: true,
@@ -286,7 +633,12 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       toolPermissionSkipInAutoMode: true,
       denyPrivateNetworkByDefault: false,
     },
-    rules: [...SHARED_CONFIG_PROTECTION_RULES, ...SHARED_ASK_RULES, ...SHARED_DENY_RULES],
+    rules: [
+      ...SHARED_CONFIG_PROTECTION_RULES,
+      ...SHARED_ASK_RULES,
+      ...SHARED_DENY_RULES,
+      ...SHARED_PERSISTENCE_DENY_RULES,
+    ],
   },
   high: {
     profile: 'high',
@@ -299,6 +651,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       'Auto-mode bypass disabled; Sentinel still enforces',
       'Denies cloud-metadata and private network egress by default',
       'Blocks tampering with Claude Code permissions and Sentinel state',
+      'Blocks persistence vectors and editor-config writes (vim, nvim, emacs, vscode)',
     ],
     settings: {
       securityScanEnabled: true,
@@ -319,6 +672,8 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       ...SHARED_ASK_RULES,
       ...SHARED_DENY_RULES,
       ...HIGH_NETWORK_DENY_RULES,
+      ...SHARED_PERSISTENCE_DENY_RULES,
+      ...HIGH_EDITOR_CONFIG_DENY_RULES,
       ...HIGH_ALLOW_RULES,
     ],
   },
