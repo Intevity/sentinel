@@ -550,14 +550,22 @@ export interface SecurityEvent {
   provenance: FindingProvenance;
 }
 
-/** Provenance categories for security findings. Blocking for secret/PII
- *  is restricted to `file-read` (Read tool_result or Write file_path)
- *  and `tool-use` (risky Bash/Write/WebFetch commands). Everything else
- *  persists as observe-only so the user still sees it in the Security
- *  tab without getting 403'd on conversation text. */
+/** Provenance categories for security findings.
+ *
+ *  Blocking for `secret`/`pii` kinds is restricted to `file-read` (Read
+ *  tool_result or Write file_path) and `tool-use` (risky Bash/Write/WebFetch
+ *  commands). Everything else persists as observe-only so the user still
+ *  sees it in the Security tab without getting 403'd on conversation text.
+ *
+ *  Blocking for `prompt_injection` kind additionally covers `tool-result`
+ *  (attacker-supplied content embedded in WebFetch/Read/Bash output, no
+ *  recoverable file_path) and `mcp-description` (poisoned `tools[].description`
+ *  text advertised to the agent). See Sprint 7 for the rationale. */
 export type FindingProvenance =
   | 'file-read'
   | 'tool-use'
+  | 'tool-result'
+  | 'mcp-description'
   | 'conversation'
   | 'system-prompt'
   | 'telemetry';

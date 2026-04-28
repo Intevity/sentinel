@@ -50,6 +50,12 @@ export function classifyProvenance(
     return 'file-read';
   }
   if (sourceHint.startsWith('tool_use[')) return 'tool-use';
+  // tool_result content embedded in messages — attacker-supplied text from a
+  // WebFetch/Read/Bash with no recoverable file_path. Sprint 7 makes this
+  // blockable for prompt_injection kind (see scanner.isBlockableForPolicy).
+  if (/^messages\[\d+\]\.tool_result/.test(sourceHint)) return 'tool-result';
+  // MCP tool description advertised in the request body's tools[].
+  if (/^tools\[\d+\]\.description$/.test(sourceHint)) return 'mcp-description';
   if (sourceHint === 'system' || /^system\[/.test(sourceHint) || /^tools\[/.test(sourceHint)) {
     return 'system-prompt';
   }
@@ -975,7 +981,10 @@ interface InjectionRule {
   alwaysOn?: boolean;
 }
 
-const INJECTION_RULES: InjectionRule[] = [
+/** Rules that fire on user-supplied request text: `system`, plain message
+ *  content, and assistant text. These are the canonical injection phrases —
+ *  someone trying to jailbreak the model from the input side. */
+const INJECTION_RULES_REQUEST: InjectionRule[] = [
   {
     id: 'unicode-tag-chars',
     title: 'Hidden unicode tag characters',
@@ -1009,14 +1018,159 @@ const INJECTION_RULES: InjectionRule[] = [
   },
 ];
 
-function scanInjectionIn(
+/** Rules that fire on attacker-supplied content: tool_result text returned
+ *  from a WebFetch/Read/Bash, and MCP tool descriptions advertised in the
+ *  request body's tools[]. The four request rules are included here too —
+ *  attacker content can include any of them — and five new rules cover
+ *  patterns that are suspicious **only** when they arrive via the network
+ *  (HTML img exfil, markdown link with credential param, base64 next to an
+ *  execute verb, structural <system> markers, tool_use proposals embedded
+ *  in returned text). See Sprint 7 in documentation/SECURITY_PLAN.md. */
+const INJECTION_RULES_TOOL_RESULT: InjectionRule[] = [
+  ...INJECTION_RULES_REQUEST,
+  {
+    // Stronger version of role-impersonation for content arriving from the
+    // network: a webpage talking AT a model in system/Assistant/Human voice
+    // is suspicious by default. Higher confidence than the request-side rule
+    // because legitimate user prose rarely starts a line with these markers.
+    id: 'tool-result-system-prompt-injection',
+    title: 'System-prompt marker in tool_result',
+    reason: 'Attacker-supplied content contains a system/role marker',
+    confidence: 0.9,
+    // Unlike role-impersonation (which anchors to line start because user
+    // prose rarely begins with these markers), tool_result attackers can
+    // inject mid-line. No anchor here; we rely on the markers themselves
+    // being structurally distinctive.
+    regex:
+      /(<\|system\|>|<\|im_start\|>\s*system|<system>|<\/system>|\[INST\]|\[\/INST\]|SYSTEM:|Assistant:|Human:)/g,
+  },
+  {
+    id: 'tool-result-multistep-instruction',
+    title: 'Imperative instruction in tool_result',
+    reason: '"Now execute/run/download/save the following" is a classic injection lead',
+    confidence: 0.65,
+    regex: /\b(now\s+)?(execute|run|download|save|write|append)\s+(this|the\s+following)\b/gi,
+  },
+  {
+    // Markdown link whose query string contains an auth-style key. Attacker
+    // pattern: render a link the user clicks that exfils $TOKEN/$COOKIE in
+    // the URL. Use a non-greedy match to avoid picking up huge chunks of
+    // surrounding markdown.
+    id: 'tool-result-markdown-link-with-token',
+    title: 'Markdown link with credential-like query parameter',
+    reason: 'A markdown link query string includes token/key/secret/cookie/session/auth',
+    confidence: 0.9,
+    regex: /\[[^\]]+\]\(https?:\/\/[^)]*\?[^)]*(token|key|secret|cookie|session|auth)[^)]*\)/gi,
+  },
+  {
+    // <img> tag whose src interpolates a $VAR — Claude's renderer might
+    // resolve and fetch this, exfiltrating the variable's value. The $-anchor
+    // is what makes this high-confidence; plain <img src="https://..."> is
+    // benign.
+    id: 'tool-result-html-image-exfil',
+    title: 'HTML image tag with variable interpolation',
+    reason: 'An <img> tag references a $-prefixed variable in its src URL',
+    confidence: 0.95,
+    regex: /<img\s+[^>]*src=["']https?:\/\/[^"']+\?[^"']*=[^"']*\$/gi,
+  },
+  {
+    // Heuristic: an attacker-supplied page suggesting the agent issue a
+    // tool_use of its own. Matches Bash(/Write(/Edit(/WebFetch( followed
+    // by something path-or-command-shaped. Medium confidence; this fires
+    // on legitimate documentation that *describes* tool usage too.
+    id: 'tool-result-tool-injection',
+    title: 'Tool-use proposal embedded in tool_result',
+    reason: 'Tool name + open-paren pattern suggests an injection telling the agent what to call',
+    confidence: 0.7,
+    regex: /\b(Bash|Write|Edit|WebFetch)\s*\(\s*[^)]*[/$"'\\\s][^)]{0,200}\)/g,
+  },
+];
+
+/** Sentinel marker for the tool-result-base64-payload-near-instruction
+ *  detector. Uses proximity scanning rather than a single regex — see
+ *  scanBase64NearInstruction below. */
+const BASE64_CHUNK_REGEX = /[A-Za-z0-9+/]{60,}={0,2}/g;
+const EXECUTE_VERB_REGEX = /\b(execute|run|decode)\b/gi;
+const BASE64_PROXIMITY_WINDOW = 200;
+
+/** Scan for a base64 chunk within BASE64_PROXIMITY_WINDOW chars of an
+ *  execute/run/decode verb. Emits one finding per qualifying chunk; the
+ *  chunk itself is the matchMask so the user can see what was flagged. */
+function scanBase64NearInstruction(
   fullText: string,
   sourceHint: string | undefined,
   options: DetectorOptions,
 ): Finding[] {
+  if (!options.scanInjection) return [];
+  if (isAllowlistedPath(sourceHint)) return [];
+  // Collect verb positions first so we can answer "any verb within window?"
+  // in O(verbs * chunks) instead of re-scanning the full text per chunk.
+  const verbPositions: number[] = [];
+  EXECUTE_VERB_REGEX.lastIndex = 0;
+  let vm: RegExpExecArray | null;
+  while ((vm = EXECUTE_VERB_REGEX.exec(fullText)) !== null) {
+    verbPositions.push(vm.index);
+  }
+  if (verbPositions.length === 0) return [];
+
+  const findings: Finding[] = [];
+  BASE64_CHUNK_REGEX.lastIndex = 0;
+  let bm: RegExpExecArray | null;
+  while ((bm = BASE64_CHUNK_REGEX.exec(fullText)) !== null) {
+    const match = bm[0];
+    const start = bm.index;
+    const end = start + match.length;
+    const within = verbPositions.some((p) => {
+      // Verb can be before the chunk or after it; window measured edge-to-edge.
+      const distBefore = start - (p + 0); // verb ends near its start anyway
+      const distAfter = p - end;
+      return (
+        (distBefore >= 0 && distBefore <= BASE64_PROXIMITY_WINDOW) ||
+        (distAfter >= 0 && distAfter <= BASE64_PROXIMITY_WINDOW)
+      );
+    });
+    if (!within) continue;
+    if (hasAllowlistedContext(fullText, start, end)) continue;
+    const { drop, reasons } = computeConfidenceDrop(fullText, start, end, match);
+    const adjustedConfidence = Math.max(0.1, 0.7 - drop);
+    const adjustedReason =
+      reasons.length > 0
+        ? `Base64 payload near execute/run/decode verb (confidence reduced: ${reasons.join(', ')})`
+        : 'Base64 payload near execute/run/decode verb';
+    const severity: SecuritySeverity =
+      adjustedConfidence >= 0.9 ? 'high' : adjustedConfidence >= 0.6 ? 'medium' : 'low';
+    findings.push({
+      detectorId: 'tool-result-base64-payload-near-instruction',
+      kind: 'prompt_injection',
+      severity,
+      confidence: adjustedConfidence,
+      title: 'Base64 payload near instruction verb',
+      reason: adjustedReason,
+      matchMask: maskSecret(match),
+      matchHash: hashText(match.toLowerCase()),
+      contextHash: contextHashOf(fullText, start, end),
+      snippet: buildSnippet({
+        fullText,
+        matchStart: start,
+        matchEnd: end,
+        kind: 'prompt_injection',
+      }),
+      sourceHint,
+      provenance: classifyProvenance('prompt_injection', sourceHint),
+    });
+  }
+  return findings;
+}
+
+function scanInjectionIn(
+  fullText: string,
+  sourceHint: string | undefined,
+  options: DetectorOptions,
+  rules: InjectionRule[] = INJECTION_RULES_REQUEST,
+): Finding[] {
   if (isAllowlistedPath(sourceHint)) return [];
   const findings: Finding[] = [];
-  for (const rule of INJECTION_RULES) {
+  for (const rule of rules) {
     if (!options.scanInjection && !rule.alwaysOn) continue;
     rule.regex.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -1672,21 +1826,37 @@ export function scanRequestBody(body: unknown, options: DetectorOptions): Findin
   const findings: Finding[] = [];
   const obj = body as Record<string, unknown>;
 
+  const scanSecretsAndEnv = (text: string, sourceHint: string): void => {
+    if (!options.scanSecrets) return;
+    findings.push(...scanSecretsIn(text, sourceHint));
+    findings.push(...scanPrivateKeyBlocks(text, sourceHint));
+    // Provenance-aware: when the source path looks like a `.env`
+    // file, run the per-line entropy scanner alongside the regex
+    // pipeline. The other detectors continue to fire as well — this
+    // catches the long tail (custom tokens, app-specific creds) that
+    // wouldn't match any provider-specific shape.
+    if (isEnvFilePath(sourceHint)) {
+      findings.push(...scanEnvFileLines(text, sourceHint));
+    }
+  };
+
+  /** Scan user-supplied text (request body): system, plain message text,
+   *  message.content arrays. Uses INJECTION_RULES_REQUEST. */
   const scanText = (text: string, sourceHint: string): void => {
     if (!text) return;
-    if (options.scanSecrets) {
-      findings.push(...scanSecretsIn(text, sourceHint));
-      findings.push(...scanPrivateKeyBlocks(text, sourceHint));
-      // Provenance-aware: when the source path looks like a `.env`
-      // file, run the per-line entropy scanner alongside the regex
-      // pipeline. The other detectors continue to fire as well — this
-      // catches the long tail (custom tokens, app-specific creds) that
-      // wouldn't match any provider-specific shape.
-      if (isEnvFilePath(sourceHint)) {
-        findings.push(...scanEnvFileLines(text, sourceHint));
-      }
-    }
-    findings.push(...scanInjectionIn(text, sourceHint, options));
+    scanSecretsAndEnv(text, sourceHint);
+    findings.push(...scanInjectionIn(text, sourceHint, options, INJECTION_RULES_REQUEST));
+  };
+
+  /** Scan attacker-suppliable text (tool_result and MCP tool descriptions).
+   *  Uses INJECTION_RULES_TOOL_RESULT (the request rules + five new
+   *  network-content-specific detectors) and the base64-near-instruction
+   *  proximity scanner. */
+  const scanIndirectText = (text: string, sourceHint: string): void => {
+    if (!text) return;
+    scanSecretsAndEnv(text, sourceHint);
+    findings.push(...scanInjectionIn(text, sourceHint, options, INJECTION_RULES_TOOL_RESULT));
+    findings.push(...scanBase64NearInstruction(text, sourceHint, options));
   };
 
   // system can be a string or an array of {type:'text', text:'...'}
@@ -1711,7 +1881,11 @@ export function scanRequestBody(body: unknown, options: DetectorOptions): Findin
     tools.forEach((t, i) => {
       if (t && typeof t === 'object') {
         const desc = (t as Record<string, unknown>)['description'];
-        if (typeof desc === 'string') scanText(desc, `tools[${i}].description`);
+        // MCP tool descriptions are attacker-suppliable: the agent treats
+        // them as authoritative and an MCP server can register a tool
+        // whose description embeds an injection. Scan with the indirect
+        // bank so we also catch tool-result-* patterns here.
+        if (typeof desc === 'string') scanIndirectText(desc, `tools[${i}].description`);
       }
     });
   }
@@ -1741,7 +1915,7 @@ export function scanRequestBody(body: unknown, options: DetectorOptions): Findin
           const baseHint = filePath ?? `messages[${mi}].tool_result[${bi}]`;
           const tc = b['content'];
           if (typeof tc === 'string') {
-            scanText(tc, baseHint);
+            scanIndirectText(tc, baseHint);
           } else if (Array.isArray(tc)) {
             tc.forEach((sub, si) => {
               if (
@@ -1755,7 +1929,7 @@ export function scanRequestBody(body: unknown, options: DetectorOptions): Findin
                 // back to the array-indexed JSON hint when no path was
                 // recovered.
                 const hint = filePath ?? `messages[${mi}].tool_result[${bi}][${si}]`;
-                if (typeof t === 'string') scanText(t, hint);
+                if (typeof t === 'string') scanIndirectText(t, hint);
               }
             });
           }

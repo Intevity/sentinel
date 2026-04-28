@@ -1019,15 +1019,25 @@ describe('classifyProvenance', () => {
     expect(classifyProvenance('secret', 'tool_use[2]:Write')).toBe('tool-use');
   });
 
-  it('maps system / tools hints to system-prompt', () => {
+  it('maps system hints to system-prompt', () => {
     expect(classifyProvenance('secret', 'system')).toBe('system-prompt');
     expect(classifyProvenance('secret', 'system[0]')).toBe('system-prompt');
-    expect(classifyProvenance('secret', 'tools[1].description')).toBe('system-prompt');
+  });
+
+  it('maps tools[N].description to mcp-description (Sprint 7)', () => {
+    expect(classifyProvenance('secret', 'tools[1].description')).toBe('mcp-description');
+    expect(classifyProvenance('prompt_injection', 'tools[0].description')).toBe('mcp-description');
+  });
+
+  it('maps messages[N].tool_result hints to tool-result (Sprint 7)', () => {
+    expect(classifyProvenance('secret', 'messages[5].tool_result[2]')).toBe('tool-result');
+    expect(classifyProvenance('prompt_injection', 'messages[0].tool_result[0][3]')).toBe(
+      'tool-result',
+    );
   });
 
   it('maps anything else to conversation (JSON-index hints, etc.)', () => {
     expect(classifyProvenance('secret', 'messages[3].content[0]')).toBe('conversation');
-    expect(classifyProvenance('secret', 'messages[5].tool_result[2]')).toBe('conversation');
     expect(classifyProvenance('prompt_injection', 'messages[0]')).toBe('conversation');
   });
 });

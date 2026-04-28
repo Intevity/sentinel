@@ -404,7 +404,19 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     const isBlockableForPolicy = (f: Finding): boolean => {
       if (f.kind === 'risky_bash' || f.kind === 'risky_write' || f.kind === 'risky_webfetch')
         return true;
-      return f.provenance === 'file-read' || f.provenance === 'tool-use';
+      if (f.provenance === 'file-read' || f.provenance === 'tool-use') return true;
+      // Sprint 7: prompt-injection findings in attacker-suppliable surfaces
+      // — tool_result content from a WebFetch/Read/Bash with no recoverable
+      // file_path, and MCP tool descriptions advertised in tools[] — are
+      // blockable. Other kinds (secrets, PII) in those provenances stay
+      // observe-only: a credential string in a webpage body is the user's
+      // business to triage, not Sentinel's to 403.
+      if (
+        f.kind === 'prompt_injection' &&
+        (f.provenance === 'tool-result' || f.provenance === 'mcp-description')
+      )
+        return true;
+      return false;
     };
     const blockableFindings = findings.filter(isBlockableForPolicy);
 

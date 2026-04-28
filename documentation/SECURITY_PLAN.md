@@ -67,7 +67,7 @@ Apply these in every sprint:
 | 4   | Persistence-mechanism rules                  | ✅ done       | 2026-04-28 |           |
 | 5   | Bash matcher edges and filesystem boundaries | ✅ done       | 2026-04-28 |           |
 | 6   | Environment-variable hardening               | ✅ done       | 2026-04-28 |           |
-| 7   | Indirect prompt-injection scanning           | ☐ not started |            |           |
+| 7   | Indirect prompt-injection scanning           | ✅ done       | 2026-04-28 |           |
 | 8   | Audit log integrity and forensics            | ☐ not started |            |           |
 | 9   | UX, presets, observability                   | ☐ not started |            |           |
 | 10  | Resource limits and race-condition pinning   | ☐ not started |            |           |
@@ -530,6 +530,20 @@ Detection patterns the detector must match:
 - `packages/daemon/src/security/scanner.ts` — wire response-tap path to scan tool_result content separately. Add MCP-description scan path.
 - `packages/daemon/src/security/response-tap.ts` — emit tool_result text events distinct from full-response events.
 - `packages/daemon/src/proxy.ts` — request-side: scan request body's `tools[*].description` if present.
+
+> **Reconciliation note (Sprint 7 implementation, 2026-04-28):** The two
+> bullets above involving `response-tap.ts` and `proxy.ts` were inaccurate.
+> tool_result content does not appear in the SSE response stream — it
+> arrives in the **next** request from Claude Code under
+> `messages[].content[].type === 'tool_result'` and is iterated by
+> `scanRequestBody` in `detectors.ts`. The `tools[].description` field is
+> already iterated by `scanRequestBody` too. Sprint 7's actual diff lives in
+> `packages/shared/src/types.ts` (provenance widening),
+> `packages/daemon/src/security/detectors.ts` (rule split + new bank +
+> proximity scanner + provenance routing + dispatch refactor), and
+> `packages/daemon/src/security/scanner.ts` (block-policy gate widening for
+> `prompt_injection` × {`tool-result`, `mcp-description`}). No changes
+> needed in `response-tap.ts` or `proxy.ts`.
 
 **Tests to add**:
 
