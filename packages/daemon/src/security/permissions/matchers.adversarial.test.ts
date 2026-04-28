@@ -24,6 +24,10 @@ import {
   matchMcpTool,
   extractSubshells,
   extractHeredocs,
+  extractProcessSubstitutions,
+  extractFindExec,
+  extractForLoopBodies,
+  tokenize,
 } from './matchers.js';
 
 const RM_RULE = 'rm -rf *';
@@ -329,5 +333,106 @@ describe('globToRegex regression: escape interactions with new escapeRegex', () 
   it('treats `\\[` as a literal bracket (no char class)', () => {
     expect(globToRegex('a\\[b').test('a[b')).toBe(true);
     expect(globToRegex('a\\[b').test('axb')).toBe(false);
+  });
+});
+
+describe('matchBash adversarial: process substitution `<(cmd)` and `>(cmd)`', () => {
+  it('matches inside `cat <(rm -rf /)` (input substitution)', () => {
+    expect(matchBash(RM_RULE, 'cat <(rm -rf /)')).toBe(true);
+  });
+
+  it('matches inside `tee >(rm -rf /)` (output substitution)', () => {
+    expect(matchBash(RM_RULE, 'tee >(rm -rf /)')).toBe(true);
+  });
+
+  it('matches inside nested `<(<(rm -rf /))`', () => {
+    // Outer extracts `<(rm -rf /)`; recursion extracts `rm -rf /`.
+    expect(matchBash(RM_RULE, 'cat <(<(rm -rf /))')).toBe(true);
+  });
+
+  it('does NOT extract from inside single quotes (literal text)', () => {
+    // The `<(rm)` inside `'…'` is a literal string, not a substitution.
+    expect(extractProcessSubstitutions("echo '<(rm -rf /)'")).toEqual([]);
+  });
+
+  it('does NOT mistake plain `>` redirect or `>>` append for a substitution', () => {
+    expect(extractProcessSubstitutions('cat foo > /tmp/out')).toEqual([]);
+    expect(extractProcessSubstitutions('cat foo >> /tmp/out')).toEqual([]);
+  });
+});
+
+describe("matchBash adversarial: ANSI-C `$'…'` quoting", () => {
+  it("decodes `$'rm -rf /'` to literal chars and matches", () => {
+    expect(matchBash(RM_RULE, "$'rm -rf /'")).toBe(true);
+  });
+
+  it('decodes `\\xHH` hex escapes', () => {
+    // \x72 = 'r'. Without decoding, the head looks literal `\x72m -rf`.
+    expect(matchBash(RM_RULE, "$'\\x72m -rf /'")).toBe(true);
+  });
+
+  it('decodes `\\NNN` octal escapes', () => {
+    // \162 = 'r' octal.
+    expect(matchBash(RM_RULE, "$'\\162m -rf /'")).toBe(true);
+  });
+
+  it('decodes `\\n` and surrounding context still parses', () => {
+    // The decoded newline is a token-internal char (no token split inside `$'…'`).
+    const tokens = tokenize("$'foo\\nbar'");
+    expect(tokens).toEqual(['foo\nbar']);
+  });
+
+  it('passes through malformed escape literally without throwing', () => {
+    // `\z` is not a recognized C escape; bash leaves both chars literal.
+    const tokens = tokenize("$'\\zzz'");
+    expect(tokens).toEqual(['\\zzz']);
+  });
+});
+
+describe('matchBash adversarial: `find -exec` extraction', () => {
+  it('matches `find / -name "*.key" -exec cat {} \\;`', () => {
+    // Without extraction, the head is `find` and a `Bash(cat *)` rule
+    // would silently miss the actual exfil path.
+    expect(matchBash('cat *', 'find / -name "*.key" -exec cat {} \\;')).toBe(true);
+  });
+
+  it('matches `find . -execdir rm {} +` (batched terminator)', () => {
+    expect(matchBash(RM_RULE, 'find . -execdir rm -rf {} +')).toBe(true);
+  });
+
+  it('also matches the `find:*` head rule (rules at both layers fire)', () => {
+    expect(matchBash('find *', 'find / -name "*.key" -exec cat {} \\;')).toBe(true);
+  });
+
+  it('returns nothing when the head is not `find`', () => {
+    // A custom script named `myscript.sh -exec foo` is not find.
+    expect(extractFindExec('myscript.sh -exec foo \\;')).toEqual([]);
+  });
+
+  it('extracts the exec argv as a single command', () => {
+    expect(extractFindExec('find / -exec cat {} \\;')).toEqual(['cat {}']);
+  });
+});
+
+describe('matchBash adversarial: `for` loop body extraction', () => {
+  it('matches body of `for f in *.key; do cat $f; done`', () => {
+    expect(matchBash('cat *', 'for f in *.key; do cat $f; done')).toBe(true);
+  });
+
+  it('extracts only the body, not the for/in/do/done framing', () => {
+    expect(extractForLoopBodies('for f in a b c; do echo $f; done')).toEqual(['echo $f']);
+  });
+
+  it('LIMIT: while-loop bodies are NOT extracted (XFAIL pin)', () => {
+    // Only `for` loops are walked in this sprint. A future contributor
+    // who extends the parser to `while` should flip this pin.
+    expect(extractForLoopBodies('while true; do rm -rf /; done')).toEqual([]);
+  });
+});
+
+describe('matchBash adversarial: `xargs sh -c` chain', () => {
+  it('matches inside `find / | xargs sh -c "cat \\$0"` via existing recursion', () => {
+    // No source change — xargs is stripWrapper'd, sh -c recurses.
+    expect(matchBash('cat *', 'find / | xargs sh -c "cat $0"')).toBe(true);
   });
 });

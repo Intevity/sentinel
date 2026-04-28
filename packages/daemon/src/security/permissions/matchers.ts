@@ -16,6 +16,7 @@
  *   - fallback           — glob against JSON.stringify(toolInput)
  */
 
+import { realpathSync } from 'fs';
 import { homedir } from 'os';
 import { posix as posixPath } from 'path';
 
@@ -99,8 +100,50 @@ export function tokenize(cmd: string): string[] {
   const out: string[] = [];
   let cur = '';
   let quote: '"' | "'" | null = null;
+  let ansiC = false;
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i]!;
+    if (ansiC) {
+      if (ch === "'") {
+        ansiC = false;
+        continue;
+      }
+      if (ch === '\\' && i + 1 < cmd.length) {
+        const next = cmd[i + 1]!;
+        // Single-char C escapes. Real bash also supports \uHHHH /
+        // \UHHHHHHHH / \cX; deferred (rare in attack corpora; surrogate
+        // pairs add risk without payoff).
+        const single = ANSI_C_SINGLE_CHAR.get(next);
+        if (single !== undefined) {
+          cur += single;
+          i++;
+          continue;
+        }
+        if (next === 'x') {
+          const m = /^[0-9a-fA-F]{1,2}/.exec(cmd.slice(i + 2));
+          if (m) {
+            cur += String.fromCharCode(parseInt(m[0], 16));
+            i += 1 + m[0].length;
+            continue;
+          }
+          // Malformed `\x` — fall through, append literal backslash.
+        }
+        if (next >= '0' && next <= '7') {
+          const m = /^[0-7]{1,3}/.exec(cmd.slice(i + 1));
+          if (m) {
+            cur += String.fromCharCode(parseInt(m[0], 8));
+            i += m[0].length;
+            continue;
+          }
+        }
+        // Unknown escape — bash leaves the backslash literal AND the
+        // next char literal. Mirror that.
+        cur += ch;
+        continue;
+      }
+      cur += ch;
+      continue;
+    }
     if (quote) {
       if (ch === quote) {
         quote = null;
@@ -109,6 +152,13 @@ export function tokenize(cmd: string): string[] {
       } else {
         cur += ch;
       }
+      continue;
+    }
+    // ANSI-C `$'…'` opener. Real shells decode the body and emit the
+    // result as part of the surrounding token (NOT a token boundary).
+    if (ch === '$' && cmd[i + 1] === "'") {
+      ansiC = true;
+      i++;
       continue;
     }
     if (ch === '"' || ch === "'") {
@@ -127,6 +177,22 @@ export function tokenize(cmd: string): string[] {
   if (cur) out.push(cur);
   return out;
 }
+
+const ANSI_C_SINGLE_CHAR = new Map<string, string>([
+  ['a', '\x07'],
+  ['b', '\b'],
+  ['e', '\x1b'],
+  ['E', '\x1b'],
+  ['f', '\f'],
+  ['n', '\n'],
+  ['r', '\r'],
+  ['t', '\t'],
+  ['v', '\v'],
+  ['\\', '\\'],
+  ["'", "'"],
+  ['"', '"'],
+  ['?', '?'],
+]);
 
 /** Split a command string into segments separated by `|`, `||`, `&&`, or `;`.
  *  Quoted sections are preserved (we don't split inside quotes). */
@@ -332,13 +398,125 @@ export function extractHeredocs(cmd: string): string[] {
   return out;
 }
 
+/** Find every `<(cmd)` and `>(cmd)` process substitution inside `cmd`
+ *  and return the inner command text. Honors quote regions (single
+ *  AND double quotes — both suppress expansion in real shells). Does
+ *  not recurse: the caller (`expandBashCommand`) feeds each result
+ *  back through the enqueue loop so nested `<(<(rm))` is fully
+ *  walked.
+ *
+ *  `<(...)` and `>(...)` look like redirections to a naive splitter;
+ *  the parser-level disambiguation is `<` or `>` IMMEDIATELY followed
+ *  by `(` (no space, no second `<`/`>`). `<<` is heredoc, `>>` is
+ *  append redirect, and a bare `>` followed by space is plain output
+ *  redirect — none of those reach the inner-command extraction. */
+export function extractProcessSubstitutions(cmd: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  let quote: '"' | "'" | null = null;
+  while (i < cmd.length) {
+    const ch = cmd[i]!;
+    if (quote) {
+      if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      i++;
+      continue;
+    }
+    if ((ch === '<' || ch === '>') && cmd[i + 1] === '(') {
+      let depth = 1;
+      let j = i + 2;
+      while (j < cmd.length && depth > 0) {
+        const cj = cmd[j]!;
+        if (cj === '(') depth++;
+        else if (cj === ')') {
+          depth--;
+          if (depth === 0) break;
+        }
+        j++;
+      }
+      if (depth !== 0) {
+        i++;
+        continue;
+      }
+      out.push(cmd.slice(i + 2, j));
+      i = j + 1;
+      continue;
+    }
+    i++;
+  }
+  return out;
+}
+
+/** Find every `find … -exec[dir] <argv> \;|+` clause inside `cmd` and
+ *  return the inner argv (`<argv>`) as a single command string per
+ *  clause. The terminator is either `\;` (single-command form) or `+`
+ *  (xargs-style batched form). Both `find`'s `-exec` and `-execdir`
+ *  flags are matched; a `find` head must be present somewhere earlier
+ *  in the segment, otherwise we treat the `-exec` token as foreign
+ *  (e.g., `myscript.sh -exec rm` is NOT find).
+ *
+ *  Does not normalize `{}` placeholder substitution — the inner
+ *  command is enqueued as-is so a rule like `Bash(cat *)` matches
+ *  `cat {}`. */
+export function extractFindExec(cmd: string): string[] {
+  const tokens = tokenize(cmd);
+  if (tokens.length === 0) return [];
+  // `find` must appear as the head OR after a wrapper like sudo/env.
+  // Use the post-stripWrappers head as the cheap canonical form.
+  const stripped = tokenize(stripWrappers(cmd));
+  if (stripped[0] !== 'find') return [];
+  const out: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i]!;
+    if (tok !== '-exec' && tok !== '-execdir') continue;
+    const argv: string[] = [];
+    let j = i + 1;
+    while (j < tokens.length) {
+      const t = tokens[j]!;
+      if (t === ';' || t === '\\;' || t === '+') break;
+      argv.push(t);
+      j++;
+    }
+    if (argv.length > 0) out.push(argv.join(' '));
+    i = j;
+  }
+  return out;
+}
+
+/** Find every `for … do <body> done` loop inside `cmd` and return the
+ *  loop body. Real shells iterate the body, so a deny rule for the
+ *  body command should match.
+ *
+ *  LIMIT: only `for` loops are extracted in this sprint. `while`,
+ *  `until`, `select`, and `if … then … fi` bodies are NOT extracted —
+ *  rule authors who care about those constructs should write rules
+ *  on the inner command directly until we extend the parser. */
+export function extractForLoopBodies(cmd: string): string[] {
+  const out: string[] = [];
+  // Match `for VAR in LIST; do BODY; done` and the newline form.
+  // The body is non-greedy up to the closing `done` word boundary.
+  const re = /\bfor\s+\w+\s+in\b[\s\S]*?\bdo\b\s*([\s\S]*?)\s*\bdone\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cmd)) !== null) {
+    // Real bodies typically end `…; ` before `done`; strip a trailing
+    // separator so `splitPipeline(body)` doesn't see an empty tail.
+    const body = m[1]?.trim().replace(/;\s*$/, '').trim();
+    if (body) out.push(body);
+  }
+  return out;
+}
+
 /**
  * Expand `-c` shells so a rule can match the inner command directly. A
  * `sh -c "npm test && npm lint"` call becomes two logical segments —
  * `npm test` and `npm lint` — alongside the outer `sh` so rules can target
  * either layer. Also expands command substitutions (`$(...)`,
- * backticks) and heredoc bodies — each of those is itself an inner
- * command that real shells execute.
+ * backticks), heredoc bodies, process substitutions (`<(...)`,
+ * `>(...)`), `find -exec` argv, and `for` loop bodies.
  */
 export function expandBashCommand(cmd: string): string[] {
   const results: string[] = [];
@@ -367,7 +545,24 @@ export function expandBashCommand(cmd: string): string[] {
     for (const inner of extractHeredocs(trimmed)) {
       for (const seg of splitPipeline(inner)) enqueue(seg);
     }
+    for (const inner of extractProcessSubstitutions(trimmed)) {
+      for (const seg of splitPipeline(inner)) enqueue(seg);
+    }
+    for (const inner of extractFindExec(trimmed)) {
+      for (const seg of splitPipeline(inner)) enqueue(seg);
+    }
+    for (const inner of extractForLoopBodies(trimmed)) {
+      for (const seg of splitPipeline(inner)) enqueue(seg);
+    }
   };
+  // For-loops use `;` separators that `splitPipeline` would fragment —
+  // `for f in *.key; do cat $f; done` splits into 3 pipeline-like
+  // segments, none of which contains a complete loop. Pre-extract
+  // bodies from the un-split command so the body's commands reach
+  // matchBash candidates intact.
+  for (const inner of extractForLoopBodies(cmd)) {
+    for (const seg of splitPipeline(inner)) enqueue(seg);
+  }
   for (const seg of splitPipeline(cmd)) enqueue(seg);
   return results;
 }
@@ -452,12 +647,44 @@ function normalizePathForMatch(raw: string): string {
  *  The path is normalized through `posixPath.normalize` before matching
  *  so traversal via `..` segments cannot escape an `**` boundary
  *  (`/safe/../etc/passwd` matches `Read(//etc/**)`).
+ *
+ *  `opts.resolveSymlinks` (off by default) runs the input through
+ *  `fs.realpathSync` first so a deny rule for the canonical path
+ *  catches symlink-redirected reads. The pattern is NEVER realpath'd.
+ *  Broken/missing links fall back to the un-resolved input.
+ *
+ *  On macOS (`process.platform === 'darwin'`) the match is
+ *  case-insensitive — APFS and HFS+ default to case-insensitive
+ *  filesystems, so a deny rule for `Read(//etc/**)` would otherwise
+ *  miss `Read(/Etc/Passwd)`. APFS supports case-sensitive volumes but
+ *  they are <1% of installs; conservative widening is safer than the
+ *  reverse. Uses `.toLowerCase()` (NOT `.toLocaleLowerCase()`) — locale
+ *  folds like Turkish dotless-i would create a security footgun.
  */
-export function matchPath(pattern: string, input: unknown): boolean {
+export function matchPath(
+  pattern: string,
+  input: unknown,
+  opts?: { resolveSymlinks?: boolean },
+): boolean {
   const raw = pickPath(input);
   if (!raw) return false;
-  const normalizedRaw = normalizePathForMatch(raw);
-  const normalizedPattern = normalizePatternToAbsolute(pattern);
+  let resolved = raw;
+  if (opts?.resolveSymlinks) {
+    try {
+      resolved = realpathSync(raw);
+    } catch {
+      // Broken or missing symlink, EACCES, etc. Fall back to the raw
+      // input — the rule still gets a chance to match on the path the
+      // user named, and the OS-level access check downstream remains
+      // authoritative.
+    }
+  }
+  let normalizedRaw = normalizePathForMatch(resolved);
+  let normalizedPattern = normalizePatternToAbsolute(pattern);
+  if (process.platform === 'darwin') {
+    normalizedRaw = normalizedRaw.toLowerCase();
+    normalizedPattern = normalizedPattern.toLowerCase();
+  }
   const regex = globToRegex(normalizedPattern, { pathMode: true });
   if (regex.test(normalizedRaw)) return true;
   // For bare patterns without an anchoring slash, also try matching against

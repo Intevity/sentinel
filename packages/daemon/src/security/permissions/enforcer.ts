@@ -254,6 +254,7 @@ function settingsView(s: Settings): EvaluatorSettingsView {
     toolPermissionSkipInAutoMode: s.toolPermissionSkipInAutoMode,
     toolPermissionAutoModeActive: s.toolPermissionAutoModeActive,
     denyPrivateNetworkByDefault: s.denyPrivateNetworkByDefault,
+    toolPermissionResolveSymlinks: s.toolPermissionResolveSymlinks,
   };
 }
 

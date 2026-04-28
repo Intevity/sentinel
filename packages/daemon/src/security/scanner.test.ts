@@ -59,6 +59,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     securitySetupCompleted: false,
     tourCompleted: false,
     denyPrivateNetworkByDefault: false,
+    toolPermissionResolveSymlinks: false,
     ...overrides,
   };
 }

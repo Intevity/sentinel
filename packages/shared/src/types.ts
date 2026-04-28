@@ -314,6 +314,15 @@ export interface Settings {
    *  flips it on. The deny is overridable by an explicit allow rule. */
   denyPrivateNetworkByDefault: boolean;
 
+  /** When true, path-tool rule evaluation calls `fs.realpathSync` on the
+   *  target before matching, so a deny rule for `Read(//etc/**)` still
+   *  fires when the agent reads a symlink that points into `/etc/`. Adds
+   *  one stat per rule check, so it's opt-in. Off by default. The
+   *  resolution is best-effort; broken or non-existent links fall back
+   *  to the un-resolved input. The pattern is never realpath'd, only
+   *  the input. */
+  toolPermissionResolveSymlinks: boolean;
+
   /** Size threshold (MB) above which the scanner takes its deferred
    *  path — the body is scanned off the proxy's hot path so the
    *  request isn't stalled by multi-MB JSON parsing. Raising this
@@ -705,6 +714,7 @@ export type SecurityKind =
   | 'prompt_injection'
   | 'risky_bash'
   | 'risky_write'
+  | 'risky_read'
   | 'risky_webfetch'
   | 'scan_truncated'
   | 'scan_skipped_encoding'

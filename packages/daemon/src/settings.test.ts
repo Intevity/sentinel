@@ -280,6 +280,24 @@ describe('settings', () => {
       expect(loaded.tourCompleted).toBe(false);
     });
 
+    it('defaults toolPermissionResolveSymlinks to false', () => {
+      writeRawWithSig(path, JSON.stringify({}), 'utf-8');
+      expect(loadSettings(path).toolPermissionResolveSymlinks).toBe(false);
+    });
+
+    it('round-trips toolPermissionResolveSymlinks=true and rejects non-boolean input', () => {
+      writeRawWithSig(path, JSON.stringify({ toolPermissionResolveSymlinks: true }));
+      expect(loadSettings(path).toolPermissionResolveSymlinks).toBe(true);
+      writeRawWithSig(path, JSON.stringify({ toolPermissionResolveSymlinks: 'yes' }));
+      expect(loadSettings(path).toolPermissionResolveSymlinks).toBe(
+        DEFAULT_SETTINGS.toolPermissionResolveSymlinks,
+      );
+      writeRawWithSig(path, JSON.stringify({ toolPermissionResolveSymlinks: 1 }));
+      expect(loadSettings(path).toolPermissionResolveSymlinks).toBe(
+        DEFAULT_SETTINGS.toolPermissionResolveSymlinks,
+      );
+    });
+
     it('round-trips securitySetupCompleted/tourCompleted and rejects non-boolean input', () => {
       writeRawWithSig(path, JSON.stringify({ securitySetupCompleted: true, tourCompleted: true }));
       const loaded = loadSettings(path);

@@ -119,6 +119,7 @@ function benchSettings(): Settings {
     securitySetupCompleted: true,
     tourCompleted: true,
     denyPrivateNetworkByDefault: false,
+    toolPermissionResolveSymlinks: false,
   };
 }
 

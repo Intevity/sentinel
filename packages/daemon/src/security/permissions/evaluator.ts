@@ -44,6 +44,11 @@ export interface EvaluatorSettingsView {
    *  network-egress default-deny set (link-local IPs, cloud-metadata
    *  FQDNs, and localhost are always denied regardless). */
   denyPrivateNetworkByDefault: boolean;
+  /** When true, path-tool inputs are run through `fs.realpathSync`
+   *  before matching, so a deny rule for the canonical path catches
+   *  symlink-redirected reads/writes. Adds a stat per rule check;
+   *  off by default. */
+  toolPermissionResolveSymlinks: boolean;
 }
 
 /** Stable id used by the synthetic network-egress default-deny.
@@ -80,7 +85,12 @@ export function compileRules(rules: PermissionRule[]): CompiledRuleSet {
 
 /** True iff `rule` matches the tool call. Handles both whole-tool rules
  *  (pattern === null) and specifier rules. Exported for unit tests. */
-export function ruleMatches(rule: PermissionRule, toolName: string, toolInput: unknown): boolean {
+export function ruleMatches(
+  rule: PermissionRule,
+  toolName: string,
+  toolInput: unknown,
+  opts?: { resolveSymlinks?: boolean },
+): boolean {
   // Tool-name gate. A rule targeting 'Bash' does not match a 'Read' tool_use.
   // '*' matches any tool. MCP wildcard rules are handled here.
   if (!toolNameMatches(rule.tool, toolName)) return false;
@@ -94,7 +104,7 @@ export function ruleMatches(rule: PermissionRule, toolName: string, toolInput: u
     return matchBash(rule.pattern, command);
   }
   if (isPathTool(toolName)) {
-    return matchPath(rule.pattern, toolInput);
+    return matchPath(rule.pattern, toolInput, opts);
   }
   if (isWebTool(toolName)) {
     return matchWeb(rule.pattern, toolInput);
@@ -184,8 +194,9 @@ export function evaluateToolCall(
   if (settings.toolPermissionSkipInAutoMode && settings.toolPermissionAutoModeActive) {
     return { decision: 'allow', matchedRule: null, reason: 'auto mode — enforcement skipped' };
   }
+  const matchOpts = { resolveSymlinks: settings.toolPermissionResolveSymlinks };
   for (const rule of compiled.denies) {
-    if (ruleMatches(rule, toolName, toolInput)) {
+    if (ruleMatches(rule, toolName, toolInput, matchOpts)) {
       // Per-rule input bypass short-circuit. Computed lazily — a user
       // without any bypass rows pays zero hash cost on every deny
       // match. `hooks?.isBypassed` is the gate; only hash when it's
@@ -204,7 +215,7 @@ export function evaluateToolCall(
     }
   }
   for (const rule of compiled.allows) {
-    if (ruleMatches(rule, toolName, toolInput)) {
+    if (ruleMatches(rule, toolName, toolInput, matchOpts)) {
       return { decision: 'allow', matchedRule: rule, reason: `allowed by ${rule.raw}` };
     }
   }

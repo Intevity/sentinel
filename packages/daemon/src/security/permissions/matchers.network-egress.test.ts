@@ -32,6 +32,7 @@ function settings(overrides: Partial<EvaluatorSettingsView> = {}): EvaluatorSett
     toolPermissionSkipInAutoMode: true,
     toolPermissionAutoModeActive: false,
     denyPrivateNetworkByDefault: false,
+    toolPermissionResolveSymlinks: false,
     ...overrides,
   };
 }

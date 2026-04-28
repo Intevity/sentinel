@@ -1429,6 +1429,70 @@ function scanWriteTarget(filePath: string, sourceHint: string | undefined): Find
   return findings;
 }
 
+// Sprint 5 filesystem-boundary read targets. /proc on Linux exposes
+// process-internal state that an agent has no legitimate reason to
+// read — `/proc/self/environ` leaks every env var (including AWS / GH
+// tokens) and `/proc/<pid>/mem` is a direct memory read of any pid the
+// agent's UID can see. /sys and /dev are similarly off-limits for the
+// shapes the agent might use; broaden the list as new vectors surface.
+interface RiskyReadRule {
+  re: RegExp;
+  detectorId: string;
+  reason: string;
+}
+const RISKY_READ_HIGH: RiskyReadRule[] = [
+  {
+    re: /^\/proc\/(?:self|[0-9]+)\/environ$/,
+    detectorId: 'proc-self-environ',
+    reason: '/proc/<pid>/environ leaks every environment variable, including credentials',
+  },
+  {
+    re: /^\/proc\/(?:self|[0-9]+)\/mem$/,
+    detectorId: 'proc-self-mem',
+    reason: '/proc/<pid>/mem is a direct memory read of the process address space',
+  },
+];
+const RISKY_READ_MEDIUM: RiskyReadRule[] = [
+  {
+    re: /^\/proc\/(?:self|[0-9]+)\/cmdline$/,
+    detectorId: 'proc-self-cmdline',
+    reason: '/proc/<pid>/cmdline leaks other processes invocation arguments',
+  },
+];
+
+function scanReadTarget(filePath: string, sourceHint: string | undefined): Finding[] {
+  const findings: Finding[] = [];
+  const emit = (severity: SecuritySeverity, rule: RiskyReadRule): void => {
+    findings.push({
+      detectorId: rule.detectorId,
+      kind: 'risky_read',
+      severity,
+      confidence: 0.95,
+      title: `Sensitive file read (${severity})`,
+      reason: rule.reason,
+      matchMask: maskSecret(filePath),
+      matchHash: hashText(filePath),
+      contextHash: hashText(filePath),
+      snippet: `Read → ${filePath}`,
+      sourceHint,
+      provenance: classifyProvenance('risky_read', sourceHint),
+    });
+  };
+  for (const rule of RISKY_READ_HIGH) {
+    if (rule.re.test(filePath)) {
+      emit('high', rule);
+      return findings;
+    }
+  }
+  for (const rule of RISKY_READ_MEDIUM) {
+    if (rule.re.test(filePath)) {
+      emit('medium', rule);
+      return findings;
+    }
+  }
+  return findings;
+}
+
 const RISKY_WEBFETCH_HOSTS: Array<{ pattern: RegExp; reason: string }> = [
   {
     pattern: /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/,
@@ -1668,6 +1732,13 @@ export function scanToolUseBlocks(
         const fp = input['file_path'];
         if (typeof fp === 'string') {
           findings.push(...scanWriteTarget(fp, sourceHint));
+        }
+        break;
+      }
+      case 'Read': {
+        const fp = input['file_path'];
+        if (typeof fp === 'string') {
+          findings.push(...scanReadTarget(fp, sourceHint));
         }
         break;
       }

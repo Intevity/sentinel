@@ -31,6 +31,7 @@ function settings(overrides: Partial<EvaluatorSettingsView> = {}): EvaluatorSett
     toolPermissionSkipInAutoMode: true,
     toolPermissionAutoModeActive: false,
     denyPrivateNetworkByDefault: false,
+    toolPermissionResolveSymlinks: false,
     ...overrides,
   };
 }
@@ -126,6 +127,38 @@ describe('ruleMatches — WebFetch domain', () => {
       ruleMatches(rule({ tool: 'WebFetch', pattern: 'domain:example.com' }), 'WebFetch', {
         url: 'https://example.com',
       }),
+    ).toBe(true);
+  });
+});
+
+describe('ruleMatches — opts.resolveSymlinks threading', () => {
+  // Smoke-test that opts is forwarded to matchPath. The behavior of
+  // realpath is exercised end-to-end in matchers.symlink.test.ts; here
+  // we just pin that ruleMatches accepts the opts arg without changing
+  // the no-opts behavior.
+  it('returns true with resolveSymlinks=false for a literal-path match', () => {
+    expect(
+      ruleMatches(
+        rule({ tool: 'Read', pattern: '//etc/**' }),
+        'Read',
+        { file_path: '/etc/passwd' },
+        { resolveSymlinks: false },
+      ),
+    ).toBe(true);
+  });
+
+  it('forwards opts to matchPath (smoke test — non-existent path falls back gracefully)', () => {
+    // realpathSync throws ENOENT for a non-existent path; the matcher
+    // catches and falls back to the un-resolved input. Pin that the
+    // forwarding works (no exception escapes ruleMatches) and that
+    // the literal pattern still matches the literal input.
+    expect(
+      ruleMatches(
+        rule({ tool: 'Read', pattern: '//tmp/cs-evaluator-no-such-file/**' }),
+        'Read',
+        { file_path: '/tmp/cs-evaluator-no-such-file/x' },
+        { resolveSymlinks: true },
+      ),
     ).toBe(true);
   });
 });

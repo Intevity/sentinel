@@ -62,6 +62,7 @@ export const DEFAULT_SETTINGS: Settings = {
   toolPermissionSkipInAutoMode: true,
   toolPermissionAutoModeActive: false,
   denyPrivateNetworkByDefault: false,
+  toolPermissionResolveSymlinks: false,
   // 4 MB chosen from request-size telemetry + scanner.bench.ts on an
   // M-series Mac (Apple Silicon). Observed Claude Code request-body
   // distribution: 100% under 2 MB across 1,500+ captured requests.
@@ -247,6 +248,9 @@ function coerce(raw: unknown): Settings {
   }
   if (typeof obj['denyPrivateNetworkByDefault'] === 'boolean') {
     next.denyPrivateNetworkByDefault = obj['denyPrivateNetworkByDefault'];
+  }
+  if (typeof obj['toolPermissionResolveSymlinks'] === 'boolean') {
+    next.toolPermissionResolveSymlinks = obj['toolPermissionResolveSymlinks'];
   }
   if (typeof obj['securityOversizedThresholdMb'] === 'number') {
     // Clamp 1–16 MB. Values outside the range fall back to the
