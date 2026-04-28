@@ -1300,7 +1300,83 @@ const BASH_RULES: BashRule[] = [
     severity: 'medium',
     regex: /osascript[^\n|]*Add to Login Items/gi,
   },
+  // Sprint 6 — env-var hijacking. stripWrappers() in matchers.ts removes
+  // VAR=value prefixes for permission-rule matching so legitimate flows like
+  // `FOO=bar npm test` still match `Bash(npm test)`. These detectors run on
+  // the original tool_use input (scanBash never sees the stripped form), so
+  // assignment of a known-dangerous variable always surfaces a finding even
+  // when the wrapped command itself was permitted.
+  {
+    id: 'env-var-hijack-high',
+    title: 'Hijack of high-risk environment variable',
+    reason:
+      'Setting variables like LD_PRELOAD, NODE_OPTIONS, or PYTHONPATH redirects libraries, ' +
+      'CA trust, or interpreter behavior for every subsequent invocation',
+    confidence: 0.9,
+    severity: 'high',
+    regex: buildEnvVarHijackRegex([
+      'LD_PRELOAD',
+      'LD_LIBRARY_PATH',
+      'LD_AUDIT',
+      'DYLD_INSERT_LIBRARIES',
+      'DYLD_LIBRARY_PATH',
+      'DYLD_FALLBACK_LIBRARY_PATH',
+      'NODE_OPTIONS',
+      'NODE_EXTRA_CA_CERTS',
+      'PYTHONPATH',
+      'PYTHONSTARTUP',
+      'PERL5LIB',
+      'PERL5OPT',
+      'RUBYOPT',
+      'RUBYLIB',
+      'GIT_SSH',
+      'GIT_SSH_COMMAND',
+      'DOCKER_HOST',
+      'KUBECONFIG',
+      'GOOGLE_APPLICATION_CREDENTIALS',
+    ]),
+  },
+  {
+    id: 'env-var-hijack-medium',
+    title: 'Hijack of network/path environment variable',
+    reason:
+      'Setting PATH, *_PROXY, AWS_*, or similar variables can redirect command resolution, ' +
+      'route traffic through an attacker proxy, or swap cloud-credential context',
+    // 0.85 is the floor that scanBash() preserves rule.severity at; at 0.8
+    // medium-severity rules get demoted to low regardless of context. The
+    // patterns are literal exact-name matches, not heuristic, so keeping the
+    // confidence at the floor is calibrated to intent. Context drops in
+    // quoted/comment/test strings still take the finding below 0.85 and
+    // produce a low-severity emission.
+    confidence: 0.85,
+    severity: 'medium',
+    regex: buildEnvVarHijackRegex([
+      'PYTHONHOME',
+      'HTTP_PROXY',
+      'HTTPS_PROXY',
+      'ALL_PROXY',
+      'NO_PROXY',
+      'PATH',
+      // AWS_* family: AWS_ACCESS_KEY_ID, AWS_PROFILE, AWS_DEFAULT_REGION, etc.
+      'AWS_[A-Z][A-Z0-9_]*',
+    ]),
+  },
 ];
+
+/** Build a regex that detects assignment of any name in `vars` across the
+ *  shell forms `export V=...`, `V=... cmd`, `env [V=v ...] V=... cmd`, and
+ *  `setenv V ...` (csh). Bare-name reads like `printenv V` are NOT matched
+ *  because the threat is mutation, not inspection. The leading
+ *  `(?:^|[\s;&|])` anchor prevents matches inside quoted strings or words
+ *  (e.g. `MYAPP_CONFIG_PATH=...` does not fire on the embedded `PATH`). */
+function buildEnvVarHijackRegex(vars: readonly string[]): RegExp {
+  const alternation = vars.join('|');
+  return new RegExp(
+    `(?:(?:^|[\\s;&|])(?:export\\s+|env\\s+(?:[A-Z_][A-Z0-9_]*=\\S*\\s+)*)?(?:${alternation})=` +
+      `|\\bsetenv\\s+(?:${alternation})\\b)`,
+    'g',
+  );
+}
 
 function scanBash(command: string, sourceHint: string | undefined): Finding[] {
   const findings: Finding[] = [];

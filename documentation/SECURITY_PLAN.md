@@ -66,7 +66,7 @@ Apply these in every sprint:
 | 3   | Secret detector expansion                    | ✅ done       | 2026-04-28 |           |
 | 4   | Persistence-mechanism rules                  | ✅ done       | 2026-04-28 |           |
 | 5   | Bash matcher edges and filesystem boundaries | ✅ done       | 2026-04-28 |           |
-| 6   | Environment-variable hardening               | ☐ not started |            |           |
+| 6   | Environment-variable hardening               | ✅ done       | 2026-04-28 |           |
 | 7   | Indirect prompt-injection scanning           | ☐ not started |            |           |
 | 8   | Audit log integrity and forensics            | ☐ not started |            |           |
 | 9   | UX, presets, observability                   | ☐ not started |            |           |
@@ -482,6 +482,8 @@ Detection patterns the detector must match:
 - `MYAPP_DEBUG=1 npm test` does NOT trigger.
 
 **Effort**: small.
+
+> **Sprint 6 follow-up note (2026-04-28)**: while implementing this sprint, the dual-fire acceptance for AWS keys turned out to require a pipeline change that's out of Sprint 6's scope. `scanToolUseBlocks` only runs `scanBash` on Bash input, and `scanRequestBody` skips `tool_use` blocks (it only descends into `text` and `tool_result`). So an AWS key embedded in a Bash `tool_use.input.command` reaches `env-var-hijack-medium` but not `aws-access-key`. To unlock the dual-fire, a future sprint should run `scanSecretsIn` on tool_use string inputs (Bash `command`, Edit `new_string`, Write `content` is already covered). Likely fits Sprint 3 expansion or a small surgical add in the secret-scanner pipeline.
 
 ---
 
