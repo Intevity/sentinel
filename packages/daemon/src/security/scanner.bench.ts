@@ -90,6 +90,7 @@ function benchSettings(overrides: Partial<Settings> = {}): Settings {
     cacheTtlForceOneHour: false,
     securitySetupCompleted: false,
     tourCompleted: false,
+    denyPrivateNetworkByDefault: false,
     ...overrides,
   };
 }

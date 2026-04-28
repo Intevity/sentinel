@@ -58,6 +58,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     cacheTtlForceOneHour: false,
     securitySetupCompleted: false,
     tourCompleted: false,
+    denyPrivateNetworkByDefault: false,
     ...overrides,
   };
 }

@@ -22,6 +22,8 @@ import {
   matchFallback,
   isPathTool,
   isWebTool,
+  isLinkLocalOrMetadata,
+  pickHost,
 } from './matchers.js';
 
 export interface EvaluationResult {
@@ -38,7 +40,16 @@ export interface EvaluatorSettingsView {
   toolPermissionDefaultAction: PermissionDecision;
   toolPermissionSkipInAutoMode: boolean;
   toolPermissionAutoModeActive: boolean;
+  /** When true, RFC-1918 ranges are added to the synthetic
+   *  network-egress default-deny set (link-local IPs, cloud-metadata
+   *  FQDNs, and localhost are always denied regardless). */
+  denyPrivateNetworkByDefault: boolean;
 }
+
+/** Stable id used by the synthetic network-egress default-deny.
+ *  Exported so audit / pending consumers can recognize a system-emitted
+ *  block versus a user rule. */
+export const SYNTHETIC_NETWORK_EGRESS_DENY_ID = '__sentinel/network-egress-default-deny__';
 
 /** Stably sorted view of rules, grouped by decision tier so hot-path
  *  evaluation doesn't re-sort on every tool call. */
@@ -195,6 +206,35 @@ export function evaluateToolCall(
   for (const rule of compiled.allows) {
     if (ruleMatches(rule, toolName, toolInput)) {
       return { decision: 'allow', matchedRule: rule, reason: `allowed by ${rule.raw}` };
+    }
+  }
+  // Synthetic network-egress default-deny. Sits between the user's
+  // allow tier (so an explicit `WebFetch(domain:internal-api.local)`
+  // allow can override) and the default-action fallback (so it
+  // applies even in default-allow mode, which is the whole point).
+  if (isWebTool(toolName)) {
+    const host = pickHost(toolInput);
+    if (host) {
+      const ne = isLinkLocalOrMetadata(host, settings.denyPrivateNetworkByDefault);
+      if (ne.match) {
+        const synthetic: PermissionRule = {
+          id: SYNTHETIC_NETWORK_EGRESS_DENY_ID,
+          decision: 'deny',
+          tool: toolName,
+          pattern: `domain:${host}`,
+          raw: `${SYNTHETIC_NETWORK_EGRESS_DENY_ID}(${host})`,
+          note: `Default-deny: ${ne.category}`,
+          enabled: true,
+          priority: 0,
+          createdAt: 0,
+          source: 'local',
+        };
+        return {
+          decision: 'deny',
+          matchedRule: synthetic,
+          reason: `denied by network-egress default (${ne.category})`,
+        };
+      }
     }
   }
   return {

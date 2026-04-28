@@ -306,6 +306,14 @@ export interface Settings {
    *  flips it off when they're done. */
   toolPermissionAutoModeActive: boolean;
 
+  /** When true, RFC-1918 private network ranges (10/8, 172.16/12,
+   *  192.168/16) are added to the always-on default-deny set for web
+   *  tools (alongside link-local 169.254/16, IPv6 link-local fe80::/10,
+   *  cloud-metadata FQDNs, and localhost). Off by default because users
+   *  legitimately fetch from intra-LAN dev servers; the High preset
+   *  flips it on. The deny is overridable by an explicit allow rule. */
+  denyPrivateNetworkByDefault: boolean;
+
   /** Size threshold (MB) above which the scanner takes its deferred
    *  path — the body is scanned off the proxy's hot path so the
    *  request isn't stalled by multi-MB JSON parsing. Raising this

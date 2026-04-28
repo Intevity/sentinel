@@ -118,6 +118,7 @@ function benchSettings(): Settings {
     cacheTtlForceOneHour: false,
     securitySetupCompleted: true,
     tourCompleted: true,
+    denyPrivateNetworkByDefault: false,
   };
 }
 

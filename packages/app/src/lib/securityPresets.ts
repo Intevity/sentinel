@@ -25,6 +25,7 @@ export type PresetSettingsPatch = Pick<
   | 'toolPermissionsEnabled'
   | 'toolPermissionDefaultAction'
   | 'toolPermissionSkipInAutoMode'
+  | 'denyPrivateNetworkByDefault'
 >;
 
 export interface Preset {
@@ -97,6 +98,31 @@ const SHARED_DENY_RULES: PresetRule[] = [
   { decision: 'deny', tool: 'WebFetch', pattern: 'domain:ngrok.io', note: 'Common exfil surface.' },
 ];
 
+// ─── Network egress denies (High preset) ─────────────────────────────────
+// Belt-and-suspenders alongside the synthetic default-deny in
+// matchers.ts: explicit rules surface in the rule list so the user can
+// see, audit, or disable them. The synthetic matcher is the broader net.
+const HIGH_NETWORK_DENY_RULES: PresetRule[] = [
+  {
+    decision: 'deny',
+    tool: 'WebFetch',
+    pattern: 'domain:169.254.169.254',
+    note: 'Cloud metadata IMDS.',
+  },
+  {
+    decision: 'deny',
+    tool: 'WebFetch',
+    pattern: 'domain:metadata.google.internal',
+    note: 'GCP metadata.',
+  },
+  {
+    decision: 'deny',
+    tool: 'WebFetch',
+    pattern: 'domain:metadata.googleapis.com',
+    note: 'GCP metadata.',
+  },
+];
+
 // ─── Allow list so High (default-deny) stays functional ───────────────────
 const HIGH_ALLOW_RULES: PresetRule[] = [
   { decision: 'allow', tool: 'Read', pattern: null, note: 'File reads.' },
@@ -156,6 +182,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       toolPermissionsEnabled: false,
       toolPermissionDefaultAction: 'allow' as PermissionDecision,
       toolPermissionSkipInAutoMode: true,
+      denyPrivateNetworkByDefault: false,
     },
     rules: [],
   },
@@ -180,6 +207,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       toolPermissionsEnabled: true,
       toolPermissionDefaultAction: 'allow' as PermissionDecision,
       toolPermissionSkipInAutoMode: true,
+      denyPrivateNetworkByDefault: false,
     },
     rules: [...SHARED_ASK_RULES, ...SHARED_DENY_RULES],
   },
@@ -192,6 +220,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       'Prompt-injection scanner enabled',
       'Default-deny permissions with an explicit allow list',
       'Auto-mode bypass disabled; Sentinel still enforces',
+      'Denies cloud-metadata and private network egress by default',
     ],
     settings: {
       securityScanEnabled: true,
@@ -205,8 +234,14 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       toolPermissionsEnabled: true,
       toolPermissionDefaultAction: 'deny' as PermissionDecision,
       toolPermissionSkipInAutoMode: false,
+      denyPrivateNetworkByDefault: true,
     },
-    rules: [...SHARED_ASK_RULES, ...SHARED_DENY_RULES, ...HIGH_ALLOW_RULES],
+    rules: [
+      ...SHARED_ASK_RULES,
+      ...SHARED_DENY_RULES,
+      ...HIGH_NETWORK_DENY_RULES,
+      ...HIGH_ALLOW_RULES,
+    ],
   },
 };
 

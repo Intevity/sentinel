@@ -687,6 +687,68 @@ const BASH_RULES: BashRule[] = [
     severity: 'high',
     regex: /\bchmod\s+(-R\s+)?0?777\s+\//g,
   },
+  {
+    id: 'dns-exfil',
+    title: 'DNS-tunneled exfiltration',
+    reason: 'dig/nslookup/host with a $(...)/${...} subshell label is a canonical DNS exfil shape',
+    confidence: 0.85,
+    severity: 'high',
+    regex: /\b(dig|nslookup|host)\s+\S*\$(\(|\{)[^)}]+(\)|\})\S*\.[a-z]{2,}/g,
+  },
+  {
+    id: 'netcat-egress',
+    title: 'Netcat egress connection',
+    reason: 'nc/ncat with a host and port is an outbound network channel often used to exfil data',
+    confidence: 0.9,
+    severity: 'high',
+    regex: /\b(nc|ncat)\s+(-[^\s]+\s+)*([a-z][a-z0-9.-]*\s+\d+|\d+\.\d+\.\d+\.\d+\s+\d+)\b/g,
+  },
+  {
+    id: 'ssh-tunnel',
+    title: 'SSH port forward',
+    reason: 'ssh -R/-L/-D opens a port forward, frequently used to tunnel egress around firewalls',
+    confidence: 0.8,
+    severity: 'medium',
+    // ssh has many no-arg flags (-N -f -T) and arg-bearing flags (-i, -p
+    // …), so a strict "flag-then-token" pattern misses real call shapes.
+    // Allow any non-newline run between `ssh` and the port-forward
+    // flag — the trailing `\s-[RLD]\s+\S+` is the diagnostic part.
+    regex: /\bssh\b[^\n|]*\s-[RLD]\s+\S+/g,
+  },
+  {
+    id: 'rsync-remote-egress',
+    title: 'rsync to remote host',
+    reason: 'rsync with a `host:path` destination ships local files to a remote endpoint',
+    confidence: 0.75,
+    severity: 'medium',
+    // Match `<token>:<path>` after rsync. Token allows word chars,
+    // `@` (user@host), `.`, `-` so `user@attacker.com:/uploads/` matches.
+    regex: /\brsync\b[^\n|]*\s[\w@.-]+:\S/g,
+  },
+  {
+    id: 'scp-egress',
+    title: 'scp/sftp to remote host',
+    reason: 'scp/sftp with a `host:path` destination ships local files to a remote endpoint',
+    confidence: 0.75,
+    severity: 'medium',
+    regex: /\b(scp|sftp)\b[^\n|]*\s[\w@.-]+:\S/g,
+  },
+  {
+    id: 'python-socket-inline',
+    title: 'Inline python -c with networking import',
+    reason: 'python -c "...import socket/urllib/http..." opens a network channel from one-liner',
+    confidence: 0.75,
+    severity: 'medium',
+    regex: /\bpython[23]?\s+-c\s+["'][^"']*import\s+(socket|urllib|requests|http|aiohttp)/g,
+  },
+  {
+    id: 'node-net-inline',
+    title: 'Inline node -e with networking require',
+    reason: 'node -e "...require(http/net/dgram)..." opens a network channel from one-liner',
+    confidence: 0.75,
+    severity: 'medium',
+    regex: /\bnode\s+-e\s+["'][^"']*require\(['"](http|https|net|dgram)['"]/g,
+  },
 ];
 
 function scanBash(command: string, sourceHint: string | undefined): Finding[] {

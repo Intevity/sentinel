@@ -509,6 +509,159 @@ export function matchWeb(pattern: string, input: unknown): boolean {
   return globToRegex(pattern, { pathMode: false }).test(url);
 }
 
+// ─── Network egress default-deny ────────────────────────────────────────────
+
+const METADATA_FQDNS: readonly string[] = ['metadata.google.internal', 'metadata.googleapis.com'];
+
+/** Parse a dotted-quad IPv4 string. Returns null if any octet is out of
+ *  range or the shape is wrong. Strict — does not accept octal/hex
+ *  forms (`0177.0.0.1`) since real shells / URL parsers normalize
+ *  those before this function sees them. */
+function parseIpv4(host: string): [number, number, number, number] | null {
+  const parts = host.split('.');
+  if (parts.length !== 4) return null;
+  const octets: number[] = [];
+  for (const p of parts) {
+    if (!/^[0-9]{1,3}$/.test(p)) return null;
+    const n = Number(p);
+    if (n < 0 || n > 255) return null;
+    octets.push(n);
+  }
+  return octets as [number, number, number, number];
+}
+
+function isIpv4LinkLocal(o: [number, number, number, number]): boolean {
+  return o[0] === 169 && o[1] === 254;
+}
+
+function isIpv4Loopback(o: [number, number, number, number]): boolean {
+  return o[0] === 127;
+}
+
+function isIpv4Unspecified(o: [number, number, number, number]): boolean {
+  return o[0] === 0 && o[1] === 0 && o[2] === 0 && o[3] === 0;
+}
+
+function isIpv4Rfc1918(o: [number, number, number, number]): boolean {
+  if (o[0] === 10) return true;
+  if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return true;
+  if (o[0] === 192 && o[1] === 168) return true;
+  return false;
+}
+
+/** Strip optional surrounding brackets (URL hostnames for IPv6 keep
+ *  them via WHATWG URL parsing in some forms). */
+function stripBrackets(host: string): string {
+  if (host.startsWith('[') && host.endsWith(']')) return host.slice(1, -1);
+  return host;
+}
+
+/** Result for `isLinkLocalOrMetadata`. `category` is a short label
+ *  recorded on the synthetic deny rule's `pattern` so audit rows
+ *  capture which sub-category triggered the block. */
+export interface NetworkEgressMatch {
+  match: boolean;
+  category: string | null;
+}
+
+/**
+ * Decide whether a host should be denied by the synthetic
+ * network-egress default-deny. Pure function; no DNS, no I/O.
+ *
+ * Always-on categories (independent of `includePrivateRanges`):
+ *   - 169.254.0.0/16            link-local IPv4 (incl. 169.254.169.254)
+ *   - fe80::/10                 link-local IPv6
+ *   - localhost / 127.0.0.0/8   loopback
+ *   - 0.0.0.0 / ::              unspecified
+ *   - ::1                       IPv6 loopback
+ *   - metadata.google.internal, metadata.googleapis.com
+ *   - *.compute.internal
+ *
+ * Gated on `includePrivateRanges` (RFC-1918):
+ *   - 10.0.0.0/8
+ *   - 172.16.0.0/12
+ *   - 192.168.0.0/16
+ *
+ * The returned `category` is one of: 'ipv4-link-local',
+ * 'ipv4-loopback', 'ipv4-unspecified', 'ipv4-rfc1918',
+ * 'ipv6-link-local', 'ipv6-loopback', 'ipv6-unspecified',
+ * 'ipv6-mapped-ipv4', 'localhost-name', 'cloud-metadata-fqdn',
+ * 'compute-internal-fqdn'.
+ */
+export function isLinkLocalOrMetadata(
+  host: string,
+  includePrivateRanges: boolean,
+): NetworkEgressMatch {
+  if (!host) return { match: false, category: null };
+  const lower = stripBrackets(host).toLowerCase();
+
+  // FQDN checks first — fast string matches with subdomain confusion guard.
+  if (lower === 'localhost' || lower.endsWith('.localhost')) {
+    return { match: true, category: 'localhost-name' };
+  }
+  for (const fqdn of METADATA_FQDNS) {
+    if (lower === fqdn || lower.endsWith('.' + fqdn)) {
+      return { match: true, category: 'cloud-metadata-fqdn' };
+    }
+  }
+  if (lower === 'compute.internal' || lower.endsWith('.compute.internal')) {
+    return { match: true, category: 'compute-internal-fqdn' };
+  }
+
+  // IPv4 literal.
+  const v4 = parseIpv4(lower);
+  if (v4) {
+    if (isIpv4LinkLocal(v4)) return { match: true, category: 'ipv4-link-local' };
+    if (isIpv4Loopback(v4)) return { match: true, category: 'ipv4-loopback' };
+    if (isIpv4Unspecified(v4)) return { match: true, category: 'ipv4-unspecified' };
+    if (includePrivateRanges && isIpv4Rfc1918(v4)) {
+      return { match: true, category: 'ipv4-rfc1918' };
+    }
+    return { match: false, category: null };
+  }
+
+  // IPv6 literal — WHATWG URL keeps IPv6 in lowercase, may be
+  // bracketed (already stripped above). Detect by presence of `:`
+  // which is illegal in any DNS hostname.
+  if (lower.includes(':')) {
+    // IPv4-mapped (`::ffff:1.2.3.4`) — extract trailing dotted-quad
+    // and recurse so 169.254.x.x stays caught even when wrapped.
+    const dotted = /(?:^|:)([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})$/.exec(lower);
+    if (dotted) {
+      const inner = parseIpv4(dotted[1]!);
+      if (inner) {
+        if (isIpv4LinkLocal(inner)) return { match: true, category: 'ipv6-mapped-ipv4' };
+        if (isIpv4Loopback(inner)) return { match: true, category: 'ipv6-mapped-ipv4' };
+        if (isIpv4Unspecified(inner)) return { match: true, category: 'ipv6-mapped-ipv4' };
+        if (includePrivateRanges && isIpv4Rfc1918(inner)) {
+          return { match: true, category: 'ipv6-mapped-ipv4' };
+        }
+      }
+    }
+    // ::1 IPv6 loopback (with or without leading zero compression).
+    if (lower === '::1') return { match: true, category: 'ipv6-loopback' };
+    // :: IPv6 unspecified.
+    if (lower === '::') return { match: true, category: 'ipv6-unspecified' };
+    // fe80::/10 link-local — first 10 bits are `1111111010`, so any
+    // address starting fe80–febf qualifies. The `:` after the prefix
+    // is required so `fe800:...` (a different /16) doesn't match.
+    if (/^fe[89ab][0-9a-f]?:/.test(lower)) {
+      return { match: true, category: 'ipv6-link-local' };
+    }
+  }
+
+  return { match: false, category: null };
+}
+
+/** Extract the host portion of a tool input's URL/query. Exposed
+ *  alongside `isLinkLocalOrMetadata` so the evaluator can chain them
+ *  without recreating WHATWG URL parsing. */
+export function pickHost(input: unknown): string | null {
+  const url = pickUrl(input);
+  if (!url) return null;
+  return extractDomain(url);
+}
+
 // ─── MCP ─────────────────────────────────────────────────────────────────────
 
 /** MCP tools follow the `mcp__<server>__<toolname>` naming convention. A rule

@@ -40,6 +40,7 @@ function settings(overrides: Partial<EvaluatorSettingsView> = {}): EvaluatorSett
     toolPermissionDefaultAction: 'allow',
     toolPermissionSkipInAutoMode: true,
     toolPermissionAutoModeActive: false,
+    denyPrivateNetworkByDefault: false,
     ...overrides,
   };
 }
