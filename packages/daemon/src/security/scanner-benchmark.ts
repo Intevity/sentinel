@@ -121,6 +121,10 @@ function benchSettings(): Settings {
     tourCompleted: true,
     denyPrivateNetworkByDefault: false,
     toolPermissionResolveSymlinks: false,
+    daemonHealthFailMode: 'warn',
+    securityWebhookUrl: null,
+    securityWebhookSecret: null,
+    securityWebhookSeverityFloor: 'high',
   };
 }
 

@@ -425,6 +425,25 @@ export interface Settings {
    *  is more invasive than recording detector findings alone. */
   securityIncidentReplay: boolean;
 
+  // ─── Sprint 9: health gate + webhook ───────────────────────────────
+  /** Behaviour when one of the daemon's critical components (DB,
+   *  scanner, enforcer) reports unhealthy. `'closed'` synthesizes a
+   *  503 to Claude Code so requests fail loudly while degraded;
+   *  `'open'` always forwards (explicit fail-open opt-in); `'warn'`
+   *  (default) logs a throttled degradation line but still forwards. */
+  daemonHealthFailMode: 'closed' | 'open' | 'warn';
+  /** Outbound webhook URL POSTed on every security event whose severity
+   *  reaches `securityWebhookSeverityFloor`. `null` disables. The
+   *  daemon validates the URL is `http(s):` on save. */
+  securityWebhookUrl: string | null;
+  /** When set, every webhook POST carries an
+   *  `X-Sentinel-Signature: sha256=<hex>` header computed as
+   *  HMAC-SHA256(secret, body). Empty/null disables signing. */
+  securityWebhookSecret: string | null;
+  /** Severity floor for the webhook emitter. Events strictly below
+   *  this level are skipped. Default `'high'`. */
+  securityWebhookSeverityFloor: 'low' | 'medium' | 'high';
+
   // ─── Onboarding state ──────────────────────────────────────────────
   /** True once the user has either applied a risk-profile preset in the
    *  Security Setup Wizard or explicitly dismissed it. The wizard fires
@@ -626,6 +645,28 @@ export interface PendingSecurityBlock {
    *  `permissions_strip` path has no specific input, and `scanner`
    *  blocks have no toolInput, so the field is absent for both. */
   toolInputFields?: Record<string, string>;
+  /** Sprint 9: where the matched permission rule came from, surfaced in
+   *  the banner so the user can tell "I added this last week" from "the
+   *  Medium preset added this for me". Present only for permission
+   *  blocks with a real DB-backed rule (permissions_tool_use,
+   *  permissions_strip); scanner blocks and synthetic rules omit it. */
+  provenance?: {
+    /** Unix ms — `permission_rules.created_at`. */
+    createdAt: number;
+    /** Mirrors `permission_rules.source` so the banner can render
+     *  "added by you" vs "imported from Claude Code". */
+    source: 'local' | 'claude-code';
+    /** FK to `permission_rules.id`. Lets the rule-editor "Edit rule"
+     *  jump scroll into the matching row. */
+    ruleId: string;
+  };
+  /** Sprint 9: count of approves the user has issued for this exact
+   *  pattern in this session within the last 5 minutes. When ≥ 5 the
+   *  banner surfaces a "consider editing the rule" pill so the user
+   *  isn't grinding through repeated prompts. Absent when the daemon
+   *  cannot attribute the request to a session (no parseable
+   *  metadata.user_id). */
+  recentApproveCount?: number;
 }
 
 /** Per-field character cap for {@link PendingSecurityBlock.toolInputFields}.
@@ -800,6 +841,12 @@ export interface PermissionRule {
   /** Origin. Drives the bi-directional Claude Code sync reconciliation.
    *  Defaults to 'local' for hand-authored rules. */
   source: PermissionRuleSource;
+  /** Sprint 9 per-project rule scoping. Path glob (e.g.
+   *  `~/work/prod/**`) the request's working directory must match for
+   *  this rule to fire. `null` = global (matches every cwd; legacy
+   *  default). When the daemon cannot extract a cwd from the request,
+   *  scoped rules are skipped — the rule editor's UI explains this. */
+  projectScope: string | null;
 }
 
 /** Input shape for upsert_permission_rule. Omit `id` to create a new rule. */
@@ -815,6 +862,8 @@ export interface PermissionRuleInput {
   /** Defaults to 'local' when omitted. The sync engine passes
    *  'claude-code' when importing from settings.json. */
   source?: PermissionRuleSource;
+  /** Optional path glob; `null` means global. */
+  projectScope?: string | null;
 }
 
 /**

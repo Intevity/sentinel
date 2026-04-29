@@ -66,19 +66,35 @@ export default function PendingBlockBanner(): React.ReactElement | null {
 interface PendingRowProps {
   entry: PendingSecurityBlock;
   remaining: number;
-  onApprove: (opts?: { addBypass?: boolean }) => void | Promise<void>;
+  onApprove: (opts?: { mode?: 'once' | 'session' | 'always' }) => void | Promise<void>;
   onDeny: () => void | Promise<void>;
+}
+
+type ApproveMode = 'once' | 'session' | 'always';
+
+function formatProvenance(createdAt: number, source: 'local' | 'claude-code'): string {
+  const ageMs = Date.now() - createdAt;
+  const minutes = Math.floor(ageMs / 60_000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  let when: string;
+  if (days >= 1) when = days === 1 ? '1 day ago' : `${days} days ago`;
+  else if (hours >= 1) when = hours === 1 ? '1 hour ago' : `${hours} hours ago`;
+  else if (minutes >= 1) when = minutes === 1 ? '1 minute ago' : `${minutes} minutes ago`;
+  else when = 'just now';
+  const origin = source === 'claude-code' ? 'via Claude Code' : 'by you';
+  return `Rule added ${when} ${origin}`;
 }
 
 function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): React.ReactElement {
   const [busy, setBusy] = useState<null | 'approve' | 'deny'>(null);
-  // Only the tool_use permission path has a hashable input; the
-  // scanner variant has its own implicit allowlist-on-approve, and
-  // `permissions_strip` doesn't see tool inputs (the tool
-  // advertisement is what's being blocked, not a specific call).
-  // Default off — explicit user opt-in.
-  const canBypass = entry.source === 'permissions_tool_use';
-  const [addBypass, setAddBypass] = useState(false);
+  // Sprint 9: only the tool_use permission path supports the durable
+  // "session" / "always" modes — the scanner variant has its own
+  // implicit allowlist-on-approve path, and `permissions_strip`
+  // doesn't have a stable per-input key. The radio is hidden for
+  // those sources; the approve button still works as a one-shot.
+  const canPickMode = entry.source === 'permissions_tool_use';
+  const [mode, setMode] = useState<ApproveMode>('once');
   const Icon = SEVERITY_ICON[entry.severity];
 
   const handleDeny = async (): Promise<void> => {
@@ -92,7 +108,7 @@ function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): R
   const handleApprove = async (): Promise<void> => {
     setBusy('approve');
     try {
-      await onApprove(canBypass && addBypass ? { addBypass: true } : undefined);
+      await onApprove(canPickMode ? { mode } : undefined);
     } finally {
       setBusy(null);
     }
@@ -117,10 +133,23 @@ function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): R
             </span>
           </div>
           <p className="text-[11px] text-[#8E8E93] mt-0.5 leading-snug">
-            {canBypass
+            {canPickMode
               ? 'Approve to forward this call. Deny to refuse it. Approval expires automatically.'
               : 'Approve to forward this request and allow this match in the future. Deny to refuse it now. Approval expires automatically.'}
           </p>
+          {entry.provenance && (
+            <p className="text-[10px] text-[#8E8E93]/80 mt-1 leading-snug italic">
+              {formatProvenance(entry.provenance.createdAt, entry.provenance.source)}
+            </p>
+          )}
+          {entry.recentApproveCount !== undefined && entry.recentApproveCount >= 5 && (
+            <div className="mt-1.5 flex items-start gap-1.5 rounded-md bg-ios-orange/10 border border-ios-orange/20 px-2 py-1 text-[10px] text-ios-orange">
+              <span className="font-semibold">
+                Approved {entry.recentApproveCount} times in the last 5 minutes:
+              </span>
+              <span className="text-ios-orange/90">consider editing the rule in Settings.</span>
+            </div>
+          )}
           {entry.matchMask && (
             <code className="inline-block mt-1.5 text-[10px] font-mono bg-black/5 dark:bg-white/10 px-1.5 py-0.5 rounded">
               {entry.matchMask}
@@ -154,17 +183,42 @@ function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): R
           <X size={12} strokeWidth={2.5} />
         </button>
       </div>
-      {canBypass && (
-        <label className="mt-2 flex items-center gap-1.5 text-[11px] text-black/75 dark:text-white/75 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={addBypass}
-            onChange={(e) => setAddBypass(e.target.checked)}
-            disabled={busy !== null}
-            className="accent-ios-blue"
-          />
-          <span>Always allow this exact input (skip banner next time)</span>
-        </label>
+      {canPickMode && (
+        <fieldset
+          className="mt-2 flex items-center gap-1 text-[11px] text-black/75 dark:text-white/75"
+          aria-label="Approval scope"
+        >
+          {(['once', 'session', 'always'] as const).map((m) => (
+            <label
+              key={m}
+              className={`flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded-md cursor-pointer select-none border transition-colors ${
+                mode === m
+                  ? 'bg-ios-blue/10 border-ios-blue text-ios-blue'
+                  : 'border-transparent bg-black/[0.03] dark:bg-white/[0.05] hover:border-black/10 dark:hover:border-white/15'
+              }`}
+              title={
+                m === 'once'
+                  ? 'Approve only this single call'
+                  : m === 'session'
+                    ? 'Approve every matching call in this Claude Code session for the next 12 hours'
+                    : 'Approve and add a permanent bypass so future identical inputs skip the banner'
+              }
+            >
+              <input
+                type="radio"
+                name={`approve-mode-${entry.pendingId}`}
+                value={m}
+                checked={mode === m}
+                onChange={() => setMode(m)}
+                disabled={busy !== null}
+                className="sr-only"
+              />
+              <span className="font-medium capitalize">
+                {m === 'once' ? 'Once' : m === 'session' ? 'For session' : 'Always'}
+              </span>
+            </label>
+          ))}
+        </fieldset>
       )}
       <div className="flex items-center justify-end gap-2 mt-3">
         <button
@@ -181,13 +235,17 @@ function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): R
           disabled={busy !== null}
           className="flex items-center gap-1 text-[12px] font-semibold px-3 py-1.5 rounded-full bg-ios-blue text-white hover:bg-ios-blue/90 active:scale-95 transition-all disabled:opacity-40"
           title={
-            canBypass && addBypass
-              ? 'Approve this call and add a bypass so future identical calls skip the banner'
+            canPickMode
+              ? mode === 'always'
+                ? 'Approve and add a permanent bypass'
+                : mode === 'session'
+                  ? 'Approve for this session (12h)'
+                  : 'Approve only this call'
               : 'Approve: forward upstream'
           }
         >
           <ShieldCheck size={13} strokeWidth={2.5} />
-          {busy === 'approve' ? 'Approving…' : canBypass ? 'Approve' : 'Approve & allow'}
+          {busy === 'approve' ? 'Approving…' : canPickMode ? 'Approve' : 'Approve & allow'}
         </button>
       </div>
     </div>

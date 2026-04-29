@@ -149,7 +149,30 @@ interface ProxyOptions {
    *  use the freshly-refreshed token. Dedup of in-flight refreshes is the
    *  callback's responsibility. */
   onUpstreamAuthFailure?: (accountId: string) => void;
+  /** Sprint 9 health probe. Returns the per-component status of the
+   *  daemon's critical subsystems (DB, scanner, enforcer). Used by
+   *  `/health` to respond 503 when any component is degraded and by
+   *  the proxy's `daemonHealthFailMode === 'closed'` short-circuit to
+   *  refuse to forward requests. */
+  getHealth?: () => DaemonHealthSnapshot;
+  /** Live accessor for the user's `daemonHealthFailMode` setting.
+   *  When `'closed'`, any unhealthy component synthesizes a 503 to
+   *  Claude Code; when `'open'`, the proxy forwards anyway; the
+   *  default `'warn'` logs but forwards. Returning undefined or no
+   *  function disables the gate entirely (legacy behaviour). */
+  getSettings?: () => { daemonHealthFailMode: 'closed' | 'open' | 'warn' };
 }
+
+/** Per-component health snapshot returned by `getHealth()`. Each
+ *  field is either the literal `'ok'` or an arbitrary failure
+ *  detail string. */
+export interface DaemonHealthSnapshot {
+  db: 'ok' | string;
+  scanner: 'ok' | string;
+  enforcer: 'ok' | string;
+}
+
+const HEALTH_LOG_THROTTLE_MS = 60_000;
 
 /** Mutable capture state threaded through a single request's lifecycle.
  *  Built when capture is enabled, populated phase by phase, and handed to
@@ -501,15 +524,75 @@ export function createProxyServer(
     );
   };
 
+  // Sprint 9: throttle the warn-mode log so a degraded subsystem doesn't
+  // flood daemon.log on every request. Per-component last-logged stamp.
+  const lastDegradeLogAt: Record<keyof DaemonHealthSnapshot, number> = {
+    db: 0,
+    scanner: 0,
+    enforcer: 0,
+  };
+
+  const evaluateHealth = (): {
+    healthy: boolean;
+    snapshot: DaemonHealthSnapshot;
+  } => {
+    if (!opts.getHealth) {
+      return { healthy: true, snapshot: { db: 'ok', scanner: 'ok', enforcer: 'ok' } };
+    }
+    const snapshot = opts.getHealth();
+    const healthy = snapshot.db === 'ok' && snapshot.scanner === 'ok' && snapshot.enforcer === 'ok';
+    return { healthy, snapshot };
+  };
+
   const server = createServer((req, res) => {
     /* v8 ignore next 1 */
     const url = req.url ?? '/';
 
     // Health check
     if (url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', pid: process.pid }));
+      const { healthy, snapshot } = evaluateHealth();
+      const status = healthy ? 200 : 503;
+      const body = {
+        status: healthy ? 'ok' : 'degraded',
+        pid: process.pid,
+        components: snapshot,
+      };
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
       return;
+    }
+
+    // Sprint 9 fail-mode gate. Only consults health when the user wired
+    // a probe in; legacy paths (no `getHealth`) skip this entirely so
+    // existing tests don't change behaviour.
+    if (opts.getHealth) {
+      const { healthy, snapshot } = evaluateHealth();
+      if (!healthy) {
+        // `?? 'warn'` is the no-getSettings-wired fallback; in production
+        // index.ts always wires both, so this default is reached only by
+        // a partial-wiring test path that we don't exercise.
+        /* v8 ignore next 1 */
+        const failMode = opts.getSettings?.().daemonHealthFailMode ?? 'warn';
+        // Throttled warn line for any failed component, regardless of
+        // mode. Keeps operators informed without flooding the log.
+        const now = Date.now();
+        for (const k of Object.keys(snapshot) as Array<keyof DaemonHealthSnapshot>) {
+          if (snapshot[k] !== 'ok' && now - lastDegradeLogAt[k] >= HEALTH_LOG_THROTTLE_MS) {
+            console.warn(`[Health] degraded: ${k}=${snapshot[k]}`);
+            lastDegradeLogAt[k] = now;
+          }
+        }
+        if (failMode === 'closed') {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              error: 'sentinel daemon degraded; refusing to forward',
+              components: snapshot,
+            }),
+          );
+          return;
+        }
+      }
     }
 
     if (OTEL_PATHS.some((p) => url.startsWith(p)) && req.method === 'POST') {
@@ -1166,7 +1249,7 @@ async function proxyToAnthropic(
       // at the request layer (accept-encoding was stripped).
       const isSse = !encoding && req.url?.startsWith('/v1/messages') && req.method === 'POST';
       const interceptor = isSse
-        ? (permissionsEnforcer?.createInterceptor(res, currentRlKey, req.headers) ?? null)
+        ? (permissionsEnforcer?.createInterceptor(res, currentRlKey, req.headers, body) ?? null)
         : null;
 
       const captureChunk = (chunk: Buffer): void => {

@@ -21,6 +21,7 @@ function rule(overrides: Partial<PermissionRule>): PermissionRule {
     priority: overrides.priority ?? 100,
     createdAt: overrides.createdAt ?? 0,
     source: overrides.source ?? 'local',
+    projectScope: overrides.projectScope ?? null,
   };
 }
 

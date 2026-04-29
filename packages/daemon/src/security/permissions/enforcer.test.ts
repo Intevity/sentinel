@@ -70,6 +70,10 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     tourCompleted: false,
     denyPrivateNetworkByDefault: false,
     toolPermissionResolveSymlinks: false,
+    daemonHealthFailMode: 'warn',
+    securityWebhookUrl: null,
+    securityWebhookSecret: null,
+    securityWebhookSeverityFloor: 'high',
     ...overrides,
   };
 }

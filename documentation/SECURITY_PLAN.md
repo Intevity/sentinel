@@ -69,7 +69,7 @@ Apply these in every sprint:
 | 6   | Environment-variable hardening               | ✅ done       | 2026-04-28 |           |
 | 7   | Indirect prompt-injection scanning           | ✅ done       | 2026-04-28 |           |
 | 8   | Audit log integrity and forensics            | ✅ done       | 2026-04-28 |           |
-| 9   | UX, presets, observability                   | ☐ not started |            |           |
+| 9   | UX, presets, observability                   | ✅ done       | 2026-04-28 |           |
 | 10  | Resource limits and race-condition pinning   | ☐ not started |            |           |
 
 Sprint dependencies are mostly forward: a later sprint can reference earlier work, but each is shippable on its own. The recommended execution order is the numbering. Sprints 3 and 4 are both purely additive and could run in parallel if you have two agent sessions.

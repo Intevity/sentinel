@@ -31,6 +31,11 @@ import {
   insertNotification,
   addPermissionBypass,
   isPermissionBypassed,
+  insertSessionGrant,
+  findSessionGrant,
+  pruneExpiredSessionGrants,
+  recordApprovalEvent,
+  countRecentApprovals,
 } from '../../db.js';
 import { redactSecretsInValue } from '../detectors.js';
 import { hashText } from '../redact.js';
@@ -38,6 +43,7 @@ import {
   compileRules,
   findWholeToolDeny,
   hashCanonicalToolInput,
+  ruleKey,
   type CompiledRuleSet,
   type EvaluatorSettingsView,
 } from './evaluator.js';
@@ -112,23 +118,36 @@ export interface PermissionsEnforcer {
   /** Install an interceptor on the response stream. Returns null when the
    *  feature is disabled or auto-mode-skipped — caller should pipe raw.
    *  When hold is enabled the interceptor awaits the user's decision
-   *  for each denied tool_use before substituting. */
+   *  for each denied tool_use before substituting.
+   *
+   *  Sprint 9: pass the original request body so the enforcer can
+   *  extract the cwd (and session_id) and thread them into the
+   *  evaluator. Optional for backwards compatibility — without a body
+   *  scoped rules act as if cwd is unknown (= scoped rules skip). */
   createInterceptor(
     res: ServerResponse,
     accountId: string,
     headers?: IncomingHttpHeaders,
+    body?: Buffer,
   ): PermissionsSseInterceptor | null;
   /** Resolve a pending permission block from the UI (approve or deny).
    *  Returns true when the id belonged to this registry and was
    *  applied, false otherwise. The IPC layer calls this AND the
    *  scanner's `resolvePending` so either registry can own the id.
-   *  `opts.addBypass` — tick-in from the banner checkbox — requests a
-   *  permission_bypass row be written for the approved tool_use so
-   *  subsequent identical inputs skip the banner. No-op on deny. */
+   *
+   *  Sprint 9: `opts.mode` controls how durable the approval is.
+   *    - 'once'     — default; just resolve.
+   *    - 'session'  — write a session_approval_grants row keyed by the
+   *                   request's session_id so future matching tool_uses
+   *                   in the same session skip the banner.
+   *    - 'always'   — equivalent to legacy `addBypass: true`; insert a
+   *                   permission_bypass row.
+   *  Backwards compatibility: when `mode` is omitted, `opts.addBypass`
+   *  is honored as before. */
   resolvePending(
     pendingId: string,
     outcome: 'approve' | 'deny',
-    opts?: { addBypass?: boolean },
+    opts?: { addBypass?: boolean; mode?: 'once' | 'session' | 'always' },
   ): boolean;
   /** Snapshot of every outstanding permission pending block. Merged
    *  with the scanner's list at the IPC layer. */
@@ -136,6 +155,10 @@ export interface PermissionsEnforcer {
   /** Force a cache rebuild after a rule mutation (create / update / delete).
    *  IPC handlers call this after upserting a rule. */
   invalidate(): void;
+  /** Sprint 9: distinct working directories observed across recent
+   *  sessions, deduped, most-recent first. Powers the rule editor's
+   *  project_scope autocomplete. Bounded to 20 entries. */
+  getRecentCwds(): string[];
   /** Expose the compiled rule set to the IPC layer so list_permission_rules
    *  can return it without a second DB hit on the hot path. */
   listRules(): PermissionRule[];
@@ -223,6 +246,45 @@ export function extractSessionInfo(
   }
 }
 
+/**
+ * Sprint 9 — pull the request's working directory out of the system
+ * prompt. Claude Code embeds an `<env>` block (or a `Working
+ * directory:` line in the system text) on every /v1/messages request.
+ * `metadata.user_id` does NOT carry cwd despite what one earlier draft
+ * of the spec assumed; the system prompt is the only reliable source
+ * Sentinel can see from the proxy layer.
+ *
+ * The system field can be a plain string OR an array of `{type:'text',
+ * text:string}` blocks. We walk both forms, scan for the first
+ * `Working directory:` line, and return the trimmed path. Returns
+ * `null` when the body is malformed or the env block is absent.
+ */
+export function extractCwd(body: Buffer): string | null {
+  try {
+    const obj = JSON.parse(body.toString('utf-8')) as Record<string, unknown>;
+    const system = obj['system'];
+    const cwdRegex = /Working directory:\s*(\S.*?)(?:\n|$)/;
+    const tryText = (text: string): string | null => {
+      const m = cwdRegex.exec(text);
+      if (!m || !m[1]) return null;
+      return m[1].trim();
+    };
+    if (typeof system === 'string') return tryText(system);
+    if (Array.isArray(system)) {
+      for (const block of system) {
+        if (!block || typeof block !== 'object') continue;
+        const text = (block as Record<string, unknown>)['text'];
+        if (typeof text !== 'string') continue;
+        const found = tryText(text);
+        if (found) return found;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 const execAsync = promisify(exec);
 
 /**
@@ -297,6 +359,23 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
   // only emit `permissions_status` on edges (activate/deactivate/count-
   // change) rather than per request.
   const sessions = new Map<string, ActiveClaudeSession>();
+  // Sprint 9: per-session cwd cache. Stable across the session's
+  // lifetime (Claude Code's cwd doesn't change mid-session). Keyed by
+  // session_id so the rule editor's recent-cwd autocomplete and the
+  // evaluator's project_scope check can share one source of truth.
+  // Bounded by the auto-mode session map's pruning logic — when the
+  // session is dropped, this entry is dropped too.
+  const sessionCwds = new Map<string, string>();
+  // Recent-cwd ring for the rule editor's autocomplete dropdown.
+  // Most-recent first; deduplicated; capped at 20.
+  const recentCwds: string[] = [];
+  const recordRecentCwd = (cwd: string): void => {
+    const idx = recentCwds.indexOf(cwd);
+    if (idx === 0) return; // already at the front
+    if (idx > 0) recentCwds.splice(idx, 1);
+    recentCwds.unshift(cwd);
+    if (recentCwds.length > 20) recentCwds.length = 20;
+  };
   let lastHeaderDetectedAt: number | null = null;
   let deactivateTimer: ReturnType<typeof setTimeout> | null = null;
   let processPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -679,20 +758,16 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
         direction: entry.source === 'permissions_strip' ? 'outbound' : 'tool_use',
         outcome,
       });
-      // "Always allow this exact input" side-effect. Only meaningful
-      // for tool_use approves: we have a concrete parsed toolInput to
-      // hash. The strip path doesn't have inputs (tool advertisement,
-      // not a call), and scanner pending blocks use their own
-      // security_allowlist path. Silent no-op if the conditions aren't
-      // all met — the IPC layer leaves it to us to decide whether a
-      // checkbox tick was actually applicable.
-      if (
-        outcome === 'approve' &&
-        opts?.addBypass === true &&
-        entry.source === 'permissions_tool_use' &&
-        toolInput !== null
-      ) {
-        try {
+      // Sprint 9: durable approval-mode dispatch.
+      //   'always' (or legacy addBypass: true) — insert permission_bypass.
+      //   'session' — insert session_approval_grants (12h TTL).
+      //   'once' / undefined — no-op beyond the resolve.
+      // Also record an approval_events row regardless of mode so the
+      // banner's "approved 5 times in 5min" pill has a stable feed.
+      if (outcome === 'approve') {
+        const wantsAlways =
+          opts?.mode === 'always' || (opts?.addBypass === true && opts?.mode === undefined);
+        if (wantsAlways && entry.source === 'permissions_tool_use' && toolInput !== null) {
           const inputHash = hashCanonicalToolInput(entry.toolName, toolInput);
           const mask = summarizeToolInput(
             entry.toolName,
@@ -708,12 +783,42 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
             note: 'Added via banner approve',
           });
           deps.ipcServer.broadcast({ type: 'permission_bypasses_updated' });
-        } catch (err) {
-          console.error('[Permissions] addPermissionBypass failed:', err);
+        }
+        // The pending registry's outer onFinalized invocation is
+        // already try/caught (pending.ts:resolvePending) so a DB
+        // write throwing here surfaces as an `[Permissions] onFinalized
+        // failed` log line rather than crashing the proxy. We don't
+        // double-wrap — that just adds a defensive branch that v8
+        // marks as uncovered without changing real behaviour.
+        if (opts?.mode === 'session' && entry.sessionId) {
+          const nowMs = Date.now();
+          insertSessionGrant(deps.db, {
+            sessionId: entry.sessionId,
+            ruleKey: ruleKey(entry.matchedRule),
+            nowMs,
+            // 12h is long enough that an active workday session won't
+            // re-prompt, short enough that a stale grant doesn't
+            // outlive the session in practice.
+            expiresAtMs: nowMs + 12 * 60 * 60 * 1000,
+          });
+        }
+        if (entry.sessionId) {
+          recordApprovalEvent(deps.db, {
+            sessionId: entry.sessionId,
+            ruleKey: ruleKey(entry.matchedRule),
+            approvedAtMs: Date.now(),
+          });
         }
       }
     },
   });
+
+  // Sprint 9: prune expired grants at startup so a daemon restart
+  // doesn't leave stale rows lingering for the index lookup. The
+  // table is created in SCHEMA so this is a single SQLite call
+  // against a known-good schema; we let exceptions propagate to the
+  // existing daemon-startup guard instead of double-wrapping.
+  pruneExpiredSessionGrants(deps.db, Date.now());
 
   // Evaluator callback threaded into the SSE interceptor. Kept as a
   // direct DB call rather than caching — bypass lookups are rare (only
@@ -747,6 +852,18 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
     const obj = parsed as Record<string, unknown>;
     const tools = obj['tools'];
     if (!Array.isArray(tools) || tools.length === 0) return body;
+    // Sprint 9: extract cwd + session_id once per request and cache the
+    // cwd against the session so other code paths (the SSE interceptor
+    // for the same request, the rule editor's recent-cwd list) can
+    // share one source of truth.
+    const sessionInfo = extractSessionInfo(body);
+    const cwd = extractCwd(body);
+    if (sessionInfo && cwd) {
+      sessionCwds.set(sessionInfo.sessionId, cwd);
+      recordRecentCwd(cwd);
+    }
+    const sessionId = sessionInfo?.sessionId ?? null;
+    const effectiveCwd = cwd ?? (sessionId ? (sessionCwds.get(sessionId) ?? null) : null);
     const { compiled } = getCompiled();
     const kept: unknown[] = [];
     const stripped: Array<{ toolName: string; rule: PermissionRule }> = [];
@@ -760,7 +877,12 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
         kept.push(tool);
         continue;
       }
-      const rule = findWholeToolDeny(name, compiled, settingsView(deps.getSettings()));
+      const rule = findWholeToolDeny(
+        name,
+        compiled,
+        settingsView(deps.getSettings()),
+        effectiveCwd,
+      );
       if (rule) {
         stripped.push({ toolName: name, rule });
       } else {
@@ -797,11 +919,37 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
     // Guard: `stripped.length === 0` is handled above, so `stripped[0]`
     // is always defined here.
     const first = stripped[0]!;
+    // Sprint 9: a prior "Approve for session" grant short-circuits the
+    // banner entirely. We treat the strip path the same as tool_use:
+    // a session grant for the rule means the tool advertisement is
+    // forwarded as-is for the rest of the session.
+    const stripRuleKey = ruleKey(first.rule);
+    const nowMs = Date.now();
+    if (sessionId && findSessionGrant(deps.db, { sessionId, ruleKey: stripRuleKey, nowMs })) {
+      console.log(
+        `[Permissions] session grant honored for ${first.rule.raw} — forwarding tools intact`,
+      );
+      return body;
+    }
+    const recentApproveCount = sessionId
+      ? countRecentApprovals(deps.db, {
+          sessionId,
+          ruleKey: stripRuleKey,
+          sinceMs: nowMs - 5 * 60 * 1000,
+        })
+      : 0;
     const pendingId = pendingRegistry.beginPending({
       accountId,
       toolName: first.toolName,
       matchedRule: first.rule,
       source: 'permissions_strip',
+      provenance: {
+        createdAt: first.rule.createdAt,
+        source: first.rule.source,
+        ruleId: first.rule.id,
+      },
+      recentApproveCount,
+      sessionId,
     });
     const outcome = await pendingRegistry.awaitPendingResolution(pendingId);
     if (outcome === 'approve') {
@@ -839,9 +987,21 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
     res: ServerResponse,
     accountId: string,
     headers?: IncomingHttpHeaders,
+    body?: Buffer,
   ): PermissionsSseInterceptor | null => {
     if (!isEnabled() || isSkippedForAutoMode(headers)) return null;
     const { rules } = getCompiled();
+    // Sprint 9: extract cwd + session_id once for this response and
+    // close over them so the awaitDecision hook can consult session
+    // grants + provenance + recentApproveCount without re-parsing.
+    const sessionInfo = body ? extractSessionInfo(body) : null;
+    const cwdNow = body ? extractCwd(body) : null;
+    if (sessionInfo && cwdNow) {
+      sessionCwds.set(sessionInfo.sessionId, cwdNow);
+      recordRecentCwd(cwdNow);
+    }
+    const sessionId = sessionInfo?.sessionId ?? null;
+    const interceptorCwd = cwdNow ?? (sessionId ? (sessionCwds.get(sessionId) ?? null) : null);
     // Async decision gate — when hold is enabled and a tool_use
     // matches a deny rule, the interceptor pauses processing,
     // opens a pending block, and awaits the user's decision. On
@@ -855,6 +1015,7 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
       rules,
       settings: settingsView(deps.getSettings()),
       accountId,
+      cwd: interceptorCwd,
       // When a deny rule matches but this (rule, input) pair was
       // previously approved with "Always allow this exact input", the
       // evaluator flips the decision to 'allow' before the
@@ -893,6 +1054,17 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
         matchedRule,
         accountId: acc,
       }) => {
+        // Sprint 9: a session-scoped grant short-circuits the banner
+        // entirely — the user already approved this rule for the
+        // session, so flush the tool_use through.
+        const rkey = ruleKey(matchedRule);
+        const nowMs = Date.now();
+        if (sessionId && findSessionGrant(deps.db, { sessionId, ruleKey: rkey, nowMs })) {
+          console.log(
+            `[Permissions] session grant honored for ${matchedRule.raw} — flushing tool_use`,
+          );
+          return 'approve';
+        }
         // Build the IPC-bound field map up-front: extract recognised
         // scalars, truncate per-field so a 50KB pasted prompt can't
         // bloat the broadcast. extractToolInputFields returns {} for
@@ -901,11 +1073,25 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
         const truncatedFields = truncateToolInputFields(
           extractToolInputFields(toolName, toolInput),
         );
+        const recentCount = sessionId
+          ? countRecentApprovals(deps.db, {
+              sessionId,
+              ruleKey: rkey,
+              sinceMs: nowMs - 5 * 60 * 1000,
+            })
+          : 0;
         const beginArgs: Parameters<typeof pendingRegistry.beginPending>[0] = {
           accountId: acc,
           toolName,
           matchedRule,
           source: 'permissions_tool_use',
+          provenance: {
+            createdAt: matchedRule.createdAt,
+            source: matchedRule.source,
+            ruleId: matchedRule.id,
+          },
+          recentApproveCount: recentCount,
+          sessionId,
         };
         if (Object.keys(truncatedFields).length > 0) {
           beginArgs.toolInputFields = truncatedFields;
@@ -928,10 +1114,12 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
   const resolvePending = (
     pendingId: string,
     outcome: 'approve' | 'deny',
-    opts?: { addBypass?: boolean },
+    opts?: { addBypass?: boolean; mode?: 'once' | 'session' | 'always' },
   ): boolean => pendingRegistry.resolvePending(pendingId, outcome, opts);
 
   const listPending = (): PendingSecurityBlock[] => pendingRegistry.listPending();
+
+  const getRecentCwds = (): string[] => recentCwds.slice();
 
   const listRules = (): PermissionRule[] => getCompiled().rules;
 
@@ -953,6 +1141,7 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
       priority: 0,
       createdAt: now,
       source: 'local',
+      projectScope: null,
     };
     const syntheticInput =
       scenario === 'permissions-tool-use-block' || scenario === 'permissions-tool-use-pending'
@@ -996,6 +1185,7 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
     resolvePending,
     listPending,
     invalidate,
+    getRecentCwds,
     listRules,
     getAutoModeStatus,
     shutdown,

@@ -8,11 +8,18 @@ interface UsePendingBlocksResult {
   error: string | null;
   /** Approve a held block. Adds the match to the allowlist, releases
    *  the held request upstream, and clears the banner.
-   *  `opts.addBypass` — only meaningful for `permissions_tool_use`
-   *  blocks — writes a `permission_bypass` row so subsequent
-   *  identical calls short-circuit the rule. Ignored for scanner
-   *  blocks and for permission strip blocks (no tool input to hash). */
-  approve: (pendingId: string, opts?: { addBypass?: boolean }) => Promise<void>;
+   *  Sprint 9: `mode` picks how durable the approval is.
+   *    - 'once'    (default) — resolve only this call.
+   *    - 'session' — also write a session_approval_grants row so
+   *                  future matching calls in the same Claude Code
+   *                  session skip the banner for 12 hours.
+   *    - 'always'  — write a permission_bypass row so future
+   *                  identical inputs skip the banner permanently.
+   *  Legacy `addBypass: true` is mapped to `mode: 'always'`. */
+  approve: (
+    pendingId: string,
+    opts?: { addBypass?: boolean; mode?: 'once' | 'session' | 'always' },
+  ) => Promise<void>;
   /** Deny a held block. Triggers the 403 immediately and clears the banner. */
   deny: (pendingId: string) => Promise<void>;
   /** Seconds remaining before the approve window expires. Ticks every
@@ -54,17 +61,26 @@ export function usePendingSecurityBlocks(): UsePendingBlocksResult {
     }
   }, []);
 
-  const approve = useCallback(async (pendingId: string, opts?: { addBypass?: boolean }) => {
-    const payload: { type: 'approve_blocked_request'; pendingId: string; addBypass?: boolean } = {
-      type: 'approve_blocked_request',
-      pendingId,
-    };
-    if (opts?.addBypass) payload.addBypass = true;
-    await sendToSentinel(payload).catch(() => undefined);
-    // The daemon broadcasts `security_block_resolved` on success; the
-    // subscription below will remove it from state. No optimistic update
-    // needed.
-  }, []);
+  const approve = useCallback(
+    async (
+      pendingId: string,
+      opts?: { addBypass?: boolean; mode?: 'once' | 'session' | 'always' },
+    ) => {
+      const payload: {
+        type: 'approve_blocked_request';
+        pendingId: string;
+        addBypass?: boolean;
+        mode?: 'once' | 'session' | 'always';
+      } = { type: 'approve_blocked_request', pendingId };
+      if (opts?.mode) payload.mode = opts.mode;
+      if (opts?.addBypass) payload.addBypass = true;
+      await sendToSentinel(payload).catch(() => undefined);
+      // The daemon broadcasts `security_block_resolved` on success; the
+      // subscription below will remove it from state. No optimistic update
+      // needed.
+    },
+    [],
+  );
 
   const deny = useCallback(async (pendingId: string) => {
     await sendToSentinel({ type: 'deny_blocked_request', pendingId }).catch(() => undefined);

@@ -39,12 +39,14 @@ const PROFILE_ICONS: Record<RiskProfile, typeof Shield> = {
   low: Shield,
   medium: ShieldAlert,
   high: ShieldX,
+  paranoid: ShieldX,
 };
 
 const PROFILE_ICON_CLASS: Record<RiskProfile, string> = {
   low: 'text-ios-green',
   medium: 'text-ios-orange',
   high: 'text-ios-red',
+  paranoid: 'text-ios-red',
 };
 
 type Step = 'select' | 'benchmark' | 'review';
@@ -164,7 +166,7 @@ export default function SecuritySetupWizard({
             </p>
 
             <div className="space-y-2">
-              {(['low', 'medium', 'high'] as const).map((profile) => {
+              {(['low', 'medium', 'high', 'paranoid'] as const).map((profile) => {
                 const preset = PRESETS[profile];
                 const Icon = PROFILE_ICONS[profile];
                 const iconClass = PROFILE_ICON_CLASS[profile];

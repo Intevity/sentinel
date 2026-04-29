@@ -7,7 +7,7 @@ import type {
 } from '@claude-sentinel/shared';
 import { sendToSentinel } from './ipc.js';
 
-export type RiskProfile = 'low' | 'medium' | 'high';
+export type RiskProfile = 'low' | 'medium' | 'high' | 'paranoid';
 
 /** The subset of `Settings` keys this preset writes. Everything else on the
  *  live settings object is left untouched. Mutually exclusive with the rule
@@ -516,11 +516,14 @@ const HIGH_EDITOR_CONFIG_DENY_RULES: PresetRule[] = [
   },
 ];
 
-// ─── Network egress denies (High preset) ─────────────────────────────────
-// Belt-and-suspenders alongside the synthetic default-deny in
-// matchers.ts: explicit rules surface in the rule list so the user can
-// see, audit, or disable them. The synthetic matcher is the broader net.
-const HIGH_NETWORK_DENY_RULES: PresetRule[] = [
+// ─── Cloud-metadata egress denies (Medium and High) ───────────────────
+// Sprint 9 promoted these from High-only to a shared set: cloud
+// metadata IMDS endpoints leak EC2/GCP credentials in their default
+// configuration, so blocking them is universally desirable. RFC-1918
+// private-network deny (`denyPrivateNetworkByDefault: true`) stays
+// High-only because users legitimately fetch from intra-LAN dev
+// servers; cloud metadata IPs do not have a development analog.
+const SHARED_NETWORK_DENY_RULES: PresetRule[] = [
   {
     decision: 'deny',
     tool: 'WebFetch',
@@ -539,6 +542,18 @@ const HIGH_NETWORK_DENY_RULES: PresetRule[] = [
     pattern: 'domain:metadata.googleapis.com',
     note: 'GCP metadata.',
   },
+];
+
+// ─── Paranoid-only Bash default-deny (Sprint 9) ───────────────────────
+// Inside Paranoid, every Bash invocation must match an explicit allow
+// rule. The catch-all whole-tool deny gates everything; the explicit
+// `exec`/`eval`/`source` denies catch shell builtins that the High
+// allow list's prefix patterns might miss.
+const PARANOID_DEFAULT_DENY_BASH_RULES: PresetRule[] = [
+  { decision: 'deny', tool: 'Bash', pattern: null, note: 'Whitelist-only Bash.' },
+  { decision: 'deny', tool: 'Bash', pattern: 'exec *', note: 'Process replacement.' },
+  { decision: 'deny', tool: 'Bash', pattern: 'eval *', note: 'Dynamic command execution.' },
+  { decision: 'deny', tool: 'Bash', pattern: 'source *', note: 'Inline script load.' },
 ];
 
 // ─── Allow list so High (default-deny) stays functional ───────────────────
@@ -618,6 +633,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       'Asks before rm -rf, sudo, chmod 777, curl|bash; denies SSH/AWS keys, exfil surfaces',
       'Blocks tampering with Claude Code permissions and Sentinel state',
       'Blocks persistence vectors (cron, launchd, systemd, git hooks, gpg/docker/kube)',
+      'Blocks cloud metadata endpoints (IMDS, GCP)',
     ],
     settings: {
       securityScanEnabled: true,
@@ -637,6 +653,7 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       ...SHARED_CONFIG_PROTECTION_RULES,
       ...SHARED_ASK_RULES,
       ...SHARED_DENY_RULES,
+      ...SHARED_NETWORK_DENY_RULES,
       ...SHARED_PERSISTENCE_DENY_RULES,
     ],
   },
@@ -671,10 +688,50 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       ...SHARED_CONFIG_PROTECTION_RULES,
       ...SHARED_ASK_RULES,
       ...SHARED_DENY_RULES,
-      ...HIGH_NETWORK_DENY_RULES,
+      ...SHARED_NETWORK_DENY_RULES,
       ...SHARED_PERSISTENCE_DENY_RULES,
       ...HIGH_EDITOR_CONFIG_DENY_RULES,
       ...HIGH_ALLOW_RULES,
+    ],
+  },
+  paranoid: {
+    profile: 'paranoid',
+    label: 'Paranoid',
+    description: 'Whitelist-only Bash; auto-mode disabled; aggressive scanning everywhere.',
+    highlights: [
+      'Inherits every High protection',
+      'All Bash denied except an explicit allow list',
+      'No auto-mode skip: Sentinel always enforces',
+      'Longest approval window (180s) for unknown tool calls',
+    ],
+    settings: {
+      securityScanEnabled: true,
+      securityEnforcementMode: 'block_medium_high' as SecurityEnforcementMode,
+      securityScanSecrets: true,
+      securityScanInjection: true,
+      securityScanToolUse: true,
+      securityOsNotifyThreshold: 'low' as SecurityOsNotifyThreshold,
+      securityBlockHoldEnabled: true,
+      // Paranoid users want a longer review window before a held block
+      // auto-denies; 180s gives room to walk away from the screen.
+      securityApproveHoldSec: 180,
+      toolPermissionsEnabled: true,
+      toolPermissionDefaultAction: 'deny' as PermissionDecision,
+      // Sentinel keeps gating even in auto mode: the whole point of
+      // Paranoid is that the user does NOT trust the auto-mode
+      // classifier alone.
+      toolPermissionSkipInAutoMode: false,
+      denyPrivateNetworkByDefault: true,
+    },
+    rules: [
+      ...SHARED_CONFIG_PROTECTION_RULES,
+      ...SHARED_ASK_RULES,
+      ...SHARED_DENY_RULES,
+      ...SHARED_NETWORK_DENY_RULES,
+      ...SHARED_PERSISTENCE_DENY_RULES,
+      ...HIGH_EDITOR_CONFIG_DENY_RULES,
+      ...HIGH_ALLOW_RULES,
+      ...PARANOID_DEFAULT_DENY_BASH_RULES,
     ],
   },
 };

@@ -54,15 +54,26 @@ interface PendingPermissionEntry {
   expiresAt: number;
   timeoutHandle: ReturnType<typeof setTimeout>;
   settle: (outcome: PendingOutcome) => void;
+  /** Sprint 9 — populated when the enforcer hands them in. Carried
+   *  through into the snapshot + finalize hook unchanged. */
+  provenance: { createdAt: number; source: 'local' | 'claude-code'; ruleId: string } | null;
+  recentApproveCount: number | null;
+  sessionId: string | null;
 }
 
 /** Extra per-resolution metadata the IPC layer can pass alongside an
- *  approve/deny to steer side effects. Today only `addBypass` is
- *  defined — if the user ticked "Always allow this exact input" on a
- *  `permissions_tool_use` banner, the enforcer inserts a
- *  `permission_bypass` row so future identical calls short-circuit. */
+ *  approve/deny to steer side effects.
+ *  - `addBypass` (legacy v1.x): inserts a permission_bypass row so
+ *    future identical inputs skip the banner.
+ *  - `mode` (Sprint 9): user-picked approval scope. 'once' just
+ *    resolves; 'session' inserts a session_approval_grants row so the
+ *    same Claude Code session skips this rule until the grant
+ *    expires; 'always' is the new spelling of `addBypass: true`.
+ *  When both are set, `mode` wins. The enforcer maps unknown values
+ *  to 'once' for forward-compat. */
 export interface ResolveOpts {
   addBypass?: boolean;
+  mode?: 'once' | 'session' | 'always';
 }
 
 /** Callback invoked when a pending entry settles (approve / deny /
@@ -87,6 +98,10 @@ export interface FinalizedPermissionEntry {
   matchedRule: PermissionRule;
   source: PendingBlockSource;
   severity: SecuritySeverity;
+  /** Sprint 9 — request's session_id if the enforcer extracted one,
+   *  null otherwise. The onFinalized hook uses this to write
+   *  session_approval_grants rows on `mode === 'session'`. */
+  sessionId: string | null;
 }
 
 export interface PermissionsPendingRegistry {
@@ -102,6 +117,18 @@ export interface PermissionsPendingRegistry {
      *  responsible for per-field truncation; the registry forwards
      *  verbatim and omits the field from the snapshot when empty/absent. */
     toolInputFields?: Record<string, string>;
+    /** Sprint 9: pulled from the matched rule's row at evaluation
+     *  time so the banner can render "rule added X days ago, by Y". */
+    provenance?: { createdAt: number; source: 'local' | 'claude-code'; ruleId: string };
+    /** Sprint 9: count of approves the user has issued for this exact
+     *  pattern in this session within the last 5 minutes. Drives the
+     *  "consider editing the rule" pill. */
+    recentApproveCount?: number;
+    /** Sprint 9: session_id of the request that triggered this block.
+     *  Used by the registry to thread the value back into the
+     *  finalized entry so the enforcer's onFinalized hook can write
+     *  session_approval_grants rows on approve. */
+    sessionId?: string | null;
   }): string;
   /** Resolve via `awaitPendingResolution(pendingId)` — returns a
    *  Promise that settles with 'approve' | 'deny' | 'timeout'. Safe
@@ -166,6 +193,10 @@ export function createPermissionsPendingRegistry(
     ...(entry.toolInputFields && Object.keys(entry.toolInputFields).length > 0
       ? { toolInputFields: entry.toolInputFields }
       : {}),
+    ...(entry.provenance ? { provenance: entry.provenance } : {}),
+    ...(entry.recentApproveCount !== null && entry.recentApproveCount !== undefined
+      ? { recentApproveCount: entry.recentApproveCount }
+      : {}),
   });
 
   const beginPending = (args: {
@@ -174,6 +205,9 @@ export function createPermissionsPendingRegistry(
     matchedRule: PermissionRule;
     source: 'permissions_strip' | 'permissions_tool_use';
     toolInputFields?: Record<string, string>;
+    provenance?: { createdAt: number; source: 'local' | 'claude-code'; ruleId: string };
+    recentApproveCount?: number;
+    sessionId?: string | null;
   }): string => {
     const id = randomUUID();
     const holdSec = Math.max(1, deps.getHoldSec());
@@ -200,6 +234,7 @@ export function createPermissionsPendingRegistry(
             matchedRule: entry.matchedRule,
             source: entry.source,
             severity: entry.severity,
+            sessionId: entry.sessionId,
           },
           outcome,
           opts,
@@ -252,6 +287,9 @@ export function createPermissionsPendingRegistry(
       settle: (outcome) => {
         externalSettle(outcome);
       },
+      provenance: args.provenance ?? null,
+      recentApproveCount: args.recentApproveCount ?? null,
+      sessionId: args.sessionId ?? null,
     };
 
     entries.set(id, entry);
@@ -315,6 +353,7 @@ export function createPermissionsPendingRegistry(
           matchedRule: entry.matchedRule,
           source: entry.source,
           severity: entry.severity,
+          sessionId: entry.sessionId,
         },
         outcome,
         opts ?? null,

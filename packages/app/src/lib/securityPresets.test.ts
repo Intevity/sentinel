@@ -165,6 +165,40 @@ describe('PRESETS', () => {
       expect(found).toBe(true);
     }
   });
+
+  it('Sprint 9: Medium preset includes cloud-metadata WebFetch denies', () => {
+    // Promoted from High-only in Sprint 9. RFC-1918 deny stays
+    // High-only (denyPrivateNetworkByDefault=false in Medium) so
+    // localhost dev still works.
+    const byRaw = new Map(
+      PRESETS.medium.rules.map((r) => [`${r.tool}(${r.pattern ?? ''})`, r] as const),
+    );
+    expect(byRaw.get('WebFetch(domain:169.254.169.254)')?.decision).toBe('deny');
+    expect(byRaw.get('WebFetch(domain:metadata.google.internal)')?.decision).toBe('deny');
+    expect(byRaw.get('WebFetch(domain:metadata.googleapis.com)')?.decision).toBe('deny');
+    // RFC-1918 stays gated behind the High-only setting.
+    expect(PRESETS.medium.settings.denyPrivateNetworkByDefault).toBe(false);
+    expect(PRESETS.high.settings.denyPrivateNetworkByDefault).toBe(true);
+  });
+
+  it('Sprint 9: Paranoid preset default-denies Bash and disables auto-mode skip', () => {
+    expect(PRESETS.paranoid).toBeDefined();
+    expect(PRESETS.paranoid.settings.toolPermissionSkipInAutoMode).toBe(false);
+    expect(PRESETS.paranoid.settings.toolPermissionDefaultAction).toBe('deny');
+    expect(PRESETS.paranoid.settings.securityApproveHoldSec).toBe(180);
+    const byRaw = new Map(
+      PRESETS.paranoid.rules.map((r) => [`${r.tool}(${r.pattern ?? ''})`, r] as const),
+    );
+    // Whole-tool Bash deny (the catch-all). pattern null → key suffix '()'.
+    expect(byRaw.get('Bash()')?.decision).toBe('deny');
+    expect(byRaw.get('Bash(exec *)')?.decision).toBe('deny');
+    expect(byRaw.get('Bash(eval *)')?.decision).toBe('deny');
+    expect(byRaw.get('Bash(source *)')?.decision).toBe('deny');
+    // Paranoid still includes High's allow list, otherwise nothing
+    // could run.
+    expect(byRaw.get('Bash(npm *)')?.decision).toBe('allow');
+    expect(byRaw.get('Bash(git *)')?.decision).toBe('allow');
+  });
 });
 
 describe('applyPreset', () => {

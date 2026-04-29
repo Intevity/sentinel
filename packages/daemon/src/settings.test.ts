@@ -364,6 +364,62 @@ describe('settings', () => {
       expect(got.switchingMode).toBe(DEFAULT_SETTINGS.switchingMode);
     });
 
+    it('Sprint 9: validates daemonHealthFailMode and rejects unknown values', () => {
+      saveSettings(DEFAULT_SETTINGS, path);
+      const closedMode = updateSettings({ daemonHealthFailMode: 'closed' }, path);
+      expect(closedMode.daemonHealthFailMode).toBe('closed');
+      const openMode = updateSettings({ daemonHealthFailMode: 'open' }, path);
+      expect(openMode.daemonHealthFailMode).toBe('open');
+      // Coerce drops unknown strings; the result reverts to the
+      // DEFAULT_SETTINGS value (the per-field fallback in coerce).
+      const badMode = updateSettings({ daemonHealthFailMode: 'meow' as unknown as 'open' }, path);
+      expect(badMode.daemonHealthFailMode).toBe(DEFAULT_SETTINGS.daemonHealthFailMode);
+    });
+
+    it('Sprint 9: round-trips the webhook URL and rejects non-http(s) schemes', () => {
+      saveSettings(DEFAULT_SETTINGS, path);
+      const ok = updateSettings({ securityWebhookUrl: 'https://hooks.example.com/sentinel' }, path);
+      expect(ok.securityWebhookUrl).toBe('https://hooks.example.com/sentinel');
+      // Empty string also clears (UI sentinel for "off").
+      const cleared = updateSettings({ securityWebhookUrl: '' }, path);
+      expect(cleared.securityWebhookUrl).toBe(null);
+      const httpOk = updateSettings({ securityWebhookUrl: 'http://localhost:9999/sink' }, path);
+      expect(httpOk.securityWebhookUrl).toBe('http://localhost:9999/sink');
+      // Non-http(s) drops the field; coerce reverts to default null.
+      const ftpRejected = updateSettings({ securityWebhookUrl: 'ftp://nope.example' }, path);
+      expect(ftpRejected.securityWebhookUrl).toBe(null);
+      // Malformed URL also drops to default.
+      const malformedRejected = updateSettings({ securityWebhookUrl: 'not-a-url' }, path);
+      expect(malformedRejected.securityWebhookUrl).toBe(null);
+      // Explicit null is honored.
+      const nulled = updateSettings({ securityWebhookUrl: null }, path);
+      expect(nulled.securityWebhookUrl).toBe(null);
+    });
+
+    it('Sprint 9: webhook secret + severity floor coerce', () => {
+      saveSettings(DEFAULT_SETTINGS, path);
+      const set = updateSettings(
+        { securityWebhookSecret: 'shh', securityWebhookSeverityFloor: 'medium' },
+        path,
+      );
+      expect(set.securityWebhookSecret).toBe('shh');
+      expect(set.securityWebhookSeverityFloor).toBe('medium');
+      // Empty-string secret coerces to null.
+      const cleared = updateSettings({ securityWebhookSecret: '' }, path);
+      expect(cleared.securityWebhookSecret).toBe(null);
+      // Unknown floor reverts to default 'high'.
+      const bogus = updateSettings(
+        { securityWebhookSeverityFloor: 'critical' as unknown as 'high' },
+        path,
+      );
+      expect(bogus.securityWebhookSeverityFloor).toBe(
+        DEFAULT_SETTINGS.securityWebhookSeverityFloor,
+      );
+      // Explicit null on the secret clears.
+      const nulled = updateSettings({ securityWebhookSecret: null }, path);
+      expect(nulled.securityWebhookSecret).toBe(null);
+    });
+
     it('persists across calls', () => {
       updateSettings({ launchAtLogin: false }, path);
       updateSettings({ switchingMode: 'round-robin' }, path);

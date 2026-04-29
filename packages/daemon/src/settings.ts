@@ -93,6 +93,13 @@ export const DEFAULT_SETTINGS: Settings = {
   cacheTtlForceOneHour: false,
   securitySetupCompleted: false,
   tourCompleted: false,
+  // Sprint 9: warn-and-forward by default; users opt into 'closed' once
+  // they've decided they would rather see Claude Code fail than fall
+  // through Sentinel's gates while degraded.
+  daemonHealthFailMode: 'warn',
+  securityWebhookUrl: null,
+  securityWebhookSecret: null,
+  securityWebhookSeverityFloor: 'high',
 };
 
 const VALID_MODES: readonly SwitchingMode[] = ['off', 'round-robin'];
@@ -110,6 +117,16 @@ const VALID_NOTIFY_THRESHOLDS: readonly SecurityOsNotifyThreshold[] = [
 ];
 const VALID_LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
 const VALID_PERMISSION_DECISIONS: readonly PermissionDecision[] = ['allow', 'deny'];
+const VALID_HEALTH_FAIL_MODES: readonly Settings['daemonHealthFailMode'][] = [
+  'closed',
+  'open',
+  'warn',
+];
+const VALID_WEBHOOK_FLOORS: readonly Settings['securityWebhookSeverityFloor'][] = [
+  'low',
+  'medium',
+  'high',
+];
 
 /**
  * Coerce an arbitrary value into a valid Settings object, falling back to
@@ -355,6 +372,50 @@ function coerce(raw: unknown): Settings {
   }
   if (typeof obj['tourCompleted'] === 'boolean') {
     next.tourCompleted = obj['tourCompleted'];
+  }
+  if (
+    typeof obj['daemonHealthFailMode'] === 'string' &&
+    VALID_HEALTH_FAIL_MODES.includes(
+      obj['daemonHealthFailMode'] as Settings['daemonHealthFailMode'],
+    )
+  ) {
+    next.daemonHealthFailMode = obj['daemonHealthFailMode'] as Settings['daemonHealthFailMode'];
+  }
+  if (obj['securityWebhookUrl'] === null) {
+    next.securityWebhookUrl = null;
+  } else if (typeof obj['securityWebhookUrl'] === 'string') {
+    // Drop anything that doesn't parse as http(s). An empty string also
+    // means "off" — easier for the UI to roundtrip than null.
+    const candidate = obj['securityWebhookUrl'] as string;
+    if (candidate.trim() === '') {
+      next.securityWebhookUrl = null;
+    } else {
+      try {
+        const u = new URL(candidate);
+        if (u.protocol === 'http:' || u.protocol === 'https:') {
+          next.securityWebhookUrl = candidate;
+        }
+      } catch {
+        // Malformed URL; leave the previous value (default null) intact
+        // rather than throwing on a partial update payload.
+      }
+    }
+  }
+  if (obj['securityWebhookSecret'] === null) {
+    next.securityWebhookSecret = null;
+  } else if (typeof obj['securityWebhookSecret'] === 'string') {
+    const candidate = obj['securityWebhookSecret'] as string;
+    next.securityWebhookSecret = candidate === '' ? null : candidate;
+  }
+  if (
+    typeof obj['securityWebhookSeverityFloor'] === 'string' &&
+    VALID_WEBHOOK_FLOORS.includes(
+      obj['securityWebhookSeverityFloor'] as Settings['securityWebhookSeverityFloor'],
+    )
+  ) {
+    next.securityWebhookSeverityFloor = obj[
+      'securityWebhookSeverityFloor'
+    ] as Settings['securityWebhookSeverityFloor'];
   }
   return next;
 }

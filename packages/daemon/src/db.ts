@@ -347,6 +347,35 @@ CREATE INDEX IF NOT EXISTS idx_perm_rules_priority ON permission_rules(priority)
 -- permission_rules(source) would fail against a legacy table that
 -- still lacks the column. The migration block in getDb() adds the
 -- column first (or rebuilds the table) and creates the index there.
+
+-- Sprint 9 — Per-session approval grants. When the user picks
+-- "Approve for session" on a pending banner, the enforcer writes a
+-- (session_id, rule_key) row here so the next matching tool_use in the
+-- same Claude Code session skips the prompt. expires_at bounds the
+-- grant at 12 hours so a long-lived session doesn't permanently
+-- remember a one-time decision; expired rows are pruned lazily on
+-- read and aggressively at startup.
+CREATE TABLE IF NOT EXISTS session_approval_grants (
+  session_id TEXT NOT NULL,
+  rule_key   TEXT NOT NULL,
+  granted_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, rule_key)
+);
+CREATE INDEX IF NOT EXISTS idx_sag_expires ON session_approval_grants(expires_at);
+
+-- Sprint 9 — Approval-event audit. Every approve outcome on a
+-- permission pending block lands here so the banner can warn "you've
+-- approved this 5 times in 5 minutes — edit the rule?" without a
+-- per-session in-memory tracker (which would drop on restart). Bounded
+-- in size by the same retention sweep that prunes security_events.
+CREATE TABLE IF NOT EXISTS approval_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id  TEXT NOT NULL,
+  rule_key    TEXT NOT NULL,
+  approved_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ae_lookup ON approval_events(session_id, rule_key, approved_at);
 `;
 
 let _db: Database.Database | null = null;
@@ -496,6 +525,17 @@ export function getDb(
     }
   }
   _db.exec('CREATE INDEX IF NOT EXISTS idx_perm_rules_source ON permission_rules(source)');
+
+  // Sprint 9: per-project rule scoping. NULL means global (legacy
+  // behavior). The column is nullable so existing rules survive
+  // unchanged. Index is intentionally absent — the evaluator filters
+  // in-memory after the priority-ordered scan, and the table stays
+  // small enough that an extra index would cost more on writes than
+  // it saves on reads.
+  const prCols2 = _db.pragma('table_info(permission_rules)') as Array<{ name: string }>;
+  if (prCols2.length > 0 && !prCols2.some((c) => c.name === 'project_scope')) {
+    _db.exec('ALTER TABLE permission_rules ADD COLUMN project_scope TEXT');
+  }
 
   // One-time cleanup of double-counted usage_events. A prior version of the
   // OTEL receiver wrote two rows per request: one from the `api_request` log
@@ -3358,6 +3398,9 @@ interface DbPermissionRuleRow {
   // added. `rowToPermissionRule` coerces the undefined / null to
   // 'local' so consumers always see a concrete value.
   source: 'local' | 'claude-code' | null;
+  // Sprint 9: undefined / null when the rule predates the migration
+  // or the user left it blank (= global scope).
+  project_scope: string | null;
 }
 
 function rowToPermissionRule(row: DbPermissionRuleRow): PermissionRule {
@@ -3372,6 +3415,7 @@ function rowToPermissionRule(row: DbPermissionRuleRow): PermissionRule {
     priority: row.priority,
     createdAt: row.created_at,
     source: row.source ?? 'local',
+    projectScope: row.project_scope ?? null,
   };
 }
 
@@ -3421,9 +3465,17 @@ export function upsertPermissionRule(
     // it). The sync engine itself overrides via explicit `source`
     // on the input.
     const source = input.source ?? existing.source ?? 'local';
+    // project_scope is freely editable: an empty/missing value means
+    // "global" (NULL in SQLite). undefined on the input preserves
+    // the existing value so partial updates from non-scope-aware
+    // callers don't accidentally clear the scope.
+    const projectScope =
+      input.projectScope === undefined
+        ? (existing.project_scope ?? null)
+        : (input.projectScope ?? null);
     db.prepare(
       `UPDATE permission_rules
-       SET decision = ?, tool = ?, pattern = ?, raw = ?, note = ?, enabled = ?, priority = ?, source = ?
+       SET decision = ?, tool = ?, pattern = ?, raw = ?, note = ?, enabled = ?, priority = ?, source = ?, project_scope = ?
        WHERE id = ?`,
     ).run(
       input.decision,
@@ -3434,6 +3486,7 @@ export function upsertPermissionRule(
       enabled,
       priority,
       source,
+      projectScope,
       existing.id,
     );
     const row = db
@@ -3451,9 +3504,10 @@ export function upsertPermissionRule(
   const priority = input.priority ?? maxPriority + 10;
   const enabled = (input.enabled ?? true) ? 1 : 0;
   const source = input.source ?? 'local';
+  const projectScope = input.projectScope ?? null;
   db.prepare(
-    `INSERT INTO permission_rules (id, decision, tool, pattern, raw, note, enabled, priority, created_at, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO permission_rules (id, decision, tool, pattern, raw, note, enabled, priority, created_at, source, project_scope)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.decision,
@@ -3465,11 +3519,87 @@ export function upsertPermissionRule(
     priority,
     now,
     source,
+    projectScope,
   );
   const row = db
     .prepare('SELECT * FROM permission_rules WHERE id = ?')
     .get(id) as DbPermissionRuleRow;
   return rowToPermissionRule(row);
+}
+
+// ─── Sprint 9 — Session approval grants ────────────────────────────────
+
+/** Insert (or upsert) a session-scoped approval. Used when the user
+ *  picks "Approve for session" on a pending banner. The rule_key is
+ *  the canonical `tool|pattern` form so a deny rule rewritten to allow
+ *  the same input survives the change. expires_at is in unix ms. */
+export function insertSessionGrant(
+  db: Database.Database,
+  args: { sessionId: string; ruleKey: string; nowMs: number; expiresAtMs: number },
+): void {
+  db.prepare(
+    `INSERT INTO session_approval_grants (session_id, rule_key, granted_at, expires_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(session_id, rule_key) DO UPDATE SET
+       granted_at = excluded.granted_at,
+       expires_at = excluded.expires_at`,
+  ).run(args.sessionId, args.ruleKey, args.nowMs, args.expiresAtMs);
+}
+
+/** True iff a non-expired grant exists for this (session_id, rule_key)
+ *  pair. Lazily prunes the matched row when expired so the table doesn't
+ *  grow unbounded between explicit sweeps. */
+export function findSessionGrant(
+  db: Database.Database,
+  args: { sessionId: string; ruleKey: string; nowMs: number },
+): boolean {
+  const row = db
+    .prepare('SELECT expires_at FROM session_approval_grants WHERE session_id = ? AND rule_key = ?')
+    .get(args.sessionId, args.ruleKey) as { expires_at: number } | undefined;
+  if (!row) return false;
+  if (row.expires_at <= args.nowMs) {
+    db.prepare('DELETE FROM session_approval_grants WHERE session_id = ? AND rule_key = ?').run(
+      args.sessionId,
+      args.ruleKey,
+    );
+    return false;
+  }
+  return true;
+}
+
+/** Sweep all expired grants. Called at startup and periodically by the
+ *  housekeeping path. */
+export function pruneExpiredSessionGrants(db: Database.Database, nowMs: number): number {
+  const result = db.prepare('DELETE FROM session_approval_grants WHERE expires_at <= ?').run(nowMs);
+  return result.changes;
+}
+
+// ─── Sprint 9 — Approval-event audit ───────────────────────────────────
+
+/** Append an approval-event row. Caller (enforcer) records on every
+ *  approve outcome so the banner's "approved 5x in 5min" surface has a
+ *  durable count. */
+export function recordApprovalEvent(
+  db: Database.Database,
+  args: { sessionId: string; ruleKey: string; approvedAtMs: number },
+): void {
+  db.prepare(
+    'INSERT INTO approval_events (session_id, rule_key, approved_at) VALUES (?, ?, ?)',
+  ).run(args.sessionId, args.ruleKey, args.approvedAtMs);
+}
+
+/** Count approves of `(sessionId, ruleKey)` in the window
+ *  `[sinceMs, +inf)`. */
+export function countRecentApprovals(
+  db: Database.Database,
+  args: { sessionId: string; ruleKey: string; sinceMs: number },
+): number {
+  const row = db
+    .prepare(
+      'SELECT COUNT(*) AS n FROM approval_events WHERE session_id = ? AND rule_key = ? AND approved_at >= ?',
+    )
+    .get(args.sessionId, args.ruleKey, args.sinceMs) as { n: number };
+  return row.n;
 }
 
 export function deletePermissionRule(db: Database.Database, id: string): boolean {

@@ -64,6 +64,10 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     cacheTtlForceOneHour: false,
     securitySetupCompleted: true,
     tourCompleted: true,
+    daemonHealthFailMode: 'warn',
+    securityWebhookUrl: null,
+    securityWebhookSecret: null,
+    securityWebhookSeverityFloor: 'high',
     ...overrides,
   };
 }

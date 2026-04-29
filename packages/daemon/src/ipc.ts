@@ -50,6 +50,10 @@ export class IpcServer {
   private server: Server | null = null;
   private clients = new Set<Socket>();
   private messageHandlers: AppMessageHandler[] = [];
+  /** Sprint 9: in-process listeners that observe every outgoing
+   *  broadcast. Used by the webhook emitter to filter by severity and
+   *  POST to the user's URL without intercepting the broadcast itself. */
+  private broadcastListeners: Array<(msg: DaemonToAppMessage) => void> = [];
   /** Per-socket flag: true once the handshake has been validated. New
    *  sockets start false; the first line either flips this to true or
    *  destroys the socket. */
@@ -58,6 +62,13 @@ export class IpcServer {
 
   onMessage(handler: AppMessageHandler): void {
     this.messageHandlers.push(handler);
+  }
+
+  /** Sprint 9: register a daemon-internal observer fired on every
+   *  broadcast. Synchronous; listeners must not throw — caught and
+   *  logged here so a faulty subscriber can't break the IPC stream. */
+  onBroadcast(listener: (msg: DaemonToAppMessage) => void): void {
+    this.broadcastListeners.push(listener);
   }
 
   start(
@@ -216,6 +227,16 @@ export class IpcServer {
       // pre-auth peers may be probing connections we never trusted.
       if (!client.destroyed && this.authenticated.has(client)) {
         client.write(line);
+      }
+    }
+    // Notify daemon-internal listeners (Sprint 9 webhook emitter, etc.).
+    // Listeners run after the on-the-wire write so a slow listener
+    // can't delay the IPC stream the UI sees.
+    for (const listener of this.broadcastListeners) {
+      try {
+        listener(message);
+      } catch (err) {
+        console.error('[IPC] broadcast listener threw:', err);
       }
     }
   }

@@ -84,6 +84,7 @@ import {
 } from './alerts.js';
 import { createSecurityScanner } from './security/scanner.js';
 import { createPermissionsEnforcer } from './security/permissions/enforcer.js';
+import { attachWebhookToIpc } from './alerting/webhook.js';
 import { createIncidentReplayRecorder } from './security/incident-replay.js';
 import { redactSecretsInString } from './security/detectors.js';
 import { createClaudeSyncEngine } from './security/permissions/claude-sync.js';
@@ -1665,14 +1666,26 @@ export async function startDaemon(): Promise<DaemonHandle> {
         // disjoint UUID namespaces, so trying both is safe — at most
         // one returns true. Accept success from either. The scanner
         // doesn't take opts (it always adds to its own allowlist on
-        // approve); the permissions path forwards `addBypass` so the
-        // banner's "Always allow this exact input" checkbox can
-        // insert a permission_bypass row atomically with the approve.
+        // approve); the permissions path forwards `addBypass` and the
+        // Sprint 9 `mode` so the banner's radio routes to either a
+        // session grant (12h TTL row) or a permanent allow rule.
         const addBypass = msg.addBypass === true;
+        const mode: 'once' | 'session' | 'always' | undefined =
+          msg.mode === 'session' || msg.mode === 'always' || msg.mode === 'once'
+            ? msg.mode
+            : undefined;
+        const opts: { addBypass: boolean; mode?: 'once' | 'session' | 'always' } = { addBypass };
+        if (mode) opts.mode = mode;
         const ok =
           securityScanner.resolvePending(msg.pendingId, 'approve') ||
-          (permissionsEnforcer?.resolvePending(msg.pendingId, 'approve', { addBypass }) ?? false);
+          (permissionsEnforcer?.resolvePending(msg.pendingId, 'approve', opts) ?? false);
         respond({ requestType: 'approve_blocked_request', success: ok });
+        break;
+      }
+
+      case 'list_recent_working_dirs': {
+        const cwds = permissionsEnforcer?.getRecentCwds() ?? [];
+        respond({ requestType: 'list_recent_working_dirs', success: true, data: cwds });
         break;
       }
 
@@ -2361,6 +2374,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
     incidentReplay,
   });
 
+  // Sprint 9 webhook emitter — passive subscriber on the broadcast
+  // pipeline. Settings drive whether anything actually goes out;
+  // an unset URL turns the emitter into a silent no-op.
+  attachWebhookToIpc(ipcServer, { getSettings: () => currentSettings });
+
   // Claude Code auto-sync engine. Owns the file watcher lifecycle.
   // Started when `claudeCodeSyncEnabled` is on; stopped when toggled
   // off. A local rule mutation (upsert / delete) fires pushNow so
@@ -2476,6 +2494,24 @@ export async function startDaemon(): Promise<DaemonHandle> {
         });
       },
       /* v8 ignore stop */
+      // Sprint 9 health probe. Each component check is sub-millisecond
+      // and runs inline on `/health` requests + on the fail-mode gate.
+      // SELECT 1 catches a closed/locked DB; the scanner/enforcer truthy
+      // check guards against a partial-init regression in the future.
+      getHealth: () => {
+        let dbStatus: string = 'ok';
+        try {
+          db.prepare('SELECT 1 AS ok').get();
+        } catch (err) {
+          dbStatus = err instanceof Error ? `error:${err.message}` : 'error:unknown';
+        }
+        return {
+          db: dbStatus,
+          scanner: securityScanner ? 'ok' : 'error:not_initialized',
+          enforcer: permissionsEnforcer ? 'ok' : 'error:not_initialized',
+        };
+      },
+      getSettings: () => ({ daemonHealthFailMode: currentSettings.daemonHealthFailMode }),
     },
     (req, res) => {
       const url = req.url ?? '/';

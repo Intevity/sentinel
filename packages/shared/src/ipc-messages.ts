@@ -851,11 +851,22 @@ export interface GetClaudeSyncStatusMessage {
  *  the daemon also inserts a `permission_bypass` row so future
  *  identical calls to the same tool + input short-circuit the rule.
  *  Ignored for scanner pending blocks and for `permissions_strip`
- *  (which doesn't have a tool input to key on). */
+ *  (which doesn't have a tool input to key on).
+ *
+ *  Sprint 9: `mode` lets the user pick how durable the approval is.
+ *    'once'    — current default; resolves the held block only.
+ *    'session' — also inserts a row in `session_approval_grants` so
+ *                future matching tool_uses in the SAME session_id
+ *                skip the banner. Expires after 12h.
+ *    'always'  — equivalent to legacy `addBypass: true`; inserts a
+ *                permission_bypass row.
+ *  Unset / unknown values are treated as `'once'` for backwards
+ *  compatibility with older app builds. */
 export interface ApproveBlockedRequestMessage {
   type: 'approve_blocked_request';
   pendingId: string;
   addBypass?: boolean;
+  mode?: 'once' | 'session' | 'always';
 }
 
 /** Deny a held outbound block. The daemon synthesizes the 403 and
@@ -1059,6 +1070,14 @@ export interface GetPausedAccountsMessage {
   type: 'get_paused_accounts';
 }
 
+/** Sprint 9: list distinct recent working directories observed on the
+ *  proxy across the last 20 sessions, deduped, most-recent first. Used
+ *  by the rule-editor's project_scope autocomplete so users don't have
+ *  to type the path themselves. Response payload is `string[]`. */
+export interface ListRecentWorkingDirsMessage {
+  type: 'list_recent_working_dirs';
+}
+
 export type AppToDaemonMessage =
   | GetAccountsMessage
   | GetCredentialsMessage
@@ -1123,7 +1142,8 @@ export type AppToDaemonMessage =
   | ListPermissionRulesMessage
   | UpsertPermissionRuleMessage
   | DeletePermissionRuleMessage
-  | GetPermissionsStatusMessage;
+  | GetPermissionsStatusMessage
+  | ListRecentWorkingDirsMessage;
 
 /** Response payload alias re-exports for convenience in consumers. */
 export type {

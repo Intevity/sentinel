@@ -148,6 +148,12 @@ export interface CreateInterceptorOptions {
    *  to 'allow' before the interceptor ever gates the pending flow —
    *  so previously-approved inputs flush through with zero banner. */
   evaluatorHooks?: EvaluatorHooks;
+  /** Sprint 9: working directory of the request that produced this
+   *  response stream. Threaded into `evaluateToolCall` so rules with
+   *  a non-null `projectScope` only fire when the cwd matches. `null`
+   *  (the default) makes scoped rules opt out of the match — matches
+   *  the evaluator's contract. */
+  cwd?: string | null;
 }
 
 /**
@@ -350,6 +356,7 @@ export function createPermissionsSseInterceptor(
       compiled,
       opts.settings,
       opts.evaluatorHooks,
+      opts.cwd ?? null,
     );
     if (decision.decision === 'allow' || !decision.matchedRule) {
       // Flush verbatim.

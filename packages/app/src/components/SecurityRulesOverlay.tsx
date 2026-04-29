@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import { Plus, Trash2, Loader2, Pencil, X, Search, ShieldCheck } from 'lucide-react';
 import type {
@@ -11,6 +11,7 @@ import type {
 import { usePermissionRules } from '../hooks/usePermissionRules.js';
 import { useSecurityAllowlist } from '../hooks/useSecurityAllowlist.js';
 import { useInlineConfirm } from '../hooks/useInlineConfirm.js';
+import { sendToSentinel } from '../lib/ipc.js';
 import OverlayPanel from './OverlayPanel.js';
 
 export type SecurityOverlayTab = 'rules' | 'allowlist';
@@ -38,6 +39,8 @@ interface Draft {
   note: string;
   raw: string;
   mode: Mode;
+  /** Sprint 9 per-project scope — empty string means global. */
+  projectScope: string;
 }
 
 const BUILTIN_TOOLS = [
@@ -62,6 +65,7 @@ const EMPTY_DRAFT: Draft = {
   note: '',
   raw: '',
   mode: 'form',
+  projectScope: '',
 };
 
 /** Two-tabbed overlay: tool permission rules + security scanning allowlist.
@@ -181,6 +185,20 @@ function PermissionRulesView(): React.ReactElement {
   const [search, setSearch] = useState('');
   const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>('all');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
+  // Sprint 9: cwds collected by the daemon from active Claude Code sessions.
+  // Fetched once when the rule editor opens; powers the project_scope datalist.
+  const [recentCwds, setRecentCwds] = useState<string[]>([]);
+  useEffect(() => {
+    let alive = true;
+    void sendToSentinel<string[]>({ type: 'list_recent_working_dirs' })
+      .then((res) => {
+        if (alive && res.success && Array.isArray(res.data)) setRecentCwds(res.data);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const startAdd = (): void => {
     setDraft({ ...EMPTY_DRAFT });
@@ -194,6 +212,7 @@ function PermissionRulesView(): React.ReactElement {
       note: rule.note ?? '',
       raw: rule.raw,
       mode: 'form',
+      projectScope: rule.projectScope ?? '',
     });
     setSaveError(null);
   };
@@ -227,6 +246,7 @@ function PermissionRulesView(): React.ReactElement {
         finalRaw = finalPattern ? `${finalTool}(${finalPattern})` : finalTool;
       }
       const existing = rules.find((r) => r.raw === finalRaw && r.decision === finalDecision);
+      const trimmedScope = draft.projectScope.trim();
       const saveInput = {
         decision: finalDecision,
         tool: finalTool,
@@ -234,6 +254,7 @@ function PermissionRulesView(): React.ReactElement {
         raw: finalRaw,
         note: note.trim() ? note : null,
         enabled: true,
+        projectScope: trimmedScope === '' ? null : trimmedScope,
       };
       await upsert(existing ? { id: existing.id, ...saveInput } : saveInput);
       setDraft(null);
@@ -525,6 +546,28 @@ function PermissionRulesView(): React.ReactElement {
                   placeholder="Why this rule exists"
                   className="w-full text-[12px] px-2 py-1.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white border-none focus:outline-none focus:ring-1 focus:ring-ios-blue"
                 />
+              </div>
+
+              <div>
+                <p className="text-[11px] text-[#8E8E93] mb-1">Project scope (optional)</p>
+                <input
+                  value={draft.projectScope}
+                  list="rule-scope-recent-cwds"
+                  onChange={(e) => setDraft((d) => d && { ...d, projectScope: e.target.value })}
+                  placeholder="e.g. ~/work/prod/**  (blank: applies everywhere)"
+                  className="w-full text-[12px] px-2 py-1.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white border-none focus:outline-none focus:ring-1 focus:ring-ios-blue font-mono"
+                />
+                <datalist id="rule-scope-recent-cwds">
+                  {recentCwds.map((cwd) => (
+                    <option key={cwd} value={cwd} />
+                  ))}
+                  {recentCwds.map((cwd) => (
+                    <option key={`${cwd}-glob`} value={`${cwd}/**`} />
+                  ))}
+                </datalist>
+                <p className="text-[10px] text-[#8E8E93] mt-1">
+                  Path glob the request's working directory must match. Leave blank for global.
+                </p>
               </div>
 
               {saveError && <p className="text-[11px] text-ios-red">{saveError}</p>}
@@ -999,6 +1042,14 @@ function RuleList({
                       title="Imported from Claude Code's ~/.claude/settings.json"
                     >
                       cc
+                    </span>
+                  )}
+                  {rule.projectScope && (
+                    <span
+                      className="text-[9px] font-mono px-1 py-0.5 rounded bg-black/[0.06] dark:bg-white/[0.08] text-black/70 dark:text-white/70 flex-shrink-0 truncate max-w-[160px]"
+                      title={`Scope: ${rule.projectScope}`}
+                    >
+                      {rule.projectScope}
                     </span>
                   )}
                 </div>

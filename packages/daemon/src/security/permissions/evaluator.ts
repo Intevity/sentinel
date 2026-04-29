@@ -14,6 +14,8 @@
 
 import type { PermissionDecision, PermissionRule } from '@claude-sentinel/shared';
 import { createHash } from 'crypto';
+import { homedir } from 'os';
+import { posix as posixPath } from 'path';
 import {
   matchBash,
   matchPath,
@@ -24,6 +26,7 @@ import {
   isWebTool,
   isLinkLocalOrMetadata,
   pickHost,
+  globToRegex,
 } from './matchers.js';
 
 export interface EvaluationResult {
@@ -49,6 +52,39 @@ export interface EvaluatorSettingsView {
    *  symlink-redirected reads/writes. Adds a stat per rule check;
    *  off by default. */
   toolPermissionResolveSymlinks: boolean;
+}
+
+/** Sprint 9: canonical key for a rule's identity in approval-grant /
+ *  approval-event tables. Two rules with the same `tool|pattern` pair
+ *  represent the same enforcement target even if their decision was
+ *  edited (deny → ask, ask → allow). Pattern is normalized to '*' when
+ *  null so a whole-tool rule has a stable string key. Exported so the
+ *  enforcer and tests share one definition. */
+export function ruleKey(rule: { tool: string; pattern: string | null }): string {
+  return `${rule.tool}|${rule.pattern ?? '*'}`;
+}
+
+/** Sprint 9: returns true when the rule's project_scope glob matches
+ *  the request's working directory (or when the rule is global). When
+ *  the request has no extractable cwd, scoped rules are skipped — the
+ *  user's intent of "rule applies in /work/prod/**" cannot be
+ *  satisfied without knowing where the agent is running. Path
+ *  expansion mirrors `matchers.matchPath`: `~` expands to the user's
+ *  home directory; on macOS we lower-case both sides because APFS is
+ *  case-insensitive by default. */
+export function ruleScopeMatchesCwd(scope: string | null, cwd: string | null): boolean {
+  if (scope === null || scope === '') return true;
+  if (cwd === null) return false;
+  let pattern = scope;
+  if (pattern.startsWith('//')) pattern = pattern.slice(1);
+  else if (pattern === '~') pattern = homedir();
+  else if (pattern.startsWith('~/')) pattern = homedir() + pattern.slice(1);
+  let target = posixPath.normalize(cwd);
+  if (process.platform === 'darwin') {
+    pattern = pattern.toLowerCase();
+    target = target.toLowerCase();
+  }
+  return globToRegex(pattern, { pathMode: true }).test(target);
 }
 
 /** Stable id used by the synthetic network-egress default-deny.
@@ -180,6 +216,13 @@ export interface EvaluatorHooks {
  *      matches the (rule, input) pair, the decision flips to 'allow'
  *   4. allow tier → first matching allow rule wins
  *   5. fallback → settings.toolPermissionDefaultAction
+ *
+ * Sprint 9: when `cwd` is provided, rules with a non-null
+ * `projectScope` are skipped unless their scope glob matches the cwd.
+ * `null`/undefined cwd disables the scope check (the request had no
+ * extractable working directory) — scoped rules are conservatively
+ * skipped, matching the user's intent of "fire only when in this
+ * project tree".
  */
 export function evaluateToolCall(
   toolName: string,
@@ -187,6 +230,7 @@ export function evaluateToolCall(
   compiled: CompiledRuleSet,
   settings: EvaluatorSettingsView,
   hooks?: EvaluatorHooks,
+  cwd: string | null = null,
 ): EvaluationResult {
   if (!settings.toolPermissionsEnabled) {
     return { decision: 'allow', matchedRule: null, reason: 'tool permissions disabled' };
@@ -196,6 +240,7 @@ export function evaluateToolCall(
   }
   const matchOpts = { resolveSymlinks: settings.toolPermissionResolveSymlinks };
   for (const rule of compiled.denies) {
+    if (!ruleScopeMatchesCwd(rule.projectScope, cwd)) continue;
     if (ruleMatches(rule, toolName, toolInput, matchOpts)) {
       // Per-rule input bypass short-circuit. Computed lazily — a user
       // without any bypass rows pays zero hash cost on every deny
@@ -215,6 +260,7 @@ export function evaluateToolCall(
     }
   }
   for (const rule of compiled.allows) {
+    if (!ruleScopeMatchesCwd(rule.projectScope, cwd)) continue;
     if (ruleMatches(rule, toolName, toolInput, matchOpts)) {
       return { decision: 'allow', matchedRule: rule, reason: `allowed by ${rule.raw}` };
     }
@@ -239,6 +285,7 @@ export function evaluateToolCall(
           priority: 0,
           createdAt: 0,
           source: 'local',
+          projectScope: null,
         };
         return {
           decision: 'deny',
@@ -260,17 +307,22 @@ export function evaluateToolCall(
 
 /** Whole-tool deny lookup used by the request-level tool stripper. Returns the
  *  matching rule when the tool name is outright denied with no pattern. Does
- *  NOT consider sub-command rules (those need response-level evaluation). */
+ *  NOT consider sub-command rules (those need response-level evaluation).
+ *
+ *  Sprint 9: scoped whole-tool rules are skipped when their scope does not
+ *  match the request's cwd (or when cwd is unknown). */
 export function findWholeToolDeny(
   toolName: string,
   compiled: CompiledRuleSet,
   settings: EvaluatorSettingsView,
+  cwd: string | null = null,
 ): PermissionRule | null {
   if (!settings.toolPermissionsEnabled) return null;
   if (settings.toolPermissionSkipInAutoMode && settings.toolPermissionAutoModeActive) return null;
   for (const rule of compiled.denies) {
     if (rule.pattern !== null) continue;
     if (!toolNameMatches(rule.tool, toolName)) continue;
+    if (!ruleScopeMatchesCwd(rule.projectScope, cwd)) continue;
     return rule;
   }
   return null;
