@@ -41,6 +41,7 @@ import { redactSecretsInValue } from '../detectors.js';
 import { hashText } from '../redact.js';
 import {
   compileRules,
+  compileRulesContentHash,
   findWholeToolDeny,
   hashCanonicalToolInput,
   ruleKey,
@@ -334,7 +335,19 @@ function toNotificationType(severity: SecuritySeverity): NotificationType {
 }
 
 export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): PermissionsEnforcer {
-  let cached: { rules: PermissionRule[]; compiled: CompiledRuleSet } | null = null;
+  // Sprint 10: hash-keyed memo. `cached` keeps both the compiled rule
+  // set AND the content hash that produced it. `invalidate()` only
+  // clears the hash (not the compiled output) so that the next
+  // getCompiled() can re-hash, and if the new hash matches the prior
+  // one we keep the compiled set instead of paying for sort + group
+  // again. With 10k rules this matters: an unrelated invalidate (a
+  // settings save, a no-op claude-sync pass) shouldn't recompile.
+  let cached: {
+    rules: PermissionRule[];
+    compiled: CompiledRuleSet;
+    hash: string;
+    invalidated: boolean;
+  } | null = null;
 
   // ── Auto-mode state ────────────────────────────────────────────────
   //
@@ -386,14 +399,23 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
   let lastBroadcastAutoModeSessions = 0;
 
   const getCompiled = (): { rules: PermissionRule[]; compiled: CompiledRuleSet } => {
-    if (cached) return cached;
+    if (cached && !cached.invalidated) return cached;
     const rules = listPermissionRules(deps.db);
-    cached = { rules, compiled: compileRules(rules) };
+    const hash = compileRulesContentHash(rules);
+    if (cached && cached.hash === hash) {
+      // Rule rows hash-equal to the prior compile — keep the compiled
+      // set. Refresh the row references in case callers rely on them.
+      cached = { rules, compiled: cached.compiled, hash, invalidated: false };
+      return cached;
+    }
+    cached = { rules, compiled: compileRules(rules), hash, invalidated: false };
     return cached;
   };
 
   const invalidate = (): void => {
-    cached = null;
+    // Mark the cache stale but keep the compiled set + hash so the next
+    // getCompiled() can short-circuit when rule content didn't change.
+    if (cached) cached.invalidated = true;
   };
 
   const isEnabled = (): boolean => deps.getSettings().toolPermissionsEnabled;

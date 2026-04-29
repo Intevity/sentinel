@@ -157,12 +157,24 @@ export interface CreatePermissionsPendingDeps {
   onFinalized: OnPendingFinalized;
 }
 
+/** Sprint 10: hard cap on live pending entries. Above this, new
+ *  beginPending() calls fail-open (let the request through with an
+ *  immediate 'approve' resolution) and log a WARN. The cap exists so a
+ *  buggy client that holds requests indefinitely or a flood of
+ *  malicious "ask" matches can't grow the registry without bound. */
+export const PERMISSIONS_PENDING_MAX = 1000;
+
 /** Build a permissions pending registry. Lives for the lifetime of
  *  the daemon; the enforcer owns a single instance. */
 export function createPermissionsPendingRegistry(
   deps: CreatePermissionsPendingDeps,
 ): PermissionsPendingRegistry {
   const entries = new Map<string, PendingPermissionEntry>();
+  // Tracks ids issued under the fail-open path so awaitPendingResolution
+  // can resolve them to 'approve' instead of the unknown-id 'timeout'.
+  // Each id is consumed by its single awaiter; the set never holds more
+  // than the in-flight burst that triggered the cap.
+  const failOpenIds = new Set<string>();
 
   /** Short human-readable "title" shown in the banner + OS notification.
    *  Must be stable so duplicate-broadcast collapsing works later. */
@@ -209,6 +221,19 @@ export function createPermissionsPendingRegistry(
     recentApproveCount?: number;
     sessionId?: string | null;
   }): string => {
+    if (entries.size >= PERMISSIONS_PENDING_MAX) {
+      // Cap reached. Fail-open: skip the hold, let the caller through
+      // (awaitPendingResolution returns 'approve' for this id). No
+      // broadcast, no onFinalized — fail-open is a system-level event
+      // and we don't want a flood of audit rows masking the underlying
+      // capacity issue. The WARN is the operator signal.
+      const id = randomUUID();
+      failOpenIds.add(id);
+      console.warn(
+        `[Permissions] pending registry at cap (${PERMISSIONS_PENDING_MAX}); failing open for rule=${args.matchedRule.raw || args.matchedRule.id}`,
+      );
+      return id;
+    }
     const id = randomUUID();
     const holdSec = Math.max(1, deps.getHoldSec());
     const expiresAt = Date.now() + holdSec * 1000;
@@ -324,6 +349,10 @@ export function createPermissionsPendingRegistry(
   };
 
   const awaitPendingResolution = (pendingId: string): Promise<PendingOutcome> => {
+    if (failOpenIds.has(pendingId)) {
+      failOpenIds.delete(pendingId);
+      return Promise.resolve('approve');
+    }
     const entry = entries.get(pendingId);
     // Unknown id — fall through as timeout. Matches scanner behavior.
     if (!entry) return Promise.resolve('timeout');

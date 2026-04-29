@@ -68,6 +68,9 @@ jobs:
       - name: Mock budget check
         run: node scripts/mock-budget.mjs
 
+      - name: Detector ReDoS check
+        run: node scripts/check-detector-regex.mjs
+
       - name: Fake API contract check
         run: pnpm exec vitest run packages/test-harness/src/fake-anthropic.contract.test.ts
 

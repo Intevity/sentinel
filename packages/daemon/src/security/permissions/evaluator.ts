@@ -119,6 +119,26 @@ export function compileRules(rules: PermissionRule[]): CompiledRuleSet {
   };
 }
 
+/** Sprint 10: stable content hash over the fields `compileRules` reads.
+ *  When two rule arrays have the same hash, `compileRules` must produce
+ *  identical output — allowing the enforcer to keep its cached compiled
+ *  set across `invalidate()` calls when the underlying rows didn't
+ *  actually change (e.g., a settings save that triggered invalidate but
+ *  left rules untouched, or a no-op upsert from claude-sync). */
+export function compileRulesContentHash(rules: PermissionRule[]): string {
+  const sorted = rules
+    .filter((r) => r.enabled)
+    .slice()
+    .sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt);
+  const h = createHash('sha256');
+  for (const r of sorted) {
+    h.update(
+      `${r.id}\0${r.decision}\0${r.tool}\0${r.pattern ?? '\x01'}\0${r.priority}\0${r.createdAt}\0${r.projectScope ?? '\x01'}\n`,
+    );
+  }
+  return h.digest('hex');
+}
+
 /** True iff `rule` matches the tool call. Handles both whole-tool rules
  *  (pattern === null) and specifier rules. Exported for unit tests. */
 export function ruleMatches(
