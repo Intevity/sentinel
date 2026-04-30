@@ -239,8 +239,7 @@ pub fn route_recent_event() {
     // LSUIElement tray apps stay hidden by default — bring the
     // window forward so the emitted event lands on a visible tab.
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.set_focus();
+        crate::activation::show_and_activate(&window);
     }
     let payload = serde_json::json!({ "eventId": event_id });
     let _ = app.emit(DETAILS_EVENT, payload);

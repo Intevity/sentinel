@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activation;
 mod daemon;
 mod first_run;
 mod ipc;
@@ -237,8 +238,7 @@ fn main() {
             // staring at a tray icon with no cue that anything needs doing.
             if let Some(window) = app.get_webview_window("main") {
                 if first_run::is_first_run(app.handle()) {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                    activation::show_and_activate(&window);
                 } else {
                     window.hide().unwrap_or_default();
                 }

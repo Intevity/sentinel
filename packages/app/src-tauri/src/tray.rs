@@ -119,8 +119,7 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             }
             "open" => {
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                    crate::activation::show_and_activate(&window);
                 }
             }
             "check_updates" => {
@@ -143,8 +142,7 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     if window.is_visible().unwrap_or(false) {
                         let _ = window.hide();
                     } else {
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        crate::activation::show_and_activate(&window);
                     }
                 }
             }

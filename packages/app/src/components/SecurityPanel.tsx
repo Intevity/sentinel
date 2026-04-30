@@ -105,6 +105,7 @@ const KIND_LABEL: Record<SecurityKind, string> = {
   prompt_injection: 'Injection',
   risky_bash: 'Risky Bash',
   risky_write: 'Risky Write',
+  risky_read: 'Risky Read',
   risky_webfetch: 'Risky WebFetch',
   scan_truncated: 'Scan Truncated',
   scan_skipped_encoding: 'Scan Skipped',
@@ -146,6 +147,18 @@ const PROVENANCE_META: Record<
     bg: 'bg-ios-green/10',
   },
   'tool-use': { label: 'Tool use', Icon: Terminal, color: 'text-ios-blue', bg: 'bg-ios-blue/10' },
+  'tool-result': {
+    label: 'Tool result',
+    Icon: Terminal,
+    color: 'text-ios-blue',
+    bg: 'bg-ios-blue/10',
+  },
+  'mcp-description': {
+    label: 'MCP tool description',
+    Icon: Info,
+    color: 'text-[#8E8E93]',
+    bg: 'bg-[#8E8E93]/10',
+  },
   conversation: {
     label: 'Conversation',
     Icon: MessageSquare,
