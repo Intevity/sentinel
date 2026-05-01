@@ -379,6 +379,43 @@ describe('IPC — security events', () => {
     expect(r.data).toEqual([]);
   });
 
+  it('get_security_events surfaces LOW real findings by default and gates telemetry behind includeWeakSignals', async () => {
+    ctx = await startTestDaemon();
+    // Real LOW-severity finding with sub-0.7 confidence — this is the
+    // case that used to be invisible on the Security page (decoupled
+    // from the weak-signal/telemetry filter as of this change).
+    await ctx.request({
+      type: 'dev_trigger_security_event',
+      scenario: 'tool-use-low-severity',
+    });
+    await ctx.waitForBroadcast((m) => m.type === 'security_event_detected', 3000);
+    // Scanner-self-telemetry — should still be hidden by default.
+    await ctx.request({
+      type: 'dev_trigger_security_event',
+      scenario: 'scan-truncated',
+    });
+    await ctx.waitForBroadcast((m) => m.type === 'security_event_detected', 3000);
+
+    const defaultResp = await ctx.request<Array<{ kind: string; severity: string }>>({
+      type: 'get_security_events',
+    });
+    expect(defaultResp.success).toBe(true);
+    const defaultKinds = (defaultResp.data ?? []).map((e) => e.kind).sort();
+    // Real LOW finding visible by default — the bug-fix lock-in.
+    expect(defaultKinds).toContain('risky_bash');
+    // Telemetry hidden by default.
+    expect(defaultKinds).not.toContain('scan_truncated');
+
+    const allResp = await ctx.request<Array<{ kind: string; severity: string }>>({
+      type: 'get_security_events',
+      includeWeakSignals: true,
+    });
+    expect(allResp.success).toBe(true);
+    const allKinds = (allResp.data ?? []).map((e) => e.kind).sort();
+    expect(allKinds).toContain('risky_bash');
+    expect(allKinds).toContain('scan_truncated');
+  });
+
   it('acknowledge_security_event on unknown id returns success=false', async () => {
     ctx = await startTestDaemon();
     const r = await ctx.request({ type: 'acknowledge_security_event', id: 99999 });

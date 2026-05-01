@@ -94,15 +94,82 @@ describe('security_events DB helpers', () => {
     expect(listSecurityEvents(db)).toHaveLength(2);
   });
 
-  it('filters by accountId and minConfidence', () => {
+  it('filters by accountId', () => {
     const db = getDb(dbPath);
-    insertSecurityEvent(db, makeEvent({ accountId: 'acc-a', confidence: 0.95, matchHash: 'h1' }));
-    insertSecurityEvent(db, makeEvent({ accountId: 'acc-b', confidence: 0.95, matchHash: 'h2' }));
-    insertSecurityEvent(db, makeEvent({ accountId: 'acc-a', confidence: 0.5, matchHash: 'h3' }));
-    const aOnly = listSecurityEvents(db, { accountId: 'acc-a' });
-    expect(aOnly).toHaveLength(2);
-    const highConf = listSecurityEvents(db, { minConfidence: 0.7 });
-    expect(highConf).toHaveLength(2);
+    insertSecurityEvent(db, makeEvent({ accountId: 'acc-a', matchHash: 'h1' }));
+    insertSecurityEvent(db, makeEvent({ accountId: 'acc-b', matchHash: 'h2' }));
+    insertSecurityEvent(db, makeEvent({ accountId: 'acc-a', matchHash: 'h3' }));
+    expect(listSecurityEvents(db, { accountId: 'acc-a' })).toHaveLength(2);
+    expect(listSecurityEvents(db, { accountId: 'acc-b' })).toHaveLength(1);
+  });
+
+  it('excludes telemetry kinds when excludeTelemetry is true; returns LOW real findings regardless of confidence', () => {
+    const db = getDb(dbPath);
+    // HIGH-confidence real finding
+    insertSecurityEvent(
+      db,
+      makeEvent({
+        severity: 'high',
+        kind: 'secret',
+        confidence: 0.95,
+        matchHash: 'h-high',
+      }),
+    );
+    // LOW-severity real finding with sub-0.7 confidence — used to be hidden
+    // by the old minConfidence filter. Must now appear by default so users
+    // can see details on the Security page (matches Alerts → Notification
+    // History which already shows it).
+    insertSecurityEvent(
+      db,
+      makeEvent({
+        severity: 'low',
+        kind: 'pii',
+        confidence: 0.6,
+        matchHash: 'h-low-real',
+      }),
+    );
+    // Scanner-self-telemetry — hidden by default.
+    insertSecurityEvent(
+      db,
+      makeEvent({
+        severity: 'low',
+        kind: 'scan_truncated',
+        confidence: 0.99,
+        matchHash: 'h-truncated',
+      }),
+    );
+    insertSecurityEvent(
+      db,
+      makeEvent({
+        severity: 'low',
+        kind: 'scan_skipped_encoding',
+        confidence: 0.99,
+        matchHash: 'h-skipped',
+      }),
+    );
+    insertSecurityEvent(
+      db,
+      makeEvent({
+        severity: 'low',
+        kind: 'scan_deferred_oversized',
+        confidence: 0.99,
+        matchHash: 'h-deferred',
+      }),
+    );
+
+    // Default (excludeTelemetry: true) — both real findings, no telemetry.
+    const filtered = listSecurityEvents(db, { excludeTelemetry: true });
+    const filteredHashes = filtered.map((e) => e.matchHash).sort();
+    expect(filteredHashes).toEqual(['h-high', 'h-low-real']);
+    // Regression lock-in: the LOW/0.6 PII row MUST be visible by default.
+    expect(filteredHashes).toContain('h-low-real');
+
+    // excludeTelemetry: false (the "Show scan diagnostics" toggle on) — all 5.
+    const all = listSecurityEvents(db, { excludeTelemetry: false });
+    expect(all).toHaveLength(5);
+
+    // Default options (no excludeTelemetry) — return everything (caller opt-in).
+    expect(listSecurityEvents(db)).toHaveLength(5);
   });
 
   it('applies limit', () => {

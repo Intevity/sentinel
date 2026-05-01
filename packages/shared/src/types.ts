@@ -548,14 +548,24 @@ export interface SecurityEvent {
   title: string;
   /** Human-readable rationale shown in the expand panel. */
   reason: string;
-  /** e.g. "AKIA…[16 redacted]…AB12" — first 4, last 4, length in middle. */
+  /** Two formats:
+   *  - Sensitive (secret/PII/unicode-tag/base64): `"AKIA…[16 redacted]…AB12"`
+   *    via `maskSecret()` — first 4, last 4, length in middle.
+   *  - Non-secret pattern findings (text-pattern prompt-injection rules):
+   *    the literal matched phrase verbatim (e.g. `"execute this"`), since
+   *    the match itself is the threat signal and not sensitive. */
   matchMask: string | null;
   /** sha256(matched).slice(0,32) — dedup primary key component. */
   matchHash: string;
   /** sha256(40-char window around the match).slice(0,32). */
   contextHash: string | null;
-  /** 40 chars around the match with the secret itself replaced by
-   *  `[REDACTED:kind]`. Null when `securityPersistSnippet` is off. */
+  /** Two formats:
+   *  - Sensitive findings: 40 chars each side with the match replaced by
+   *    `[REDACTED:kind]` (`buildSnippet`).
+   *  - Non-secret pattern findings: ~200 chars each side, trimmed to the
+   *    nearest sentence boundary, with the literal match wrapped in `«…»`
+   *    so the UI can render it highlighted (`buildPatternSnippet`).
+   *  Null when `securityPersistSnippet` is off. */
   snippet: string | null;
   /** File path, tool name, or block index — whatever tells the user
    *  "which part of my prompt/response triggered this". */

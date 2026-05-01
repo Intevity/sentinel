@@ -1427,12 +1427,26 @@ export function insertSecurityEvent(
   return { id, isNew: true };
 }
 
+/** Scanner-self-telemetry kinds — informational events the scanner emits about
+ *  its own state (truncation, encoding-skip, deferred-oversized). They are
+ *  always low-severity, low-signal, and easy to ignore once seen, so the
+ *  Security panel hides them behind the "Show scan diagnostics" toggle.
+ *  Real findings (any severity) are never excluded by this list. */
+export const TELEMETRY_SECURITY_KINDS: readonly SecurityKind[] = [
+  'scan_truncated',
+  'scan_skipped_encoding',
+  'scan_deferred_oversized',
+];
+
 export function listSecurityEvents(
   db: Database.Database,
   opts: {
     accountId?: string;
     limit?: number;
-    minConfidence?: number;
+    /** When true, filter out scanner-self-telemetry kinds (see
+     *  TELEMETRY_SECURITY_KINDS). Real findings of any severity are always
+     *  returned regardless of this flag. */
+    excludeTelemetry?: boolean;
   } = {},
 ): SecurityEvent[] {
   let sql = 'SELECT * FROM security_events WHERE 1=1';
@@ -1442,9 +1456,12 @@ export function listSecurityEvents(
     sql += ' AND account_id = @accountId';
     params['accountId'] = opts.accountId;
   }
-  if (opts.minConfidence !== undefined) {
-    sql += ' AND confidence >= @minConfidence';
-    params['minConfidence'] = opts.minConfidence;
+  if (opts.excludeTelemetry === true) {
+    const placeholders = TELEMETRY_SECURITY_KINDS.map((_, i) => `@telemetry${i}`).join(', ');
+    sql += ` AND kind NOT IN (${placeholders})`;
+    TELEMETRY_SECURITY_KINDS.forEach((k, i) => {
+      params[`telemetry${i}`] = k;
+    });
   }
 
   sql += ' ORDER BY ts DESC';

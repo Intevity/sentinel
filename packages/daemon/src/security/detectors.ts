@@ -1,5 +1,11 @@
 import type { SecurityKind, SecuritySeverity, FindingProvenance } from '@claude-sentinel/shared';
-import { buildSnippet, contextHashOf, hashText, maskSecret } from './redact.js';
+import {
+  buildPatternSnippet,
+  buildSnippet,
+  contextHashOf,
+  hashText,
+  maskSecret,
+} from './redact.js';
 
 export type { FindingProvenance };
 
@@ -979,6 +985,17 @@ interface InjectionRule {
    *  `scanInjection` category — for signals that are too specific to be
    *  false positives. */
   alwaysOn?: boolean;
+  /** How to render the matched text in persisted snippet/matchMask:
+   *  - 'preserve' (default for text-pattern rules): the match is plain
+   *    English/markup that IS the threat signal. Store it verbatim and
+   *    surround with a wider, sentence-trimmed context window so the user
+   *    can tell what fired.
+   *  - 'mask' (default): treat the match as sensitive — replace it with
+   *    `[REDACTED:<kind>]` in the snippet and `maskSecret()` in matchMask.
+   *    Used for `unicode-tag-chars` (invisible code points) where preserving
+   *    wouldn't render anyway.
+   *  Defaults to 'mask' when omitted. */
+  displayMatch?: 'preserve' | 'mask';
 }
 
 /** Rules that fire on user-supplied request text: `system`, plain message
@@ -1000,6 +1017,7 @@ const INJECTION_RULES_REQUEST: InjectionRule[] = [
     confidence: 0.55,
     regex:
       /\bignore\s+(?:(?:all|the|any|every|my|your)\s+)?(?:previous|prior|above|earlier|preceding|former)?\s*(?:instructions?|prompts?|directives?|rules?)\b/gi,
+    displayMatch: 'preserve',
   },
   {
     id: 'jailbreak-persona',
@@ -1008,6 +1026,7 @@ const INJECTION_RULES_REQUEST: InjectionRule[] = [
     confidence: 0.7,
     regex:
       /\byou\s+are\s+(now\s+)?(dan|in\s+developer\s+mode|jailbroken|unrestricted|gpt[- ]?4\s+with\s+no|without\s+any\s+restrictions?)\b/gi,
+    displayMatch: 'preserve',
   },
   {
     id: 'role-impersonation',
@@ -1015,6 +1034,7 @@ const INJECTION_RULES_REQUEST: InjectionRule[] = [
     reason: 'A system/role marker appears inside non-system content',
     confidence: 0.65,
     regex: /(^|\n)\s*(SYSTEM:|<\|im_start\|>\s*system|<system>|\[INST\])/gm,
+    displayMatch: 'preserve',
   },
 ];
 
@@ -1043,6 +1063,7 @@ const INJECTION_RULES_TOOL_RESULT: InjectionRule[] = [
     // being structurally distinctive.
     regex:
       /(<\|system\|>|<\|im_start\|>\s*system|<system>|<\/system>|\[INST\]|\[\/INST\]|SYSTEM:|Assistant:|Human:)/g,
+    displayMatch: 'preserve',
   },
   {
     id: 'tool-result-multistep-instruction',
@@ -1050,6 +1071,7 @@ const INJECTION_RULES_TOOL_RESULT: InjectionRule[] = [
     reason: '"Now execute/run/download/save the following" is a classic injection lead',
     confidence: 0.65,
     regex: /\b(now\s+)?(execute|run|download|save|write|append)\s+(this|the\s+following)\b/gi,
+    displayMatch: 'preserve',
   },
   {
     // Markdown link whose query string contains an auth-style key. Attacker
@@ -1061,6 +1083,7 @@ const INJECTION_RULES_TOOL_RESULT: InjectionRule[] = [
     reason: 'A markdown link query string includes token/key/secret/cookie/session/auth',
     confidence: 0.9,
     regex: /\[[^\]]+\]\(https?:\/\/[^)]*\?[^)]*(token|key|secret|cookie|session|auth)[^)]*\)/gi,
+    displayMatch: 'preserve',
   },
   {
     // <img> tag whose src interpolates a $VAR — Claude's renderer might
@@ -1072,6 +1095,7 @@ const INJECTION_RULES_TOOL_RESULT: InjectionRule[] = [
     reason: 'An <img> tag references a $-prefixed variable in its src URL',
     confidence: 0.95,
     regex: /<img\s+[^>]*src=["']https?:\/\/[^"']+\?[^"']*=[^"']*\$/gi,
+    displayMatch: 'preserve',
   },
   {
     // Heuristic: an attacker-supplied page suggesting the agent issue a
@@ -1083,6 +1107,7 @@ const INJECTION_RULES_TOOL_RESULT: InjectionRule[] = [
     reason: 'Tool name + open-paren pattern suggests an injection telling the agent what to call',
     confidence: 0.7,
     regex: /\b(Bash|Write|Edit|WebFetch)\s*\(\s*[^)]*[/$"'\\\s][^)]{0,200}\)/g,
+    displayMatch: 'preserve',
   },
 ];
 
@@ -1189,6 +1214,23 @@ function scanInjectionIn(
       const severity: SecuritySeverity =
         adjustedConfidence >= 0.9 ? 'high' : adjustedConfidence >= 0.6 ? 'medium' : 'low';
 
+      // Non-secret pattern rules (default for text-pattern injection rules):
+      // the matched English IS the threat signal, so preserve it verbatim
+      // and surround with a wider, sentence-trimmed context window. The UI
+      // splits on the «…» markers in the snippet to render the match
+      // highlighted. Sensitive rules (unicode-tag-chars; secret/PII paths
+      // elsewhere) keep the redact-and-mask behavior.
+      const preserve = rule.displayMatch === 'preserve' && end > start;
+      const matchMask = preserve ? match : maskSecret(match);
+      const snippet = preserve
+        ? buildPatternSnippet({ fullText, matchStart: start, matchEnd: end }).snippet
+        : buildSnippet({
+            fullText,
+            matchStart: start,
+            matchEnd: end,
+            kind: 'prompt_injection',
+          });
+
       findings.push({
         detectorId: rule.id,
         kind: 'prompt_injection',
@@ -1196,15 +1238,10 @@ function scanInjectionIn(
         confidence: adjustedConfidence,
         title: rule.title,
         reason: adjustedReason,
-        matchMask: maskSecret(match),
+        matchMask,
         matchHash: hashText(match.toLowerCase()),
         contextHash: contextHashOf(fullText, start, end),
-        snippet: buildSnippet({
-          fullText,
-          matchStart: start,
-          matchEnd: end,
-          kind: 'prompt_injection',
-        }),
+        snippet,
         sourceHint,
         provenance: classifyProvenance('prompt_injection', sourceHint),
       });

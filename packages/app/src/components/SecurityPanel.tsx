@@ -349,7 +349,7 @@ export default function SecurityPanel({
     if (severityFilter !== 'all') parts.push(severityFilter.toUpperCase());
     if (kindFilter !== 'all') parts.push(KIND_LABEL[kindFilter as SecurityKind]);
     if (search.trim()) parts.push(`"${search.trim()}"`);
-    if (includeWeakSignals) parts.push('incl. weak');
+    if (includeWeakSignals) parts.push('incl. diagnostics');
     return parts.join(' · ');
   }, [severityFilter, kindFilter, search, includeWeakSignals]);
 
@@ -654,7 +654,7 @@ export default function SecurityPanel({
                 onChange={(e) => setIncludeWeakSignals(e.target.checked)}
                 className="w-3 h-3 accent-ios-blue"
               />
-              Show weak signals (confidence &lt; 0.7)
+              Show scan diagnostics (truncation, encoding-skip, deferred)
             </label>
           </div>
         )}
@@ -1109,9 +1109,7 @@ function SecurityRow({
           {event.snippet && (
             <div>
               <span className="text-[#8E8E93]">Context:</span>{' '}
-              <code className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded break-all">
-                {event.snippet}
-              </code>
+              <HighlightedSnippet text={event.snippet} />
             </div>
           )}
           <DetailsList details={event.details} />
@@ -1312,6 +1310,37 @@ const DETAILS_LABEL: Record<string, string> = {
   prompt: 'Prompt',
   description: 'Description',
 };
+
+/** Renders the `Context:` snippet. Two formats arrive from the daemon:
+ *  - Sensitive findings (secret/PII/unicode-tag/base64): a 40-char window
+ *    with `[REDACTED:kind]` in place of the match. No markers — falls
+ *    through to plain rendering.
+ *  - Non-secret pattern findings: ~200 chars trimmed to a sentence boundary,
+ *    with the literal match wrapped in `«…»` markers. We split on the
+ *    first `«` and last `»` (so any inner literals survive as text) and
+ *    render the matched span with a yellow highlight.
+ *  Old DB rows pre-dating the marker format also fall through cleanly. */
+function HighlightedSnippet({ text }: { text: string }): React.ReactElement {
+  const open = text.indexOf('«');
+  const close = text.lastIndexOf('»');
+  if (open === -1 || close === -1 || close <= open) {
+    return (
+      <code className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded break-all">
+        {text}
+      </code>
+    );
+  }
+  const before = text.slice(0, open);
+  const match = text.slice(open + 1, close);
+  const after = text.slice(close + 1);
+  return (
+    <code className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded break-all">
+      {before}
+      <span className="bg-ios-orange/20 text-ios-orange font-semibold px-0.5 rounded">{match}</span>
+      {after}
+    </code>
+  );
+}
 
 function DetailsList({
   details,

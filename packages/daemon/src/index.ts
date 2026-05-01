@@ -1447,11 +1447,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
       }
 
       case 'get_security_events': {
-        const minConfidence = msg.includeWeakSignals === true ? 0 : 0.7;
         const rows = listSecurityEvents(db, {
           ...(msg.accountId !== undefined ? { accountId: msg.accountId } : {}),
           limit: msg.limit ?? 200,
-          minConfidence,
+          excludeTelemetry: msg.includeWeakSignals !== true,
         });
         respond({ requestType: 'get_security_events', success: true, data: rows });
         break;

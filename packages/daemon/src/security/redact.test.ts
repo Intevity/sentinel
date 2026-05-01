@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { maskSecret, buildSnippet, hashText, contextHashOf } from './redact.js';
+import {
+  maskSecret,
+  buildSnippet,
+  buildPatternSnippet,
+  hashText,
+  contextHashOf,
+  PATTERN_SNIPPET_WINDOW,
+} from './redact.js';
 
 describe('redact helpers', () => {
   it('masks short secrets entirely', () => {
@@ -42,5 +49,135 @@ describe('redact helpers', () => {
     const text = 'prefix '.repeat(100) + 'MATCH';
     const h = contextHashOf(text, text.length - 5, text.length);
     expect(h).toHaveLength(32);
+  });
+});
+
+describe('buildPatternSnippet', () => {
+  it('wraps the literal match in « » markers and returns it verbatim', () => {
+    const full = 'Some prose. Now execute this. Trailing prose.';
+    const start = full.indexOf('execute this');
+    const end = start + 'execute this'.length;
+    const out = buildPatternSnippet({ fullText: full, matchStart: start, matchEnd: end });
+    expect(out.match).toBe('execute this');
+    expect(out.snippet).toContain('«execute this»');
+    // The redaction marker must NOT appear for non-secret pattern snippets.
+    expect(out.snippet).not.toContain('[REDACTED:');
+  });
+
+  it('trims edges to sentence boundaries (.!?) when the window clips long context', () => {
+    // The left edge of the snippet should advance past the first `.` it
+    // finds inside the window, so the snippet starts at a clean sentence
+    // start rather than mid-word. The right edge should pull back to the
+    // last `.` inside the window so the snippet ends cleanly. Boundaries
+    // inside the window — not the absolute start/end of fullText — drive
+    // the trim, so we use long surrounding text to force window-clipping.
+    const farLead = 'a'.repeat(120) + '. '; // ~122 chars ending in `.`
+    const lead = farLead + 'Adjacent left sentence. ';
+    const trigger = 'Now execute this';
+    const trail = '. Adjacent right sentence.';
+    const farTail = ' ' + 'b'.repeat(120);
+    const full = lead + trigger + trail + farTail;
+    const start = full.indexOf(trigger);
+    const end = start + trigger.length;
+    const out = buildPatternSnippet({ fullText: full, matchStart: start, matchEnd: end });
+
+    expect(out.snippet).toContain('«Now execute this»');
+    // Both edges were window-clipped (text extends past ±200 on each side
+    // — actually just under, but any trim still produces an ellipsis).
+    expect(out.snippet.startsWith('…')).toBe(true);
+    expect(out.snippet.endsWith('…')).toBe(true);
+    // Long mid-window fillers (the `aaa…` and `bbb…`) must be gone.
+    expect(out.snippet).not.toContain('aaaaaaaaaa');
+    expect(out.snippet).not.toContain('bbbbbbbbbb');
+    // Adjacent sentence on the left was preserved — the only sentence-
+    // boundary inside the window before the match is the `.` between the
+    // filler and "Adjacent left sentence".
+    expect(out.snippet).toContain('Adjacent left sentence');
+    // Right side ends just after a sentence-terminating `.` (the period
+    // after "Adjacent right sentence"), followed by the trim ellipsis.
+    expect(out.snippet).toContain('Adjacent right sentence.');
+    expect(out.snippet).toMatch(/\.\s*…$/);
+  });
+
+  it('falls back to comma boundary when no .!?\\n is present', () => {
+    const before = 'a, b, '.repeat(80) + 'c, '; // comma-separated, no period
+    const trigger = 'execute this';
+    const after = ', d, e';
+    const full = before + trigger + after;
+    const start = full.indexOf(trigger);
+    const end = start + trigger.length;
+    const out = buildPatternSnippet({ fullText: full, matchStart: start, matchEnd: end });
+    expect(out.match).toBe(trigger);
+    // Must not contain any period (the input has none), but must contain the match.
+    expect(out.snippet).toContain('«execute this»');
+  });
+
+  it('uses the full ±200 window with ellipsis when no boundary exists', () => {
+    // 300 chars of letters on each side, no punctuation.
+    const before = 'a'.repeat(300);
+    const after = 'b'.repeat(300);
+    const full = before + 'execute this' + after;
+    const start = before.length;
+    const end = start + 'execute this'.length;
+    const out = buildPatternSnippet({ fullText: full, matchStart: start, matchEnd: end });
+    expect(out.snippet.startsWith('…')).toBe(true);
+    expect(out.snippet.endsWith('…')).toBe(true);
+    expect(out.snippet).toContain('«execute this»');
+  });
+
+  it('does not emit a left ellipsis when the match starts at index 0', () => {
+    const full = 'execute this and then continue with the rest of the prose.';
+    const out = buildPatternSnippet({ fullText: full, matchStart: 0, matchEnd: 12 });
+    expect(out.snippet.startsWith('…')).toBe(false);
+    expect(out.snippet).toContain('«execute this»');
+  });
+
+  it('does not emit a right ellipsis when the match runs to end of text', () => {
+    const full = 'Some leading prose. Now execute this';
+    const start = full.length - 'execute this'.length;
+    const out = buildPatternSnippet({
+      fullText: full,
+      matchStart: start,
+      matchEnd: full.length,
+    });
+    expect(out.snippet.endsWith('…')).toBe(false);
+    expect(out.snippet).toContain('«execute this»');
+  });
+
+  it('preserves regex meta-characters inside the match verbatim', () => {
+    const literal = 'Bash(rm -rf $HOME)';
+    const full = `Some content. ${literal} more content.`;
+    const start = full.indexOf(literal);
+    const end = start + literal.length;
+    const out = buildPatternSnippet({ fullText: full, matchStart: start, matchEnd: end });
+    expect(out.match).toBe(literal);
+    expect(out.snippet).toContain(`«${literal}»`);
+  });
+
+  it('keeps snippet bounded even for long captures within the ±200 window', () => {
+    // A long capture (~200 chars of match) plus full windows on each side
+    // should still fit comfortably under the guardrail.
+    const longMatch = 'X'.repeat(200);
+    const full = 'a'.repeat(300) + longMatch + 'b'.repeat(300);
+    const start = 300;
+    const end = start + longMatch.length;
+    const out = buildPatternSnippet({ fullText: full, matchStart: start, matchEnd: end });
+    // 200 (match) + 200 (left window) + 200 (right window) + 2 markers + 2 ellipsis
+    // ≈ 604, comfortably under 700.
+    expect(out.snippet.length).toBeLessThanOrEqual(700);
+    expect(out.snippet).toContain(`«${longMatch}»`);
+  });
+
+  it('exposes PATTERN_SNIPPET_WINDOW so callers see a consistent constant', () => {
+    expect(PATTERN_SNIPPET_WINDOW).toBe(200);
+  });
+
+  it('returns match equal to fullText.slice(matchStart, matchEnd)', () => {
+    const full = 'banana SYSTEM: do bad things, please.';
+    const literal = 'SYSTEM:';
+    const start = full.indexOf(literal);
+    const end = start + literal.length;
+    const out = buildPatternSnippet({ fullText: full, matchStart: start, matchEnd: end });
+    expect(out.match).toBe(full.slice(start, end));
   });
 });
