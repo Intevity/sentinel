@@ -436,6 +436,42 @@ describe('settings', () => {
       expect(off.autoUpdate).toBe(false);
     });
 
+    it('defaults alternateApiUrl to null', () => {
+      expect(loadSettings(path).alternateApiUrl).toBe(null);
+    });
+
+    it('round-trips alternateApiUrl and strips trailing path/query/hash to origin', () => {
+      saveSettings(DEFAULT_SETTINGS, path);
+      const ok = updateSettings({ alternateApiUrl: 'https://router.example.com' }, path);
+      expect(ok.alternateApiUrl).toBe('https://router.example.com');
+      // Origin-only: path/query/hash are stripped on save.
+      const stripped = updateSettings(
+        { alternateApiUrl: 'https://router.example.com/foo/bar?q=1#frag' },
+        path,
+      );
+      expect(stripped.alternateApiUrl).toBe('https://router.example.com');
+      // http origins are accepted (loopback / lab use cases).
+      const httpOk = updateSettings({ alternateApiUrl: 'http://localhost:8080' }, path);
+      expect(httpOk.alternateApiUrl).toBe('http://localhost:8080');
+      // Empty string clears the setting (UI sentinel).
+      const cleared = updateSettings({ alternateApiUrl: '' }, path);
+      expect(cleared.alternateApiUrl).toBe(null);
+      // Whitespace-only also clears.
+      const ws = updateSettings({ alternateApiUrl: '   ' }, path);
+      expect(ws.alternateApiUrl).toBe(null);
+      // Non-http(s) protocols are dropped (coerce reverts to default null).
+      saveSettings(DEFAULT_SETTINGS, path);
+      const ftp = updateSettings({ alternateApiUrl: 'ftp://nope.example' }, path);
+      expect(ftp.alternateApiUrl).toBe(null);
+      // Malformed strings are dropped.
+      saveSettings(DEFAULT_SETTINGS, path);
+      const garbage = updateSettings({ alternateApiUrl: 'not a url' }, path);
+      expect(garbage.alternateApiUrl).toBe(null);
+      // Explicit null is honored.
+      const nulled = updateSettings({ alternateApiUrl: null }, path);
+      expect(nulled.alternateApiUrl).toBe(null);
+    });
+
     it('accepts a well-formed lastScanBenchmark payload', () => {
       // Valid payload — every field passes the shape check, gets persisted.
       const goodUpdate = updateSettings(

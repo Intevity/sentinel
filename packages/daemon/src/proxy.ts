@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest } from 'http';
 import type { Server } from 'http';
-import { getAnthropicUpstream } from './hosts.js';
+import { getProxyUpstream } from './hosts.js';
 import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { OverageStateMachine } from './overage.js';
@@ -1066,7 +1066,7 @@ async function proxyToAnthropic(
   };
 
   return new Promise((resolve, reject) => {
-    const upstream = getAnthropicUpstream();
+    const upstream = getProxyUpstream(settings.alternateApiUrl);
     const makeRequest = upstream.protocol === 'http:' ? httpRequest : httpsRequest;
 
     /** Dispatch one upstream attempt. On a 429 where a retry credential is

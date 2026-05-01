@@ -16,6 +16,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     alertSoundName: 'Glass',
     overageOsNotify: true,
     autoUpdate: false,
+    alternateApiUrl: null,
     poolExcludedIds: [],
     overageEnabledIds: [],
     budgetWeeklyUsdByAccount: {},

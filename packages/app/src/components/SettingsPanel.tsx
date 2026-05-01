@@ -23,7 +23,7 @@ import { accountColor } from '../lib/accountColor.js';
 import { planLabel } from '../lib/plan.js';
 import AccountColorDot from './AccountColorDot.js';
 import OverlayPanel from './OverlayPanel.js';
-import { Section, ToggleRow, RadioRow } from './settings/primitives.js';
+import { Section, ToggleRow, RadioRow, SettingsCard } from './settings/primitives.js';
 
 /**
  * Which of the 4 Settings tabs a given deep-link anchor lives in. Used by
@@ -144,6 +144,10 @@ export default function SettingsPanel({
 
   const setAutoUpdate = (enabled: boolean): void => {
     void update({ autoUpdate: enabled }).catch(() => undefined);
+  };
+
+  const setAlternateApiUrl = (value: string | null): void => {
+    void update({ alternateApiUrl: value }).catch(() => undefined);
   };
 
   const setCacheTtlForceOneHour = (enabled: boolean): void => {
@@ -746,6 +750,18 @@ export default function SettingsPanel({
                   </select>
                 </div>
               </Section>
+            )}
+
+            {activeTab === 'general' && (
+              <SettingsCard
+                title="Advanced"
+                {...(settings.alternateApiUrl ? { summary: 'Alternate API URL set' } : {})}
+              >
+                <AlternateApiUrlRow
+                  value={settings.alternateApiUrl}
+                  onChange={setAlternateApiUrl}
+                />
+              </SettingsCard>
             )}
 
             {activeTab === 'security' && onRunSetupWizard && (
@@ -1670,6 +1686,75 @@ function BudgetInputRow(props: {
           className="w-20 px-2 py-1 rounded-md text-right text-[13px] tabular-nums bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white placeholder:text-[#8E8E93]/60 focus:outline-none focus:ring-2 focus:ring-ios-blue/40"
         />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Text input for `alternateApiUrl`. Debounced write-through (400 ms) like
+ * BudgetInputRow so each keystroke doesn't fire its own update_settings IPC.
+ * Validation runs on debounce: empty saves as null; valid http(s) origin
+ * saves; everything else surfaces an inline error and skips the save. The
+ * daemon's coercer is still the source of truth: it strips any trailing
+ * path/query/hash, so a value displayed here is always the persisted origin.
+ */
+function AlternateApiUrlRow(props: {
+  value: string | null;
+  onChange: (value: string | null) => void;
+}): React.ReactElement {
+  const [text, setText] = useState<string>(props.value ?? '');
+  const [error, setError] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const next = props.value ?? '';
+    if (text === '' || text === props.value) {
+      setText(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.value]);
+
+  const onChangeDebounced = (raw: string): void => {
+    setText(raw);
+    setError(null);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      const trimmed = raw.trim();
+      if (trimmed === '') {
+        props.onChange(null);
+        return;
+      }
+      try {
+        const u = new URL(trimmed);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+          setError('Use http:// or https://');
+          return;
+        }
+        props.onChange(u.origin);
+      } catch {
+        setError('Enter a valid URL');
+      }
+    }, 400);
+  };
+
+  return (
+    <div className="px-3 py-2.5">
+      <p className="text-[13px] font-medium text-black dark:text-white">Alternate API URL</p>
+      <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+        Claude Code traffic will route through this URL. Account, usage, and OAuth queries continue
+        to use api.anthropic.com.
+      </p>
+      <input
+        type="text"
+        inputMode="url"
+        autoComplete="off"
+        spellCheck={false}
+        value={text}
+        onChange={(e) => onChangeDebounced(e.target.value)}
+        placeholder="https://router.example.com"
+        className="mt-2 w-full px-2 py-1.5 rounded-md text-[12px] bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white placeholder:text-[#8E8E93]/60 focus:outline-none focus:ring-2 focus:ring-ios-blue/40"
+      />
+      {error && <p className="text-[11px] text-red-500 mt-1">{error}</p>}
     </div>
   );
 }

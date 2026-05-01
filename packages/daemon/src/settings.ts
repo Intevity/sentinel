@@ -39,6 +39,7 @@ export const DEFAULT_SETTINGS: Settings = {
   alertSoundName: 'Glass',
   overageOsNotify: true,
   autoUpdate: false,
+  alternateApiUrl: null,
   poolExcludedIds: [],
   overageEnabledIds: [],
   budgetWeeklyUsdByAccount: {},
@@ -155,6 +156,23 @@ function coerce(raw: unknown): Settings {
   }
   if (typeof obj['autoUpdate'] === 'boolean') {
     next.autoUpdate = obj['autoUpdate'];
+  }
+  if (obj['alternateApiUrl'] === null) {
+    next.alternateApiUrl = null;
+  } else if (typeof obj['alternateApiUrl'] === 'string') {
+    const trimmed = (obj['alternateApiUrl'] as string).trim();
+    if (trimmed === '') {
+      next.alternateApiUrl = null;
+    } else {
+      try {
+        const u = new URL(trimmed);
+        if (u.protocol === 'http:' || u.protocol === 'https:') {
+          next.alternateApiUrl = u.origin;
+        }
+      } catch {
+        // Malformed URL; keep default (null). Matches securityWebhookUrl pattern.
+      }
+    }
   }
   if (Array.isArray(obj['poolExcludedIds'])) {
     next.poolExcludedIds = obj['poolExcludedIds'].filter((v): v is string => typeof v === 'string');

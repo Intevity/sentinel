@@ -26,6 +26,7 @@ function defaultSettings(over: Partial<Settings> = {}): Settings {
     alertSoundName: null,
     overageOsNotify: true,
     autoUpdate: false,
+    alternateApiUrl: null,
     poolExcludedIds: [],
     overageEnabledIds: [],
     budgetWeeklyUsdByAccount: {},

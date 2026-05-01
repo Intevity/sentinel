@@ -80,6 +80,7 @@ function benchSettings(): Settings {
     alertSoundName: null,
     overageOsNotify: false,
     autoUpdate: false,
+    alternateApiUrl: null,
     poolExcludedIds: [],
     overageEnabledIds: [],
     budgetWeeklyUsdByAccount: {},

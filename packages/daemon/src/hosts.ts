@@ -34,6 +34,36 @@ export function getAnthropicOrigin(): string {
   return getAnthropicUpstream().origin;
 }
 
+/**
+ * Upstream for the Claude Code proxy. Prefers the user-configured
+ * `alternateApiUrl` setting (e.g. a model router like Herma) when set;
+ * otherwise falls back to `getAnthropicUpstream()` (which itself respects
+ * `ANTHROPIC_UPSTREAM_URL` for tests).
+ *
+ * Used ONLY by the request-forwarding path in `proxy.ts`. Daemon-originated
+ * calls (OAuth profile, /api/oauth/usage, /v1/code/routines/run-budget) keep
+ * using `getAnthropicOrigin()` and remain on the canonical Anthropic API.
+ *
+ * Invalid input (non-http(s) protocol, malformed URL) silently falls back to
+ * the canonical upstream — the settings coercer is the validation gate; this
+ * function is the runtime safety net.
+ */
+export function getProxyUpstream(alternateApiUrl: string | null): AnthropicUpstream {
+  if (alternateApiUrl) {
+    try {
+      const u = new URL(alternateApiUrl);
+      if (u.protocol === 'http:' || u.protocol === 'https:') {
+        const protocol: 'https:' | 'http:' = u.protocol === 'http:' ? 'http:' : 'https:';
+        const port = u.port ? Number(u.port) : protocol === 'https:' ? 443 : 80;
+        return { hostname: u.hostname, port, protocol, origin: u.origin };
+      }
+    } catch {
+      // fall through to canonical
+    }
+  }
+  return getAnthropicUpstream();
+}
+
 export function getOAuthTokenUrl(): string {
   return process.env.OAUTH_TOKEN_URL ?? DEFAULT_TOKEN_URL;
 }

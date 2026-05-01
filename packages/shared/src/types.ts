@@ -207,6 +207,14 @@ export interface Settings {
    *  signing + notarization lands (Gatekeeper rejects unsigned .app
    *  replacements). Users can still opt in on Windows/Linux immediately. */
   autoUpdate: boolean;
+  /** Alternate origin for Claude Code API traffic (e.g. a model router like
+   *  Herma). When set, the proxy forwards `/v1/messages`, `/v1/complete`,
+   *  `/v1/models`, `/v1/count_tokens` to this origin instead of
+   *  `https://api.anthropic.com`. Sentinel's own daemon-originated calls
+   *  (OAuth profile, usage, run-budget, OAuth) always use the canonical
+   *  Anthropic API regardless of this setting. Origin only; trailing path
+   *  is stripped on save. `null` (default) routes to the canonical API. */
+  alternateApiUrl: string | null;
   /** Sentinel account IDs excluded from round-robin rotation. Empty means
    *  every enrolled account rotates (opt-out model) — preserves the
    *  original "RR just works" behavior and auto-enrolls newly added
