@@ -101,6 +101,9 @@ export const DEFAULT_SETTINGS: Settings = {
   securityWebhookUrl: null,
   securityWebhookSecret: null,
   securityWebhookSeverityFloor: 'high',
+  optimizeCaptureEnabled: true,
+  optimizeAutoRecommend: true,
+  optimizeShowMicroOpportunities: false,
 };
 
 const VALID_MODES: readonly SwitchingMode[] = ['off', 'round-robin'];
@@ -434,6 +437,15 @@ function coerce(raw: unknown): Settings {
     next.securityWebhookSeverityFloor = obj[
       'securityWebhookSeverityFloor'
     ] as Settings['securityWebhookSeverityFloor'];
+  }
+  if (typeof obj['optimizeCaptureEnabled'] === 'boolean') {
+    next.optimizeCaptureEnabled = obj['optimizeCaptureEnabled'];
+  }
+  if (typeof obj['optimizeAutoRecommend'] === 'boolean') {
+    next.optimizeAutoRecommend = obj['optimizeAutoRecommend'];
+  }
+  if (typeof obj['optimizeShowMicroOpportunities'] === 'boolean') {
+    next.optimizeShowMicroOpportunities = obj['optimizeShowMicroOpportunities'];
   }
   return next;
 }

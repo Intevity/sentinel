@@ -51,7 +51,7 @@ export interface TourStep {
   /** Optional tab to switch to before this step renders. The harness only
    *  runs this once per step-enter to avoid bouncing tabs while the user
    *  navigates. */
-  tab?: 'accounts' | 'usage' | 'metrics' | 'overage' | 'notifications' | 'security' | 'logs';
+  tab?: 'accounts' | 'usage' | 'metrics' | 'optimize' | 'notifications' | 'security' | 'logs';
   /** Preferred placement for the coach mark relative to the target. `auto`
    *  flips to the side with more space. Ignored when `targetId` is null. */
   placement: 'auto' | 'top' | 'bottom';

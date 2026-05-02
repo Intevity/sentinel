@@ -376,6 +376,115 @@ CREATE TABLE IF NOT EXISTS approval_events (
   approved_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ae_lookup ON approval_events(session_id, rule_key, approved_at);
+
+-- Optimize feature: per-tool-call structured metadata captured by the
+-- in-proxy tool-call extractor. Stores ONLY the fields needed to score
+-- subagent opportunities (file paths, sizes, model). Never stores raw
+-- tool inputs or outputs. Privacy posture documented inline in the
+-- Optimize Settings section: "Optimize captures file paths and tool
+-- call sizes, not contents."
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts                       INTEGER NOT NULL,
+  account_id               TEXT    NOT NULL,
+  session_id               TEXT,
+  request_id               TEXT,
+  request_seq_in_session   INTEGER,
+  -- Anthropic API tool_use block id (e.g. "toolu_01abcd..."). Used to
+  -- match the matching tool_result that arrives in a later request's
+  -- user message and backfill response_size_bytes. Nullable because
+  -- some upstream paths produce responses we can't parse.
+  tool_use_id              TEXT,
+  tool_name                TEXT    NOT NULL,
+  -- Set for Read/Write/Edit/Glob/Grep when a path/pattern is present in
+  -- the tool_use input. Null otherwise. Already discoverable via the
+  -- request-log raw bodies when logging is on; this index does not add
+  -- a new exfil surface, only a query-friendly form.
+  file_path                TEXT,
+  -- Bytes of the tool_use input JSON (input.length). Used to bias the
+  -- proportional split when the same turn issued multiple tool_use
+  -- calls.
+  input_size_bytes         INTEGER NOT NULL DEFAULT 0,
+  -- Bytes of the matching tool_result content (filled async on the
+  -- next request, where the prior turn's tool_result blocks live).
+  response_size_bytes      INTEGER,
+  -- 1 when a later request in the same session contains the file_path
+  -- string in its text content; 0 when the next request arrived without
+  -- it; NULL while the next request hasn't arrived yet.
+  was_quoted_in_later_turn INTEGER,
+  -- Matches PermissionsEnforcer's deny decision for this tool_use. The
+  -- analyzer filters out denied calls — they don't reflect intended
+  -- token spend.
+  denied                   INTEGER NOT NULL DEFAULT 0,
+  model                    TEXT    NOT NULL,
+  -- Approximate input-token contribution attributed to this call by
+  -- the analyzer (proportional split of the parent turn's tokens).
+  -- Filled lazily; null until the analyzer runs.
+  attributed_input_tokens  INTEGER,
+  attributed_cached_tokens INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_tc_session_seq ON tool_calls(session_id, request_seq_in_session);
+CREATE INDEX IF NOT EXISTS idx_tc_account_ts  ON tool_calls(account_id, ts);
+CREATE INDEX IF NOT EXISTS idx_tc_tool_ts     ON tool_calls(tool_name, ts);
+CREATE INDEX IF NOT EXISTS idx_tc_request     ON tool_calls(request_id);
+
+-- Optimize feature: ledger of recommend / install / dismiss / measure
+-- events keyed by curated subagent id. Joined to subagent_installs by
+-- (curated_id) for the dashboard. One row per analyzer pass per
+-- (account_id, session_id, curated_id, pattern) — the analyzer dedups
+-- against this table over the past 7 days so a noisy session doesn't
+-- spam multiple identical recommendations.
+CREATE TABLE IF NOT EXISTS optimization_events (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts                       INTEGER NOT NULL,
+  account_id               TEXT    NOT NULL,
+  session_id               TEXT,
+  curated_id               TEXT    NOT NULL,
+  -- 'recommended' | 'installed' | 'dismissed' | 'measured'
+  kind                     TEXT    NOT NULL,
+  pattern                  TEXT,
+  savings_usd              REAL,
+  actual_input_tokens      INTEGER,
+  actual_cached_tokens     INTEGER,
+  actual_cost_usd          REAL,
+  hypothetical_cost_usd    REAL,
+  source_tool_call_ids     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_oe_ts           ON optimization_events(ts);
+CREATE INDEX IF NOT EXISTS idx_oe_curated_kind ON optimization_events(curated_id, kind);
+CREATE INDEX IF NOT EXISTS idx_oe_account_ts   ON optimization_events(account_id, ts);
+
+-- Optimize feature: DB-as-source-of-truth mirror of ~/.claude/agents/.
+-- One row per installed subagent. The agents-sync engine pushes
+-- 'curated' rows to disk and pulls 'local' rows from user-authored .md
+-- files. Soft-delete via uninstalled_at preserves history for the
+-- savings dashboard.
+CREATE TABLE IF NOT EXISTS subagent_installs (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  -- The frontmatter name field, also the .md filename stem and the
+  -- canonical key. UNIQUE so the sync engine can upsert by name.
+  name              TEXT    NOT NULL UNIQUE,
+  -- 'curated' rows track a Sentinel-shipped GAP entry by curated_id;
+  -- 'local' rows mirror user-authored .md files. Push only writes
+  -- curated rows; pull never overwrites curated rows with local data.
+  source            TEXT    NOT NULL DEFAULT 'curated',
+  curated_id        TEXT,
+  -- SHA-256 of the GAP folder we generated this install from. Lets a
+  -- future daemon upgrade detect "your installed version is stale".
+  gap_fingerprint   TEXT,
+  md_path           TEXT    NOT NULL,
+  -- SHA-256 of the rendered .md content. Drives echo detection in
+  -- agents-sync — when a watcher event reports the same hash we just
+  -- wrote, skip the pull.
+  md_hash           TEXT    NOT NULL DEFAULT '',
+  installed_at      INTEGER NOT NULL,
+  uninstalled_at    INTEGER,
+  -- 1 = user opted this curated subagent out of auto-recommend. The
+  -- analyzer skips opportunities whose curated_id is opted out.
+  opted_out         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_si_source ON subagent_installs(source);
+CREATE INDEX IF NOT EXISTS idx_si_active ON subagent_installs(uninstalled_at);
 `;
 
 let _db: Database.Database | null = null;
@@ -724,6 +833,20 @@ export function getDb(
       SELECT RAISE(ABORT, 'security_events: deletes only allowed during retention sweep');
     END
   `);
+
+  // Optimize feature schema marker. The CREATE TABLE statements in SCHEMA
+  // are idempotent (IF NOT EXISTS) so a fresh install gets the tables
+  // created automatically. The marker exists so retention sweeps and
+  // future column-additive migrations can key off whether v1 already ran
+  // on this DB without inspecting table_info every startup.
+  const optimizeApplied = _db
+    .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+    .get('optimize_v1_schema_2026_05') as { ok: number } | undefined;
+  if (!optimizeApplied) {
+    _db
+      .prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)')
+      .run('optimize_v1_schema_2026_05', Date.now());
+  }
 
   return _db;
 }
@@ -3626,4 +3749,363 @@ export function deletePermissionRule(db: Database.Database, id: string): boolean
 
 function randomPermissionRuleId(): string {
   return randomUUID();
+}
+
+// ─── Optimize feature: tool_calls ─────────────────────────────────────────────
+
+export interface InsertToolCall {
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  requestId: string | null;
+  requestSeqInSession: number | null;
+  toolUseId: string | null;
+  toolName: string;
+  filePath: string | null;
+  inputSizeBytes: number;
+  responseSizeBytes: number | null;
+  denied: boolean;
+  model: string;
+}
+
+export interface ToolCallRow {
+  id: number;
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  requestId: string | null;
+  requestSeqInSession: number | null;
+  toolUseId: string | null;
+  toolName: string;
+  filePath: string | null;
+  inputSizeBytes: number;
+  responseSizeBytes: number | null;
+  wasQuotedInLaterTurn: boolean | null;
+  denied: boolean;
+  model: string;
+  attributedInputTokens: number | null;
+  attributedCachedTokens: number | null;
+}
+
+interface DbToolCallRow {
+  id: number;
+  ts: number;
+  account_id: string;
+  session_id: string | null;
+  request_id: string | null;
+  request_seq_in_session: number | null;
+  tool_use_id: string | null;
+  tool_name: string;
+  file_path: string | null;
+  input_size_bytes: number;
+  response_size_bytes: number | null;
+  was_quoted_in_later_turn: number | null;
+  denied: number;
+  model: string;
+  attributed_input_tokens: number | null;
+  attributed_cached_tokens: number | null;
+}
+
+function rowToToolCall(row: DbToolCallRow): ToolCallRow {
+  return {
+    id: row.id,
+    ts: row.ts,
+    accountId: row.account_id,
+    sessionId: row.session_id,
+    requestId: row.request_id,
+    requestSeqInSession: row.request_seq_in_session,
+    toolUseId: row.tool_use_id,
+    toolName: row.tool_name,
+    filePath: row.file_path,
+    inputSizeBytes: row.input_size_bytes,
+    responseSizeBytes: row.response_size_bytes,
+    wasQuotedInLaterTurn:
+      row.was_quoted_in_later_turn === null ? null : row.was_quoted_in_later_turn === 1,
+    denied: row.denied === 1,
+    model: row.model,
+    attributedInputTokens: row.attributed_input_tokens,
+    attributedCachedTokens: row.attributed_cached_tokens,
+  };
+}
+
+export function insertToolCall(db: Database.Database, e: InsertToolCall): number {
+  const result = db
+    .prepare(
+      `
+      INSERT INTO tool_calls (
+        ts, account_id, session_id, request_id, request_seq_in_session, tool_use_id,
+        tool_name, file_path, input_size_bytes, response_size_bytes, denied, model
+      ) VALUES (
+        @ts, @accountId, @sessionId, @requestId, @requestSeqInSession, @toolUseId,
+        @toolName, @filePath, @inputSizeBytes, @responseSizeBytes, @denied, @model
+      )
+    `,
+    )
+    .run({
+      ts: e.ts,
+      accountId: e.accountId,
+      sessionId: e.sessionId,
+      requestId: e.requestId,
+      requestSeqInSession: e.requestSeqInSession,
+      toolUseId: e.toolUseId,
+      toolName: e.toolName,
+      filePath: e.filePath,
+      inputSizeBytes: e.inputSizeBytes,
+      responseSizeBytes: e.responseSizeBytes,
+      denied: e.denied ? 1 : 0,
+      model: e.model,
+    });
+  return Number(result.lastInsertRowid);
+}
+
+/**
+ * Find a recently-recorded tool_calls row by tool_use_id within a session.
+ * Used when a later request brings tool_result blocks for the prior turn:
+ * the extractor walks each tool_result, looks up the matching prior row by
+ * tool_use_id, and backfills response_size_bytes.
+ */
+export function findToolCallByToolUseId(
+  db: Database.Database,
+  toolUseId: string,
+): ToolCallRow | null {
+  const row = db
+    .prepare('SELECT * FROM tool_calls WHERE tool_use_id = ? LIMIT 1')
+    .get(toolUseId) as DbToolCallRow | undefined;
+  return row ? rowToToolCall(row) : null;
+}
+
+export function listRecentToolCalls(
+  db: Database.Database,
+  opts: { sessionId?: string; sinceMs?: number; limit?: number },
+): ToolCallRow[] {
+  let sql = 'SELECT * FROM tool_calls WHERE 1=1';
+  const params: Record<string, string | number> = {};
+  if (opts.sessionId !== undefined) {
+    sql += ' AND session_id = @sessionId';
+    params['sessionId'] = opts.sessionId;
+  }
+  if (opts.sinceMs !== undefined) {
+    sql += ' AND ts >= @sinceMs';
+    params['sinceMs'] = opts.sinceMs;
+  }
+  sql += ' ORDER BY ts DESC';
+  if (opts.limit !== undefined) {
+    sql += ' LIMIT @limit';
+    params['limit'] = opts.limit;
+  }
+  const rows = db.prepare(sql).all(params) as DbToolCallRow[];
+  return rows.map(rowToToolCall);
+}
+
+export function backfillToolCallResponseSize(
+  db: Database.Database,
+  toolCallId: number,
+  bytes: number,
+): boolean {
+  const result = db
+    .prepare('UPDATE tool_calls SET response_size_bytes = ? WHERE id = ?')
+    .run(bytes, toolCallId);
+  return result.changes > 0;
+}
+
+export function backfillToolCallQuoteDetection(
+  db: Database.Database,
+  toolCallId: number,
+  wasQuoted: boolean,
+): boolean {
+  const result = db
+    .prepare('UPDATE tool_calls SET was_quoted_in_later_turn = ? WHERE id = ?')
+    .run(wasQuoted ? 1 : 0, toolCallId);
+  return result.changes > 0;
+}
+
+// ─── Optimize feature: optimization_events ────────────────────────────────────
+
+export type OptimizationEventKind = 'recommended' | 'installed' | 'dismissed' | 'measured';
+
+export interface InsertOptimizationEvent {
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  curatedId: string;
+  kind: OptimizationEventKind;
+  pattern: string | null;
+  savingsUsd: number | null;
+  actualInputTokens: number | null;
+  actualCachedTokens: number | null;
+  actualCostUsd: number | null;
+  hypotheticalCostUsd: number | null;
+  sourceToolCallIds: number[];
+}
+
+export function insertOptimizationEvent(db: Database.Database, e: InsertOptimizationEvent): number {
+  const result = db
+    .prepare(
+      `
+      INSERT INTO optimization_events (
+        ts, account_id, session_id, curated_id, kind, pattern,
+        savings_usd, actual_input_tokens, actual_cached_tokens,
+        actual_cost_usd, hypothetical_cost_usd, source_tool_call_ids
+      ) VALUES (
+        @ts, @accountId, @sessionId, @curatedId, @kind, @pattern,
+        @savingsUsd, @actualInputTokens, @actualCachedTokens,
+        @actualCostUsd, @hypotheticalCostUsd, @sourceToolCallIds
+      )
+    `,
+    )
+    .run({
+      ts: e.ts,
+      accountId: e.accountId,
+      sessionId: e.sessionId,
+      curatedId: e.curatedId,
+      kind: e.kind,
+      pattern: e.pattern,
+      savingsUsd: e.savingsUsd,
+      actualInputTokens: e.actualInputTokens,
+      actualCachedTokens: e.actualCachedTokens,
+      actualCostUsd: e.actualCostUsd,
+      hypotheticalCostUsd: e.hypotheticalCostUsd,
+      sourceToolCallIds: JSON.stringify(e.sourceToolCallIds),
+    });
+  return Number(result.lastInsertRowid);
+}
+
+// ─── Optimize feature: subagent_installs ──────────────────────────────────────
+
+export type SubagentInstallSource = 'curated' | 'local';
+
+export interface SubagentInstallRow {
+  id: number;
+  name: string;
+  source: SubagentInstallSource;
+  curatedId: string | null;
+  gapFingerprint: string | null;
+  mdPath: string;
+  mdHash: string;
+  installedAt: number;
+  uninstalledAt: number | null;
+  optedOut: boolean;
+}
+
+export interface UpsertSubagentInstall {
+  name: string;
+  source: SubagentInstallSource;
+  curatedId: string | null;
+  gapFingerprint: string | null;
+  mdPath: string;
+  mdHash: string;
+  installedAt: number;
+  optedOut?: boolean;
+}
+
+interface DbSubagentInstallRow {
+  id: number;
+  name: string;
+  source: string;
+  curated_id: string | null;
+  gap_fingerprint: string | null;
+  md_path: string;
+  md_hash: string;
+  installed_at: number;
+  uninstalled_at: number | null;
+  opted_out: number;
+}
+
+function rowToSubagentInstall(row: DbSubagentInstallRow): SubagentInstallRow {
+  return {
+    id: row.id,
+    name: row.name,
+    source: row.source as SubagentInstallSource,
+    curatedId: row.curated_id,
+    gapFingerprint: row.gap_fingerprint,
+    mdPath: row.md_path,
+    mdHash: row.md_hash,
+    installedAt: row.installed_at,
+    uninstalledAt: row.uninstalled_at,
+    optedOut: row.opted_out === 1,
+  };
+}
+
+export function upsertSubagentInstall(
+  db: Database.Database,
+  e: UpsertSubagentInstall,
+): SubagentInstallRow {
+  db.prepare(
+    `
+    INSERT INTO subagent_installs (
+      name, source, curated_id, gap_fingerprint, md_path, md_hash,
+      installed_at, uninstalled_at, opted_out
+    ) VALUES (
+      @name, @source, @curatedId, @gapFingerprint, @mdPath, @mdHash,
+      @installedAt, NULL, @optedOut
+    )
+    ON CONFLICT(name) DO UPDATE SET
+      source          = excluded.source,
+      curated_id      = excluded.curated_id,
+      gap_fingerprint = excluded.gap_fingerprint,
+      md_path         = excluded.md_path,
+      md_hash         = excluded.md_hash,
+      installed_at    = excluded.installed_at,
+      uninstalled_at  = NULL,
+      opted_out       = excluded.opted_out
+  `,
+  ).run({
+    name: e.name,
+    source: e.source,
+    curatedId: e.curatedId,
+    gapFingerprint: e.gapFingerprint,
+    mdPath: e.mdPath,
+    mdHash: e.mdHash,
+    installedAt: e.installedAt,
+    optedOut: e.optedOut ? 1 : 0,
+  });
+  const row = db
+    .prepare('SELECT * FROM subagent_installs WHERE name = ?')
+    .get(e.name) as DbSubagentInstallRow;
+  return rowToSubagentInstall(row);
+}
+
+export function listSubagentInstalls(
+  db: Database.Database,
+  opts: { includeUninstalled?: boolean } = {},
+): SubagentInstallRow[] {
+  const sql = opts.includeUninstalled
+    ? 'SELECT * FROM subagent_installs ORDER BY installed_at DESC'
+    : 'SELECT * FROM subagent_installs WHERE uninstalled_at IS NULL ORDER BY installed_at DESC';
+  const rows = db.prepare(sql).all() as DbSubagentInstallRow[];
+  return rows.map(rowToSubagentInstall);
+}
+
+export function findSubagentInstallByName(
+  db: Database.Database,
+  name: string,
+): SubagentInstallRow | null {
+  const row = db.prepare('SELECT * FROM subagent_installs WHERE name = ?').get(name) as
+    | DbSubagentInstallRow
+    | undefined;
+  return row ? rowToSubagentInstall(row) : null;
+}
+
+export function softDeleteSubagentInstall(
+  db: Database.Database,
+  name: string,
+  uninstalledAt: number,
+): boolean {
+  const result = db
+    .prepare(
+      'UPDATE subagent_installs SET uninstalled_at = ? WHERE name = ? AND uninstalled_at IS NULL',
+    )
+    .run(uninstalledAt, name);
+  return result.changes > 0;
+}
+
+export function setSubagentInstallMdHash(
+  db: Database.Database,
+  name: string,
+  mdHash: string,
+): boolean {
+  const result = db
+    .prepare('UPDATE subagent_installs SET md_hash = ? WHERE name = ?')
+    .run(mdHash, name);
+  return result.changes > 0;
 }

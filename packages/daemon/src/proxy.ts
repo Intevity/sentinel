@@ -12,6 +12,11 @@ import type { RateLimitStore } from './rate-limit-store.js';
 import type { SecurityScanner } from './security/scanner.js';
 import type { PermissionsEnforcer } from './security/permissions/enforcer.js';
 import { extractSessionInfo } from './security/permissions/enforcer.js';
+import {
+  createToolCallExtractor,
+  applyToolResultBackfill,
+  nextRequestSeqForSession,
+} from './optimize/tool-call-extractor.js';
 import { loadSettings } from './settings.js';
 import { redactHeaders, type RequestLogStore } from './request-log-db.js';
 import type { RequestAccountMap } from './request-account-map.js';
@@ -799,6 +804,61 @@ async function proxyToAnthropic(
         }
       : null;
 
+  // Optimize feature: in-proxy tool-call extractor. Always on when the
+  // settings toggle allows it. Pure observer — never participates in
+  // forwarding, never blocks a chunk. Stores ONLY structured metadata
+  // (tool_use_id, name, file_path when present, sizes) — never raw
+  // tool input/output payloads. Disclosure copy lives in the Optimize
+  // section of SettingsPanel.
+  const toolCallCtx: {
+    extractor: ReturnType<typeof createToolCallExtractor>;
+    requestId: string;
+  } | null =
+    db && isMessagesPost && settings.optimizeCaptureEnabled
+      ? (() => {
+          const sessionInfo = extractSessionInfo(body);
+          const sessionId = sessionInfo?.sessionId ?? null;
+          const seq = nextRequestSeqForSession(sessionId, Date.now());
+          const requestId = capture?.requestId ?? cacheTtlCtx?.requestId ?? randomUUID();
+          // Backfill prior tool_calls' response_size_bytes and quote
+          // detection from this request's tool_result and text blocks.
+          // Best-effort; any parse error is silently ignored so the
+          // proxy hot path never stalls on this side-channel.
+          /* v8 ignore next 5 */
+          try {
+            applyToolResultBackfill(db, body, sessionId);
+          } catch {
+            /* swallow */
+          }
+          return {
+            extractor: createToolCallExtractor({
+              db,
+              accountId: rlKey,
+              sessionId,
+              requestId,
+              requestSeqInSession: seq,
+              // Best-effort model extraction — extractor stores it on
+              // every row so analyzer can scope by main-conversation
+              // model. Fall back to empty string when missing; the
+              // analyzer treats unknown-model rows as Opus-equivalent.
+              model: (() => {
+                try {
+                  const parsed = JSON.parse(body.toString('utf-8')) as Record<string, unknown>;
+                  const m = parsed['model'];
+                  return typeof m === 'string' ? m : '';
+                  /* v8 ignore next 3 */
+                } catch {
+                  return '';
+                }
+              })(),
+              deniedToolNames: new Set(),
+              nowMs: Date.now(),
+            }),
+            requestId,
+          };
+        })()
+      : null;
+
   // Auto-mode observation — always runs so the UI's "Claude Code is in auto
   // mode" indicator stays live even when Sentinel's own rule enforcement is
   // turned off. Scoped to /v1/messages POST (actual conversation requests),
@@ -965,18 +1025,27 @@ async function proxyToAnthropic(
   }
 
   const feedCacheTtl = (chunk: Buffer): void => {
-    if (!cacheTtlCtx) return;
-    if (cacheTtlCtx.isSse) {
-      cacheTtlCtx.sse.onChunk(chunk);
-      return;
+    if (cacheTtlCtx) {
+      if (cacheTtlCtx.isSse) {
+        cacheTtlCtx.sse.onChunk(chunk);
+      } else if (cacheTtlCtx.nonSseBytes < 256 * 1024) {
+        // Non-SSE responses: buffer up to 256 KB for a final JSON parse.
+        // That's plenty of headroom for a top-level usage object on a
+        // non-streaming /v1/messages response; anything larger almost
+        // certainly IS streaming misclassified by a gzip edge case, and
+        // we'll simply skip the insert.
+        cacheTtlCtx.nonSseChunks.push(chunk);
+        cacheTtlCtx.nonSseBytes += chunk.length;
+      }
     }
-    // Non-SSE responses: buffer up to 256 KB for a final JSON parse. That's
-    // plenty of headroom for a top-level usage object on a non-streaming
-    // /v1/messages response; anything larger almost certainly IS streaming
-    // misclassified by a gzip edge case, and we'll simply skip the insert.
-    if (cacheTtlCtx.nonSseBytes >= 256 * 1024) return;
-    cacheTtlCtx.nonSseChunks.push(chunk);
-    cacheTtlCtx.nonSseBytes += chunk.length;
+    // Optimize feature: pure observer. Only feed when this is an SSE
+    // response — non-SSE /v1/messages responses don't carry tool_use
+    // blocks in the same shape and would just confuse the parser.
+    // The extractor's onChunk silently no-ops on non-SSE bytes anyway,
+    // but skipping here keeps the hot path tighter.
+    if (toolCallCtx && cacheTtlCtx?.isSse) {
+      toolCallCtx.extractor.onChunk(chunk);
+    }
   };
 
   const finalizeCacheTtl = (): void => {
@@ -1029,8 +1098,19 @@ async function proxyToAnthropic(
     }
   };
 
+  const finalizeToolCalls = (): void => {
+    if (!toolCallCtx) return;
+    try {
+      toolCallCtx.extractor.flush();
+    } catch (err) {
+      /* v8 ignore next 2 */
+      console.error('[Optimize] tool_calls flush failed:', err);
+    }
+  };
+
   const finalizeCapture = (): void => {
     finalizeCacheTtl();
+    finalizeToolCalls();
     if (!capture || !requestLogStore || capture.finalized) return;
     capture.finalized = true;
     const responseBody =

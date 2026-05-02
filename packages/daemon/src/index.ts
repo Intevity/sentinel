@@ -18,7 +18,6 @@ import {
   upsertRateLimit,
   loadRateLimits,
   getOverageEvents,
-  clearOverageEvents,
   getLastOverageEventPerAccount,
   listNotifications,
   listAlerts,
@@ -54,6 +53,8 @@ import {
   insertNotification,
   getCacheTtlByDayModel,
   getCacheTtlBySession,
+  listSubagentInstalls,
+  insertOptimizationEvent,
 } from './db.js';
 import {
   loadSettings,
@@ -88,6 +89,10 @@ import { attachWebhookToIpc } from './alerting/webhook.js';
 import { createIncidentReplayRecorder } from './security/incident-replay.js';
 import { redactSecretsInString } from './security/detectors.js';
 import { createClaudeSyncEngine } from './security/permissions/claude-sync.js';
+import { createAgentsSyncEngine } from './optimize/agents-sync.js';
+import { getCuratedLibrary, getCuratedSubagent } from './optimize/curated-library.js';
+import { homedir } from 'os';
+import { join } from 'path';
 import { runScanBenchmark } from './security/scanner-benchmark.js';
 import { parseRule as parsePermissionRule } from './security/permissions/parser.js';
 import type { Settings } from '@claude-sentinel/shared';
@@ -1173,21 +1178,6 @@ export async function startDaemon(): Promise<DaemonHandle> {
         break;
       }
 
-      case 'get_overage_events': {
-        const events = getOverageEvents(db, {
-          limit: msg.limit ?? 100,
-          ...(msg.accountId ? { accountId: msg.accountId } : {}),
-        });
-        respond({ requestType: 'get_overage_events', success: true, data: events });
-        break;
-      }
-
-      case 'clear_overage_events': {
-        const count = clearOverageEvents(db, msg.accountId);
-        respond({ requestType: 'clear_overage_events', success: true, data: { count } });
-        break;
-      }
-
       case 'get_daemon_status': {
         respond({
           requestType: 'get_daemon_status',
@@ -2156,6 +2146,148 @@ export async function startDaemon(): Promise<DaemonHandle> {
           });
         break;
       }
+
+      // ─── Optimize feature ─────────────────────────────────────────
+      case 'list_installed_subagents': {
+        const rows = listSubagentInstalls(db);
+        respond({ requestType: 'list_installed_subagents', success: true, data: rows });
+        break;
+      }
+      case 'get_curated_library': {
+        const lib = getCuratedLibrary().map((s) => ({
+          curatedId: s.curatedId,
+          name: s.gap.name,
+          description: s.gap.description,
+          model: s.gap.model,
+          tools: s.gap.tools,
+          fingerprint: s.fingerprint,
+        }));
+        respond({ requestType: 'get_curated_library', success: true, data: lib });
+        break;
+      }
+      case 'install_curated_subagent': {
+        const entry = getCuratedSubagent(msg.curatedId);
+        if (!entry) {
+          respond({
+            requestType: 'install_curated_subagent',
+            success: false,
+            error: `unknown curated id: ${msg.curatedId}`,
+          });
+          break;
+        }
+        const agentsDir =
+          process.env['CLAUDE_SENTINEL_TEST_AGENTS_DIR'] ?? join(homedir(), '.claude', 'agents');
+        const mdPath = join(agentsDir, `${entry.curatedId}.md`);
+        agentsSyncEngine
+          .installCuratedFile({
+            name: entry.curatedId,
+            mdPath,
+            renderedMd: entry.renderedMd,
+            curatedId: entry.curatedId,
+            gapFingerprint: entry.fingerprint,
+          })
+          .then(() => {
+            insertOptimizationEvent(db, {
+              ts: Date.now(),
+              accountId: activeAccountId.value ?? '',
+              sessionId: null,
+              curatedId: entry.curatedId,
+              kind: 'installed',
+              pattern: null,
+              savingsUsd: null,
+              actualInputTokens: null,
+              actualCachedTokens: null,
+              actualCostUsd: null,
+              hypotheticalCostUsd: null,
+              sourceToolCallIds: [],
+            });
+            ipcServer.broadcast({
+              type: 'subagent_installed',
+              name: entry.curatedId,
+              curatedId: entry.curatedId,
+            });
+            respond({
+              requestType: 'install_curated_subagent',
+              success: true,
+              data: { name: entry.curatedId, mdPath },
+            });
+          })
+          /* v8 ignore next 7 */
+          .catch((err: unknown) => {
+            respond({
+              requestType: 'install_curated_subagent',
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        break;
+      }
+      case 'uninstall_subagent': {
+        agentsSyncEngine
+          .uninstallByName(msg.name)
+          .then(() => {
+            ipcServer.broadcast({ type: 'subagent_uninstalled', name: msg.name });
+            respond({ requestType: 'uninstall_subagent', success: true, data: { name: msg.name } });
+          })
+          /* v8 ignore next 7 */
+          .catch((err: unknown) => {
+            respond({
+              requestType: 'uninstall_subagent',
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        break;
+      }
+      case 'get_agents_sync_status': {
+        respond({
+          requestType: 'get_agents_sync_status',
+          success: true,
+          data: agentsSyncEngine.getStatus(),
+        });
+        break;
+      }
+      case 'get_optimization_opportunities': {
+        // M3 fills this in from the analyzer. For M2, return an empty
+        // list so the UI scaffolding can be wired before the analyzer
+        // ships.
+        respond({
+          requestType: 'get_optimization_opportunities',
+          success: true,
+          data: [],
+        });
+        break;
+      }
+      case 'get_optimization_metrics': {
+        respond({
+          requestType: 'get_optimization_metrics',
+          success: true,
+          data: { totals: { savingsUsd: 0, opportunities: 0, installs: 0 }, daily: [] },
+        });
+        break;
+      }
+      case 'run_optimization_analysis': {
+        respond({ requestType: 'run_optimization_analysis', success: true, data: {} });
+        break;
+      }
+      case 'dismiss_optimization': {
+        insertOptimizationEvent(db, {
+          ts: Date.now(),
+          accountId: activeAccountId.value ?? '',
+          sessionId: null,
+          curatedId: msg.curatedId,
+          kind: 'dismissed',
+          pattern: msg.pattern,
+          savingsUsd: null,
+          actualInputTokens: null,
+          actualCachedTokens: null,
+          actualCostUsd: null,
+          hypotheticalCostUsd: null,
+          sourceToolCallIds: [],
+        });
+        respond({ requestType: 'dismiss_optimization', success: true, data: {} });
+        break;
+      }
     }
   });
 
@@ -2392,6 +2524,17 @@ export async function startDaemon(): Promise<DaemonHandle> {
       console.error('[ClaudeSync] initial start failed:', err);
     });
   }
+
+  // Optimize feature: agents-sync engine. Always started — capture
+  // can be off (no new tool_calls accumulate), but if the user has
+  // installed curated subagents in the past, we still want the sync
+  // engine alive to detect orphans, hand-edits, and to support
+  // uninstall. The engine is lightweight when AGENTS_DIR is empty.
+  const agentsSyncEngine = createAgentsSyncEngine({ db, ipcServer });
+  void agentsSyncEngine.start().catch((err: unknown) => {
+    /* v8 ignore next 2 */
+    console.error('[AgentsSync] initial start failed:', err);
+  });
 
   // Start IPC server. Sprint 2: when the Tauri parent piped a handshake
   // token through stdin, we enforce it on every connection. When stdin

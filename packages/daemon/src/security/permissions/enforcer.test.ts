@@ -75,6 +75,9 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     securityWebhookUrl: null,
     securityWebhookSecret: null,
     securityWebhookSeverityFloor: 'high',
+    optimizeCaptureEnabled: true,
+    optimizeAutoRecommend: true,
+    optimizeShowMicroOpportunities: false,
     ...overrides,
   };
 }

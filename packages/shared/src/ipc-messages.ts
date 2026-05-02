@@ -14,6 +14,7 @@ import type {
   SecurityAllowlistEntry,
   PermissionBypassEntry,
   ClaudeSyncStatus,
+  AgentsSyncStatus,
   PendingSecurityBlock,
   PendingBlockSource,
   LogEntry,
@@ -254,6 +255,28 @@ export interface ClaudeSyncStatusMessage {
   status: ClaudeSyncStatus;
 }
 
+/** Broadcast when the Optimize agents-sync engine state changes.
+ *  Mirrors `claude_sync_status` for `~/.claude/agents/`. */
+export interface AgentsSyncStatusMessage {
+  type: 'agents_sync_status';
+  status: AgentsSyncStatus;
+}
+
+/** Broadcast after a curated subagent is successfully installed via
+ *  the install_curated_subagent IPC. The UI's installed-list refetches. */
+export interface SubagentInstalledMessage {
+  type: 'subagent_installed';
+  name: string;
+  curatedId: string;
+}
+
+/** Broadcast after a subagent is uninstalled via the uninstall_subagent
+ *  IPC. */
+export interface SubagentUninstalledMessage {
+  type: 'subagent_uninstalled';
+  name: string;
+}
+
 /** Broadcast once per OTEL HTTP batch (metrics or logs) after any events
  *  were written to the telemetry tables. The Metrics tab listens for this
  *  and refetches its rollup so dashboards update live as Claude Code emits. */
@@ -462,6 +485,9 @@ export type DaemonToAppMessage =
   | SecurityAllowlistUpdatedMessage
   | PermissionBypassesUpdatedMessage
   | ClaudeSyncStatusMessage
+  | AgentsSyncStatusMessage
+  | SubagentInstalledMessage
+  | SubagentUninstalledMessage
   | MetricsUpdatedMessage
   | OverageGrantsUpdatedMessage
   | SpendUpdateMessage
@@ -587,19 +613,65 @@ export interface GetAllRateLimitsMessage {
   type: 'get_all_rate_limits';
 }
 
-export interface GetOverageEventsMessage {
-  type: 'get_overage_events';
-  limit?: number;
-  /** View-scope account. When omitted, the handler returns events across
-   *  every account so the Overage tab can default to an all-accounts view. */
-  accountId?: string;
+/** Optimize feature: list active subagent installs (curated + local).
+ *  The dashboard renders this. Uninstalled rows are excluded by default. */
+export interface ListInstalledSubagentsMessage {
+  type: 'list_installed_subagents';
 }
 
-/** Permanently delete overage transition rows. Optional `accountId` scopes
- *  the delete to a single account; omitted wipes every row. */
-export interface ClearOverageEventsMessage {
-  type: 'clear_overage_events';
-  accountId?: string;
+/** Optimize feature: install a curated subagent by id. Writes
+ *  `~/.claude/agents/<id>.md` and inserts/upserts a curated row. */
+export interface InstallCuratedSubagentMessage {
+  type: 'install_curated_subagent';
+  curatedId: string;
+}
+
+/** Optimize feature: uninstall a subagent by name (frontmatter `name` =
+ *  filename stem). Removes the .md file and soft-deletes the DB row. */
+export interface UninstallSubagentMessage {
+  type: 'uninstall_subagent';
+  name: string;
+}
+
+/** Optimize feature: list the curated library entries shipping with
+ *  this daemon build. The dashboard's "Available curated subagents"
+ *  section renders this. */
+export interface GetCuratedLibraryMessage {
+  type: 'get_curated_library';
+}
+
+/** Optimize feature: list optimization opportunities (curated_id ×
+ *  pattern × session) discovered by the analyzer and not yet
+ *  installed/dismissed by the user. */
+export interface GetOptimizationOpportunitiesMessage {
+  type: 'get_optimization_opportunities';
+}
+
+/** Optimize feature: aggregate savings metrics for the dashboard chart.
+ *  `days` selects the lookback window; UI defaults to 7. */
+export interface GetOptimizationMetricsMessage {
+  type: 'get_optimization_metrics';
+  days: number;
+}
+
+/** Optimize feature: trigger a one-shot analyzer pass. Used by the
+ *  "Refresh recommendations" button in the dashboard. */
+export interface RunOptimizationAnalysisMessage {
+  type: 'run_optimization_analysis';
+}
+
+/** Optimize feature: dismiss an opportunity so the analyzer suppresses
+ *  it from future recommendations. Persists via an `optimization_events`
+ *  row with kind='dismissed'. */
+export interface DismissOptimizationMessage {
+  type: 'dismiss_optimization';
+  curatedId: string;
+  pattern: string;
+}
+
+/** Optimize feature: read-only snapshot of the agents-sync engine. */
+export interface GetAgentsSyncStatusMessage {
+  type: 'get_agents_sync_status';
 }
 
 export interface GetRemovedAccountsMessage {
@@ -1093,8 +1165,15 @@ export type AppToDaemonMessage =
   | RemoveAccountMessage
   | GetRateLimitsMessage
   | GetAllRateLimitsMessage
-  | GetOverageEventsMessage
-  | ClearOverageEventsMessage
+  | ListInstalledSubagentsMessage
+  | InstallCuratedSubagentMessage
+  | UninstallSubagentMessage
+  | GetCuratedLibraryMessage
+  | GetOptimizationOpportunitiesMessage
+  | GetOptimizationMetricsMessage
+  | RunOptimizationAnalysisMessage
+  | DismissOptimizationMessage
+  | GetAgentsSyncStatusMessage
   | GetRemovedAccountsMessage
   | PurgeAccountMessage
   | GetDaemonStatusMessage
@@ -1156,6 +1235,7 @@ export type {
   SecurityAllowlistEntry,
   PermissionBypassEntry,
   ClaudeSyncStatus,
+  AgentsSyncStatus,
   PendingSecurityBlock,
   PendingBlockSource,
   LogEntry,

@@ -177,6 +177,15 @@ export default function SettingsPanel({
   const setRequestLogRedactAuthHeaders = (v: boolean): void => {
     void update({ requestLogRedactAuthHeaders: v }).catch(() => undefined);
   };
+  const setOptimizeCaptureEnabled = (v: boolean): void => {
+    void update({ optimizeCaptureEnabled: v }).catch(() => undefined);
+  };
+  const setOptimizeAutoRecommend = (v: boolean): void => {
+    void update({ optimizeAutoRecommend: v }).catch(() => undefined);
+  };
+  const setOptimizeShowMicroOpportunities = (v: boolean): void => {
+    void update({ optimizeShowMicroOpportunities: v }).catch(() => undefined);
+  };
   const [requestLogClearConfirm, setRequestLogClearConfirm] = useState(false);
   const clearRequestLogsConfirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
@@ -705,6 +714,42 @@ export default function SettingsPanel({
                     <Trash2 size={11} strokeWidth={2.5} className="inline mr-1" />
                     {requestLogClearConfirm ? 'Click again' : 'Clear'}
                   </button>
+                </div>
+              </Section>
+            )}
+
+            {activeTab === 'data' && (
+              <Section title="Optimize">
+                <div className="px-3 py-2.5">
+                  <p className="text-[11px] text-[#8E8E93] leading-snug">
+                    Optimize captures file paths and tool call sizes (not contents) so it can
+                    suggest cheaper-model subagents for routine tasks. Routing happens through
+                    Claude Code's own subagent system; Sentinel never reroutes traffic silently.
+                  </p>
+                </div>
+                <ToggleRow
+                  label="Enable optimization capture"
+                  description="When off, no tool_calls rows are recorded; the analyzer becomes a no-op. Existing installed subagents keep working."
+                  checked={settings.optimizeCaptureEnabled}
+                  onChange={setOptimizeCaptureEnabled}
+                />
+                <div
+                  className={
+                    settings.optimizeCaptureEnabled ? '' : 'opacity-50 pointer-events-none'
+                  }
+                >
+                  <ToggleRow
+                    label="Auto-recommend subagents"
+                    description="Show recommended curated subagents based on observed session patterns. Turn off to keep capture on without nudges."
+                    checked={settings.optimizeAutoRecommend}
+                    onChange={setOptimizeAutoRecommend}
+                  />
+                  <ToggleRow
+                    label="Show low-value opportunities"
+                    description="Surface individual recommendations under $0.10 estimated savings. Off by default; they aggregate into a totals strip on the Optimize tab instead."
+                    checked={settings.optimizeShowMicroOpportunities}
+                    onChange={setOptimizeShowMicroOpportunities}
+                  />
                 </div>
               </Section>
             )}

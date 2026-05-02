@@ -477,28 +477,3 @@ describe('list_alerts scope variations', () => {
     expect(Array.isArray(r.data)).toBe(true);
   });
 });
-
-// ─── get_overage_events with accountId scope ─────────────────────────────────
-
-describe('get_overage_events scoped', () => {
-  it('returns empty with accountId filter on empty table', async () => {
-    ctx = await startTestDaemon();
-    const r = await ctx.request<unknown[]>({
-      type: 'get_overage_events',
-      accountId: 'x',
-      limit: 50,
-    });
-    expect(r.success).toBe(true);
-    expect(r.data).toEqual([]);
-  });
-
-  it('clear_overage_events with accountId scope succeeds', async () => {
-    ctx = await startTestDaemon();
-    const r = await ctx.request<{ count: number }>({
-      type: 'clear_overage_events',
-      accountId: 'x',
-    });
-    expect(r.success).toBe(true);
-    expect(r.data?.count).toBe(0);
-  });
-});

@@ -115,6 +115,7 @@ const TEST_ENV_KEYS = [
   'CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE',
   'CLAUDE_SENTINEL_TEST_IPC_SOCKET',
   'CLAUDE_SENTINEL_TEST_DAEMON_PORT',
+  'CLAUDE_SENTINEL_TEST_AGENTS_DIR',
   'ANTHROPIC_UPSTREAM_URL',
   'OAUTH_TOKEN_URL',
   'OAUTH_AUTH_URL',
@@ -181,6 +182,10 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
   process.env.CLAUDE_SENTINEL_TEST_IPC_SOCKET = socketPath;
   process.env.CLAUDE_SENTINEL_TEST_DAEMON_PORT = String(daemonPort);
+  // Optimize feature: agents-sync watches ~/.claude/agents/ in
+  // production; redirect to tmp so we don't touch the dev's real
+  // subagents directory.
+  process.env.CLAUDE_SENTINEL_TEST_AGENTS_DIR = join(workdir, 'agents');
   process.env.ANTHROPIC_UPSTREAM_URL = fake.origin;
   process.env.OAUTH_TOKEN_URL = fake.tokenUrl;
   process.env.OAUTH_AUTH_URL = fake.authUrl;

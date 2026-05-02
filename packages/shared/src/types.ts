@@ -452,6 +452,23 @@ export interface Settings {
    *  this level are skipped. Default `'high'`. */
   securityWebhookSeverityFloor: 'low' | 'medium' | 'high';
 
+  // ─── Optimize feature ──────────────────────────────────────────────
+  /** Master kill switch for the in-proxy tool-call extractor. When false,
+   *  no tool_use blocks are parsed from SSE responses, no rows land in
+   *  `tool_calls`, and the analyzer becomes a no-op. Default true; the
+   *  toggle exists so beta users can disable capture without uninstalling
+   *  if a perf or privacy concern surfaces. Removable in v1.1 once
+   *  stable. */
+  optimizeCaptureEnabled: boolean;
+  /** When false, the analyzer still runs but produces no `recommended`
+   *  optimization_events. Lets users keep the savings dashboard live
+   *  without getting nudged to install. Default true. */
+  optimizeAutoRecommend: boolean;
+  /** When true, individual sub-$0.10 opportunities surface in the
+   *  recommendation list. Otherwise they aggregate into a "micro-
+   *  opportunities" bucket on the chart. Default false. */
+  optimizeShowMicroOpportunities: boolean;
+
   // ─── Onboarding state ──────────────────────────────────────────────
   /** True once the user has either applied a risk-profile preset in the
    *  Security Setup Wizard or explicitly dismissed it. The wizard fires
@@ -748,6 +765,20 @@ export interface SecurityBenchmarkResult {
  *  render a live "last imported / last exported / error" summary
  *  without polling. All fields are null before the engine has had a
  *  chance to run the first sync cycle. */
+/** Runtime status of the Optimize agents-sync engine. Mirrors
+ *  ClaudeSyncStatus but for `~/.claude/agents/`. Broadcast via
+ *  `agents_sync_status`. */
+export interface AgentsSyncStatus {
+  /** True when the watcher is attached to `~/.claude/agents/`. */
+  active: boolean;
+  /** Unix ms of the last successful pull (dir → DB). */
+  lastPulledAt: number | null;
+  /** Unix ms of the last successful push (DB → dir). */
+  lastPushedAt: number | null;
+  /** Last error message; null when the previous cycle succeeded. */
+  lastError: string | null;
+}
+
 export interface ClaudeSyncStatus {
   /** True when `claudeCodeSyncEnabled` is on AND the watcher is
    *  actually attached to `~/.claude/settings.json`. False during

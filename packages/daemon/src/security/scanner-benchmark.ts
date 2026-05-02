@@ -126,6 +126,9 @@ function benchSettings(): Settings {
     securityWebhookUrl: null,
     securityWebhookSecret: null,
     securityWebhookSeverityFloor: 'high',
+    optimizeCaptureEnabled: true,
+    optimizeAutoRecommend: true,
+    optimizeShowMicroOpportunities: false,
   };
 }
 

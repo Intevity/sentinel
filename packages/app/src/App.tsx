@@ -3,7 +3,7 @@ import {
   Users,
   Activity,
   BarChart3,
-  AlertTriangle,
+  Sparkles,
   Bell,
   Shield,
   ScrollText,
@@ -27,7 +27,7 @@ import type { AccountInfo } from '@claude-sentinel/shared';
 import { accountColor } from './lib/accountColor.js';
 import UsageView from './components/UsageView.js';
 import MetricsDashboard from './components/MetricsDashboard.js';
-import OverageTimeline from './components/OverageTimeline.js';
+import OptimizeDashboard from './components/OptimizeDashboard.js';
 import AlertsEditor from './components/AlertsEditor.js';
 import ActivationBanner from './components/ActivationBanner.js';
 import HeaderMenu from './components/HeaderMenu.js';
@@ -54,14 +54,14 @@ import { DUR, EASE_STD } from './lib/motion.js';
 import { sendToSentinel } from './lib/ipc.js';
 import { listen } from '@tauri-apps/api/event';
 
-type Tab = 'accounts' | 'usage' | 'metrics' | 'overage' | 'notifications' | 'security' | 'logs';
+type Tab = 'accounts' | 'usage' | 'metrics' | 'optimize' | 'notifications' | 'security' | 'logs';
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: 'accounts', label: 'Accounts', icon: Users },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'notifications', label: 'Alerts', icon: Bell },
   { id: 'usage', label: 'Usage', icon: Activity },
-  { id: 'overage', label: 'Overage', icon: AlertTriangle },
+  { id: 'optimize', label: 'Optimize', icon: Sparkles },
   { id: 'metrics', label: 'Metrics', icon: BarChart3 },
   { id: 'logs', label: 'Logs', icon: ScrollText },
 ];
@@ -92,7 +92,6 @@ export default function App(): React.ReactElement {
     activeAccount,
     accounts,
     rateLimitsVersion,
-    overageVersion,
     probingAccountId,
     initializing,
     refetch,
@@ -146,7 +145,6 @@ export default function App(): React.ReactElement {
   // a stale selection when they return.
   const [usageView, setUsageView] = useState<PickerValue | undefined>(undefined);
   const [metricsView, setMetricsView] = useState<PickerValue | undefined>(undefined);
-  const [overageView, setOverageView] = useState<string | undefined>(undefined);
   const [alertsView, setAlertsView] = useState<string | undefined>(undefined);
   const [securityView, setSecurityView] = useState<string | undefined>(undefined);
 
@@ -254,7 +252,6 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     setUsageView(undefined);
     setMetricsView(undefined);
-    setOverageView(undefined);
     setAlertsView(undefined);
     setSecurityView(undefined);
   }, [activeAccount?.accountUuid, activeAccount?.organizationUuid, isRoundRobin]);
@@ -655,26 +652,8 @@ export default function App(): React.ReactElement {
                           </>
                         );
                       }
-                      if (activeTab === 'overage') {
-                        const picker = (
-                          <AccountViewPicker
-                            accounts={accounts}
-                            activeAccount={activeAccount}
-                            switchingMode={pickerSwitchingMode}
-                            poolExcludedIds={pickerPoolExcludedIds}
-                            {...(overageView !== undefined ? { value: overageView } : {})}
-                            onChange={(v) => setOverageView(v === POOL_VIEW ? undefined : v)}
-                          />
-                        );
-                        return (
-                          <>
-                            {picker}
-                            <OverageTimeline
-                              overageVersion={overageVersion}
-                              viewAccountId={overageView}
-                            />
-                          </>
-                        );
+                      if (activeTab === 'optimize') {
+                        return <OptimizeDashboard />;
                       }
                       if (activeTab === 'notifications') {
                         const picker = (

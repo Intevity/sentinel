@@ -165,20 +165,6 @@ describe('IPC — usage / metrics', () => {
 // ─── Overage ─────────────────────────────────────────────────────────────────
 
 describe('IPC — overage', () => {
-  it('get_overage_events returns empty array initially', async () => {
-    ctx = await startTestDaemon();
-    const r = await ctx.request<unknown[]>({ type: 'get_overage_events' });
-    expect(r.success).toBe(true);
-    expect(r.data).toEqual([]);
-  });
-
-  it('clear_overage_events succeeds with no rows', async () => {
-    ctx = await startTestDaemon();
-    const r = await ctx.request<{ count: number }>({ type: 'clear_overage_events' });
-    expect(r.success).toBe(true);
-    expect(r.data?.count).toBe(0);
-  });
-
   it('get_overage_grants returns an object (empty when no cache)', async () => {
     ctx = await startTestDaemon();
     const r = await ctx.request<Record<string, unknown>>({ type: 'get_overage_grants' });
