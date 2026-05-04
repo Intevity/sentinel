@@ -25,6 +25,8 @@
  * versions and avoids a dependency for one call site.
  */
 
+import { createHash } from 'crypto';
+
 export interface GapSubagent {
   /** Unique slug. Used as the .md filename and the frontmatter `name`. */
   name: string;
@@ -81,7 +83,7 @@ function escapeYamlInline(s: string): string {
   if (s === '') return "''";
   // Single quote when the string contains any of: : # & * ! | > " { } [ ] , @ %, leading/trailing whitespace, or a leading - / ?
   const needsQuotes =
-    /[:#&*!|>"{}\[\],@%]/.test(s) || /^[\s\-?]/.test(s) || /\s$/.test(s) || s.includes("'");
+    /[:#&*!|>"{}[\],@%]/.test(s) || /^[\s\-?]/.test(s) || /\s$/.test(s) || s.includes("'");
   if (!needsQuotes) return s;
   // YAML single-quote escaping: '' represents a literal '.
   return `'${s.replace(/'/g, "''")}'`;
@@ -94,8 +96,5 @@ function escapeYamlInline(s: string): string {
  * change, not just the source GAP fields.
  */
 export function gapFingerprint(g: GapSubagent): string {
-  // Lazy require so this module stays side-effect-free at import time.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createHash } = require('crypto') as typeof import('crypto');
   return createHash('sha256').update(renderClaudeCodeMd(g)).digest('hex');
 }

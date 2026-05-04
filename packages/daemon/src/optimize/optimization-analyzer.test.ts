@@ -4,6 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { unlinkSync } from 'fs';
 import Database from 'better-sqlite3';
 import {
   getDb,
@@ -87,7 +88,7 @@ describe('createOptimizationAnalyzer.runOnce', () => {
     closeDb();
     delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
     try {
-      require('fs').unlinkSync(TMP_DB);
+      unlinkSync(TMP_DB);
     } catch {
       /* ignore */
     }
@@ -259,7 +260,7 @@ describe('getOptimizationMetrics — realized vs potential split', () => {
     closeDb();
     delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
     try {
-      require('fs').unlinkSync(TMP_DB);
+      unlinkSync(TMP_DB);
     } catch {
       /* ignore */
     }
@@ -486,7 +487,7 @@ describe('analyzer schedule', () => {
     closeDb();
     delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
     try {
-      require('fs').unlinkSync(TMP_DB);
+      unlinkSync(TMP_DB);
     } catch {
       /* ignore */
     }
@@ -518,7 +519,7 @@ describe('analyzer schedule', () => {
     closeDb();
     delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
     try {
-      require('fs').unlinkSync(TMP_DB);
+      unlinkSync(TMP_DB);
     } catch {
       /* ignore */
     }
@@ -541,7 +542,7 @@ describe('analyzer scheduleRun (debounced trigger)', () => {
     closeDb();
     delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
     try {
-      require('fs').unlinkSync(TMP_DB);
+      unlinkSync(TMP_DB);
     } catch {
       /* ignore */
     }

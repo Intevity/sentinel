@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { unlinkSync } from 'fs';
 import Database from 'better-sqlite3';
 import {
   createToolCallExtractor,
@@ -73,7 +74,7 @@ describe('createToolCallExtractor', () => {
     closeDb();
     delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
     try {
-      require('fs').unlinkSync(TMP_DB_PATH);
+      unlinkSync(TMP_DB_PATH);
     } catch {
       /* ignore */
     }
@@ -212,7 +213,7 @@ describe('createToolCallExtractor', () => {
 
 describe('createToolCallExtractor — flush error tolerance', () => {
   it('flush silently swallows insert failures (DB closed mid-stream)', () => {
-    const tmpDb = new (require('better-sqlite3'))(':memory:');
+    const tmpDb = new Database(':memory:');
     // Intentionally do NOT create the tool_calls table; insert will
     // throw "no such table". The extractor must not propagate.
     const ex = createToolCallExtractor({
@@ -244,7 +245,7 @@ describe('applyToolResultBackfill', () => {
     closeDb();
     delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
     try {
-      require('fs').unlinkSync(TMP_DB_PATH);
+      unlinkSync(TMP_DB_PATH);
     } catch {
       /* ignore */
     }

@@ -17,6 +17,7 @@
  *      diff-pre-pass (medium-judgment task; sonnet to keep quality).
  */
 
+import { createHash } from 'crypto';
 import type { GapSubagent } from './gap-to-claude-code.js';
 import { renderClaudeCodeMd, gapFingerprint } from './gap-to-claude-code.js';
 
@@ -190,8 +191,6 @@ export function getCuratedSubagent(curatedId: string): CuratedSubagent | null {
  * "library v3a4f…" and confirm an upgrade landed.
  */
 export function curatedLibraryVersion(): string {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createHash } = require('crypto') as typeof import('crypto');
   const all = getCuratedLibrary();
   const h = createHash('sha256');
   for (const s of all) h.update(`${s.curatedId}:${s.fingerprint}\n`);
