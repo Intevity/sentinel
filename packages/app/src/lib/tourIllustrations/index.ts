@@ -6,4 +6,5 @@ export { default as AlertsIllustration } from './Alerts.js';
 export { default as PermissionsIllustration } from './Permissions.js';
 export { default as BudgetIllustration } from './Budget.js';
 export { default as MetricsIllustration } from './Metrics.js';
+export { default as OptimizeIllustration } from './Optimize.js';
 export { default as ReplayIllustration } from './Replay.js';

@@ -233,6 +233,9 @@ export interface StartProxyOpts {
   /** Callback fired when upstream returns 401 for an identified account.
    *  Wired into ProxyOptions.onUpstreamAuthFailure. */
   onUpstreamAuthFailure?: (accountId: string) => void;
+  /** Callback fired when the per-request tool-call extractor flushes a
+   *  non-empty batch. Wired into ProxyOptions.onToolCallsFlushed. */
+  onToolCallsFlushed?: () => void;
 }
 
 export interface StartedProxy {
@@ -346,6 +349,7 @@ export async function startProxyWithFake(opts: StartProxyOpts = {}): Promise<Sta
   if (opts.getOverageBufferPct) proxyOpts.getOverageBufferPct = opts.getOverageBufferPct;
   if (opts.overageMachine) proxyOpts.overageMachine = opts.overageMachine;
   if (opts.onUpstreamAuthFailure) proxyOpts.onUpstreamAuthFailure = opts.onUpstreamAuthFailure;
+  if (opts.onToolCallsFlushed) proxyOpts.onToolCallsFlushed = opts.onToolCallsFlushed;
   if (securityScanner) proxyOpts.securityScanner = securityScanner;
   if (permissionsEnforcer) proxyOpts.permissionsEnforcer = permissionsEnforcer;
 

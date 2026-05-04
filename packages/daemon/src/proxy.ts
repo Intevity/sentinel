@@ -154,6 +154,14 @@ interface ProxyOptions {
    *  use the freshly-refreshed token. Dedup of in-flight refreshes is the
    *  callback's responsibility. */
   onUpstreamAuthFailure?: (accountId: string) => void;
+  /** Optimize feature: invoked once per /v1/messages response after the
+   *  tool-call extractor has flushed a non-empty batch of rows into
+   *  `tool_calls`. Wired to the analyzer's debounced `scheduleRun` so
+   *  the dashboard updates within ~1.5s of the proxy completing a
+   *  tool_use, mirroring the Metrics tab's near-real-time refresh.
+   *  Optional — when unset, the analyzer relies solely on its periodic
+   *  scan loop. */
+  onToolCallsFlushed?: () => void;
   /** Sprint 9 health probe. Returns the per-component status of the
    *  daemon's critical subsystems (DB, scanner, enforcer). Used by
    *  `/health` to respond 503 when any component is degraded and by
@@ -335,6 +343,7 @@ export function createProxyServer(
     requestLogStore,
     requestAccountMap,
     onUpstreamAuthFailure,
+    onToolCallsFlushed,
   } = opts;
   const getPausedAccountIds = opts.getPausedAccountIds ?? (() => new Set<string>());
   const getPauseReason = opts.getPauseReason ?? (() => null);
@@ -526,6 +535,7 @@ export function createProxyServer(
       requestAccountMap,
       onUpstreamAuthFailure,
       retryProvider,
+      onToolCallsFlushed,
     );
   };
 
@@ -658,6 +668,8 @@ export function createProxyServer(
         undefined,
         requestAccountMap,
         onUpstreamAuthFailure,
+        undefined,
+        onToolCallsFlushed,
       ).catch((err) => {
         console.error('[Proxy] Proxy error:', err);
         res.writeHead(502);
@@ -682,6 +694,8 @@ export function createProxyServer(
       undefined,
       requestAccountMap,
       onUpstreamAuthFailure,
+      undefined,
+      onToolCallsFlushed,
     ).catch((err) => {
       console.error('[Proxy] Default proxy error:', err);
       res.writeHead(502);
@@ -729,6 +743,9 @@ async function proxyToAnthropic(
    *  Not provided for non-messages endpoints (probes, GETs) — those have
    *  no buffered body to replay. */
   retryCredentialProvider?: (currentAccountId: string) => TokenSelection | null,
+  /** Optimize feature: invoked when the per-request tool-call extractor
+   *  flushes a non-empty batch. See ProxyOptions.onToolCallsFlushed. */
+  onToolCallsFlushed?: () => void,
 ): Promise<void> {
   let body = preReadBody ?? (await readBody(req));
 
@@ -1101,7 +1118,19 @@ async function proxyToAnthropic(
   const finalizeToolCalls = (): void => {
     if (!toolCallCtx) return;
     try {
-      toolCallCtx.extractor.flush();
+      const flushed = toolCallCtx.extractor.flush();
+      // Optimize feature: poke the analyzer when this turn captured at
+      // least one tool_use. The analyzer's debounce collapses bursts
+      // from a chatty session into a single runOnce; the dashboard
+      // receives `optimization_metrics_updated` within ~1.5s.
+      if (flushed.length > 0 && onToolCallsFlushed) {
+        try {
+          onToolCallsFlushed();
+          /* v8 ignore next 3 */
+        } catch (err) {
+          console.error('[Optimize] onToolCallsFlushed failed:', err);
+        }
+      }
     } catch (err) {
       /* v8 ignore next 2 */
       console.error('[Optimize] tool_calls flush failed:', err);

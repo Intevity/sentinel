@@ -277,6 +277,14 @@ export interface SubagentUninstalledMessage {
   name: string;
 }
 
+/** Broadcast when the analyzer writes new measured rows. The dashboard
+ *  refetches `get_optimization_metrics` so the savings header + chart
+ *  reflect the latest analysis pass. Fired at most once per analyzer
+ *  tick (every 5 min in production). */
+export interface OptimizationMetricsUpdatedMessage {
+  type: 'optimization_metrics_updated';
+}
+
 /** Broadcast once per OTEL HTTP batch (metrics or logs) after any events
  *  were written to the telemetry tables. The Metrics tab listens for this
  *  and refetches its rollup so dashboards update live as Claude Code emits. */
@@ -488,6 +496,7 @@ export type DaemonToAppMessage =
   | AgentsSyncStatusMessage
   | SubagentInstalledMessage
   | SubagentUninstalledMessage
+  | OptimizationMetricsUpdatedMessage
   | MetricsUpdatedMessage
   | OverageGrantsUpdatedMessage
   | SpendUpdateMessage
@@ -652,6 +661,37 @@ export interface GetOptimizationOpportunitiesMessage {
 export interface GetOptimizationMetricsMessage {
   type: 'get_optimization_metrics';
   days: number;
+}
+
+/** Per-subagent attribution row for {@link OptimizationMetrics.bySubagent}.
+ *  Each measured opportunity carries a `curated_id`, so totals can be
+ *  split per recommended subagent. The dashboard renders one badge per
+ *  list row showing either `savingsRealized` (when the subagent is
+ *  installed) or `savingsPotential` (when it isn't), so the user can
+ *  see at a glance which install will convert which dollar. */
+export interface OptimizationMetricsBySubagent {
+  curatedId: string;
+  savingsRealized: number;
+  savingsPotential: number;
+  opportunities: number;
+}
+
+/** Response shape for {@link GetOptimizationMetricsMessage}. The
+ *  realized/potential split is decided at query time (LEFT JOIN against
+ *  `subagent_installs.installed_at/uninstalled_at`), so installing a
+ *  subagent retroactively promotes its prior opportunities from
+ *  potential to realized — see `db.getOptimizationMetrics`. */
+export interface OptimizationMetrics {
+  totals: {
+    savingsUsdRealized: number;
+    savingsUsdPotential: number;
+    opportunities: number;
+    installs: number;
+  };
+  daily: Array<{ day: string; savingsRealized: number; savingsPotential: number }>;
+  /** Per-curated-id breakdown, sorted by `savingsRealized + savingsPotential`
+   *  desc so the dashboard reads the highest-impact rows first. */
+  bySubagent: OptimizationMetricsBySubagent[];
 }
 
 /** Optimize feature: trigger a one-shot analyzer pass. Used by the

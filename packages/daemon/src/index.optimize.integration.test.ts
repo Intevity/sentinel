@@ -140,14 +140,54 @@ describe('Optimize IPC end-to-end', () => {
     expect(r.data).toEqual([]);
   });
 
-  it('get_optimization_metrics returns the empty totals shape', async () => {
+  it('get_optimization_metrics returns zeroed totals on a fresh daemon', async () => {
     ctx = await startTestDaemon();
-    const r = await ctx.request<{ totals: { savingsUsd: number } }>({
+    const r = await ctx.request<{
+      totals: {
+        savingsUsdRealized: number;
+        savingsUsdPotential: number;
+        opportunities: number;
+        installs: number;
+      };
+      bySubagent: Array<{
+        curatedId: string;
+        savingsRealized: number;
+        savingsPotential: number;
+        opportunities: number;
+      }>;
+    }>({
       type: 'get_optimization_metrics',
-      days: 7,
+      days: 0,
     });
     expect(r.success).toBe(true);
-    expect(r.data?.totals.savingsUsd).toBe(0);
+    expect(r.data?.totals.installs).toBe(0);
+    expect(r.data?.totals.savingsUsdRealized).toBe(0);
+    expect(r.data?.totals.savingsUsdPotential).toBe(0);
+    // bySubagent is the new contract surface for per-row attribution
+    // badges; on a fresh daemon there's no opportunity data yet.
+    expect(r.data?.bySubagent).toEqual([]);
+  });
+
+  it('get_optimization_metrics counts active installs (the original header bug)', async () => {
+    ctx = await startTestDaemon();
+    // Install two curated subagents.
+    await ctx.request({ type: 'install_curated_subagent', curatedId: 'file-explorer' });
+    await ctx.request({ type: 'install_curated_subagent', curatedId: 'log-analyzer' });
+
+    const r = await ctx.request<{ totals: { installs: number } }>({
+      type: 'get_optimization_metrics',
+      days: 0,
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.totals.installs).toBe(2);
+
+    // After uninstall, count drops.
+    await ctx.request({ type: 'uninstall_subagent', name: 'log-analyzer' });
+    const r2 = await ctx.request<{ totals: { installs: number } }>({
+      type: 'get_optimization_metrics',
+      days: 0,
+    });
+    expect(r2.data?.totals.installs).toBe(1);
   });
 
   it('run_optimization_analysis returns success', async () => {

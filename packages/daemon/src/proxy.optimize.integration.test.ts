@@ -247,4 +247,100 @@ describe('proxy Optimize tool-call capture (real HTTP, real SSE)', () => {
     // doesn't mention /var/log/system.log) — should be 0.
     expect(rowsAfter[0]?.['was_quoted_in_later_turn']).toBe(0);
   });
+
+  it('invokes onToolCallsFlushed exactly once per response with tool_uses', async () => {
+    let flushCount = 0;
+    ctx = await startProxyWithFake({
+      accounts: [{ id: 'acct-flush', email: 'f@example.com', token: 'integration-token' }],
+      settings: { optimizeCaptureEnabled: true },
+      onToolCallsFlushed: () => {
+        flushCount += 1;
+      },
+    });
+    ctx.fake.queueResponse('/v1/messages', {
+      sseEvents: [
+        {
+          event: 'message_start',
+          data: {
+            type: 'message_start',
+            message: { model: 'claude-opus-4-7', usage: { input_tokens: 1 } },
+          },
+        },
+        {
+          event: 'content_block_start',
+          data: {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'tool_use', id: 'toolu_flush', name: 'Read', input: {} },
+          },
+        },
+        {
+          event: 'content_block_delta',
+          data: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'input_json_delta', partial_json: '{"path":"/x"}' },
+          },
+        },
+        { event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } },
+        { event: 'message_delta', data: { type: 'message_delta', usage: { output_tokens: 1 } } },
+        { event: 'message_stop', data: { type: 'message_stop' } },
+      ],
+    });
+    await postThroughProxy(ctx.proxyPort, '/v1/messages', {
+      model: 'claude-opus-4-7',
+      messages: [{ role: 'user', content: 'go' }],
+      metadata: { user_id: JSON.stringify({ session_id: 'sess-FLUSH', account_uuid: 'u1' }) },
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(flushCount).toBe(1);
+  });
+
+  it('does not invoke onToolCallsFlushed when the response has no tool_uses', async () => {
+    let flushCount = 0;
+    ctx = await startProxyWithFake({
+      accounts: [{ id: 'acct-noflush', email: 'nf@example.com', token: 'integration-token' }],
+      settings: { optimizeCaptureEnabled: true },
+      onToolCallsFlushed: () => {
+        flushCount += 1;
+      },
+    });
+    ctx.fake.queueResponse('/v1/messages', {
+      sseEvents: [
+        {
+          event: 'message_start',
+          data: {
+            type: 'message_start',
+            message: { model: 'claude-opus-4-7', usage: { input_tokens: 1 } },
+          },
+        },
+        {
+          event: 'content_block_start',
+          data: {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'text', text: '' },
+          },
+        },
+        {
+          event: 'content_block_delta',
+          data: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'just thinking' },
+          },
+        },
+        { event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } },
+        { event: 'message_delta', data: { type: 'message_delta', usage: { output_tokens: 5 } } },
+        { event: 'message_stop', data: { type: 'message_stop' } },
+      ],
+    });
+    await postThroughProxy(ctx.proxyPort, '/v1/messages', {
+      model: 'claude-opus-4-7',
+      messages: [{ role: 'user', content: 'thoughts?' }],
+      metadata: { user_id: JSON.stringify({ session_id: 'sess-NOFLUSH', account_uuid: 'u1' }) },
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(flushCount).toBe(0);
+  });
 });

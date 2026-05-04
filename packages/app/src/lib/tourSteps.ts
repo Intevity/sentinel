@@ -20,6 +20,7 @@ import {
   PermissionsIllustration,
   BudgetIllustration,
   MetricsIllustration,
+  OptimizeIllustration,
   ReplayIllustration,
 } from './tourIllustrations/index.js';
 
@@ -34,6 +35,7 @@ export type TourAccent =
   | 'orange'
   | 'violet'
   | 'green'
+  | 'emerald'
   | 'sky'
   | 'gray';
 
@@ -118,6 +120,17 @@ export const TOUR_STEPS: TourStep[] = [
     accent: 'orange',
     illustration: AlertsIllustration,
     track: 'core',
+  },
+  {
+    targetId: 'tab-optimize',
+    title: 'Cut token costs with subagents',
+    body: 'Sentinel watches your sessions and recommends cheaper-model subagents for routine work like file lookups and log parsing. Install with one click and watch realized savings tick up.',
+    tab: 'optimize',
+    placement: 'bottom',
+    icon: Sparkles,
+    accent: 'emerald',
+    illustration: OptimizeIllustration,
+    track: 'power',
   },
   {
     targetId: 'tour-permissions',

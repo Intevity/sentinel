@@ -9,6 +9,7 @@ const VALID_ACCENTS: TourAccent[] = [
   'orange',
   'violet',
   'green',
+  'emerald',
   'sky',
   'gray',
 ];
@@ -37,10 +38,11 @@ describe('TOUR_STEPS', () => {
     expect(coreIds).toContain('tab-notifications');
   });
 
-  it('includes power-user steps for permissions, budget, metrics, and replay', () => {
+  it('includes power-user steps for optimize, permissions, budget, metrics, and replay', () => {
     const powerSteps = TOUR_STEPS.filter((s) => s.track === 'power');
-    expect(powerSteps.length).toBe(4);
+    expect(powerSteps.length).toBe(5);
     const powerTitles = powerSteps.map((s) => s.title.toLowerCase()).join(' | ');
+    expect(powerTitles).toMatch(/subagent|optimize|cost/);
     expect(powerTitles).toMatch(/permission/);
     expect(powerTitles).toMatch(/budget/);
     expect(powerTitles).toMatch(/metric/);

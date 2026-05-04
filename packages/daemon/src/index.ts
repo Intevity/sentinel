@@ -55,6 +55,7 @@ import {
   getCacheTtlBySession,
   listSubagentInstalls,
   insertOptimizationEvent,
+  getOptimizationMetrics,
 } from './db.js';
 import {
   loadSettings,
@@ -91,6 +92,7 @@ import { redactSecretsInString } from './security/detectors.js';
 import { createClaudeSyncEngine } from './security/permissions/claude-sync.js';
 import { createAgentsSyncEngine } from './optimize/agents-sync.js';
 import { getCuratedLibrary, getCuratedSubagent } from './optimize/curated-library.js';
+import { createOptimizationAnalyzer } from './optimize/optimization-analyzer.js';
 import { homedir } from 'os';
 import { join } from 'path';
 import { runScanBenchmark } from './security/scanner-benchmark.js';
@@ -2259,15 +2261,24 @@ export async function startDaemon(): Promise<DaemonHandle> {
         break;
       }
       case 'get_optimization_metrics': {
+        // `days` is accepted for forward compatibility but the v1
+        // dashboard wants the all-time series. The header summary uses
+        // running totals; the chart trims to the user-selected window
+        // client-side.
         respond({
           requestType: 'get_optimization_metrics',
           success: true,
-          data: { totals: { savingsUsd: 0, opportunities: 0, installs: 0 }, daily: [] },
+          data: getOptimizationMetrics(db),
         });
         break;
       }
       case 'run_optimization_analysis': {
-        respond({ requestType: 'run_optimization_analysis', success: true, data: {} });
+        const written = optimizationAnalyzer.runOnce();
+        respond({
+          requestType: 'run_optimization_analysis',
+          success: true,
+          data: { written },
+        });
         break;
       }
       case 'dismiss_optimization': {
@@ -2536,6 +2547,15 @@ export async function startDaemon(): Promise<DaemonHandle> {
     console.error('[AgentsSync] initial start failed:', err);
   });
 
+  // Optimize feature: periodic analyzer. Runs every 5 minutes,
+  // detecting opportunities in recent tool_calls and writing
+  // `kind='measured'` rows. Drives the dashboard's continuous savings
+  // tracking. Realized vs. potential is determined at query time by
+  // joining with subagent_installs, so this analyzer doesn't need to
+  // know whether anything is installed.
+  const optimizationAnalyzer = createOptimizationAnalyzer({ db, ipcServer });
+  optimizationAnalyzer.start();
+
   // Start IPC server. Sprint 2: when the Tauri parent piped a handshake
   // token through stdin, we enforce it on every connection. When stdin
   // produced nothing (dev CLI launches), the server runs unauthenticated
@@ -2654,6 +2674,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
         };
       },
       getSettings: () => ({ daemonHealthFailMode: currentSettings.daemonHealthFailMode }),
+      // Optimize feature: poke the analyzer when the proxy has just
+      // flushed a non-empty tool_calls batch. The analyzer's debounced
+      // runOnce produces an `optimization_metrics_updated` broadcast
+      // within ~1.5s, giving the dashboard Metrics-like responsiveness.
+      onToolCallsFlushed: () => optimizationAnalyzer.scheduleRun(),
     },
     (req, res) => {
       const url = req.url ?? '/';
@@ -2815,6 +2840,8 @@ export async function startDaemon(): Promise<DaemonHandle> {
     clearInterval(chainIntegrityTimer);
     spendTracker.stop();
     permissionsEnforcer.shutdown();
+    optimizationAnalyzer.stop();
+    agentsSyncEngine.stop();
     ipcServer.close();
     await new Promise<void>((resolve) => {
       httpServer.close(() => resolve());

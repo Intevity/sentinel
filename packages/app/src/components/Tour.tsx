@@ -44,6 +44,7 @@ const ACCENTS: Record<TourAccent, { hex: string; soft: string }> = {
   orange: { hex: '#FF9F0A', soft: 'rgba(255, 159, 10, 0.20)' },
   violet: { hex: '#BF5AF2', soft: 'rgba(191, 90, 242, 0.18)' },
   green: { hex: '#32D74B', soft: 'rgba(50, 215, 75, 0.20)' },
+  emerald: { hex: '#34D399', soft: 'rgba(52, 211, 153, 0.20)' },
   sky: { hex: '#64D2FF', soft: 'rgba(100, 210, 255, 0.22)' },
   gray: { hex: '#8E8E93', soft: 'rgba(142, 142, 147, 0.20)' },
 };

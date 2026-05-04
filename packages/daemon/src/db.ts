@@ -28,6 +28,8 @@ import type {
   SecurityAllowlistEntry,
   PermissionRule,
   PermissionRuleInput,
+  OptimizationMetrics,
+  OptimizationMetricsBySubagent,
 } from '@claude-sentinel/shared';
 
 export const SENTINEL_DIR = join(homedir(), '.claude-sentinel');
@@ -3968,6 +3970,214 @@ export function insertOptimizationEvent(db: Database.Database, e: InsertOptimiza
       sourceToolCallIds: JSON.stringify(e.sourceToolCallIds),
     });
   return Number(result.lastInsertRowid);
+}
+
+/**
+ * True iff a row matching (account_id, session_id, curated_id, pattern)
+ * was inserted on or after `sinceMs`. The analyzer uses this to dedup
+ * `kind='measured'` writes — a single session that fits a heuristic on
+ * every 5-min poll shouldn't accumulate many duplicate measured rows.
+ *
+ * `kind` is intentionally not part of the dedup key: a session that
+ * already has a `recommended` row should also suppress a follow-up
+ * `measured` row for the same pattern (we have ONE measurement per
+ * (session, curated_id, pattern) and the bucket distinction comes from
+ * the JOIN with `subagent_installs`).
+ */
+export function hasRecentOptimizationEvent(
+  db: Database.Database,
+  args: {
+    accountId: string;
+    sessionId: string | null;
+    curatedId: string;
+    pattern: string;
+    sinceMs: number;
+  },
+): boolean {
+  const sql =
+    args.sessionId === null
+      ? 'SELECT 1 AS ok FROM optimization_events WHERE account_id = ? AND session_id IS NULL AND curated_id = ? AND pattern = ? AND ts >= ? LIMIT 1'
+      : 'SELECT 1 AS ok FROM optimization_events WHERE account_id = ? AND session_id = ? AND curated_id = ? AND pattern = ? AND ts >= ? LIMIT 1';
+  const row =
+    args.sessionId === null
+      ? db.prepare(sql).get(args.accountId, args.curatedId, args.pattern, args.sinceMs)
+      : db
+          .prepare(sql)
+          .get(args.accountId, args.sessionId, args.curatedId, args.pattern, args.sinceMs);
+  return row !== undefined;
+}
+
+interface DbOptimizationEventRow {
+  id: number;
+  ts: number;
+  account_id: string;
+  session_id: string | null;
+  curated_id: string;
+  kind: string;
+  pattern: string | null;
+  savings_usd: number | null;
+  actual_input_tokens: number | null;
+  actual_cached_tokens: number | null;
+  actual_cost_usd: number | null;
+  hypothetical_cost_usd: number | null;
+  source_tool_call_ids: string | null;
+}
+
+export interface OptimizationEventRow {
+  id: number;
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  curatedId: string;
+  kind: OptimizationEventKind;
+  pattern: string | null;
+  savingsUsd: number | null;
+}
+
+function rowToOptimizationEvent(row: DbOptimizationEventRow): OptimizationEventRow {
+  return {
+    id: row.id,
+    ts: row.ts,
+    accountId: row.account_id,
+    sessionId: row.session_id,
+    curatedId: row.curated_id,
+    kind: row.kind as OptimizationEventKind,
+    pattern: row.pattern,
+    savingsUsd: row.savings_usd,
+  };
+}
+
+/**
+ * Aggregate savings totals plus a per-day series, split into buckets:
+ *
+ *   - **realized**: opportunity timestamp falls inside an active install
+ *     window for the matching curated subagent
+ *     (subagent_installs.installed_at ≤ ts < uninstalled_at OR uninstalled_at IS NULL)
+ *   - **potential**: opportunity exists but no active install for that
+ *     curated_id at the time
+ *
+ * Only `kind='measured'` rows count toward savings. The realized/
+ * potential split is determined by a LEFT JOIN with subagent_installs
+ * keyed on curated_id and timestamp — a multi-install / reinstall
+ * history would need a separate audit table for full precision; v1
+ * uses the latest install row's window only.
+ *
+ * `installs` returns the count of currently-active subagent_installs
+ * rows (uninstalled_at IS NULL) — drives the "N subagents installed"
+ * label in the dashboard header.
+ */
+export function getOptimizationMetrics(db: Database.Database): OptimizationMetrics {
+  // Bucket each measured row by realized/potential via a LEFT JOIN.
+  // SQLite's COALESCE handles the no-matching-install case. `curated_id`
+  // is included so the same loop can build a per-subagent breakdown
+  // alongside the daily series.
+  const rows = db
+    .prepare(
+      `
+      SELECT
+        date(oe.ts / 1000, 'unixepoch') AS day,
+        oe.curated_id                   AS curated_id,
+        oe.savings_usd                  AS savings_usd,
+        CASE
+          WHEN si.installed_at IS NOT NULL
+            AND si.installed_at <= oe.ts
+            AND (si.uninstalled_at IS NULL OR si.uninstalled_at > oe.ts)
+          THEN 1 ELSE 0
+        END AS is_realized
+      FROM optimization_events oe
+      LEFT JOIN subagent_installs si ON si.curated_id = oe.curated_id
+      WHERE oe.kind = 'measured' AND oe.savings_usd IS NOT NULL
+    `,
+    )
+    .all() as Array<{
+    day: string;
+    curated_id: string;
+    savings_usd: number;
+    is_realized: number;
+  }>;
+
+  const daily = new Map<string, { realized: number; potential: number }>();
+  const bySubagent = new Map<
+    string,
+    { realized: number; potential: number; opportunities: number }
+  >();
+  let totalRealized = 0;
+  let totalPotential = 0;
+  for (const r of rows) {
+    const dailySlot = daily.get(r.day) ?? { realized: 0, potential: 0 };
+    const subSlot = bySubagent.get(r.curated_id) ?? {
+      realized: 0,
+      potential: 0,
+      opportunities: 0,
+    };
+    if (r.is_realized === 1) {
+      dailySlot.realized += r.savings_usd;
+      subSlot.realized += r.savings_usd;
+      totalRealized += r.savings_usd;
+    } else {
+      dailySlot.potential += r.savings_usd;
+      subSlot.potential += r.savings_usd;
+      totalPotential += r.savings_usd;
+    }
+    subSlot.opportunities += 1;
+    daily.set(r.day, dailySlot);
+    bySubagent.set(r.curated_id, subSlot);
+  }
+
+  const installsRow = db
+    .prepare('SELECT COUNT(*) AS n FROM subagent_installs WHERE uninstalled_at IS NULL')
+    .get() as { n: number };
+
+  // Sort highest combined impact first so the dashboard naturally
+  // surfaces the biggest savings (or biggest missed opportunity) at the
+  // top of the curated list.
+  const bySubagentArr: OptimizationMetricsBySubagent[] = [...bySubagent.entries()]
+    .map(([curatedId, v]) => ({
+      curatedId,
+      savingsRealized: v.realized,
+      savingsPotential: v.potential,
+      opportunities: v.opportunities,
+    }))
+    .sort(
+      (a, b) => b.savingsRealized + b.savingsPotential - (a.savingsRealized + a.savingsPotential),
+    );
+
+  return {
+    totals: {
+      savingsUsdRealized: totalRealized,
+      savingsUsdPotential: totalPotential,
+      opportunities: rows.length,
+      installs: installsRow.n,
+    },
+    daily: [...daily.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([day, v]) => ({
+        day,
+        savingsRealized: v.realized,
+        savingsPotential: v.potential,
+      })),
+    bySubagent: bySubagentArr,
+  };
+}
+
+/**
+ * List recent measured rows for ad-hoc inspection. Currently used by
+ * tests; kept exported so a future "what triggered this savings number?"
+ * UI can drill in.
+ */
+export function listRecentOptimizationEvents(
+  db: Database.Database,
+  opts: { kind?: OptimizationEventKind; limit?: number } = {},
+): OptimizationEventRow[] {
+  const limit = Math.max(1, Math.min(opts.limit ?? 100, 1000));
+  const rows = (
+    opts.kind === undefined
+      ? db.prepare('SELECT * FROM optimization_events ORDER BY ts DESC LIMIT ?').all(limit)
+      : db
+          .prepare('SELECT * FROM optimization_events WHERE kind = ? ORDER BY ts DESC LIMIT ?')
+          .all(opts.kind, limit)
+  ) as DbOptimizationEventRow[];
+  return rows.map(rowToOptimizationEvent);
 }
 
 // ─── Optimize feature: subagent_installs ──────────────────────────────────────
