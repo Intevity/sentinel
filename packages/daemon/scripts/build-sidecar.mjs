@@ -33,11 +33,11 @@ const SHIM_PATH = join(DIST_DIR, 'bindings-shim.cjs');
 
 // Rust target triple → @yao-pkg/pkg target string
 const TRIPLE_TO_PKG = {
-  'aarch64-apple-darwin': 'node22-macos-arm64',
-  'x86_64-apple-darwin': 'node22-macos-x64',
-  'x86_64-unknown-linux-gnu': 'node22-linux-x64',
-  'aarch64-unknown-linux-gnu': 'node22-linux-arm64',
-  'x86_64-pc-windows-msvc': 'node22-win-x64',
+  'aarch64-apple-darwin': 'node24-macos-arm64',
+  'x86_64-apple-darwin': 'node24-macos-x64',
+  'x86_64-unknown-linux-gnu': 'node24-linux-x64',
+  'aarch64-unknown-linux-gnu': 'node24-linux-arm64',
+  'x86_64-pc-windows-msvc': 'node24-win-x64',
 };
 
 function getRustTriple() {
@@ -115,7 +115,7 @@ execSync(
     'esbuild dist/cli.js',
     '--bundle',
     '--platform=node',
-    '--target=node22',
+    '--target=node24',
     '--format=cjs',
     `--outfile="${BUNDLE_PATH}"`,
     // Replace 'bindings' with our shim; mark .node files as external so

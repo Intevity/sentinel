@@ -13,7 +13,7 @@ An open-source Claude Code companion: tray app + bundled daemon for in-flight se
 [![Credentials: OS keychain](https://img.shields.io/badge/credentials-OS%20keychain-blue)](#your-data-never-leaves-your-machine)
 [![Coverage ≥95%](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)](./vitest.config.ts)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#download)
-[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB)](https://tauri.app)
 [![TypeScript](https://img.shields.io/badge/typescript-strict-3178C6)](https://www.typescriptlang.org)
 
@@ -177,7 +177,7 @@ Claude Code  ──→  localhost:47284  ──→  api.anthropic.com
 
 - macOS 12+, Windows 10+, or Linux (libsecret required on Linux)
 - [Claude Code](https://claude.ai/code) installed
-- Node.js 22+ (for Claude Code itself; the Sentinel daemon ships its own runtime)
+- Node.js 24+ (for Claude Code itself; the Sentinel daemon ships its own runtime)
 
 ### First launch
 
@@ -232,7 +232,7 @@ Sentinel is a tray-only app (no Dock icon). Closing the window with the red ⨉ 
 
 - pnpm 9+
 - Rust stable (install via [rustup](https://rustup.rs))
-- Node.js 22+
+- Node.js 24+
 - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
 - **Linux**: `libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf`
 - **Windows**: [Visual Studio Build Tools](https://aka.ms/vs/17/release/vs_buildtools.exe) with the "Desktop development with C++" workload
