@@ -73,6 +73,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     optimizeAutoRecommend: true,
     optimizeShowMicroOpportunities: false,
     optimizeUnits: 'tokens',
+    optimizeChartView: 'realized',
     ...overrides,
   };
 }

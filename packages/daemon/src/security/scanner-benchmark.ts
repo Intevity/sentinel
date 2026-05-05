@@ -130,6 +130,7 @@ function benchSettings(): Settings {
     optimizeAutoRecommend: true,
     optimizeShowMicroOpportunities: false,
     optimizeUnits: 'tokens',
+    optimizeChartView: 'realized',
   };
 }
 

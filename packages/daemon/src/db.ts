@@ -4230,6 +4230,7 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
       SELECT
         date(oe.ts / 1000, 'unixepoch', 'localtime') AS day,
         oe.curated_id                        AS curated_id,
+        oe.pattern                           AS pattern,
         oe.savings_usd                       AS savings_usd,
         oe.actual_input_tokens               AS actual_input_tokens,
         oe.hypothetical_total_tokens         AS hypothetical_total_tokens,
@@ -4247,6 +4248,7 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
     .all() as Array<{
     day: string;
     curated_id: string;
+    pattern: string | null;
     savings_usd: number;
     actual_input_tokens: number | null;
     hypothetical_total_tokens: number | null;
@@ -4279,6 +4281,13 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
   }
   const daily = new Map<string, BucketTokens>();
   const bySubagent = new Map<string, BucketTokens & { opportunities: number }>();
+  // Per-(day, curated_id) and per-pattern aggregates power the
+  // "by subagent over time" and "by pattern" charts. Built in the same
+  // single pass so we don't re-query SQLite. Composite key for daily-by-
+  // subagent uses '\x1f' (ASCII Unit Separator) since neither YYYY-MM-DD
+  // nor curated_id slugs ever contain it.
+  const dailyBySubagent = new Map<string, BucketTokens & { day: string; curatedId: string }>();
+  const byPattern = new Map<string, BucketTokens & { opportunities: number }>();
   const emptyBucket = (): BucketTokens => ({
     realized: 0,
     potential: 0,
@@ -4292,12 +4301,27 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
   for (const r of rows) {
     const dailySlot = daily.get(r.day) ?? emptyBucket();
     const subSlot = bySubagent.get(r.curated_id) ?? { ...emptyBucket(), opportunities: 0 };
+    const dbsKey = `${r.day}\x1f${r.curated_id}`;
+    const dbsSlot = dailyBySubagent.get(dbsKey) ?? {
+      ...emptyBucket(),
+      day: r.day,
+      curatedId: r.curated_id,
+    };
+    // Pre-pattern rows (analyzer didn't record one) bucket under the
+    // sentinel '__none__' so they're still visible in the chart rather
+    // than silently dropped. Won't occur on freshly captured data.
+    const patternKey = r.pattern ?? '__none__';
+    const patSlot = byPattern.get(patternKey) ?? { ...emptyBucket(), opportunities: 0 };
     const tokens = tokenSavings(r);
     if (r.is_realized === 1) {
       dailySlot.realized += r.savings_usd;
       dailySlot.tokensRealized += tokens;
       subSlot.realized += r.savings_usd;
       subSlot.tokensRealized += tokens;
+      dbsSlot.realized += r.savings_usd;
+      dbsSlot.tokensRealized += tokens;
+      patSlot.realized += r.savings_usd;
+      patSlot.tokensRealized += tokens;
       totalRealized += r.savings_usd;
       totalTokensRealized += tokens;
     } else {
@@ -4305,12 +4329,19 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
       dailySlot.tokensPotential += tokens;
       subSlot.potential += r.savings_usd;
       subSlot.tokensPotential += tokens;
+      dbsSlot.potential += r.savings_usd;
+      dbsSlot.tokensPotential += tokens;
+      patSlot.potential += r.savings_usd;
+      patSlot.tokensPotential += tokens;
       totalPotential += r.savings_usd;
       totalTokensPotential += tokens;
     }
     subSlot.opportunities += 1;
+    patSlot.opportunities += 1;
     daily.set(r.day, dailySlot);
     bySubagent.set(r.curated_id, subSlot);
+    dailyBySubagent.set(dbsKey, dbsSlot);
+    byPattern.set(patternKey, patSlot);
   }
 
   const installsRow = db
@@ -4328,6 +4359,36 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
       tokensRealized: v.tokensRealized,
       tokensPotential: v.tokensPotential,
       opportunities: v.opportunities,
+    }))
+    .sort(
+      (a, b) => b.savingsRealized + b.savingsPotential - (a.savingsRealized + a.savingsPotential),
+    );
+
+  const dailyBySubagentArr = [...dailyBySubagent.values()]
+    .map((v) => ({
+      day: v.day,
+      curatedId: v.curatedId,
+      savingsRealized: v.realized,
+      savingsPotential: v.potential,
+      tokensRealized: v.tokensRealized,
+      tokensPotential: v.tokensPotential,
+    }))
+    .sort((a, b) => {
+      const d = a.day.localeCompare(b.day);
+      return d !== 0 ? d : a.curatedId.localeCompare(b.curatedId);
+    });
+
+  // Highest combined impact first, mirroring `bySubagent` ordering so
+  // the chart's left/top bars are always the patterns the user cares
+  // about most.
+  const byPatternArr = [...byPattern.entries()]
+    .map(([pattern, v]) => ({
+      pattern,
+      opportunities: v.opportunities,
+      savingsRealized: v.realized,
+      savingsPotential: v.potential,
+      tokensRealized: v.tokensRealized,
+      tokensPotential: v.tokensPotential,
     }))
     .sort(
       (a, b) => b.savingsRealized + b.savingsPotential - (a.savingsRealized + a.savingsPotential),
@@ -4352,6 +4413,8 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
         tokensPotential: v.tokensPotential,
       })),
     bySubagent: bySubagentArr,
+    dailyBySubagent: dailyBySubagentArr,
+    byPattern: byPatternArr,
   };
 }
 

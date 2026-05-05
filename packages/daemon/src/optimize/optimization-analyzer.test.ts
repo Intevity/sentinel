@@ -631,6 +631,201 @@ describe('getOptimizationMetrics — realized vs potential split', () => {
     expect(la?.tokensRealized).toBe(0);
     expect(la?.tokensPotential).toBe(6400);
   });
+
+  it('returns empty dailyBySubagent and byPattern arrays on a fresh database', () => {
+    const m = getOptimizationMetrics(db);
+    expect(m.dailyBySubagent).toEqual([]);
+    expect(m.byPattern).toEqual([]);
+  });
+
+  it('builds dailyBySubagent splitting (day, curated_id) buckets with realized/potential preserved', async () => {
+    const { upsertSubagentInstall, insertOptimizationEvent } = await import('../db.js');
+    const t = Date.now();
+    upsertSubagentInstall(db, {
+      name: 'file-explorer',
+      source: 'curated',
+      curatedId: 'file-explorer',
+      gapFingerprint: null,
+      mdPath: '/tmp/fe.md',
+      mdHash: 'h',
+      installedAt: t - 60_000,
+    });
+    // Two rows on the same day for file-explorer (one realized) and one
+    // row for log-analyzer (potential, no install).
+    insertOptimizationEvent(db, {
+      ts: t,
+      accountId: 'a1',
+      sessionId: 's1',
+      curatedId: 'file-explorer',
+      kind: 'measured',
+      pattern: 'short_turn_after_large_read',
+      savingsUsd: 0.4,
+      actualInputTokens: 10_000,
+      actualCachedTokens: 0,
+      actualCostUsd: 1.0,
+      hypotheticalCostUsd: 0.6,
+      hypotheticalTotalTokens: 8000,
+      sourceToolCallIds: [],
+    });
+    insertOptimizationEvent(db, {
+      ts: t + 100,
+      accountId: 'a1',
+      sessionId: 's2',
+      curatedId: 'file-explorer',
+      kind: 'measured',
+      pattern: 'short_turn_after_large_read',
+      savingsUsd: 0.1,
+      actualInputTokens: 10_000,
+      actualCachedTokens: 0,
+      actualCostUsd: 0.5,
+      hypotheticalCostUsd: 0.4,
+      hypotheticalTotalTokens: 8000,
+      sourceToolCallIds: [],
+    });
+    insertOptimizationEvent(db, {
+      ts: t,
+      accountId: 'a1',
+      sessionId: 's3',
+      curatedId: 'log-analyzer',
+      kind: 'measured',
+      pattern: 'bash_log_parse',
+      savingsUsd: 0.2,
+      actualInputTokens: 10_000,
+      actualCachedTokens: 0,
+      actualCostUsd: 0.7,
+      hypotheticalCostUsd: 0.5,
+      hypotheticalTotalTokens: 8000,
+      sourceToolCallIds: [],
+    });
+
+    const m = getOptimizationMetrics(db);
+    // Two distinct (day, curated_id) buckets — both file-explorer rows
+    // collapse onto a single bucket since they share the day.
+    expect(m.dailyBySubagent.length).toBe(2);
+
+    const fe = m.dailyBySubagent.find((d) => d.curatedId === 'file-explorer');
+    const la = m.dailyBySubagent.find((d) => d.curatedId === 'log-analyzer');
+    expect(fe?.savingsRealized).toBeCloseTo(0.5, 6);
+    expect(fe?.savingsPotential).toBe(0);
+    expect(la?.savingsRealized).toBe(0);
+    expect(la?.savingsPotential).toBeCloseTo(0.2, 6);
+
+    // Token rollup matches: file-explorer 8000 − 1000 = 7000 per row, two rows → 14000
+    // log-analyzer 8000 − 1600 = 6400.
+    expect(fe?.tokensRealized).toBe(14000);
+    expect(la?.tokensPotential).toBe(6400);
+
+    // Sort order: same day, ordered by curatedId asc.
+    expect(m.dailyBySubagent.map((d) => d.curatedId)).toEqual(['file-explorer', 'log-analyzer']);
+  });
+
+  it('builds byPattern grouping with opportunities count and impact-desc ordering', async () => {
+    const { insertOptimizationEvent } = await import('../db.js');
+    const t = Date.now();
+    // Pattern A: 3 events, total $0.30
+    for (let i = 0; i < 3; i++) {
+      insertOptimizationEvent(db, {
+        ts: t + i,
+        accountId: 'a1',
+        sessionId: `sA${i}`,
+        curatedId: 'file-explorer',
+        kind: 'measured',
+        pattern: 'short_turn_after_large_read',
+        savingsUsd: 0.1,
+        actualInputTokens: 5000,
+        actualCachedTokens: 0,
+        actualCostUsd: 0.3,
+        hypotheticalCostUsd: 0.2,
+        hypotheticalTotalTokens: 8000,
+        sourceToolCallIds: [],
+      });
+    }
+    // Pattern B: 1 event but a much larger savings — should rank first
+    // by impact ordering.
+    insertOptimizationEvent(db, {
+      ts: t + 10,
+      accountId: 'a1',
+      sessionId: 'sB',
+      curatedId: 'log-analyzer',
+      kind: 'measured',
+      pattern: 'bash_log_parse',
+      savingsUsd: 1.0,
+      actualInputTokens: 5000,
+      actualCachedTokens: 0,
+      actualCostUsd: 1.5,
+      hypotheticalCostUsd: 0.5,
+      hypotheticalTotalTokens: 8000,
+      sourceToolCallIds: [],
+    });
+
+    const m = getOptimizationMetrics(db);
+    expect(m.byPattern.length).toBe(2);
+
+    // Sorted by realized + potential desc — Pattern B's $1.00 outranks
+    // Pattern A's combined $0.30.
+    expect(m.byPattern[0]?.pattern).toBe('bash_log_parse');
+    expect(m.byPattern[0]?.opportunities).toBe(1);
+    expect(m.byPattern[0]?.savingsPotential).toBeCloseTo(1.0, 6);
+    expect(m.byPattern[1]?.pattern).toBe('short_turn_after_large_read');
+    expect(m.byPattern[1]?.opportunities).toBe(3);
+    expect(m.byPattern[1]?.savingsPotential).toBeCloseTo(0.3, 6);
+  });
+
+  it('promotes byPattern rows to realized when an active install covers their timestamp', async () => {
+    const { upsertSubagentInstall, insertOptimizationEvent } = await import('../db.js');
+    const t = Date.now();
+    upsertSubagentInstall(db, {
+      name: 'file-explorer',
+      source: 'curated',
+      curatedId: 'file-explorer',
+      gapFingerprint: null,
+      mdPath: '/tmp/fe.md',
+      mdHash: 'h',
+      installedAt: t - 60_000,
+    });
+    insertOptimizationEvent(db, {
+      ts: t,
+      accountId: 'a1',
+      sessionId: 's1',
+      curatedId: 'file-explorer',
+      kind: 'measured',
+      pattern: 'short_turn_after_large_read',
+      savingsUsd: 0.2,
+      actualInputTokens: 5000,
+      actualCachedTokens: 0,
+      actualCostUsd: 0.4,
+      hypotheticalCostUsd: 0.2,
+      hypotheticalTotalTokens: 8000,
+      sourceToolCallIds: [],
+    });
+    const m = getOptimizationMetrics(db);
+    const p = m.byPattern.find((x) => x.pattern === 'short_turn_after_large_read');
+    expect(p?.savingsRealized).toBeCloseTo(0.2, 6);
+    expect(p?.savingsPotential).toBe(0);
+  });
+
+  it('buckets rows with a NULL pattern under the __none__ sentinel rather than dropping them', async () => {
+    const { insertOptimizationEvent } = await import('../db.js');
+    insertOptimizationEvent(db, {
+      ts: Date.now(),
+      accountId: 'a1',
+      sessionId: 's1',
+      curatedId: 'file-explorer',
+      kind: 'measured',
+      pattern: null,
+      savingsUsd: 0.05,
+      actualInputTokens: 5000,
+      actualCachedTokens: 0,
+      actualCostUsd: 0.1,
+      hypotheticalCostUsd: 0.05,
+      hypotheticalTotalTokens: 8000,
+      sourceToolCallIds: [],
+    });
+    const m = getOptimizationMetrics(db);
+    expect(m.byPattern.length).toBe(1);
+    expect(m.byPattern[0]?.pattern).toBe('__none__');
+    expect(m.byPattern[0]?.opportunities).toBe(1);
+  });
 });
 
 describe('analyzer schedule', () => {

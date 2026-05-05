@@ -709,6 +709,31 @@ export interface OptimizationMetrics {
   /** Per-curated-id breakdown, sorted by `savingsRealized + savingsPotential`
    *  desc so the dashboard reads the highest-impact rows first. */
   bySubagent: OptimizationMetricsBySubagent[];
+  /** Per-(day, curated_id) breakdown powering the "by subagent over time"
+   *  chart. Sorted by `day ASC, curatedId ASC` so the chart can render
+   *  without re-sorting. Days with no events for a given subagent are
+   *  omitted; the chart fills the gaps with zero. */
+  dailyBySubagent: Array<{
+    day: string;
+    curatedId: string;
+    savingsRealized: number;
+    savingsPotential: number;
+    tokensRealized: number;
+    tokensPotential: number;
+  }>;
+  /** Per-detection-heuristic breakdown powering the "by pattern" chart.
+   *  Sorted by `savingsRealized + savingsPotential` desc so the chart
+   *  reads the highest-impact patterns first. `pattern` is the analyzer's
+   *  internal id (e.g. `short_turn_after_large_read`); the UI is
+   *  responsible for any user-facing label mapping. */
+  byPattern: Array<{
+    pattern: string;
+    opportunities: number;
+    savingsRealized: number;
+    savingsPotential: number;
+    tokensRealized: number;
+    tokensPotential: number;
+  }>;
 }
 
 /** Optimize feature: trigger a one-shot analyzer pass. Used by the

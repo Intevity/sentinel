@@ -1,15 +1,23 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Sparkles, CheckCircle2, Trash2 } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import type {
   OptimizationMetrics,
   OptimizationMetricsBySubagent,
+  OptimizeChartView,
   Settings,
 } from '@claude-sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import { formatTokens, type SavingsUnits } from '../lib/optimizeUnits.js';
 import OpportunityList from './optimize/OpportunityList.js';
 import ContextInventoryPanel from './optimize/ContextInventoryPanel.js';
+import {
+  RealizedChart,
+  BySubagentChart,
+  ComparisonChart,
+  CumulativeChart,
+  ByPatternChart,
+  ChartViewSwitcher,
+} from './optimize/charts/index.js';
 
 /**
  * Optimize tab — recommends curated subagents based on observed
@@ -63,6 +71,8 @@ const EMPTY_METRICS: OptimizationMetrics = {
   },
   daily: [],
   bySubagent: [],
+  dailyBySubagent: [],
+  byPattern: [],
 };
 
 export default function OptimizeDashboard(): React.ReactElement {
@@ -78,6 +88,10 @@ export default function OptimizeDashboard(): React.ReactElement {
   // framing — `tokensRealized` on the metrics shape is that single
   // value the daemon computes.
   const [units, setUnits] = useState<SavingsUnits>('tokens');
+  // Chart-view selection is server-persisted via Settings.optimizeChartView.
+  // Default 'realized' matches the daemon default and preserves the
+  // pre-existing chart for users who don't touch the new switcher.
+  const [chartView, setChartView] = useState<OptimizeChartView>('realized');
 
   const refresh = useCallback(async () => {
     const [lib, inst, met, settings] = await Promise.all([
@@ -91,6 +105,7 @@ export default function OptimizeDashboard(): React.ReactElement {
     if (met.success && met.data) setMetrics(met.data);
     if (settings.success && settings.data) {
       setUnits(settings.data.optimizeUnits);
+      setChartView(settings.data.optimizeChartView);
     }
   }, []);
 
@@ -119,6 +134,15 @@ export default function OptimizeDashboard(): React.ReactElement {
     await sendToSentinel({
       type: 'update_settings',
       settings: { optimizeUnits: next },
+    });
+  }, []);
+
+  const onChangeChartView = useCallback(async (next: OptimizeChartView) => {
+    // Same optimistic-then-persist pattern as the units toggle.
+    setChartView(next);
+    await sendToSentinel({
+      type: 'update_settings',
+      settings: { optimizeChartView: next },
     });
   }, []);
 
@@ -157,7 +181,10 @@ export default function OptimizeDashboard(): React.ReactElement {
   return (
     <div className="space-y-3">
       <SavingsHeader metrics={metrics} units={units} onToggleUnits={onToggleUnits} />
-      <SavingsChart daily={metrics.daily} units={units} />
+      <div className="flex justify-end">
+        <ChartViewSwitcher value={chartView} onChange={onChangeChartView} />
+      </div>
+      {renderChart(chartView, metrics, units)}
 
       {error !== null && <div className="glass-card px-4 py-3 text-sm text-red-300">{error}</div>}
 
@@ -434,85 +461,22 @@ function SubagentSavingsBadge({
   );
 }
 
-function SavingsChart({
-  daily,
-  units,
-}: {
-  daily: OptimizationMetrics['daily'];
-  units: SavingsUnits;
-}): React.ReactElement | null {
-  if (daily.length === 0) {
-    return (
-      <div className="glass-card px-4 py-6 text-center text-xs text-white/55">
-        Once Sentinel sees enough Claude Code traffic, your daily savings will appear here.
-      </div>
-    );
+function renderChart(
+  view: OptimizeChartView,
+  metrics: OptimizationMetrics,
+  units: SavingsUnits,
+): React.ReactElement {
+  switch (view) {
+    case 'bySubagent':
+      return <BySubagentChart dailyBySubagent={metrics.dailyBySubagent} units={units} />;
+    case 'comparison':
+      return <ComparisonChart bySubagent={metrics.bySubagent} units={units} />;
+    case 'cumulative':
+      return <CumulativeChart daily={metrics.daily} units={units} />;
+    case 'byPattern':
+      return <ByPatternChart byPattern={metrics.byPattern} units={units} />;
+    case 'realized':
+    default:
+      return <RealizedChart daily={metrics.daily} units={units} />;
   }
-  // Recharts wants short YYYY-MM-DD → MM/DD labels for the X-axis.
-  // Switch the y-axis values based on the units toggle: dollars are
-  // rounded to 2 decimals, token integers pass through.
-  const data = daily.map((d) => ({
-    day: d.day.slice(5).replace('-', '/'),
-    realized:
-      units === 'cost' ? Number(d.savingsRealized.toFixed(2)) : Math.round(d.tokensRealized),
-    potential:
-      units === 'cost' ? Number(d.savingsPotential.toFixed(2)) : Math.round(d.tokensPotential),
-  }));
-  const formatAxis = units === 'cost' ? formatUsd : formatTokens;
-  return (
-    <div className="glass-card px-4 pt-4 pb-3">
-      <p className="mb-3 text-[11px] font-semibold text-[#8E8E93]">Daily savings</p>
-      <ResponsiveContainer width="100%" height={160}>
-        <BarChart data={data} barSize={14} margin={{ top: 0, right: 0, bottom: 0, left: -12 }}>
-          <XAxis
-            dataKey="day"
-            tick={{ fontSize: 10, fill: '#8E8E93' }}
-            axisLine={false}
-            tickLine={false}
-          />
-          <YAxis
-            tick={{ fontSize: 10, fill: '#8E8E93' }}
-            axisLine={false}
-            tickLine={false}
-            tickFormatter={(v: number) => formatAxis(v)}
-          />
-          <Tooltip
-            cursor={{ fill: 'rgba(0,0,0,0.04)' }}
-            formatter={(v: number, name: string) => [formatAxis(v), name]}
-            labelStyle={{ color: '#8E8E93', fontSize: 11 }}
-            contentStyle={{
-              background: 'rgba(20,20,20,0.92)',
-              border: '1px solid rgba(255,255,255,0.1)',
-              borderRadius: 6,
-              fontSize: 11,
-            }}
-          />
-          <Bar
-            dataKey="realized"
-            name="Realized"
-            stackId="savings"
-            fill="#34d399"
-            radius={[0, 0, 0, 0]}
-          />
-          <Bar
-            dataKey="potential"
-            name="Potential"
-            stackId="savings"
-            fill="#60a5fa"
-            radius={[4, 4, 0, 0]}
-          />
-        </BarChart>
-      </ResponsiveContainer>
-      <div className="mt-2 flex flex-wrap gap-3">
-        <div className="flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full" style={{ background: '#34d399' }} />
-          <span className="text-[10px] text-[#8E8E93]">Realized</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full" style={{ background: '#60a5fa' }} />
-          <span className="text-[10px] text-[#8E8E93]">Potential</span>
-        </div>
-      </div>
-    </div>
-  );
 }

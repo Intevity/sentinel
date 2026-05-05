@@ -105,6 +105,7 @@ export const DEFAULT_SETTINGS: Settings = {
   optimizeAutoRecommend: true,
   optimizeShowMicroOpportunities: false,
   optimizeUnits: 'tokens',
+  optimizeChartView: 'realized',
 };
 
 const VALID_MODES: readonly SwitchingMode[] = ['off', 'round-robin'];
@@ -451,7 +452,25 @@ function coerce(raw: unknown): Settings {
   if (obj['optimizeUnits'] === 'tokens' || obj['optimizeUnits'] === 'cost') {
     next.optimizeUnits = obj['optimizeUnits'];
   }
+  if (
+    typeof obj['optimizeChartView'] === 'string' &&
+    isOptimizeChartView(obj['optimizeChartView'])
+  ) {
+    next.optimizeChartView = obj['optimizeChartView'];
+  }
   return next;
+}
+
+const VALID_CHART_VIEWS: readonly Settings['optimizeChartView'][] = [
+  'realized',
+  'bySubagent',
+  'comparison',
+  'cumulative',
+  'byPattern',
+];
+
+function isOptimizeChartView(v: string): v is Settings['optimizeChartView'] {
+  return (VALID_CHART_VIEWS as readonly string[]).includes(v);
 }
 
 /** Why a `loadSettingsWithTamper` call returned defaults instead of the

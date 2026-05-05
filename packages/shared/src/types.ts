@@ -188,6 +188,25 @@ export type SwitchingMode = 'off' | 'round-robin';
  */
 export type RoundRobinStrategy = 'balance' | 'earliest-reset';
 
+/** Which chart the Optimize dashboard renders above the curated subagent
+ *  list. The user toggles between these via the segmented control in the
+ *  dashboard header; the choice is persisted in {@link Settings.optimizeChartView}.
+ *
+ *   realized    — daily stacked bar of realized vs potential (the original).
+ *   bySubagent  — daily stacked bar where each color is a curated subagent.
+ *   comparison  — horizontal bars ranking subagents by total savings,
+ *                 with a realized/potential split per row.
+ *   cumulative  — running-total line chart over the lookback window.
+ *   byPattern   — horizontal bars ranking detection heuristics by
+ *                 opportunity count.
+ */
+export type OptimizeChartView =
+  | 'realized'
+  | 'bySubagent'
+  | 'comparison'
+  | 'cumulative'
+  | 'byPattern';
+
 /**
  * Persistent user preferences stored at ~/.claude-sentinel/settings.json.
  */
@@ -474,6 +493,13 @@ export interface Settings {
    *  available for direct-API users. Persisted so the choice survives
    *  daemon restarts. */
   optimizeUnits: 'tokens' | 'cost';
+  /** Which chart the Optimize tab shows above the curated subagent list.
+   *  Defaults to 'realized' (the original stacked realized/potential
+   *  daily bar). Persisted so the user's last selection survives
+   *  daemon restarts. See the chart components under
+   *  `packages/app/src/components/optimize/charts/` for what each id
+   *  renders. */
+  optimizeChartView: OptimizeChartView;
 
   // ─── Onboarding state ──────────────────────────────────────────────
   /** True once the user has either applied a risk-profile preset in the

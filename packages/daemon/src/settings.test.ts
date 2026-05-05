@@ -510,5 +510,40 @@ describe('settings', () => {
       const cleared = updateSettings({ lastScanBenchmark: null }, path);
       expect(cleared.lastScanBenchmark).toBeNull();
     });
+
+    it('defaults optimizeChartView to "realized"', () => {
+      expect(DEFAULT_SETTINGS.optimizeChartView).toBe('realized');
+      expect(loadSettings(path).optimizeChartView).toBe('realized');
+    });
+
+    it('round-trips every valid optimizeChartView value', () => {
+      for (const view of [
+        'realized',
+        'bySubagent',
+        'comparison',
+        'cumulative',
+        'byPattern',
+      ] as const) {
+        writeRawWithSig(path, JSON.stringify({ ...DEFAULT_SETTINGS, optimizeChartView: view }));
+        expect(loadSettings(path).optimizeChartView).toBe(view);
+      }
+    });
+
+    it('falls back to default optimizeChartView when the value is unknown', () => {
+      writeRawWithSig(path, JSON.stringify({ optimizeChartView: 'rainbow' }));
+      expect(loadSettings(path).optimizeChartView).toBe('realized');
+    });
+
+    it('falls back to default optimizeChartView when the value is not a string', () => {
+      writeRawWithSig(path, JSON.stringify({ optimizeChartView: 7 }));
+      expect(loadSettings(path).optimizeChartView).toBe('realized');
+    });
+
+    it('updateSettings persists a new optimizeChartView selection', () => {
+      const next = updateSettings({ optimizeChartView: 'cumulative' }, path);
+      expect(next.optimizeChartView).toBe('cumulative');
+      // Loading the file back proves it was persisted, not just returned.
+      expect(loadSettings(path).optimizeChartView).toBe('cumulative');
+    });
   });
 });
