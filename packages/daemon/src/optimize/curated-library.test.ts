@@ -11,11 +11,14 @@ describe('curated library', () => {
     const lib = getCuratedLibrary();
     const ids = lib.map((s) => s.curatedId).sort();
     expect(ids).toEqual([
+      'bash-loop-summarizer',
+      'bulk-reader',
       'dep-tracer',
       'diff-pre-pass',
       'file-explorer',
       'log-analyzer',
       'output-formatter',
+      'patch-applier',
       'repo-mapper',
       'test-failure-investigator',
       'test-runner-parser',
@@ -49,6 +52,9 @@ describe('curated library', () => {
     expect(getCuratedSubagent('web-fetcher')).not.toBeNull();
     expect(getCuratedSubagent('test-failure-investigator')).not.toBeNull();
     expect(getCuratedSubagent('dep-tracer')).not.toBeNull();
+    expect(getCuratedSubagent('patch-applier')).not.toBeNull();
+    expect(getCuratedSubagent('bulk-reader')).not.toBeNull();
+    expect(getCuratedSubagent('bash-loop-summarizer')).not.toBeNull();
     expect(getCuratedSubagent('does-not-exist')).toBeNull();
   });
 
@@ -72,9 +78,11 @@ describe('curated library', () => {
     }
   });
 
-  it('diff-pre-pass uses sonnet, all others use haiku', () => {
+  it('sonnet is reserved for medium-judgment agents (diff-pre-pass, patch-applier); the rest are haiku', () => {
     const byId = new Map(getCuratedLibrary().map((s) => [s.curatedId, s]));
-    expect(byId.get('diff-pre-pass')?.gap.model).toBe('sonnet');
+    for (const id of ['diff-pre-pass', 'patch-applier']) {
+      expect(byId.get(id)?.gap.model).toBe('sonnet');
+    }
     for (const id of [
       'file-explorer',
       'test-runner-parser',
@@ -84,6 +92,8 @@ describe('curated library', () => {
       'web-fetcher',
       'test-failure-investigator',
       'dep-tracer',
+      'bulk-reader',
+      'bash-loop-summarizer',
     ]) {
       expect(byId.get(id)?.gap.model).toBe('haiku');
     }

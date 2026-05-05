@@ -139,6 +139,10 @@ export function createOptimizationAnalyzer(
       test_failure_investigation: 0,
       dep_trace_grep_read_chain: 0,
       verbose_response_formatting: 0,
+      read_edit_burst: 0,
+      multi_small_read_session: 0,
+      bash_loop_session: 0,
+      dep_trace_bash_grep_chain: 0,
     };
     let dedupSkipped = 0;
     let scoreNull = 0;
@@ -230,6 +234,10 @@ export function createOptimizationAnalyzer(
         ` test_failure=${patternCounts.test_failure_investigation}` +
         ` dep_trace=${patternCounts.dep_trace_grep_read_chain}` +
         ` output_format=${patternCounts.verbose_response_formatting}` +
+        ` patch_burst=${patternCounts.read_edit_burst}` +
+        ` bulk_read=${patternCounts.multi_small_read_session}` +
+        ` bash_loop=${patternCounts.bash_loop_session}` +
+        ` dep_trace_bash=${patternCounts.dep_trace_bash_grep_chain}` +
         ` dedup_skipped=${dedupSkipped} score_null=${scoreNull} inserted=${written}` +
         ` savings=$${totalSavings.toFixed(4)}`,
     );

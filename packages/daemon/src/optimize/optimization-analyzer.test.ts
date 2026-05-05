@@ -208,6 +208,74 @@ describe('createOptimizationAnalyzer.runOnce', () => {
     expect(measured[0]?.pattern).toBe('web_fetch_oversized');
   });
 
+  it('writes a measured row when multi_small_read_session fires', () => {
+    const ts = Date.now();
+    for (let i = 0; i < 16; i++) {
+      insertToolCall(db, {
+        ts,
+        accountId: 'a1',
+        sessionId: 'sess-bulk',
+        requestId: `req-${i}`,
+        requestSeqInSession: i + 1,
+        toolUseId: `toolu_bulk_${i}`,
+        toolName: 'Read',
+        filePath: `/p${i}.ts`,
+        inputSizeBytes: 50,
+        responseSizeBytes: 3_000,
+        denied: false,
+        model: 'claude-opus-4-7',
+      });
+    }
+    const analyzer = createOptimizationAnalyzer({ db, ipcServer: ipc });
+    expect(analyzer.runOnce()).toBeGreaterThanOrEqual(1);
+    const measured = listRecentOptimizationEvents(db, { kind: 'measured' });
+    const bulkRow = measured.find((m) => m.pattern === 'multi_small_read_session');
+    expect(bulkRow).toBeDefined();
+    expect(bulkRow?.curatedId).toBe('bulk-reader');
+  });
+
+  it('writes a measured row when read_edit_burst fires', () => {
+    const ts = Date.now();
+    for (let i = 0; i < 10; i++) {
+      insertToolCall(db, {
+        ts,
+        accountId: 'a1',
+        sessionId: 'sess-burst',
+        requestId: `req-r-${i}`,
+        requestSeqInSession: i + 1,
+        toolUseId: `toolu_r_${i}`,
+        toolName: 'Read',
+        filePath: `/r${i % 3}.ts`,
+        inputSizeBytes: 50,
+        responseSizeBytes: 1_000,
+        denied: false,
+        model: 'claude-opus-4-7',
+      });
+    }
+    for (let i = 0; i < 10; i++) {
+      insertToolCall(db, {
+        ts,
+        accountId: 'a1',
+        sessionId: 'sess-burst',
+        requestId: `req-e-${i}`,
+        requestSeqInSession: 100 + i,
+        toolUseId: `toolu_e_${i}`,
+        toolName: 'Edit',
+        filePath: `/r${i % 3}.ts`,
+        inputSizeBytes: 50,
+        responseSizeBytes: 100,
+        denied: false,
+        model: 'claude-opus-4-7',
+      });
+    }
+    const analyzer = createOptimizationAnalyzer({ db, ipcServer: ipc });
+    expect(analyzer.runOnce()).toBeGreaterThanOrEqual(1);
+    const measured = listRecentOptimizationEvents(db, { kind: 'measured' });
+    const burstRow = measured.find((m) => m.pattern === 'read_edit_burst');
+    expect(burstRow).toBeDefined();
+    expect(burstRow?.curatedId).toBe('patch-applier');
+  });
+
   it('skips tool_calls without a session_id', () => {
     insertToolCall(db, {
       ts: Date.now(),
@@ -789,6 +857,10 @@ describe('analyzer diagnostic logging', () => {
       'test_failure=',
       'dep_trace=',
       'output_format=',
+      'patch_burst=',
+      'bulk_read=',
+      'bash_loop=',
+      'dep_trace_bash=',
       'dedup_skipped=',
       'score_null=',
       'inserted=',

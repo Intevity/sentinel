@@ -25,7 +25,11 @@ export type PatternKey =
   | 'web_fetch_oversized'
   | 'test_failure_investigation'
   | 'dep_trace_grep_read_chain'
-  | 'verbose_response_formatting';
+  | 'verbose_response_formatting'
+  | 'read_edit_burst'
+  | 'multi_small_read_session'
+  | 'bash_loop_session'
+  | 'dep_trace_bash_grep_chain';
 
 export interface Opportunity {
   curatedId: string;
@@ -87,8 +91,11 @@ const EXPLORATION_GLOB_THRESHOLD = 5;
 const LOG_PARSE_BYTES = 16 * 1024;
 
 /** Test-runner threshold: bash commands invoking common test runners
- *  whose output exceeds this size route to the test-runner-parser. */
-const TEST_NOISE_BYTES = 32 * 1024;
+ *  whose output exceeds this size route to the test-runner-parser.
+ *  Aligned to LOG_PARSE_BYTES (16 KB) so the floor is consistent across
+ *  the two Bash-output heuristics; bashLogParse explicitly excludes
+ *  test runners by command-stub match, so the partition is clean. */
+const TEST_NOISE_BYTES = 16 * 1024;
 
 const TEST_RUNNER_HINTS = ['npm test', 'pnpm test', 'yarn test', 'pytest', 'go test', 'cargo test'];
 
@@ -125,6 +132,37 @@ const DEP_TRACE_FOLLOWUP_READS = 4;
  *  after dogfooding. */
 const FORMATTING_WRITE_BYTES = 4 * 1024;
 const FORMATTING_PRIOR_TOOL_BYTES = 16 * 1024;
+
+/** Read/Edit burst: per-session counts that, when both crossed, suggest
+ *  Claude is hand-applying a fan-out batch of edits one tool call at a
+ *  time. Higher than diffPrePass's threshold (which catches the small-
+ *  burst case and recommends a Sonnet triager) so the two heuristics
+ *  cover distinct traffic shapes. */
+const PATCH_BURST_READ_THRESHOLD = 10;
+const PATCH_BURST_EDIT_THRESHOLD = 10;
+
+/** bulk-reader: a session with this many distinct small Read calls
+ *  spread across this many distinct file paths suggests Claude is
+ *  surveying or scanning a codebase a file at a time. Distinct from
+ *  file-explorer's heuristics which target single large reads or
+ *  3+ reads of one file. */
+const BULK_READ_THRESHOLD = 15;
+const BULK_READ_AVG_BYTES_MAX = 8 * 1024;
+const BULK_READ_DISTINCT_PATHS_MIN = 8;
+
+/** bash-loop-summarizer: a session with many small Bash outputs that
+ *  collectively exceed a meaningful byte total. Catches the
+ *  high-frequency tiny-output pattern (git status x30, ls x40, etc.)
+ *  that no other heuristic surfaces. */
+const BASH_LOOP_CALL_THRESHOLD = 60;
+const BASH_LOOP_TOTAL_BYTES_MIN = 50 * 1024;
+const BASH_LOOP_AVG_BYTES_MAX = 2 * 1024;
+
+/** dep-tracer (Bash flavor): Bash command stubs that look like a
+ *  recursive grep or rg/ag invocation. Used by depTraceBashGrepChain
+ *  for users who do code search via the Bash CLI rather than the
+ *  structured Grep tool. */
+const BASH_GREP_HINTS = ['grep -r', 'grep -R', 'rg ', 'rg.', 'ag '];
 
 export function shortTurnAfterLargeRead(rows: ToolCallRow[], nowMs: number): Opportunity[] {
   const out: Opportunity[] = [];
@@ -400,6 +438,128 @@ export function verboseResponseFormatting(rows: ToolCallRow[]): Opportunity[] {
 }
 
 /**
+ * patch-applier: heavy Read/Edit traffic across multiple files in one
+ * session. Fires when reads ≥ PATCH_BURST_READ_THRESHOLD AND
+ * (Edit + MultiEdit + Write) ≥ PATCH_BURST_EDIT_THRESHOLD AND the set
+ * of distinct edited paths has cardinality ≥ 2. The 2-distinct-paths
+ * floor distinguishes the burst pattern from "iterate on one file"
+ * sessions (which diffPrePass already covers at lower volume).
+ *
+ * Returns at most one opportunity per session.
+ */
+export function readEditBurst(rows: ToolCallRow[]): Opportunity[] {
+  const reads = rows.filter((r) => r.toolName === 'Read' && !r.denied);
+  if (reads.length < PATCH_BURST_READ_THRESHOLD) return [];
+  const edits = rows.filter(
+    (r) =>
+      (r.toolName === 'Edit' || r.toolName === 'MultiEdit' || r.toolName === 'Write') && !r.denied,
+  );
+  if (edits.length < PATCH_BURST_EDIT_THRESHOLD) return [];
+  const distinctPaths = new Set(
+    edits.map((r) => r.filePath).filter((p): p is string => p !== null),
+  );
+  if (distinctPaths.size < 2) return [];
+  const all = [...reads, ...edits];
+  return [
+    {
+      curatedId: 'patch-applier',
+      pattern: 'read_edit_burst',
+      sourceToolCallIds: all.map((r) => r.id),
+      totalResponseBytes: all.reduce((s, r) => s + (r.responseSizeBytes ?? 0), 0),
+    },
+  ];
+}
+
+/**
+ * bulk-reader: many small Reads across distinct paths in one session.
+ * Targets the dominant cost shape that isn't a single big Read (handled
+ * by file-explorer's short_turn heuristic) or a same-file repeat
+ * (repeat_read_same_file): a survey-style pass where the session reads
+ * 15+ small files spread across 8+ distinct paths. Returns at most one
+ * opportunity per session.
+ */
+export function multiSmallReadSession(rows: ToolCallRow[]): Opportunity[] {
+  const reads = rows.filter((r) => r.toolName === 'Read' && !r.denied);
+  if (reads.length < BULK_READ_THRESHOLD) return [];
+  const totalBytes = reads.reduce((s, r) => s + (r.responseSizeBytes ?? 0), 0);
+  const avgBytes = totalBytes / reads.length;
+  if (avgBytes > BULK_READ_AVG_BYTES_MAX) return [];
+  const distinctPaths = new Set(
+    reads.map((r) => r.filePath).filter((p): p is string => p !== null),
+  );
+  if (distinctPaths.size < BULK_READ_DISTINCT_PATHS_MIN) return [];
+  return [
+    {
+      curatedId: 'bulk-reader',
+      pattern: 'multi_small_read_session',
+      sourceToolCallIds: reads.map((r) => r.id),
+      totalResponseBytes: totalBytes,
+    },
+  ];
+}
+
+/**
+ * bash-loop-summarizer: many tiny Bash calls in one session whose
+ * cumulative output is meaningful. Distinct from log-analyzer (single
+ * large Bash) and test-runner-parser (test runner output). Returns at
+ * most one opportunity per session.
+ */
+export function bashLoopSession(rows: ToolCallRow[]): Opportunity[] {
+  const bashes = rows.filter((r) => r.toolName === 'Bash' && !r.denied);
+  if (bashes.length < BASH_LOOP_CALL_THRESHOLD) return [];
+  const totalBytes = bashes.reduce((s, r) => s + (r.responseSizeBytes ?? 0), 0);
+  if (totalBytes < BASH_LOOP_TOTAL_BYTES_MIN) return [];
+  const avgBytes = totalBytes / bashes.length;
+  if (avgBytes >= BASH_LOOP_AVG_BYTES_MAX) return [];
+  return [
+    {
+      curatedId: 'bash-loop-summarizer',
+      pattern: 'bash_loop_session',
+      sourceToolCallIds: bashes.map((r) => r.id),
+      totalResponseBytes: totalBytes,
+    },
+  ];
+}
+
+/**
+ * dep-tracer (Bash flavor): a Bash row whose command stub matches a
+ * recursive grep or rg/ag invocation, followed within
+ * TEST_FAILURE_FOLLOWUP_MS by ≥ DEP_TRACE_FOLLOWUP_READS distinct Read
+ * file paths. The original depTraceGrepReadChain only matches the
+ * structured Grep tool; this companion catches users whose refactor
+ * traffic goes through the Bash CLI.
+ */
+export function depTraceBashGrepChain(rows: ToolCallRow[]): Opportunity[] {
+  const out: Opportunity[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    if (r.toolName !== 'Bash') continue;
+    if (r.denied) continue;
+    const command = r.filePath ?? '';
+    if (!BASH_GREP_HINTS.some((h) => command.includes(h))) continue;
+    const followups: ToolCallRow[] = [];
+    for (let j = i + 1; j < rows.length; j++) {
+      const next = rows[j];
+      if (!next) continue;
+      if (next.ts - r.ts > TEST_FAILURE_FOLLOWUP_MS) break;
+      if (next.denied) continue;
+      if (next.toolName === 'Read' && next.filePath !== null) followups.push(next);
+    }
+    const distinctPaths = new Set(followups.map((f) => f.filePath));
+    if (distinctPaths.size < DEP_TRACE_FOLLOWUP_READS) continue;
+    out.push({
+      curatedId: 'dep-tracer',
+      pattern: 'dep_trace_bash_grep_chain',
+      sourceToolCallIds: [r.id, ...followups.map((f) => f.id)],
+      totalResponseBytes:
+        (r.responseSizeBytes ?? 0) + followups.reduce((s, f) => s + (f.responseSizeBytes ?? 0), 0),
+    });
+  }
+  return out;
+}
+
+/**
  * Cross-session repeat-read: detects when the same file is read
  * `CROSS_SESSION_REPEAT_THRESHOLD` or more times across at least two
  * distinct sessions. The per-session `repeatReadSameFile` heuristic
@@ -460,5 +620,9 @@ export function runAllHeuristics(rows: ToolCallRow[], nowMs: number): Opportunit
     ...testFailureInvestigation(rows),
     ...depTraceGrepReadChain(rows),
     ...verboseResponseFormatting(rows),
+    ...readEditBurst(rows),
+    ...multiSmallReadSession(rows),
+    ...bashLoopSession(rows),
+    ...depTraceBashGrepChain(rows),
   ];
 }

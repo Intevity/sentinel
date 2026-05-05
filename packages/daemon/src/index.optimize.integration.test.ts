@@ -29,11 +29,14 @@ describe('Optimize IPC end-to-end', () => {
     expect(r.success).toBe(true);
     const ids = (r.data ?? []).map((s) => s.curatedId).sort();
     expect(ids).toEqual([
+      'bash-loop-summarizer',
+      'bulk-reader',
       'dep-tracer',
       'diff-pre-pass',
       'file-explorer',
       'log-analyzer',
       'output-formatter',
+      'patch-applier',
       'repo-mapper',
       'test-failure-investigator',
       'test-runner-parser',

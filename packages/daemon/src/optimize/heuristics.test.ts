@@ -11,6 +11,10 @@ import {
   testFailureInvestigation,
   depTraceGrepReadChain,
   verboseResponseFormatting,
+  readEditBurst,
+  multiSmallReadSession,
+  bashLoopSession,
+  depTraceBashGrepChain,
   runAllHeuristics,
 } from './heuristics.js';
 import type { ToolCallRow } from '../db.js';
@@ -570,6 +574,243 @@ describe('verboseResponseFormatting', () => {
   });
 });
 
+describe('readEditBurst', () => {
+  function makeBurst(
+    reads: number,
+    edits: number,
+    distinctPaths: number,
+  ): ReturnType<typeof row>[] {
+    const out: ReturnType<typeof row>[] = [];
+    for (let i = 0; i < reads; i++) {
+      out.push(row({ id: 1000 + i, toolName: 'Read', filePath: `/r${i % distinctPaths}.ts` }));
+    }
+    for (let i = 0; i < edits; i++) {
+      out.push(row({ id: 2000 + i, toolName: 'Edit', filePath: `/r${i % distinctPaths}.ts` }));
+    }
+    return out;
+  }
+
+  it('fires when reads ≥ 10 AND edits ≥ 10 AND ≥ 2 distinct edited paths', () => {
+    const out = readEditBurst(makeBurst(10, 10, 3));
+    expect(out).toHaveLength(1);
+    expect(out[0]?.curatedId).toBe('patch-applier');
+    expect(out[0]?.pattern).toBe('read_edit_burst');
+  });
+
+  it('counts MultiEdit and Write toward the edit threshold', () => {
+    const rows = [
+      ...Array.from({ length: 10 }, (_, i) =>
+        row({ id: 100 + i, toolName: 'Read', filePath: `/r${i}.ts` }),
+      ),
+      ...Array.from({ length: 5 }, (_, i) =>
+        row({ id: 200 + i, toolName: 'Edit', filePath: `/a.ts` }),
+      ),
+      ...Array.from({ length: 3 }, (_, i) =>
+        row({ id: 300 + i, toolName: 'MultiEdit', filePath: `/b.ts` }),
+      ),
+      ...Array.from({ length: 2 }, (_, i) =>
+        row({ id: 400 + i, toolName: 'Write', filePath: `/c.ts` }),
+      ),
+    ];
+    const out = readEditBurst(rows);
+    expect(out).toHaveLength(1);
+  });
+
+  it('does not fire below the read threshold', () => {
+    const out = readEditBurst(makeBurst(5, 10, 3));
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire below the edit threshold', () => {
+    const out = readEditBurst(makeBurst(10, 5, 3));
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire when all edits target a single file (diffPrePass territory)', () => {
+    const out = readEditBurst(makeBurst(10, 10, 1));
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not count denied reads or edits', () => {
+    const rows = [
+      ...Array.from({ length: 10 }, (_, i) =>
+        row({ id: 500 + i, toolName: 'Read', filePath: `/r${i}.ts`, denied: true }),
+      ),
+      ...Array.from({ length: 10 }, (_, i) =>
+        row({ id: 600 + i, toolName: 'Edit', filePath: `/r${i % 3}.ts`, denied: true }),
+      ),
+    ];
+    expect(readEditBurst(rows)).toHaveLength(0);
+  });
+});
+
+describe('multiSmallReadSession', () => {
+  function makeReads(count: number, distinctPaths: number, sizeBytes: number) {
+    return Array.from({ length: count }, (_, i) =>
+      row({
+        id: 5000 + i,
+        toolName: 'Read',
+        filePath: `/p${i % distinctPaths}.ts`,
+        responseSizeBytes: sizeBytes,
+      }),
+    );
+  }
+
+  it('fires when ≥ 15 small Reads cover ≥ 8 distinct paths with avg ≤ 8KB', () => {
+    const out = multiSmallReadSession(makeReads(15, 8, 4_000));
+    expect(out).toHaveLength(1);
+    expect(out[0]?.curatedId).toBe('bulk-reader');
+    expect(out[0]?.pattern).toBe('multi_small_read_session');
+  });
+
+  it('does not fire below the read-count threshold', () => {
+    const out = multiSmallReadSession(makeReads(10, 8, 4_000));
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire when avg response size exceeds 8KB', () => {
+    const out = multiSmallReadSession(makeReads(15, 8, 12_000));
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire below the distinct-paths threshold (single-file repeats are file-explorer territory)', () => {
+    const out = multiSmallReadSession(makeReads(20, 3, 4_000));
+    expect(out).toHaveLength(0);
+  });
+
+  it('skips denied reads when counting toward the threshold', () => {
+    const reads = makeReads(15, 8, 4_000).map((r) => ({ ...r, denied: true }));
+    expect(multiSmallReadSession(reads)).toHaveLength(0);
+  });
+
+  it('does not fire on Bash or Edit traffic', () => {
+    const rows = Array.from({ length: 20 }, (_, i) =>
+      row({ id: 6000 + i, toolName: 'Bash', filePath: `cmd${i}`, responseSizeBytes: 1_000 }),
+    );
+    expect(multiSmallReadSession(rows)).toHaveLength(0);
+  });
+});
+
+describe('bashLoopSession', () => {
+  function makeBash(count: number, sizeBytes: number) {
+    return Array.from({ length: count }, (_, i) =>
+      row({
+        id: 7000 + i,
+        toolName: 'Bash',
+        filePath: `git status ${i}`,
+        responseSizeBytes: sizeBytes,
+      }),
+    );
+  }
+
+  it('fires when ≥ 60 small Bash calls accumulate ≥ 50KB total', () => {
+    const out = bashLoopSession(makeBash(60, 1_000));
+    expect(out).toHaveLength(1);
+    expect(out[0]?.curatedId).toBe('bash-loop-summarizer');
+    expect(out[0]?.pattern).toBe('bash_loop_session');
+  });
+
+  it('does not fire below the call-count threshold', () => {
+    const out = bashLoopSession(makeBash(30, 2_000));
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire when total bytes are below 50KB even with high call count', () => {
+    const out = bashLoopSession(makeBash(60, 200));
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire when avg response is too large (log-analyzer territory)', () => {
+    const out = bashLoopSession(makeBash(60, 4_000));
+    expect(out).toHaveLength(0);
+  });
+
+  it('skips denied Bash calls when counting toward the threshold', () => {
+    const rows = makeBash(60, 1_000).map((r) => ({ ...r, denied: true }));
+    expect(bashLoopSession(rows)).toHaveLength(0);
+  });
+});
+
+describe('depTraceBashGrepChain', () => {
+  const T0 = 1_700_000_000_000;
+
+  it('fires when a Bash grep -r is followed by 4+ distinct Reads in 60s', () => {
+    const out = depTraceBashGrepChain([
+      row({ id: 1, ts: T0, toolName: 'Bash', filePath: 'grep -r computeSavings src/' }),
+      row({ id: 2, ts: T0 + 1_000, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 3, ts: T0 + 2_000, toolName: 'Read', filePath: '/b.ts' }),
+      row({ id: 4, ts: T0 + 3_000, toolName: 'Read', filePath: '/c.ts' }),
+      row({ id: 5, ts: T0 + 4_000, toolName: 'Read', filePath: '/d.ts' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.curatedId).toBe('dep-tracer');
+    expect(out[0]?.pattern).toBe('dep_trace_bash_grep_chain');
+  });
+
+  it('matches `rg ` invocation', () => {
+    const out = depTraceBashGrepChain([
+      row({ id: 1, ts: T0, toolName: 'Bash', filePath: 'rg foo src/' }),
+      row({ id: 2, ts: T0 + 1_000, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 3, ts: T0 + 2_000, toolName: 'Read', filePath: '/b.ts' }),
+      row({ id: 4, ts: T0 + 3_000, toolName: 'Read', filePath: '/c.ts' }),
+      row({ id: 5, ts: T0 + 4_000, toolName: 'Read', filePath: '/d.ts' }),
+    ]);
+    expect(out).toHaveLength(1);
+  });
+
+  it('does not fire on a non-grep Bash command', () => {
+    const out = depTraceBashGrepChain([
+      row({ id: 1, ts: T0, toolName: 'Bash', filePath: 'ls -la' }),
+      row({ id: 2, ts: T0 + 1_000, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 3, ts: T0 + 2_000, toolName: 'Read', filePath: '/b.ts' }),
+      row({ id: 4, ts: T0 + 3_000, toolName: 'Read', filePath: '/c.ts' }),
+      row({ id: 5, ts: T0 + 4_000, toolName: 'Read', filePath: '/d.ts' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire when fewer than 4 distinct Read paths follow', () => {
+    const out = depTraceBashGrepChain([
+      row({ id: 1, ts: T0, toolName: 'Bash', filePath: 'grep -r foo' }),
+      row({ id: 2, ts: T0 + 1_000, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 3, ts: T0 + 2_000, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 4, ts: T0 + 3_000, toolName: 'Read', filePath: '/b.ts' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire when follow-ups are outside the 60s window', () => {
+    const out = depTraceBashGrepChain([
+      row({ id: 1, ts: T0, toolName: 'Bash', filePath: 'grep -r foo' }),
+      row({ id: 2, ts: T0 + 90_000, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 3, ts: T0 + 95_000, toolName: 'Read', filePath: '/b.ts' }),
+      row({ id: 4, ts: T0 + 100_000, toolName: 'Read', filePath: '/c.ts' }),
+      row({ id: 5, ts: T0 + 105_000, toolName: 'Read', filePath: '/d.ts' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire on a denied Bash grep', () => {
+    const out = depTraceBashGrepChain([
+      row({ id: 1, ts: T0, toolName: 'Bash', filePath: 'grep -r foo', denied: true }),
+      row({ id: 2, ts: T0 + 1_000, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 3, ts: T0 + 2_000, toolName: 'Read', filePath: '/b.ts' }),
+      row({ id: 4, ts: T0 + 3_000, toolName: 'Read', filePath: '/c.ts' }),
+      row({ id: 5, ts: T0 + 4_000, toolName: 'Read', filePath: '/d.ts' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+});
+
+describe('testRunnerNoise threshold tuning (16KB)', () => {
+  it('fires at the new 16KB floor (lowered from 32KB to match real test output sizes)', () => {
+    const out = testRunnerNoise([
+      row({ toolName: 'Bash', responseSizeBytes: 18_000, filePath: 'pnpm test' }),
+    ]);
+    expect(out).toHaveLength(1);
+  });
+});
+
 describe('testRunnerNoise — post-extractor-fix', () => {
   // Regression test: before the extractor was fixed to probe the
   // `command` field, all Bash tool_calls had file_path = null and this
@@ -710,6 +951,59 @@ describe('runAllHeuristics', () => {
     );
     const patterns = new Set(out.map((o) => o.pattern));
     expect(patterns.has('test_failure_investigation')).toBe(true);
+  });
+
+  it('combines read_edit_burst when a session shows heavy multi-file Read/Edit traffic', () => {
+    const rows = [
+      ...Array.from({ length: 10 }, (_, i) =>
+        row({ id: 700 + i, toolName: 'Read', filePath: `/r${i % 3}.ts` }),
+      ),
+      ...Array.from({ length: 10 }, (_, i) =>
+        row({ id: 800 + i, toolName: 'Edit', filePath: `/r${i % 3}.ts` }),
+      ),
+    ];
+    const out = runAllHeuristics(rows, NOW);
+    const patterns = new Set(out.map((o) => o.pattern));
+    expect(patterns.has('read_edit_burst')).toBe(true);
+  });
+
+  it('combines multi_small_read_session and bash_loop_session', () => {
+    const reads = Array.from({ length: 15 }, (_, i) =>
+      row({
+        id: 9000 + i,
+        toolName: 'Read',
+        filePath: `/p${i % 8}.ts`,
+        responseSizeBytes: 4_000,
+      }),
+    );
+    const bashes = Array.from({ length: 60 }, (_, i) =>
+      row({
+        id: 9100 + i,
+        toolName: 'Bash',
+        filePath: `git status ${i}`,
+        responseSizeBytes: 1_000,
+      }),
+    );
+    const out = runAllHeuristics([...reads, ...bashes], NOW);
+    const patterns = new Set(out.map((o) => o.pattern));
+    expect(patterns.has('multi_small_read_session')).toBe(true);
+    expect(patterns.has('bash_loop_session')).toBe(true);
+  });
+
+  it('combines dep_trace_bash_grep_chain when a Bash grep is followed by distinct Reads', () => {
+    const T = 1_700_000_000_000;
+    const out = runAllHeuristics(
+      [
+        row({ id: 1, ts: T, toolName: 'Bash', filePath: 'grep -r foo src/' }),
+        row({ id: 2, ts: T + 1_000, toolName: 'Read', filePath: '/a.ts' }),
+        row({ id: 3, ts: T + 2_000, toolName: 'Read', filePath: '/b.ts' }),
+        row({ id: 4, ts: T + 3_000, toolName: 'Read', filePath: '/c.ts' }),
+        row({ id: 5, ts: T + 4_000, toolName: 'Read', filePath: '/d.ts' }),
+      ],
+      T,
+    );
+    const patterns = new Set(out.map((o) => o.pattern));
+    expect(patterns.has('dep_trace_bash_grep_chain')).toBe(true);
   });
 
   it('does not include cross-session patterns (those run at the analyzer level)', () => {

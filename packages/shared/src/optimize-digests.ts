@@ -21,6 +21,9 @@ export const DIGEST_TOKENS_BY_CURATED_ID: Readonly<Record<string, number>> = {
   'web-fetcher': 600,
   'test-failure-investigator': 500,
   'dep-tracer': 900,
+  'patch-applier': 400,
+  'bulk-reader': 800,
+  'bash-loop-summarizer': 700,
 };
 
 /** Default digest size for unknown curated ids. Picked so the calculator
