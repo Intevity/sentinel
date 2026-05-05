@@ -7,16 +7,19 @@ import {
 } from './curated-library.js';
 
 describe('curated library', () => {
-  it('ships exactly the v1 set of six subagents', () => {
+  it('ships the curated subagent set with curated_ids stable across releases', () => {
     const lib = getCuratedLibrary();
     const ids = lib.map((s) => s.curatedId).sort();
     expect(ids).toEqual([
+      'dep-tracer',
       'diff-pre-pass',
       'file-explorer',
       'log-analyzer',
       'output-formatter',
       'repo-mapper',
+      'test-failure-investigator',
       'test-runner-parser',
+      'web-fetcher',
     ]);
   });
 
@@ -43,6 +46,9 @@ describe('curated library', () => {
     expect(getCuratedSubagent('repo-mapper')).not.toBeNull();
     expect(getCuratedSubagent('diff-pre-pass')).not.toBeNull();
     expect(getCuratedSubagent('output-formatter')).not.toBeNull();
+    expect(getCuratedSubagent('web-fetcher')).not.toBeNull();
+    expect(getCuratedSubagent('test-failure-investigator')).not.toBeNull();
+    expect(getCuratedSubagent('dep-tracer')).not.toBeNull();
     expect(getCuratedSubagent('does-not-exist')).toBeNull();
   });
 
@@ -75,6 +81,9 @@ describe('curated library', () => {
       'log-analyzer',
       'repo-mapper',
       'output-formatter',
+      'web-fetcher',
+      'test-failure-investigator',
+      'dep-tracer',
     ]) {
       expect(byId.get(id)?.gap.model).toBe('haiku');
     }

@@ -21,7 +21,11 @@ export type PatternKey =
   | 'exploration_glob_grep'
   | 'bash_log_parse'
   | 'test_runner_noise'
-  | 'diff_pre_pass';
+  | 'diff_pre_pass'
+  | 'web_fetch_oversized'
+  | 'test_failure_investigation'
+  | 'dep_trace_grep_read_chain'
+  | 'verbose_response_formatting';
 
 export interface Opportunity {
   curatedId: string;
@@ -68,7 +72,14 @@ function effectivelyNotQuoted(r: ToolCallRow, nowMs: number): boolean {
 }
 
 /** Exploration window: when ≥ this many Glob/Grep calls precede the
- *  first Edit/Write, recommend the repo-mapper. */
+ *  first Edit/Write, recommend the repo-mapper.
+ *
+ *  Note: workflows that lean on Bash + Read instead of Glob/Grep (e.g.
+ *  `find` / `rg` invoked from Bash) generate zero matches here by
+ *  design. The repo-mapper recommendation is only relevant for
+ *  exploratory sessions that use the structured Glob/Grep tools. Don't
+ *  "fix" zero-fire counts by lowering this threshold without checking
+ *  whether the user's traffic actually contains Glob/Grep tool calls. */
 const EXPLORATION_GLOB_THRESHOLD = 5;
 
 /** Bash log threshold: log/file-read responses ≥ this many bytes get
@@ -80,6 +91,40 @@ const LOG_PARSE_BYTES = 16 * 1024;
 const TEST_NOISE_BYTES = 32 * 1024;
 
 const TEST_RUNNER_HINTS = ['npm test', 'pnpm test', 'yarn test', 'pytest', 'go test', 'cargo test'];
+
+/** WebFetch / WebSearch oversized response threshold. 16 KB matches the
+ *  bash-log-parse floor and is well above the digest size, so net
+ *  savings clear the dashboard's $0.10 floor on most fetches. */
+const WEB_FETCH_LARGE_BYTES = 16 * 1024;
+
+/** Test-failure-investigation follow-up window. After a Bash test
+ *  command, this many milliseconds is the inclusive window in which
+ *  Read/Grep tool calls count as "Claude is investigating the failure"
+ *  rather than starting unrelated work. 60s matches typical session
+ *  burst pacing of ~10s/tool. */
+const TEST_FAILURE_FOLLOWUP_MS = 60_000;
+
+/** Test-failure-investigation: minimum number of Read/Grep follow-ups
+ *  inside the window before we treat the burst as an investigation
+ *  pattern (vs. a generic test run). */
+const TEST_FAILURE_FOLLOWUP_THRESHOLD = 3;
+
+/** Dep-tracer: how many times the same Grep `pattern` value must repeat
+ *  in one session to qualify as a refactor/rename trace. */
+const DEP_TRACE_GREP_REPEAT = 3;
+
+/** Dep-tracer: how many distinct Read calls must interleave with the
+ *  repeated Greps to confirm "I am opening the matches I just found,"
+ *  ruling out a simple search loop. */
+const DEP_TRACE_FOLLOWUP_READS = 4;
+
+/** Verbose-formatting threshold: a Write whose payload is at least this
+ *  size, occurring after one or more substantial reads/bash outputs in
+ *  the same session, suggests Claude is reformatting prior content
+ *  rather than synthesizing fresh. Conservative on first ship; tune
+ *  after dogfooding. */
+const FORMATTING_WRITE_BYTES = 4 * 1024;
+const FORMATTING_PRIOR_TOOL_BYTES = 16 * 1024;
 
 export function shortTurnAfterLargeRead(rows: ToolCallRow[], nowMs: number): Opportunity[] {
   const out: Opportunity[] = [];
@@ -167,10 +212,9 @@ export function testRunnerNoise(rows: ToolCallRow[]): Opportunity[] {
     if (r.toolName !== 'Bash') continue;
     if (r.denied) continue;
     if (r.responseSizeBytes === null || r.responseSizeBytes < TEST_NOISE_BYTES) continue;
-    // file_path on Bash is the input command stub captured by the
-    // extractor (Bash uses `command` field, but the extractor maps any
-    // `command`-shaped string into file_path for indexing). We match
-    // common test runner hints.
+    // file_path on Bash holds the command stub captured by the
+    // extractor's `command` probe (see tool-call-extractor.ts:204).
+    // We match common test runner hints.
     const command = r.filePath ?? '';
     if (!TEST_RUNNER_HINTS.some((h) => command.includes(h))) continue;
     out.push({
@@ -206,6 +250,153 @@ export function diffPrePass(rows: ToolCallRow[]): Opportunity[] {
       totalResponseBytes: reads.reduce((s, r) => s + (r.responseSizeBytes ?? 0), 0),
     },
   ];
+}
+
+/**
+ * web-fetcher: any WebFetch / WebSearch call whose response exceeds
+ * WEB_FETCH_LARGE_BYTES is a candidate. Each oversized fetch is its own
+ * opportunity, mirroring the per-call shape of shortTurnAfterLargeRead;
+ * the analyzer's 7-day (account, session, curated, pattern) dedup keeps
+ * repeated fetches in one session from spamming.
+ */
+export function webFetchOversized(rows: ToolCallRow[]): Opportunity[] {
+  const out: Opportunity[] = [];
+  for (const r of rows) {
+    if (r.toolName !== 'WebFetch' && r.toolName !== 'WebSearch') continue;
+    if (r.denied) continue;
+    if (r.responseSizeBytes === null || r.responseSizeBytes < WEB_FETCH_LARGE_BYTES) continue;
+    out.push({
+      curatedId: 'web-fetcher',
+      pattern: 'web_fetch_oversized',
+      sourceToolCallIds: [r.id],
+      totalResponseBytes: r.responseSizeBytes,
+    });
+  }
+  return out;
+}
+
+/**
+ * test-failure-investigator: a Bash test-runner invocation followed
+ * within TEST_FAILURE_FOLLOWUP_MS by ≥ TEST_FAILURE_FOLLOWUP_THRESHOLD
+ * Read/Grep calls. Distinct from `testRunnerNoise` (which only cares
+ * about the runner's output size) — this signal is "Claude is *acting*
+ * on the output, not just reading it." Both heuristics can fire on the
+ * same Bash row; they recommend different subagents and are dedup'd
+ * separately by the analyzer's (curated_id, pattern) key.
+ *
+ * The proxy doesn't capture Bash exit codes, so failure-vs-success is
+ * inferred from the follow-up burst rather than a status code.
+ */
+export function testFailureInvestigation(rows: ToolCallRow[]): Opportunity[] {
+  const out: Opportunity[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    if (r.toolName !== 'Bash') continue;
+    if (r.denied) continue;
+    const command = r.filePath ?? '';
+    if (!TEST_RUNNER_HINTS.some((h) => command.includes(h))) continue;
+    const followups: ToolCallRow[] = [];
+    for (let j = i + 1; j < rows.length; j++) {
+      const next = rows[j];
+      if (!next) continue;
+      if (next.ts - r.ts > TEST_FAILURE_FOLLOWUP_MS) break;
+      if (next.denied) continue;
+      if (next.toolName === 'Read' || next.toolName === 'Grep') followups.push(next);
+    }
+    if (followups.length < TEST_FAILURE_FOLLOWUP_THRESHOLD) continue;
+    out.push({
+      curatedId: 'test-failure-investigator',
+      pattern: 'test_failure_investigation',
+      sourceToolCallIds: [r.id, ...followups.map((f) => f.id)],
+      totalResponseBytes:
+        (r.responseSizeBytes ?? 0) + followups.reduce((s, f) => s + (f.responseSizeBytes ?? 0), 0),
+    });
+  }
+  return out;
+}
+
+/**
+ * dep-tracer: same Grep `pattern` repeated DEP_TRACE_GREP_REPEAT+ times
+ * within one session, with at least DEP_TRACE_FOLLOWUP_READS distinct
+ * Read calls interleaved. The "interleaved" rule rules out a pure
+ * search loop and pins the signal to "I greped, opened the matches,
+ * greped again" — refactor/rename intent.
+ *
+ * file_path on a Grep row holds the `pattern` value (extractor probe
+ * order), so grouping by filePath is grouping by the searched symbol.
+ */
+export function depTraceGrepReadChain(rows: ToolCallRow[]): Opportunity[] {
+  const grepsByPattern = new Map<string, ToolCallRow[]>();
+  for (const r of rows) {
+    if (r.toolName !== 'Grep') continue;
+    if (r.denied) continue;
+    if (!r.filePath) continue;
+    const list = grepsByPattern.get(r.filePath) ?? [];
+    list.push(r);
+    grepsByPattern.set(r.filePath, list);
+  }
+  const out: Opportunity[] = [];
+  for (const [, greps] of grepsByPattern) {
+    if (greps.length < DEP_TRACE_GREP_REPEAT) continue;
+    const firstGrepTs = greps[0]?.ts ?? 0;
+    const lastGrepTs = greps[greps.length - 1]?.ts ?? 0;
+    const interleavedReads = rows.filter(
+      (r) =>
+        r.toolName === 'Read' &&
+        !r.denied &&
+        r.ts >= firstGrepTs &&
+        r.ts <= lastGrepTs &&
+        r.filePath !== null,
+    );
+    const distinctPaths = new Set(interleavedReads.map((r) => r.filePath));
+    if (distinctPaths.size < DEP_TRACE_FOLLOWUP_READS) continue;
+    out.push({
+      curatedId: 'dep-tracer',
+      pattern: 'dep_trace_grep_read_chain',
+      sourceToolCallIds: [...greps.map((g) => g.id), ...interleavedReads.map((r) => r.id)],
+      totalResponseBytes:
+        greps.reduce((s, g) => s + (g.responseSizeBytes ?? 0), 0) +
+        interleavedReads.reduce((s, r) => s + (r.responseSizeBytes ?? 0), 0),
+    });
+  }
+  return out;
+}
+
+/**
+ * verbose-formatting (output-formatter): a Write of FORMATTING_WRITE_BYTES+
+ * occurring after one or more prior tool outputs whose combined response
+ * size is FORMATTING_PRIOR_TOOL_BYTES+. Heuristic for "Claude has the
+ * content, now it's writing the formatted version." The signal is weak
+ * v1; tune thresholds after dogfooding. If zero fires after 7 days, drop
+ * output-formatter from the curated library entirely.
+ */
+export function verboseResponseFormatting(rows: ToolCallRow[]): Opportunity[] {
+  const out: Opportunity[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    if (r.toolName !== 'Write') continue;
+    if (r.denied) continue;
+    if (r.inputSizeBytes < FORMATTING_WRITE_BYTES) continue;
+    const priorBytes = rows
+      .slice(0, i)
+      .filter(
+        (p) =>
+          !p.denied &&
+          (p.toolName === 'Read' || p.toolName === 'Bash') &&
+          p.responseSizeBytes !== null,
+      )
+      .reduce((s, p) => s + (p.responseSizeBytes ?? 0), 0);
+    if (priorBytes < FORMATTING_PRIOR_TOOL_BYTES) continue;
+    out.push({
+      curatedId: 'output-formatter',
+      pattern: 'verbose_response_formatting',
+      sourceToolCallIds: [r.id],
+      totalResponseBytes: r.inputSizeBytes,
+    });
+  }
+  return out;
 }
 
 /**
@@ -265,5 +456,9 @@ export function runAllHeuristics(rows: ToolCallRow[], nowMs: number): Opportunit
     ...bashLogParse(rows),
     ...testRunnerNoise(rows),
     ...diffPrePass(rows),
+    ...webFetchOversized(rows),
+    ...testFailureInvestigation(rows),
+    ...depTraceGrepReadChain(rows),
+    ...verboseResponseFormatting(rows),
   ];
 }

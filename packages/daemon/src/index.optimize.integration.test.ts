@@ -23,18 +23,21 @@ describe('Optimize IPC end-to-end', () => {
     expect(r.data).toEqual([]);
   });
 
-  it('get_curated_library returns six entries with stable ids', async () => {
+  it('get_curated_library returns the curated entries with stable ids', async () => {
     ctx = await startTestDaemon();
     const r = await ctx.request<Array<{ curatedId: string }>>({ type: 'get_curated_library' });
     expect(r.success).toBe(true);
     const ids = (r.data ?? []).map((s) => s.curatedId).sort();
     expect(ids).toEqual([
+      'dep-tracer',
       'diff-pre-pass',
       'file-explorer',
       'log-analyzer',
       'output-formatter',
       'repo-mapper',
+      'test-failure-investigator',
       'test-runner-parser',
+      'web-fetcher',
     ]);
   });
 

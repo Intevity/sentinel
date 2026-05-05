@@ -185,6 +185,29 @@ describe('createOptimizationAnalyzer.runOnce', () => {
     expect(analyzer.runOnce()).toBe(0);
   });
 
+  it('writes a measured row when web_fetch_oversized fires', () => {
+    insertToolCall(db, {
+      ts: Date.now(),
+      accountId: 'a1',
+      sessionId: 'sess-web',
+      requestId: 'req-web',
+      requestSeqInSession: 1,
+      toolUseId: 'toolu_web',
+      toolName: 'WebFetch',
+      filePath: 'https://example.com/docs',
+      inputSizeBytes: 100,
+      responseSizeBytes: 50_000,
+      denied: false,
+      model: 'claude-opus-4-7',
+    });
+    const analyzer = createOptimizationAnalyzer({ db, ipcServer: ipc });
+    expect(analyzer.runOnce()).toBe(1);
+    const measured = listRecentOptimizationEvents(db, { kind: 'measured' });
+    expect(measured).toHaveLength(1);
+    expect(measured[0]?.curatedId).toBe('web-fetcher');
+    expect(measured[0]?.pattern).toBe('web_fetch_oversized');
+  });
+
   it('skips tool_calls without a session_id', () => {
     insertToolCall(db, {
       ts: Date.now(),
@@ -762,6 +785,10 @@ describe('analyzer diagnostic logging', () => {
       'dropped_no_session=',
       'short_turn=',
       'cross_session=',
+      'web_fetch=',
+      'test_failure=',
+      'dep_trace=',
+      'output_format=',
       'dedup_skipped=',
       'score_null=',
       'inserted=',

@@ -7,6 +7,10 @@ import {
   bashLogParse,
   testRunnerNoise,
   diffPrePass,
+  webFetchOversized,
+  testFailureInvestigation,
+  depTraceGrepReadChain,
+  verboseResponseFormatting,
   runAllHeuristics,
 } from './heuristics.js';
 import type { ToolCallRow } from '../db.js';
@@ -351,6 +355,237 @@ describe('diffPrePass', () => {
   });
 });
 
+describe('webFetchOversized', () => {
+  it('fires on a WebFetch with response ≥ 16KB', () => {
+    const out = webFetchOversized([
+      row({ id: 7, toolName: 'WebFetch', responseSizeBytes: 20_000 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.curatedId).toBe('web-fetcher');
+    expect(out[0]?.pattern).toBe('web_fetch_oversized');
+    expect(out[0]?.sourceToolCallIds).toEqual([7]);
+  });
+
+  it('fires on WebSearch the same way it fires on WebFetch', () => {
+    const out = webFetchOversized([row({ toolName: 'WebSearch', responseSizeBytes: 50_000 })]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.curatedId).toBe('web-fetcher');
+  });
+
+  it('does not fire below the size threshold', () => {
+    const out = webFetchOversized([row({ toolName: 'WebFetch', responseSizeBytes: 1_000 })]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire when responseSizeBytes is null', () => {
+    const out = webFetchOversized([row({ toolName: 'WebFetch', responseSizeBytes: null })]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire on denied web calls', () => {
+    const out = webFetchOversized([
+      row({ toolName: 'WebFetch', responseSizeBytes: 50_000, denied: true }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire on non-web tools', () => {
+    const out = webFetchOversized([row({ toolName: 'Read', responseSizeBytes: 50_000 })]);
+    expect(out).toHaveLength(0);
+  });
+});
+
+describe('testFailureInvestigation', () => {
+  const T0 = 1_700_000_000_000;
+
+  it('fires when a test runner Bash is followed by ≥ 3 Read/Grep within 60s', () => {
+    const out = testFailureInvestigation([
+      row({ id: 1, ts: T0, toolName: 'Bash', filePath: 'pnpm test', responseSizeBytes: 5_000 }),
+      row({ id: 2, ts: T0 + 5_000, toolName: 'Read', filePath: '/test.ts' }),
+      row({ id: 3, ts: T0 + 10_000, toolName: 'Read', filePath: '/asserter.ts' }),
+      row({ id: 4, ts: T0 + 15_000, toolName: 'Grep', filePath: 'failingFn' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.curatedId).toBe('test-failure-investigator');
+    expect(out[0]?.pattern).toBe('test_failure_investigation');
+    expect(out[0]?.sourceToolCallIds).toEqual([1, 2, 3, 4]);
+  });
+
+  it('does not fire when follow-ups are outside the 60s window', () => {
+    const out = testFailureInvestigation([
+      row({ id: 1, ts: T0, toolName: 'Bash', filePath: 'pnpm test' }),
+      row({ id: 2, ts: T0 + 90_000, toolName: 'Read', filePath: '/test.ts' }),
+      row({ id: 3, ts: T0 + 95_000, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 4, ts: T0 + 100_000, toolName: 'Read', filePath: '/b.ts' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire on non-test Bash commands', () => {
+    const out = testFailureInvestigation([
+      row({ id: 1, ts: T0, toolName: 'Bash', filePath: 'ls -la' }),
+      row({ id: 2, ts: T0 + 1_000, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 3, ts: T0 + 2_000, toolName: 'Read', filePath: '/b.ts' }),
+      row({ id: 4, ts: T0 + 3_000, toolName: 'Read', filePath: '/c.ts' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire when fewer than 3 follow-ups', () => {
+    const out = testFailureInvestigation([
+      row({ id: 1, ts: T0, toolName: 'Bash', filePath: 'pnpm test' }),
+      row({ id: 2, ts: T0 + 5_000, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 3, ts: T0 + 10_000, toolName: 'Read', filePath: '/b.ts' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire on denied test bash calls', () => {
+    const out = testFailureInvestigation([
+      row({ id: 1, ts: T0, toolName: 'Bash', filePath: 'pnpm test', denied: true }),
+      row({ id: 2, ts: T0 + 5_000, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 3, ts: T0 + 6_000, toolName: 'Read', filePath: '/b.ts' }),
+      row({ id: 4, ts: T0 + 7_000, toolName: 'Read', filePath: '/c.ts' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('skips denied follow-up reads when counting toward the threshold', () => {
+    const out = testFailureInvestigation([
+      row({ id: 1, ts: T0, toolName: 'Bash', filePath: 'pytest' }),
+      row({ id: 2, ts: T0 + 1_000, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 3, ts: T0 + 2_000, toolName: 'Read', filePath: '/b.ts', denied: true }),
+      row({ id: 4, ts: T0 + 3_000, toolName: 'Read', filePath: '/c.ts', denied: true }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+});
+
+describe('depTraceGrepReadChain', () => {
+  const T0 = 1_700_000_000_000;
+
+  it('fires when same Grep pattern repeats 3+ times with 4+ distinct interleaved Reads', () => {
+    const out = depTraceGrepReadChain([
+      row({ id: 1, ts: T0, toolName: 'Grep', filePath: 'computeSavings' }),
+      row({ id: 2, ts: T0 + 100, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 3, ts: T0 + 200, toolName: 'Read', filePath: '/b.ts' }),
+      row({ id: 4, ts: T0 + 300, toolName: 'Grep', filePath: 'computeSavings' }),
+      row({ id: 5, ts: T0 + 400, toolName: 'Read', filePath: '/c.ts' }),
+      row({ id: 6, ts: T0 + 500, toolName: 'Read', filePath: '/d.ts' }),
+      row({ id: 7, ts: T0 + 600, toolName: 'Grep', filePath: 'computeSavings' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.curatedId).toBe('dep-tracer');
+    expect(out[0]?.pattern).toBe('dep_trace_grep_read_chain');
+  });
+
+  it('does not fire when the Greps are the same pattern but no Reads interleave', () => {
+    const out = depTraceGrepReadChain([
+      row({ id: 1, ts: T0, toolName: 'Grep', filePath: 'foo' }),
+      row({ id: 2, ts: T0 + 100, toolName: 'Grep', filePath: 'foo' }),
+      row({ id: 3, ts: T0 + 200, toolName: 'Grep', filePath: 'foo' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire when each Grep uses a different pattern (general search, not refactor)', () => {
+    const out = depTraceGrepReadChain([
+      row({ id: 1, ts: T0, toolName: 'Grep', filePath: 'foo' }),
+      row({ id: 2, ts: T0 + 100, toolName: 'Read', filePath: '/a.ts' }),
+      row({ id: 3, ts: T0 + 200, toolName: 'Grep', filePath: 'bar' }),
+      row({ id: 4, ts: T0 + 300, toolName: 'Read', filePath: '/b.ts' }),
+      row({ id: 5, ts: T0 + 400, toolName: 'Grep', filePath: 'baz' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('counts only distinct Read filePaths toward the interleave threshold', () => {
+    // Same file read 4 times between greps — only 1 distinct path, not 4.
+    const out = depTraceGrepReadChain([
+      row({ id: 1, ts: T0, toolName: 'Grep', filePath: 'sym' }),
+      row({ id: 2, ts: T0 + 100, toolName: 'Read', filePath: '/x.ts' }),
+      row({ id: 3, ts: T0 + 200, toolName: 'Read', filePath: '/x.ts' }),
+      row({ id: 4, ts: T0 + 300, toolName: 'Grep', filePath: 'sym' }),
+      row({ id: 5, ts: T0 + 400, toolName: 'Read', filePath: '/x.ts' }),
+      row({ id: 6, ts: T0 + 500, toolName: 'Read', filePath: '/x.ts' }),
+      row({ id: 7, ts: T0 + 600, toolName: 'Grep', filePath: 'sym' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('skips denied greps and null patterns', () => {
+    const out = depTraceGrepReadChain([
+      row({ id: 1, ts: T0, toolName: 'Grep', filePath: 'sym', denied: true }),
+      row({ id: 2, ts: T0 + 100, toolName: 'Grep', filePath: null }),
+      row({ id: 3, ts: T0 + 200, toolName: 'Grep', filePath: 'sym' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+});
+
+describe('verboseResponseFormatting', () => {
+  it('fires on a Write ≥ 4KB after prior tool outputs ≥ 16KB total', () => {
+    const out = verboseResponseFormatting([
+      row({ id: 1, toolName: 'Read', filePath: '/a.ts', responseSizeBytes: 10_000 }),
+      row({ id: 2, toolName: 'Bash', filePath: 'cat /var/log/x.log', responseSizeBytes: 10_000 }),
+      row({ id: 3, toolName: 'Write', filePath: '/REPORT.md', inputSizeBytes: 6_000 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.curatedId).toBe('output-formatter');
+    expect(out[0]?.pattern).toBe('verbose_response_formatting');
+    expect(out[0]?.sourceToolCallIds).toEqual([3]);
+  });
+
+  it('does not fire when the Write is too small', () => {
+    const out = verboseResponseFormatting([
+      row({ toolName: 'Read', responseSizeBytes: 50_000 }),
+      row({ toolName: 'Write', inputSizeBytes: 500 }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire when prior tool outputs are below the byte floor', () => {
+    const out = verboseResponseFormatting([
+      row({ toolName: 'Read', responseSizeBytes: 1_000 }),
+      row({ toolName: 'Write', inputSizeBytes: 6_000 }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire when the Write comes before the prior reads (chronologically)', () => {
+    // Heuristic walks rows in order; "prior" is rows.slice(0, i).
+    const out = verboseResponseFormatting([
+      row({ toolName: 'Write', inputSizeBytes: 6_000 }),
+      row({ toolName: 'Read', responseSizeBytes: 50_000 }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire on denied writes', () => {
+    const out = verboseResponseFormatting([
+      row({ toolName: 'Read', responseSizeBytes: 50_000 }),
+      row({ toolName: 'Write', inputSizeBytes: 6_000, denied: true }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+});
+
+describe('testRunnerNoise — post-extractor-fix', () => {
+  // Regression test: before the extractor was fixed to probe the
+  // `command` field, all Bash tool_calls had file_path = null and this
+  // heuristic could never fire on real traffic. The unit test passed
+  // because tests synthesize ToolCallRow directly with filePath set.
+  // Now that extractFilePath probes `command`, the in-memory test path
+  // and the real ingest path produce the same row shape.
+  it('matches a real Bash row with the command captured into file_path', () => {
+    const out = testRunnerNoise([
+      row({ toolName: 'Bash', filePath: 'pnpm test', responseSizeBytes: 50_000 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.curatedId).toBe('test-runner-parser');
+  });
+});
+
 describe('heuristics — null response_size_bytes branches', () => {
   it('shortTurnAfterLargeRead skips rows without response_size_bytes', () => {
     const out = shortTurnAfterLargeRead(
@@ -439,6 +674,42 @@ describe('runAllHeuristics', () => {
 
   it('returns [] for an empty session', () => {
     expect(runAllHeuristics([], NOW)).toEqual([]);
+  });
+
+  it('combines new heuristics: web_fetch_oversized, dep_trace_grep_read_chain, verbose_response_formatting', () => {
+    const T = 1_700_000_000_000;
+    const out = runAllHeuristics(
+      [
+        row({ id: 1, ts: T, toolName: 'WebFetch', responseSizeBytes: 30_000 }),
+        // Refactor pattern: same Grep pattern, distinct interleaved Reads.
+        row({ id: 2, ts: T + 100, toolName: 'Grep', filePath: 'foo' }),
+        row({ id: 3, ts: T + 200, toolName: 'Read', filePath: '/a.ts' }),
+        row({ id: 4, ts: T + 300, toolName: 'Read', filePath: '/b.ts' }),
+        row({ id: 5, ts: T + 400, toolName: 'Read', filePath: '/c.ts' }),
+        row({ id: 6, ts: T + 500, toolName: 'Read', filePath: '/d.ts' }),
+        row({ id: 7, ts: T + 600, toolName: 'Grep', filePath: 'foo' }),
+        row({ id: 8, ts: T + 700, toolName: 'Grep', filePath: 'foo' }),
+      ],
+      T,
+    );
+    const patterns = new Set(out.map((o) => o.pattern));
+    expect(patterns.has('web_fetch_oversized')).toBe(true);
+    expect(patterns.has('dep_trace_grep_read_chain')).toBe(true);
+  });
+
+  it('combines test_failure_investigation when a test runner is followed by Read/Grep', () => {
+    const T = 1_700_000_000_000;
+    const out = runAllHeuristics(
+      [
+        row({ id: 1, ts: T, toolName: 'Bash', filePath: 'pnpm test', responseSizeBytes: 5_000 }),
+        row({ id: 2, ts: T + 1_000, toolName: 'Read', filePath: '/a.ts' }),
+        row({ id: 3, ts: T + 2_000, toolName: 'Read', filePath: '/b.ts' }),
+        row({ id: 4, ts: T + 3_000, toolName: 'Grep', filePath: 'sym' }),
+      ],
+      T,
+    );
+    const patterns = new Set(out.map((o) => o.pattern));
+    expect(patterns.has('test_failure_investigation')).toBe(true);
   });
 
   it('does not include cross-session patterns (those run at the analyzer level)', () => {

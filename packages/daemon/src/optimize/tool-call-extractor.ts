@@ -10,8 +10,10 @@
  *     tool_result blocks that arrive in the next request's user message)
  *   - tool name
  *   - input bytes (length of the partial_json deltas concatenated)
- *   - file_path when the tool input includes one (Read, Write, Edit,
- *     Glob, Grep — the `path`, `pattern`, or `file_path` field)
+ *   - identifying string when the tool input includes one (Read/Write/Edit
+ *     `path` or `file_path`, Glob/Grep `pattern`, Bash `command`,
+ *     WebFetch/WebSearch `url`). Stored in `tool_calls.file_path` for
+ *     indexing.
  *
  * What we DO NOT keep:
  *   - raw tool inputs beyond the size in bytes
@@ -19,10 +21,11 @@
  *     and the recorder's `observeRequest` backfills `response_size_bytes`
  *     from the tool_result block's `content` length)
  *
- * Privacy posture: file_path is already in the request-log raw BLOB when
- * `requestLoggingEnabled` is on. Storing it in the structured `tool_calls`
- * table is a query-friendly form of the same data; no new exfil surface.
- * The user-facing disclosure lives in Settings → Optimize.
+ * Privacy posture: file paths, Bash commands, and fetched URLs are
+ * already in the request-log raw BLOB when `requestLoggingEnabled` is
+ * on. Storing them in the structured `tool_calls.file_path` column is a
+ * query-friendly form of the same data; no new exfil surface. The
+ * user-facing disclosure lives in Settings → Optimize.
  */
 
 import type Database from 'better-sqlite3';
@@ -194,10 +197,17 @@ export function createToolCallExtractor(opts: ToolCallExtractorOptions): {
 }
 
 /**
- * Best-effort file-path extraction from a tool_use input JSON. The Claude
- * API doesn't standardize the field name — `Read` uses `path`, `Glob`
- * uses `pattern`, `Grep` uses `pattern`, MCP tools use whatever the
- * server defined. We probe a small known list and fall back to null.
+ * Best-effort identifying-string extraction from a tool_use input JSON.
+ * The Claude API doesn't standardize the field name — `Read` uses `path`,
+ * `Glob` / `Grep` use `pattern`, `Bash` uses `command`, `WebFetch` /
+ * `WebSearch` use `url`, MCP tools use whatever the server defined. We
+ * probe a small known list and fall back to null.
+ *
+ * The value is stored in `tool_calls.file_path` for indexing — analyzer
+ * heuristics that key off Bash command stubs (testRunnerNoise) or web
+ * URLs (web_fetch_oversized) read this column. Privacy posture matches
+ * the surrounding comment block: the same data is in the request-log
+ * raw BLOB when request logging is on.
  *
  * Exported for testing.
  */
@@ -211,7 +221,7 @@ export function extractFilePath(partialJson: string): string | null {
   }
   if (!parsed || typeof parsed !== 'object') return null;
   const o = parsed as Record<string, unknown>;
-  for (const key of ['file_path', 'path', 'pattern', 'filename', 'filePath']) {
+  for (const key of ['file_path', 'path', 'pattern', 'filename', 'filePath', 'url', 'command']) {
     const v = o[key];
     if (typeof v === 'string' && v.length > 0) return v;
   }

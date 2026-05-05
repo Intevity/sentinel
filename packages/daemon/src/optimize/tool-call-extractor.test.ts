@@ -51,8 +51,14 @@ describe('extractFilePath', () => {
   it('reads `pattern` field for Grep/Glob', () => {
     expect(extractFilePath('{"pattern":"src/**/*.ts"}')).toBe('src/**/*.ts');
   });
+  it('reads `url` field for WebFetch / WebSearch', () => {
+    expect(extractFilePath('{"url":"https://example.com/docs"}')).toBe('https://example.com/docs');
+  });
+  it('reads `command` field for Bash', () => {
+    expect(extractFilePath('{"command":"pnpm test"}')).toBe('pnpm test');
+  });
   it('returns null when no recognized field present', () => {
-    expect(extractFilePath('{"command":"ls -la"}')).toBeNull();
+    expect(extractFilePath('{"unknown":"oops"}')).toBeNull();
   });
   it('returns null for malformed JSON', () => {
     expect(extractFilePath('{not json')).toBeNull();
@@ -150,7 +156,9 @@ describe('createToolCallExtractor', () => {
     expect(rows).toHaveLength(2);
     const byTool = new Map(rows.map((r) => [r.toolName, r]));
     expect(byTool.get('Read')?.filePath).toBe('/a');
-    expect(byTool.get('Bash')?.filePath).toBeNull();
+    // Bash command is captured into file_path so the testRunnerNoise
+    // and bashLogParse heuristics can match on the command stub.
+    expect(byTool.get('Bash')?.filePath).toBe('ls');
   });
 
   it('marks denied=true for tools listed in deniedToolNames', () => {

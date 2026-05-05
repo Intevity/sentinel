@@ -135,6 +135,10 @@ export function createOptimizationAnalyzer(
       bash_log_parse: 0,
       test_runner_noise: 0,
       diff_pre_pass: 0,
+      web_fetch_oversized: 0,
+      test_failure_investigation: 0,
+      dep_trace_grep_read_chain: 0,
+      verbose_response_formatting: 0,
     };
     let dedupSkipped = 0;
     let scoreNull = 0;
@@ -222,6 +226,10 @@ export function createOptimizationAnalyzer(
         ` bash_log=${patternCounts.bash_log_parse}` +
         ` test_runner=${patternCounts.test_runner_noise}` +
         ` diff_pre_pass=${patternCounts.diff_pre_pass}` +
+        ` web_fetch=${patternCounts.web_fetch_oversized}` +
+        ` test_failure=${patternCounts.test_failure_investigation}` +
+        ` dep_trace=${patternCounts.dep_trace_grep_read_chain}` +
+        ` output_format=${patternCounts.verbose_response_formatting}` +
         ` dedup_skipped=${dedupSkipped} score_null=${scoreNull} inserted=${written}` +
         ` savings=$${totalSavings.toFixed(4)}`,
     );
