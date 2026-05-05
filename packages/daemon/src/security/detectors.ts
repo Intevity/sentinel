@@ -1823,24 +1823,57 @@ function scanWebFetchUrl(url: string, sourceHint: string | undefined): Finding[]
 /** Walk through the scannable string fields of a POST /v1/messages body and
  *  invoke secret + injection detectors on each. */
 /**
+ * Result of resolving the `tool_use` block that produced a given
+ * `tool_result`. Carries the originating tool name plus a tool-shaped
+ * input summary so the Security panel can show "this output came from
+ * `Bash` running `<command>`" instead of an opaque `messages[N]…` path.
+ *
+ * - `filePath` is set only when the originating tool returned a real
+ *   file path (`Read`, `Edit`, `MultiEdit`, `Write`); callers still
+ *   prefer it as the human-readable sourceHint when present.
+ * - `summary` carries one tool-shaped key/value the user actually wants
+ *   to see (`command` for Bash, `url` for WebFetch, `pattern` for
+ *   Grep/Glob, …). DETAILS_LABEL on the UI side renders the key with a
+ *   friendly label, so we name keys to match existing labels rather
+ *   than inventing new ones (`command` not `bashCommand`).
+ */
+interface OriginatingToolUse {
+  name: string;
+  filePath?: string;
+  summary?: { key: string; value: string };
+}
+
+/** Truncate long tool inputs so a single security event doesn't bloat
+ *  the audit-log row. 120 chars is enough to recognise an attack and
+ *  short enough that DetailsList doesn't dominate the panel. */
+function truncateToolInput(value: string): string {
+  const TRIM = 120;
+  if (value.length <= TRIM) return value;
+  return `${value.slice(0, TRIM)}…`;
+}
+
+/**
  * Walk backward through the messages array looking for a prior
- * `tool_use` block named `'Read'` at the same content index as the
- * current tool_result. Claude Code's canonical pattern is:
+ * `tool_use` block at the same content index as the current
+ * tool_result. Claude Code's canonical pattern is:
  *
  *   messages[N-1]: assistant with content[bi] = { type: 'tool_use',
  *     name: 'Read', input: { file_path: '/…' } }
  *   messages[N]  : user with content[bi] = { type: 'tool_result', … }
  *
  * so the two indices line up by content position. We search up to ~6
- * turns back to tolerate retries or parallel tool batches, and fall
- * back to `undefined` if no matching Read is found. Callers then use
- * the generic JSON-index sourceHint.
+ * turns back to tolerate retries or parallel tool batches.
+ *
+ * Returns `undefined` only when no `tool_use` block is found at that
+ * content index — when one IS found, the tool name alone is meaningful
+ * even for tools we don't have an input-summary heuristic for, so we
+ * still return it.
  */
-function findReadFilePath(
+function findOriginatingToolUse(
   messages: unknown[],
   toolResultMsgIdx: number,
   toolResultContentIdx: number,
-): string | undefined {
+): OriginatingToolUse | undefined {
   const start = Math.max(0, toolResultMsgIdx - 6);
   for (let i = toolResultMsgIdx - 1; i >= start; i--) {
     const msg = messages[i];
@@ -1850,10 +1883,51 @@ function findReadFilePath(
     const block = content[toolResultContentIdx];
     if (!block || typeof block !== 'object') continue;
     const b = block as Record<string, unknown>;
-    if (b['type'] !== 'tool_use' || b['name'] !== 'Read') continue;
-    const input = b['input'] as Record<string, unknown> | undefined;
-    const fp = input?.['file_path'];
-    if (typeof fp === 'string' && fp.length > 0) return fp;
+    if (b['type'] !== 'tool_use' || typeof b['name'] !== 'string') continue;
+    const name = b['name'];
+    const input = (b['input'] as Record<string, unknown> | undefined) ?? {};
+
+    const stringField = (key: string): string | undefined => {
+      const v = input[key];
+      return typeof v === 'string' && v.length > 0 ? v : undefined;
+    };
+
+    switch (name) {
+      case 'Read': {
+        const fp = stringField('file_path');
+        return fp ? { name, filePath: fp } : { name };
+      }
+      case 'Bash': {
+        const cmd = stringField('command');
+        return cmd
+          ? { name, summary: { key: 'command', value: truncateToolInput(cmd) } }
+          : { name };
+      }
+      case 'WebFetch': {
+        const url = stringField('url');
+        return url ? { name, summary: { key: 'url', value: truncateToolInput(url) } } : { name };
+      }
+      case 'Grep': {
+        const pattern = stringField('pattern') ?? stringField('query');
+        return pattern
+          ? { name, summary: { key: 'pattern', value: truncateToolInput(pattern) } }
+          : { name };
+      }
+      case 'Glob': {
+        const pattern = stringField('pattern');
+        return pattern
+          ? { name, summary: { key: 'pattern', value: truncateToolInput(pattern) } }
+          : { name };
+      }
+      case 'Edit':
+      case 'MultiEdit':
+      case 'Write': {
+        const fp = stringField('file_path');
+        return fp ? { name, filePath: fp, summary: { key: 'file_path', value: fp } } : { name };
+      }
+      default:
+        return { name };
+    }
   }
   return undefined;
 }
@@ -1930,29 +2004,66 @@ export function scanRequestBody(body: unknown, options: DetectorOptions): Findin
   const messages = obj['messages'];
   if (!Array.isArray(messages)) return findings;
 
+  // Enrich every finding pushed into the array between `startIdx` and
+  // the current tail. Used to back-fill structured context (originating
+  // tool, message role) onto findings without changing the signature
+  // of every detector function. Callers capture `findings.length` just
+  // before the scan, then call this with that snapshot.
+  // Merge `extra` keys into the `details` of every finding pushed
+  // between `startIdx` (captured before the scan call) and the current
+  // tail. Used to back-fill structured context (originating tool,
+  // message role) without changing the signature of every detector.
+  const enrichRange = (startIdx: number, extra: Record<string, unknown>): void => {
+    for (let k = startIdx; k < findings.length; k++) {
+      const f = findings[k]!;
+      f.details = { ...(f.details ?? {}), ...extra };
+    }
+  };
+
   messages.forEach((msg, mi) => {
     if (!msg || typeof msg !== 'object') return;
-    const content = (msg as Record<string, unknown>)['content'];
+    const m = msg as Record<string, unknown>;
+    const role = typeof m['role'] === 'string' ? m['role'] : undefined;
+    // Only the canonical Anthropic roles get propagated into details —
+    // anything else is silently ignored to avoid noise from custom
+    // routers that smuggle extra metadata into the role slot.
+    const messageRole = role === 'user' || role === 'assistant' ? role : undefined;
+    const content = m['content'];
     if (typeof content === 'string') {
+      const start = findings.length;
       scanText(content, `messages[${mi}]`);
+      if (messageRole) enrichRange(start, { messageRole });
     } else if (Array.isArray(content)) {
       content.forEach((block, bi) => {
         if (!block || typeof block !== 'object') return;
         const b = block as Record<string, unknown>;
         const ty = b['type'];
         if (ty === 'text' && typeof b['text'] === 'string') {
+          const start = findings.length;
           scanText(b['text'], `messages[${mi}].content[${bi}]`);
+          if (messageRole) enrichRange(start, { messageRole });
         } else if (ty === 'tool_result') {
           // tool_result.content can be string or array of {type,text,...}.
-          // When the matching Read tool_use can be located a few messages
-          // back, substitute its file_path for the generic JSON-index
-          // sourceHint — so findings carry the real file the agent read
-          // instead of a useless `messages[354].tool_result[2]`.
-          const filePath = findReadFilePath(messages, mi, bi);
-          const baseHint = filePath ?? `messages[${mi}].tool_result[${bi}]`;
+          // Resolve the originating tool_use a few turns back so each
+          // finding carries the tool name (`Bash`, `WebFetch`, …) and
+          // a tool-shaped input summary (`command`, `url`, …). For
+          // file-path tools (`Read`, `Edit`, `Write`, `MultiEdit`) we
+          // also substitute the file path for the JSON-index
+          // sourceHint — so findings show the real file the agent
+          // touched instead of a useless `messages[354].tool_result[2]`.
+          const origin = findOriginatingToolUse(messages, mi, bi);
+          const baseHint = origin?.filePath ?? `messages[${mi}].tool_result[${bi}]`;
+          const enrichTool = (startIdx: number): void => {
+            if (!origin) return;
+            const extra: Record<string, unknown> = { sourceTool: origin.name };
+            if (origin.summary) extra[origin.summary.key] = origin.summary.value;
+            enrichRange(startIdx, extra);
+          };
           const tc = b['content'];
           if (typeof tc === 'string') {
+            const start = findings.length;
             scanIndirectText(tc, baseHint);
+            enrichTool(start);
           } else if (Array.isArray(tc)) {
             tc.forEach((sub, si) => {
               if (
@@ -1965,8 +2076,12 @@ export function scanRequestBody(body: unknown, options: DetectorOptions): Findin
                 // primary hint (the sub-index is usually noise) but fall
                 // back to the array-indexed JSON hint when no path was
                 // recovered.
-                const hint = filePath ?? `messages[${mi}].tool_result[${bi}][${si}]`;
-                if (typeof t === 'string') scanIndirectText(t, hint);
+                const hint = origin?.filePath ?? `messages[${mi}].tool_result[${bi}][${si}]`;
+                if (typeof t === 'string') {
+                  const start = findings.length;
+                  scanIndirectText(t, hint);
+                  enrichTool(start);
+                }
               }
             });
           }

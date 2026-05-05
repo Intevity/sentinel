@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
+import { getDigestTokens } from '@claude-sentinel/shared';
 import type {
   AccountInfo,
   UsageEvent,
@@ -450,6 +451,12 @@ CREATE TABLE IF NOT EXISTS optimization_events (
   actual_cached_tokens     INTEGER,
   actual_cost_usd          REAL,
   hypothetical_cost_usd    REAL,
+  -- Total input tokens the hypothetical (subagent) path would have
+  -- consumed: hypoInputTokens + digestTokens from savings-calc. Stored
+  -- so the dashboard can render savings in tokens without re-running
+  -- savings-calc. Nullable for migration compatibility (historical
+  -- rows render as a placeholder for token savings).
+  hypothetical_total_tokens INTEGER,
   source_tool_call_ids     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_oe_ts           ON optimization_events(ts);
@@ -726,6 +733,66 @@ export function getDb(
   // separate summary table that bridges the chain across retention
   // gaps and a TEMP-table sweep token that the trigger checks to
   // permit deletes only when invoked from a sweep-aware path.
+  // Migrate optimization_events for the `hypothetical_total_tokens`
+  // column. Used by the dashboard's tokens toggle (savings rendered in
+  // input-tokens instead of dollars). The follow-up back-fill below
+  // populates historical rows so the token view isn't blank after upgrade.
+  const oeCols = _db.pragma('table_info(optimization_events)') as Array<{ name: string }>;
+  if (oeCols.length > 0 && !oeCols.some((c) => c.name === 'hypothetical_total_tokens')) {
+    _db.exec('ALTER TABLE optimization_events ADD COLUMN hypothetical_total_tokens INTEGER');
+  }
+
+  // One-shot back-fill of `hypothetical_total_tokens` for measured rows
+  // written before the column existed. We invert the savings-calc
+  // formula:
+  //   hypoCost = (hypoInputTokens * baseHypo + digestTokens * baseActual) / 1_000_000
+  //   → hypoInputTokens = (hypoCost * 1_000_000 - digestTokens * baseActual) / baseHypo
+  // baseActual is assumed Opus ($15/MTok) — most Claude Code traffic.
+  // For Sonnet rows the result is slightly low (by roughly digestTokens
+  // worth of attribution at the rate gap); acceptable for a historical
+  // back-fill. Digest sizes mirror the constants in
+  // `optimize/savings-calc.ts`; if those change, ship a v2 migration.
+  // Marked in `_migrations` so it only runs once.
+  const tokenBackfillApplied = _db
+    .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+    .get('optimization_events_token_backfill_v1') as { ok: number } | undefined;
+  if (!tokenBackfillApplied) {
+    const BASE_ACTUAL_OPUS = 15; // $/MTok, matches getBaseInputPricePerMillion('claude-opus-4')
+    const BASE_HYPO_HAIKU = 1; // $/MTok, matches 'claude-haiku-4'
+
+    const rows = _db
+      .prepare(
+        `SELECT id, curated_id, hypothetical_cost_usd
+           FROM optimization_events
+           WHERE kind = 'measured'
+             AND hypothetical_total_tokens IS NULL
+             AND hypothetical_cost_usd IS NOT NULL`,
+      )
+      .all() as Array<{ id: number; curated_id: string; hypothetical_cost_usd: number }>;
+
+    const update = _db.prepare(
+      'UPDATE optimization_events SET hypothetical_total_tokens = ? WHERE id = ?',
+    );
+    _db.transaction(() => {
+      for (const r of rows) {
+        const digestTokens = getDigestTokens(r.curated_id);
+        // Floor at 0: a cheap-enough hypothetical (e.g., a buggy Opus
+        // override on a Sonnet conversation) could otherwise produce a
+        // negative input-token estimate, which is meaningless.
+        const hypoInputTokens = Math.max(
+          0,
+          (r.hypothetical_cost_usd * 1_000_000 - digestTokens * BASE_ACTUAL_OPUS) / BASE_HYPO_HAIKU,
+        );
+        const total = Math.round(hypoInputTokens + digestTokens);
+        update.run(total, r.id);
+      }
+    })();
+
+    _db
+      .prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)')
+      .run('optimization_events_token_backfill_v1', Date.now());
+  }
+
   const chainApplied = _db
     .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
     .get('security_events_chain_v1') as { ok: number } | undefined;
@@ -3937,6 +4004,11 @@ export interface InsertOptimizationEvent {
   actualCachedTokens: number | null;
   actualCostUsd: number | null;
   hypotheticalCostUsd: number | null;
+  /** Total input tokens the hypothetical (subagent) path would have
+   *  consumed, for the dashboard's tokens-toggle render. Pass null on
+   *  non-`measured` rows where the savings calculator wasn't run
+   *  (e.g. dismissed / installed bookkeeping rows). */
+  hypotheticalTotalTokens: number | null;
   sourceToolCallIds: number[];
 }
 
@@ -3947,11 +4019,13 @@ export function insertOptimizationEvent(db: Database.Database, e: InsertOptimiza
       INSERT INTO optimization_events (
         ts, account_id, session_id, curated_id, kind, pattern,
         savings_usd, actual_input_tokens, actual_cached_tokens,
-        actual_cost_usd, hypothetical_cost_usd, source_tool_call_ids
+        actual_cost_usd, hypothetical_cost_usd, hypothetical_total_tokens,
+        source_tool_call_ids
       ) VALUES (
         @ts, @accountId, @sessionId, @curatedId, @kind, @pattern,
         @savingsUsd, @actualInputTokens, @actualCachedTokens,
-        @actualCostUsd, @hypotheticalCostUsd, @sourceToolCallIds
+        @actualCostUsd, @hypotheticalCostUsd, @hypotheticalTotalTokens,
+        @sourceToolCallIds
       )
     `,
     )
@@ -3967,6 +4041,7 @@ export function insertOptimizationEvent(db: Database.Database, e: InsertOptimiza
       actualCachedTokens: e.actualCachedTokens,
       actualCostUsd: e.actualCostUsd,
       hypotheticalCostUsd: e.hypotheticalCostUsd,
+      hypotheticalTotalTokens: e.hypotheticalTotalTokens,
       sourceToolCallIds: JSON.stringify(e.sourceToolCallIds),
     });
   return Number(result.lastInsertRowid);
@@ -4071,13 +4146,20 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
   // SQLite's COALESCE handles the no-matching-install case. `curated_id`
   // is included so the same loop can build a per-subagent breakdown
   // alongside the daily series.
+  //
+  // We also pull `actual_input_tokens` and `hypothetical_total_tokens`
+  // so the dashboard can render savings in tokens (the user-preferred
+  // default for Claude Code subscription users where dollars don't map
+  // to billable activity).
   const rows = db
     .prepare(
       `
       SELECT
-        date(oe.ts / 1000, 'unixepoch') AS day,
-        oe.curated_id                   AS curated_id,
-        oe.savings_usd                  AS savings_usd,
+        date(oe.ts / 1000, 'unixepoch')      AS day,
+        oe.curated_id                        AS curated_id,
+        oe.savings_usd                       AS savings_usd,
+        oe.actual_input_tokens               AS actual_input_tokens,
+        oe.hypothetical_total_tokens         AS hypothetical_total_tokens,
         CASE
           WHEN si.installed_at IS NOT NULL
             AND si.installed_at <= oe.ts
@@ -4093,31 +4175,65 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
     day: string;
     curated_id: string;
     savings_usd: number;
+    actual_input_tokens: number | null;
+    hypothetical_total_tokens: number | null;
     is_realized: number;
   }>;
 
-  const daily = new Map<string, { realized: number; potential: number }>();
-  const bySubagent = new Map<
-    string,
-    { realized: number; potential: number; opportunities: number }
-  >();
+  /** Parent-context-tokens savings: how many fewer tokens flow into the
+   *  parent conversation when the subagent absorbs the read. Equal to
+   *  `hypoInputTokens − digestTokens`, where hypoInputTokens is what
+   *  the subagent reads cold and digestTokens is what the parent
+   *  re-injects. Always positive when the file is bigger than the
+   *  digest, which matches the user-mental model of "context saved."
+   *  Pre-migration rows whose hypothetical_total_tokens is NULL
+   *  contribute 0. */
+  const tokenSavings = (r: {
+    hypothetical_total_tokens: number | null;
+    curated_id: string;
+  }): number => {
+    if (r.hypothetical_total_tokens === null) return 0;
+    const digest = getDigestTokens(r.curated_id);
+    const hypoInputTokens = r.hypothetical_total_tokens - digest;
+    return hypoInputTokens - digest;
+  };
+
+  interface BucketTokens {
+    realized: number;
+    potential: number;
+    tokensRealized: number;
+    tokensPotential: number;
+  }
+  const daily = new Map<string, BucketTokens>();
+  const bySubagent = new Map<string, BucketTokens & { opportunities: number }>();
+  const emptyBucket = (): BucketTokens => ({
+    realized: 0,
+    potential: 0,
+    tokensRealized: 0,
+    tokensPotential: 0,
+  });
   let totalRealized = 0;
   let totalPotential = 0;
+  let totalTokensRealized = 0;
+  let totalTokensPotential = 0;
   for (const r of rows) {
-    const dailySlot = daily.get(r.day) ?? { realized: 0, potential: 0 };
-    const subSlot = bySubagent.get(r.curated_id) ?? {
-      realized: 0,
-      potential: 0,
-      opportunities: 0,
-    };
+    const dailySlot = daily.get(r.day) ?? emptyBucket();
+    const subSlot = bySubagent.get(r.curated_id) ?? { ...emptyBucket(), opportunities: 0 };
+    const tokens = tokenSavings(r);
     if (r.is_realized === 1) {
       dailySlot.realized += r.savings_usd;
+      dailySlot.tokensRealized += tokens;
       subSlot.realized += r.savings_usd;
+      subSlot.tokensRealized += tokens;
       totalRealized += r.savings_usd;
+      totalTokensRealized += tokens;
     } else {
       dailySlot.potential += r.savings_usd;
+      dailySlot.tokensPotential += tokens;
       subSlot.potential += r.savings_usd;
+      subSlot.tokensPotential += tokens;
       totalPotential += r.savings_usd;
+      totalTokensPotential += tokens;
     }
     subSlot.opportunities += 1;
     daily.set(r.day, dailySlot);
@@ -4136,6 +4252,8 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
       curatedId,
       savingsRealized: v.realized,
       savingsPotential: v.potential,
+      tokensRealized: v.tokensRealized,
+      tokensPotential: v.tokensPotential,
       opportunities: v.opportunities,
     }))
     .sort(
@@ -4146,6 +4264,8 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
     totals: {
       savingsUsdRealized: totalRealized,
       savingsUsdPotential: totalPotential,
+      tokensRealized: totalTokensRealized,
+      tokensPotential: totalTokensPotential,
       opportunities: rows.length,
       installs: installsRow.n,
     },
@@ -4155,6 +4275,8 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
         day,
         savingsRealized: v.realized,
         savingsPotential: v.potential,
+        tokensRealized: v.tokensRealized,
+        tokensPotential: v.tokensPotential,
       })),
     bySubagent: bySubagentArr,
   };
@@ -4178,6 +4300,298 @@ export function listRecentOptimizationEvents(
           .all(opts.kind, limit)
   ) as DbOptimizationEventRow[];
   return rows.map(rowToOptimizationEvent);
+}
+
+/** Slim summary of a tool_call linked from an optimization_event. We
+ *  intentionally don't expose response or input bodies — only the
+ *  metadata the dashboard needs to explain "this saving counts because
+ *  Sentinel observed these reads/edits." */
+export interface ToolCallSummary {
+  id: number;
+  ts: number;
+  toolName: string;
+  filePath: string | null;
+  responseSizeBytes: number | null;
+  denied: boolean;
+}
+
+/** Drill-down shape: one optimization_event plus the tool_calls that
+ *  drove it, plus a precomputed `realized` flag matching the same join
+ *  semantics as `getOptimizationMetrics`. */
+export interface OptimizationEventWithSources {
+  id: number;
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  curatedId: string;
+  kind: OptimizationEventKind;
+  pattern: string | null;
+  savingsUsd: number | null;
+  actualCostUsd: number | null;
+  hypotheticalCostUsd: number | null;
+  actualInputTokens: number | null;
+  hypotheticalTotalTokens: number | null;
+  /** Digest size for this row's curated_id; lets the UI compute the
+   *  parent-context tokens framing locally. */
+  digestTokens: number;
+  realized: boolean;
+  sourceCalls: ToolCallSummary[];
+}
+
+interface DbOptimizationEventWithRealizedRow extends DbOptimizationEventRow {
+  is_realized: number;
+  actual_cost_usd: number | null;
+  hypothetical_cost_usd: number | null;
+  hypothetical_total_tokens: number | null;
+}
+
+export interface ListOptimizationEventsResult {
+  events: OptimizationEventWithSources[];
+  /** Total matching rows ignoring `limit`/`offset`, for client-side
+   *  pagination UI. Counted with the same WHERE clause + the realized
+   *  filter applied post-query (matching the LEFT JOIN's CASE
+   *  semantics), so "Page X of Y" stays accurate when filters narrow
+   *  the result set. */
+  total: number;
+}
+
+/** Half-cent floor for the "regression" filter — matches the UI's
+ *  regression-pill threshold so the chip and the pill agree on what
+ *  counts as a misfit subagent. Negative because savings = actual − hypo;
+ *  rows where the hypothetical path would have cost more than the
+ *  inline path read negative. */
+const SAVINGS_REGRESSION_THRESHOLD_USD = -0.005;
+/** Mirror of the same noise floor on the positive side. The "Potential"
+ *  filter excludes rows at or below this dollar value so misfit-warning
+ *  rows ("subagent would have cost more") don't surface alongside real
+ *  opportunities. */
+const SAVINGS_POSITIVE_THRESHOLD_USD = 0.005;
+
+/**
+ * Drill-down query for the Optimize dashboard's opportunity list.
+ * Joins each optimization_event with subagent_installs (same realized
+ * semantics as `getOptimizationMetrics`), then resolves
+ * `source_tool_call_ids` into inline `ToolCallSummary[]`s via a single
+ * follow-up `SELECT ... WHERE id IN (...)`.
+ *
+ * Filters:
+ *   - `kind` / `curatedId` / `realized` — narrow which rows match
+ *   - `regressionsOnly` — pins kind='measured', realized=true, and
+ *     savings_usd ≤ -0.005. The "show me my misfit installs" filter.
+ *   - `search` — case-insensitive LIKE against curated_id, pattern,
+ *      and session_id. File-path search is deferred (would require
+ *      joining tool_calls or denormalising paths into this table).
+ *   - `limit` (1–500) and `offset` (≥0) for server-side pagination.
+ */
+export function listOptimizationEventsWithSources(
+  db: Database.Database,
+  opts: {
+    kind?: OptimizationEventKind;
+    curatedId?: string;
+    realized?: boolean;
+    regressionsOnly?: boolean;
+    positiveSavingsOnly?: boolean;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): ListOptimizationEventsResult {
+  const limit = Math.max(1, Math.min(opts.limit ?? 100, 500));
+  const offset = Math.max(0, opts.offset ?? 0);
+  const search = opts.search?.trim() ?? '';
+
+  // The regression filter narrows: it intersects with kind/realized
+  // rather than replacing them, so `regressionsOnly: true` together
+  // with `realized: false` returns nothing by design.
+  const effectiveKind: OptimizationEventKind | undefined = opts.regressionsOnly
+    ? 'measured'
+    : opts.kind;
+  const effectiveRealized = opts.regressionsOnly ? true : opts.realized;
+
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = { limit, offset };
+  if (effectiveKind !== undefined) {
+    conditions.push('oe.kind = @kind');
+    params['kind'] = effectiveKind;
+  }
+  if (opts.curatedId !== undefined) {
+    conditions.push('oe.curated_id = @curatedId');
+    params['curatedId'] = opts.curatedId;
+  }
+  if (opts.regressionsOnly) {
+    conditions.push('oe.savings_usd <= @regressionThreshold');
+    params['regressionThreshold'] = SAVINGS_REGRESSION_THRESHOLD_USD;
+  }
+  if (opts.positiveSavingsOnly) {
+    conditions.push('oe.savings_usd > @positiveThreshold');
+    params['positiveThreshold'] = SAVINGS_POSITIVE_THRESHOLD_USD;
+  }
+  if (search.length > 0) {
+    // SQLite's LIKE is case-insensitive on ASCII by default. Apply LOWER
+    // explicitly so non-ASCII columns (session ids are uuids — ASCII —
+    // but defensive) behave consistently. Single search term LIKE'd
+    // against three columns gives a "contains anywhere" UX.
+    conditions.push(
+      '(LOWER(oe.curated_id) LIKE @search OR LOWER(oe.pattern) LIKE @search OR LOWER(oe.session_id) LIKE @search)',
+    );
+    params['search'] = `%${search.toLowerCase()}%`;
+  }
+  const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const rows = db
+    .prepare(
+      `
+      SELECT
+        oe.*,
+        CASE
+          WHEN si.installed_at IS NOT NULL
+            AND si.installed_at <= oe.ts
+            AND (si.uninstalled_at IS NULL OR si.uninstalled_at > oe.ts)
+          THEN 1 ELSE 0
+        END AS is_realized
+      FROM optimization_events oe
+      LEFT JOIN subagent_installs si ON si.curated_id = oe.curated_id
+      ${whereSql}
+      ORDER BY oe.ts DESC
+      LIMIT @limit OFFSET @offset
+    `,
+    )
+    .all(params) as DbOptimizationEventWithRealizedRow[];
+
+  // Apply the realized filter post-query so the LEFT JOIN's CASE result
+  // is what we actually filter on. Doing this in SQL would require a
+  // subquery on the synthetic column.
+  const filtered =
+    effectiveRealized === undefined
+      ? rows
+      : rows.filter((r) => (r.is_realized === 1) === effectiveRealized);
+
+  // Collect every source_tool_call_id across all rows so we can hydrate
+  // the linked tool_calls in a single round-trip.
+  const allIds = new Set<number>();
+  for (const r of filtered) {
+    if (!r.source_tool_call_ids) continue;
+    try {
+      const ids = JSON.parse(r.source_tool_call_ids) as unknown;
+      if (Array.isArray(ids)) {
+        for (const id of ids) {
+          if (typeof id === 'number') allIds.add(id);
+        }
+      }
+      /* v8 ignore next 3 — defensive against a legacy/malformed JSON blob */
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const callsById = new Map<number, ToolCallSummary>();
+  if (allIds.size > 0) {
+    const placeholders = [...allIds].map(() => '?').join(',');
+    const callRows = db
+      .prepare(
+        `SELECT id, ts, tool_name, file_path, response_size_bytes, denied
+           FROM tool_calls
+           WHERE id IN (${placeholders})`,
+      )
+      .all(...allIds) as Array<{
+      id: number;
+      ts: number;
+      tool_name: string;
+      file_path: string | null;
+      response_size_bytes: number | null;
+      denied: number;
+    }>;
+    for (const c of callRows) {
+      callsById.set(c.id, {
+        id: c.id,
+        ts: c.ts,
+        toolName: c.tool_name,
+        filePath: c.file_path,
+        responseSizeBytes: c.response_size_bytes,
+        denied: c.denied === 1,
+      });
+    }
+  }
+
+  const events: OptimizationEventWithSources[] = filtered.map((r) => {
+    const sourceIds: number[] = (() => {
+      if (!r.source_tool_call_ids) return [];
+      try {
+        const parsed = JSON.parse(r.source_tool_call_ids) as unknown;
+        if (Array.isArray(parsed)) {
+          return parsed.filter((x): x is number => typeof x === 'number');
+        }
+        /* v8 ignore next 3 — defensive against a legacy/malformed JSON blob */
+        return [];
+      } catch {
+        return [];
+      }
+    })();
+    const sourceCalls: ToolCallSummary[] = sourceIds
+      .map((id) => callsById.get(id))
+      .filter((c): c is ToolCallSummary => c !== undefined);
+    return {
+      id: r.id,
+      ts: r.ts,
+      accountId: r.account_id,
+      sessionId: r.session_id,
+      curatedId: r.curated_id,
+      kind: r.kind as OptimizationEventKind,
+      pattern: r.pattern,
+      savingsUsd: r.savings_usd,
+      actualCostUsd: r.actual_cost_usd,
+      hypotheticalCostUsd: r.hypothetical_cost_usd,
+      actualInputTokens: r.actual_input_tokens,
+      hypotheticalTotalTokens: r.hypothetical_total_tokens,
+      digestTokens: getDigestTokens(r.curated_id),
+      realized: r.is_realized === 1,
+      sourceCalls,
+    };
+  });
+
+  // Compute the total for pagination. When `realized` is unset the
+  // count is a single COUNT(*); when set, we need the LEFT JOIN's
+  // synthetic flag to count correctly, so we materialise the matching
+  // rows' is_realized values and filter in JS — same semantics as the
+  // page query above. With a 500-row hard limit on `limit`, the upper
+  // bound on the count query is the full optimization_events table
+  // size, which the analyzer's 7-day dedup window keeps bounded.
+  const countParams: Record<string, unknown> = { ...params };
+  delete countParams['limit'];
+  delete countParams['offset'];
+  let total: number;
+  if (effectiveRealized === undefined) {
+    const row = db
+      .prepare(
+        `
+        SELECT COUNT(*) AS n
+          FROM optimization_events oe
+          ${whereSql}
+        `,
+      )
+      .get(countParams) as { n: number };
+    total = row.n;
+  } else {
+    const flagRows = db
+      .prepare(
+        `
+        SELECT
+          CASE
+            WHEN si.installed_at IS NOT NULL
+              AND si.installed_at <= oe.ts
+              AND (si.uninstalled_at IS NULL OR si.uninstalled_at > oe.ts)
+            THEN 1 ELSE 0
+          END AS is_realized
+        FROM optimization_events oe
+        LEFT JOIN subagent_installs si ON si.curated_id = oe.curated_id
+        ${whereSql}
+        `,
+      )
+      .all(countParams) as Array<{ is_realized: number }>;
+    total = flagRows.filter((r) => (r.is_realized === 1) === effectiveRealized).length;
+  }
+
+  return { events, total };
 }
 
 // ─── Optimize feature: subagent_installs ──────────────────────────────────────

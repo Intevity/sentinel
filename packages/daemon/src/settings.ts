@@ -104,6 +104,7 @@ export const DEFAULT_SETTINGS: Settings = {
   optimizeCaptureEnabled: true,
   optimizeAutoRecommend: true,
   optimizeShowMicroOpportunities: false,
+  optimizeUnits: 'tokens',
 };
 
 const VALID_MODES: readonly SwitchingMode[] = ['off', 'round-robin'];
@@ -446,6 +447,9 @@ function coerce(raw: unknown): Settings {
   }
   if (typeof obj['optimizeShowMicroOpportunities'] === 'boolean') {
     next.optimizeShowMicroOpportunities = obj['optimizeShowMicroOpportunities'];
+  }
+  if (obj['optimizeUnits'] === 'tokens' || obj['optimizeUnits'] === 'cost') {
+    next.optimizeUnits = obj['optimizeUnits'];
   }
   return next;
 }

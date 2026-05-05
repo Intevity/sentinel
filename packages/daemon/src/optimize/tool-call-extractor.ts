@@ -291,16 +291,40 @@ export function applyToolResultBackfill(
   // tool_use_id and backfill response_size_bytes (if not already set).
   // Then set was_quoted_in_later_turn based on whether the file_path
   // appears anywhere in textBlob.
+  let hits = 0;
+  let sizeBackfills = 0;
+  let quoteBackfills = 0;
+  const missPrefixes: string[] = [];
   for (const tr of toolResults) {
     const row = findToolCallByToolUseId(db, tr.toolUseId);
-    if (!row) continue;
+    if (!row) {
+      if (missPrefixes.length < 5) missPrefixes.push(tr.toolUseId.slice(0, 12));
+      continue;
+    }
+    hits += 1;
     if (row.responseSizeBytes === null) {
       backfillToolCallResponseSize(db, row.id, tr.sizeBytes);
+      sizeBackfills += 1;
     }
     if (row.wasQuotedInLaterTurn === null && row.filePath) {
       const quoted = textBlob.includes(row.filePath);
       backfillToolCallQuoteDetection(db, row.id, quoted);
+      quoteBackfills += 1;
     }
+  }
+
+  // Diagnostic line: emitted on every backfill pass that scanned at
+  // least one tool_result. Lets the user grep `[Optimize/Backfill]` and
+  // see whether the proxy is reaching the matching rows. The miss-
+  // prefixes column surfaces tool_use_id mismatches when they happen.
+  if (toolResults.length > 0) {
+    const missesSuffix = missPrefixes.length > 0 ? ` miss_prefixes=${missPrefixes.join(',')}` : '';
+    console.log(
+      `[Optimize/Backfill] tool_results=${toolResults.length} hits=${hits}` +
+        ` misses=${toolResults.length - hits}` +
+        ` size_backfills=${sizeBackfills} quote_backfills=${quoteBackfills}` +
+        missesSuffix,
+    );
   }
 
   // Touch sessionId only as a defensive guard for unit tests calling

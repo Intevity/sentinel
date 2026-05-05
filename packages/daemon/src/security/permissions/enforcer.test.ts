@@ -78,6 +78,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     optimizeCaptureEnabled: true,
     optimizeAutoRecommend: true,
     optimizeShowMicroOpportunities: false,
+    optimizeUnits: 'tokens',
     ...overrides,
   };
 }

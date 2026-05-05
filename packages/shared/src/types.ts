@@ -468,6 +468,12 @@ export interface Settings {
    *  recommendation list. Otherwise they aggregate into a "micro-
    *  opportunities" bucket on the chart. Default false. */
   optimizeShowMicroOpportunities: boolean;
+  /** Display units for the Optimize tab's savings numbers. Defaults to
+   *  'tokens' since most Claude Code users are on subscriptions where
+   *  dollars don't map to billable activity; the cost view is still
+   *  available for direct-API users. Persisted so the choice survives
+   *  daemon restarts. */
+  optimizeUnits: 'tokens' | 'cost';
 
   // ─── Onboarding state ──────────────────────────────────────────────
   /** True once the user has either applied a risk-profile preset in the

@@ -5,6 +5,7 @@ import {
   ShieldX,
   Check,
   CheckCheck,
+  Copy,
   Trash2,
   ShieldOff,
   FolderOpen,
@@ -37,6 +38,11 @@ import {
 } from './settings/primitives.js';
 import InfoTooltip from './InfoTooltip.js';
 import { describeScanSummary } from '../lib/securityScanSummary.js';
+import {
+  buildEventCopyText,
+  COPY_DETAILS_LABEL,
+  COPY_INTERNAL_KEYS,
+} from '../lib/securityEventCopyText.js';
 import { sendToSentinel } from '../lib/ipc.js';
 
 /** Inline two-click confirm: first click transitions into `pending`
@@ -1028,6 +1034,25 @@ function SecurityRow({
   onMute,
 }: SecurityRowProps): React.ReactElement {
   const allowConfirm = useConfirmButton(onAllowlist);
+  const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    };
+  }, []);
+  const handleCopy = (): void => {
+    void navigator.clipboard
+      .writeText(buildEventCopyText(event))
+      .then(() => {
+        setCopied(true);
+        if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+        copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {
+        /* clipboard rejection — leave UI unchanged so user can retry */
+      });
+  };
   // Synthetic `scan_*` events are telemetry, not detections. They
   // don't have a "match" to allowlist — the allowlist key is
   // `${kind}:${accountId}`, so a single click would silence every
@@ -1155,52 +1180,57 @@ function SecurityRow({
           </div>
           <ReplayContextSection eventId={event.id} />
           <div className="pt-1.5 flex items-center justify-between gap-2">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleCopy();
+              }}
+              className="flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold text-ios-blue hover:opacity-80 active:scale-95 transition-all"
+              title="Copy event details to clipboard"
+              aria-label="Copy event details to clipboard"
+            >
+              <Copy size={10} strokeWidth={2.5} />
+              {copied ? 'Copied' : 'Copy'}
+            </button>
             {isSynthetic ? (
-              <>
-                <p className="text-[10px] text-[#8E8E93] leading-snug flex-1 min-w-0">
-                  This is informational telemetry, not a detection. "Mute these" hides future alerts
-                  of this kind until you re-enable them in Settings.
-                </p>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onMute();
-                  }}
-                  className="flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 bg-[#8E8E93]/15 text-[#8E8E93] hover:bg-[#8E8E93]/25"
-                  title="Stop showing alerts of this kind. Reversible from Settings → Security."
-                >
-                  <ShieldOff size={10} strokeWidth={2.5} />
-                  Mute these
-                </button>
-              </>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMute();
+                }}
+                className="flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 bg-[#8E8E93]/15 text-[#8E8E93] hover:bg-[#8E8E93]/25"
+                title="Stop showing alerts of this kind. Reversible from Settings → Security."
+              >
+                <ShieldOff size={10} strokeWidth={2.5} />
+                Mute these
+              </button>
             ) : (
-              <>
-                <p className="text-[10px] text-[#8E8E93] leading-snug flex-1 min-w-0">
-                  "Always allow" adds this exact match to your allowlist so future detections of the
-                  same value are silently suppressed.
-                </p>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    allowConfirm.trigger();
-                  }}
-                  className={`flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 ${
-                    allowConfirm.pending
-                      ? 'bg-ios-orange text-white'
-                      : 'bg-ios-orange/10 text-ios-orange hover:bg-ios-orange/20'
-                  }`}
-                  title={
-                    allowConfirm.pending
-                      ? 'Click again to allow'
-                      : 'Suppress all future matches of this exact value'
-                  }
-                >
-                  <ShieldOff size={10} strokeWidth={2.5} />
-                  {allowConfirm.pending ? 'Confirm?' : 'Always allow'}
-                </button>
-              </>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  allowConfirm.trigger();
+                }}
+                className={`flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 ${
+                  allowConfirm.pending
+                    ? 'bg-ios-orange text-white'
+                    : 'bg-ios-orange/10 text-ios-orange hover:bg-ios-orange/20'
+                }`}
+                title={
+                  allowConfirm.pending
+                    ? 'Click again to allow'
+                    : 'Suppress all future matches of this exact value'
+                }
+              >
+                <ShieldOff size={10} strokeWidth={2.5} />
+                {allowConfirm.pending ? 'Confirm?' : 'Always allow'}
+              </button>
             )}
           </div>
+          <p className="text-[10px] text-[#8E8E93] leading-snug">
+            {isSynthetic
+              ? 'Informational telemetry, not a detection. "Mute these" hides future alerts of this kind until you re-enable them in Settings.'
+              : '"Always allow" adds this exact match to your allowlist so future detections of the same value are silently suppressed.'}
+          </p>
         </div>
       )}
     </div>
@@ -1298,18 +1328,11 @@ function ReplayContextSection({ eventId }: { eventId: number }): React.ReactElem
 /** Renders structured tool-call details (url / command / file_path / prompt …)
  *  below the "Context" row so users can see what was blocked without having to
  *  parse the snippet string. Internal/reference ids (matchedRuleId, etc.) are
- *  filtered out — they're already surfaced elsewhere in the expand panel. */
-const DETAILS_INTERNAL_KEYS = new Set(['matchedRuleId', 'matchedRuleRaw', 'direction', 'toolName']);
-const DETAILS_LABEL: Record<string, string> = {
-  url: 'URL',
-  command: 'Command',
-  file_path: 'File',
-  path: 'Path',
-  pattern: 'Pattern',
-  query: 'Query',
-  prompt: 'Prompt',
-  description: 'Description',
-};
+ *  filtered out — they're already surfaced elsewhere in the expand panel.
+ *  Both filter and label sets are sourced from `securityEventCopyText.ts` so
+ *  the on-screen rendering and the Copy-to-clipboard payload stay in sync. */
+const DETAILS_INTERNAL_KEYS = COPY_INTERNAL_KEYS;
+const DETAILS_LABEL = COPY_DETAILS_LABEL;
 
 /** Renders the `Context:` snippet. Two formats arrive from the daemon:
  *  - Sensitive findings (secret/PII/unicode-tag/base64): a 40-char window

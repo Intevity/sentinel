@@ -17,6 +17,7 @@ import type { ToolCallRow } from '../db.js';
 export type PatternKey =
   | 'short_turn_after_large_read'
   | 'repeat_read_same_file'
+  | 'repeat_read_cross_session'
   | 'exploration_glob_grep'
   | 'bash_log_parse'
   | 'test_runner_noise'
@@ -42,6 +43,30 @@ const LARGE_READ_BYTES = 32 * 1024;
  *  session triggers the file-explorer recommendation. */
 const REPEAT_READ_THRESHOLD = 3;
 
+/** Cross-session repeat-read threshold: same file_path read this many
+ *  times across distinct sessions in the analyzer's lookback window
+ *  triggers the file-explorer recommendation. Higher than the per-session
+ *  threshold because cross-session signal is noisier (one file naturally
+ *  gets re-opened in unrelated work). */
+const CROSS_SESSION_REPEAT_THRESHOLD = 5;
+
+/** Grace period before treating a NULL `was_quoted_in_later_turn` as
+ *  "not quoted". The proxy backfills this column when the *next* request
+ *  in a session lands; if the session ends without a follow-up, the
+ *  column stays NULL forever. We wait this long for a follow-up to
+ *  arrive, then assume the read wasn't quoted. */
+const WAS_QUOTED_GRACE_MS = 5 * 60_000;
+
+/** Decide whether a read can be considered "not quoted in any later
+ *  turn" for the purpose of the short-turn-after-large-read heuristic.
+ *  Confirmed-not-quoted wins immediately; NULL beyond the grace window
+ *  is treated as not-quoted. */
+function effectivelyNotQuoted(r: ToolCallRow, nowMs: number): boolean {
+  if (r.wasQuotedInLaterTurn === false) return true;
+  if (r.wasQuotedInLaterTurn === null && nowMs - r.ts > WAS_QUOTED_GRACE_MS) return true;
+  return false;
+}
+
 /** Exploration window: when ≥ this many Glob/Grep calls precede the
  *  first Edit/Write, recommend the repo-mapper. */
 const EXPLORATION_GLOB_THRESHOLD = 5;
@@ -56,12 +81,12 @@ const TEST_NOISE_BYTES = 32 * 1024;
 
 const TEST_RUNNER_HINTS = ['npm test', 'pnpm test', 'yarn test', 'pytest', 'go test', 'cargo test'];
 
-export function shortTurnAfterLargeRead(rows: ToolCallRow[]): Opportunity[] {
+export function shortTurnAfterLargeRead(rows: ToolCallRow[], nowMs: number): Opportunity[] {
   const out: Opportunity[] = [];
   for (const r of rows) {
     if (r.toolName !== 'Read') continue;
     if (r.responseSizeBytes === null || r.responseSizeBytes < LARGE_READ_BYTES) continue;
-    if (r.wasQuotedInLaterTurn !== false) continue; // null = not yet evaluated; only fire on confirmed-not-quoted
+    if (!effectivelyNotQuoted(r, nowMs)) continue;
     if (r.denied) continue;
     out.push({
       curatedId: 'file-explorer',
@@ -184,14 +209,57 @@ export function diffPrePass(rows: ToolCallRow[]): Opportunity[] {
 }
 
 /**
+ * Cross-session repeat-read: detects when the same file is read
+ * `CROSS_SESSION_REPEAT_THRESHOLD` or more times across at least two
+ * distinct sessions. The per-session `repeatReadSameFile` heuristic
+ * misses this case — re-reading the same file across sessions is
+ * exactly what `file-explorer` was designed to absorb (load the file
+ * into the subagent's context once, summarise into the parent), so the
+ * cross-session signal is the dominant indicator of file-explorer's
+ * value for users with mostly-short sessions. Returns at most one
+ * opportunity per file path.
+ */
+export function repeatReadAcrossSessions(rows: ToolCallRow[]): Opportunity[] {
+  const byPath = new Map<string, ToolCallRow[]>();
+  for (const r of rows) {
+    if (r.toolName !== 'Read') continue;
+    if (r.denied) continue;
+    if (!r.filePath) continue;
+    const list = byPath.get(r.filePath) ?? [];
+    list.push(r);
+    byPath.set(r.filePath, list);
+  }
+  const out: Opportunity[] = [];
+  for (const list of byPath.values()) {
+    if (list.length < CROSS_SESSION_REPEAT_THRESHOLD) continue;
+    const sessions = new Set(list.map((r) => r.sessionId).filter((s): s is string => s !== null));
+    if (sessions.size < 2) continue;
+    out.push({
+      curatedId: 'file-explorer',
+      pattern: 'repeat_read_cross_session',
+      sourceToolCallIds: list.map((r) => r.id),
+      totalResponseBytes: list.reduce((s, r) => s + (r.responseSizeBytes ?? 0), 0),
+    });
+  }
+  return out;
+}
+
+/**
  * Run every heuristic against a session's tool calls and return the
  * combined opportunity list. Order matters for the analyzer's first-
  * win dedup: large-read fires before repeat-read so a single big read
  * doesn't trigger a "you read the same file twice" recommendation.
+ *
+ * `nowMs` is threaded in so the grace-period predicate in
+ * `shortTurnAfterLargeRead` is testable without mocking the clock.
+ *
+ * Note: `repeatReadAcrossSessions` is intentionally NOT included here.
+ * It's invoked once at the analyzer level over the full lookback
+ * window, not once per session.
  */
-export function runAllHeuristics(rows: ToolCallRow[]): Opportunity[] {
+export function runAllHeuristics(rows: ToolCallRow[], nowMs: number): Opportunity[] {
   return [
-    ...shortTurnAfterLargeRead(rows),
+    ...shortTurnAfterLargeRead(rows, nowMs),
     ...repeatReadSameFile(rows),
     ...explorationGlobGrepWithoutEdit(rows),
     ...bashLogParse(rows),

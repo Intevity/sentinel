@@ -666,13 +666,18 @@ export interface GetOptimizationMetricsMessage {
 /** Per-subagent attribution row for {@link OptimizationMetrics.bySubagent}.
  *  Each measured opportunity carries a `curated_id`, so totals can be
  *  split per recommended subagent. The dashboard renders one badge per
- *  list row showing either `savingsRealized` (when the subagent is
- *  installed) or `savingsPotential` (when it isn't), so the user can
- *  see at a glance which install will convert which dollar. */
+ *  list row; the units toggle in the header switches it between cost
+ *  and tokens. */
 export interface OptimizationMetricsBySubagent {
   curatedId: string;
   savingsRealized: number;
   savingsPotential: number;
+  /** Parent-context-tokens savings: how many fewer input tokens flow
+   *  into the parent conversation when the subagent absorbs the read.
+   *  Computed as `hypoInputTokens − digestTokens`. Always positive
+   *  when the file is bigger than the digest. */
+  tokensRealized: number;
+  tokensPotential: number;
   opportunities: number;
 }
 
@@ -685,10 +690,21 @@ export interface OptimizationMetrics {
   totals: {
     savingsUsdRealized: number;
     savingsUsdPotential: number;
+    /** Parent-context-tokens savings across all measured rows. Sums
+     *  `hypoInputTokens − digestTokens` per row — the answer to
+     *  "how much context did the subagent save me?" */
+    tokensRealized: number;
+    tokensPotential: number;
     opportunities: number;
     installs: number;
   };
-  daily: Array<{ day: string; savingsRealized: number; savingsPotential: number }>;
+  daily: Array<{
+    day: string;
+    savingsRealized: number;
+    savingsPotential: number;
+    tokensRealized: number;
+    tokensPotential: number;
+  }>;
   /** Per-curated-id breakdown, sorted by `savingsRealized + savingsPotential`
    *  desc so the dashboard reads the highest-impact rows first. */
   bySubagent: OptimizationMetricsBySubagent[];
@@ -709,9 +725,139 @@ export interface DismissOptimizationMessage {
   pattern: string;
 }
 
+/** Optimize feature: drill-down into individual analyzed opportunities.
+ *  Powers the "what triggered this savings number?" UI under the
+ *  Optimize dashboard's chart. Filters narrow to a specific kind /
+ *  curated_id / realized state; `search` LIKEs against curated_id,
+ *  pattern, and session_id (file-path search is deferred). `limit`
+ *  defaults to 100 (max 500); `offset` defaults to 0.
+ *
+ *  `regressionsOnly` is the "show me the misfit subagents" filter: it
+ *  pins kind='measured' + realized=true and additionally requires
+ *  savings_usd ≤ a small negative threshold, matching the UI's
+ *  regression pill. Composes with `search` and `curatedId` if present;
+ *  passing `regressionsOnly: true` together with conflicting
+ *  `kind`/`realized` overrides yields no rows by design. */
+export interface ListOptimizationEventsMessage {
+  type: 'list_optimization_events';
+  kind?: 'measured' | 'recommended' | 'installed' | 'dismissed';
+  curatedId?: string;
+  realized?: boolean;
+  regressionsOnly?: boolean;
+  /** When true, the daemon excludes rows whose `savings_usd` is at or
+   *  below the cost noise floor (~$0.005). Used by the "Potential"
+   *  filter so misfit-warning rows (subagent would have cost more)
+   *  don't surface as opportunities. */
+  positiveSavingsOnly?: boolean;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** Slim summary of a tool_call linked from an optimization_event row.
+ *  Mirrors `ToolCallSummary` from the daemon DB layer; we redefine here
+ *  so consumers don't import daemon-private types. */
+export interface OptimizationEventSourceCall {
+  id: number;
+  ts: number;
+  toolName: string;
+  filePath: string | null;
+  responseSizeBytes: number | null;
+  denied: boolean;
+}
+
+/** Drill-down record for the Optimize dashboard's opportunity list. */
+export interface OptimizationEventRecord {
+  id: number;
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  curatedId: string;
+  kind: 'measured' | 'recommended' | 'installed' | 'dismissed';
+  pattern: string | null;
+  savingsUsd: number | null;
+  actualCostUsd: number | null;
+  hypotheticalCostUsd: number | null;
+  /** Input tokens attributed to this opportunity on the actual path. */
+  actualInputTokens: number | null;
+  /** Input tokens the hypothetical (subagent) path would have spent
+   *  (file read + digest replay). Null on pre-migration rows; the UI
+   *  shows "—" for those. */
+  hypotheticalTotalTokens: number | null;
+  /** Digest size for this row's curated_id, in input tokens. Lets the
+   *  UI compute the parent-context framing locally without re-deriving
+   *  digest sizes per curated_id. Server-supplied so a future curated
+   *  library version doesn't require a UI redeploy. */
+  digestTokens: number;
+  /** True when the curated subagent was installed at the opportunity's
+   *  timestamp (matches `getOptimizationMetrics` realized semantics). */
+  realized: boolean;
+  /** Tool calls that drove the detection. May be a subset of the stored
+   *  IDs if the underlying tool_calls rows were pruned. */
+  sourceCalls: OptimizationEventSourceCall[];
+}
+
 /** Optimize feature: read-only snapshot of the agents-sync engine. */
 export interface GetAgentsSyncStatusMessage {
   type: 'get_agents_sync_status';
+}
+
+/** Optimize feature: snapshot of every surface that contributes to
+ *  Claude Code's per-request context. Lets users see at a glance which
+ *  MCP servers, CLAUDE.md files, memory directories, plugins, and
+ *  subagents are inflating their token cost. Read-only for v1; the
+ *  disable controls are deferred to a follow-up. */
+export interface GetContextInventoryMessage {
+  type: 'get_context_inventory';
+}
+
+/** One MCP server's contribution to context. Both currently-enabled
+ *  and explicitly-disabled servers are reported (the latter marked
+ *  `enabled: false`) so users see the full picture, including stuff
+ *  they already disabled. `recent7d` aggregates `tool_calls` over the
+ *  last seven days, attributing rows whose `tool_name` starts with
+ *  `mcp__<server>__`. */
+export interface ContextInventoryMcpServer {
+  /** Absolute project path the server is configured under. */
+  project: string;
+  name: string;
+  enabled: boolean;
+  recent7d: {
+    calls: number;
+    bytesIn: number;
+    bytesOut: number;
+    estimatedTokens: number;
+  };
+}
+
+export interface ContextInventoryClaudeMd {
+  path: string;
+  sizeBytes: number;
+  scope: 'global' | 'project';
+}
+
+export interface ContextInventoryMemoryDir {
+  projectId: string;
+  fileCount: number;
+  totalBytes: number;
+}
+
+export interface ContextInventoryPlugin {
+  name: string;
+}
+
+export interface ContextInventorySubagent {
+  name: string;
+  source: 'curated' | 'local';
+}
+
+/** Aggregate response shape for {@link GetContextInventoryMessage}. */
+export interface ContextInventory {
+  mcpServers: ContextInventoryMcpServer[];
+  claudeMdFiles: ContextInventoryClaudeMd[];
+  memoryDirs: ContextInventoryMemoryDir[];
+  plugins: ContextInventoryPlugin[];
+  globalSubagents: ContextInventorySubagent[];
 }
 
 export interface GetRemovedAccountsMessage {
@@ -1213,6 +1359,8 @@ export type AppToDaemonMessage =
   | GetOptimizationMetricsMessage
   | RunOptimizationAnalysisMessage
   | DismissOptimizationMessage
+  | ListOptimizationEventsMessage
+  | GetContextInventoryMessage
   | GetAgentsSyncStatusMessage
   | GetRemovedAccountsMessage
   | PurgeAccountMessage

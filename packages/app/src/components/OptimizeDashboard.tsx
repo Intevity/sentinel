@@ -1,8 +1,15 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Sparkles, CheckCircle2, Trash2 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-import type { OptimizationMetrics, OptimizationMetricsBySubagent } from '@claude-sentinel/shared';
+import type {
+  OptimizationMetrics,
+  OptimizationMetricsBySubagent,
+  Settings,
+} from '@claude-sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
+import { formatTokens, type SavingsUnits } from '../lib/optimizeUnits.js';
+import OpportunityList from './optimize/OpportunityList.js';
+import ContextInventoryPanel from './optimize/ContextInventoryPanel.js';
 
 /**
  * Optimize tab — recommends curated subagents based on observed
@@ -49,6 +56,8 @@ const EMPTY_METRICS: OptimizationMetrics = {
   totals: {
     savingsUsdRealized: 0,
     savingsUsdPotential: 0,
+    tokensRealized: 0,
+    tokensPotential: 0,
     opportunities: 0,
     installs: 0,
   },
@@ -62,16 +71,27 @@ export default function OptimizeDashboard(): React.ReactElement {
   const [metrics, setMetrics] = useState<OptimizationMetrics>(EMPTY_METRICS);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The units toggle is server-persisted via Settings.optimizeUnits.
+  // Default to 'tokens' to match the daemon's default; the first
+  // get_settings response may flip it to 'cost' if the user picked it
+  // previously. Token savings always render in the parent-context
+  // framing — `tokensRealized` on the metrics shape is that single
+  // value the daemon computes.
+  const [units, setUnits] = useState<SavingsUnits>('tokens');
 
   const refresh = useCallback(async () => {
-    const [lib, inst, met] = await Promise.all([
+    const [lib, inst, met, settings] = await Promise.all([
       sendToSentinel<CuratedEntry[]>({ type: 'get_curated_library' }),
       sendToSentinel<InstalledRow[]>({ type: 'list_installed_subagents' }),
       sendToSentinel<OptimizationMetrics>({ type: 'get_optimization_metrics', days: 0 }),
+      sendToSentinel<Settings>({ type: 'get_settings' }),
     ]);
     if (lib.success) setLibrary(lib.data ?? []);
     if (inst.success) setInstalled(inst.data ?? []);
     if (met.success && met.data) setMetrics(met.data);
+    if (settings.success && settings.data) {
+      setUnits(settings.data.optimizeUnits);
+    }
   }, []);
 
   useEffect(() => {
@@ -81,7 +101,8 @@ export default function OptimizeDashboard(): React.ReactElement {
         msg.type === 'subagent_installed' ||
         msg.type === 'subagent_uninstalled' ||
         msg.type === 'agents_sync_status' ||
-        msg.type === 'optimization_metrics_updated'
+        msg.type === 'optimization_metrics_updated' ||
+        msg.type === 'settings_changed'
       ) {
         void refresh();
       }
@@ -90,6 +111,16 @@ export default function OptimizeDashboard(): React.ReactElement {
       void unsubP.then((u) => u());
     };
   }, [refresh]);
+
+  const onToggleUnits = useCallback(async (next: SavingsUnits) => {
+    // Optimistic update: flip locally first so the UI feels instant,
+    // then persist. The settings_changed broadcast loops back to confirm.
+    setUnits(next);
+    await sendToSentinel({
+      type: 'update_settings',
+      settings: { optimizeUnits: next },
+    });
+  }, []);
 
   const installedNames = new Set(
     installed.filter((s) => s.uninstalledAt === null).map((s) => s.name),
@@ -125,8 +156,8 @@ export default function OptimizeDashboard(): React.ReactElement {
 
   return (
     <div className="space-y-3">
-      <SavingsHeader metrics={metrics} />
-      <SavingsChart daily={metrics.daily} />
+      <SavingsHeader metrics={metrics} units={units} onToggleUnits={onToggleUnits} />
+      <SavingsChart daily={metrics.daily} units={units} />
 
       {error !== null && <div className="glass-card px-4 py-3 text-sm text-red-300">{error}</div>}
 
@@ -156,7 +187,11 @@ export default function OptimizeDashboard(): React.ReactElement {
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-white/60">{entry.description}</p>
-                  <SubagentSavingsBadge installed={isInstalled} subSavings={subSavings} />
+                  <SubagentSavingsBadge
+                    installed={isInstalled}
+                    subSavings={subSavings}
+                    units={units}
+                  />
                 </div>
                 {isInstalled ? (
                   <button
@@ -205,6 +240,9 @@ export default function OptimizeDashboard(): React.ReactElement {
           </ul>
         </div>
       )}
+
+      <OpportunityList units={units} />
+      <ContextInventoryPanel />
     </div>
   );
 }
@@ -223,9 +261,19 @@ function colorClass(n: number): string {
   return 'text-white/70';
 }
 
-function SavingsHeader({ metrics }: { metrics: OptimizationMetrics }): React.ReactElement {
-  const realized = metrics.totals.savingsUsdRealized;
-  const potential = metrics.totals.savingsUsdPotential;
+function SavingsHeader({
+  metrics,
+  units,
+  onToggleUnits,
+}: {
+  metrics: OptimizationMetrics;
+  units: SavingsUnits;
+  onToggleUnits: (next: SavingsUnits) => void;
+}): React.ReactElement {
+  const realizedCost = metrics.totals.savingsUsdRealized;
+  const potentialCost = metrics.totals.savingsUsdPotential;
+  const realizedTokens = metrics.totals.tokensRealized;
+  const potentialTokens = metrics.totals.tokensPotential;
   const installs = metrics.totals.installs;
   const opportunities = metrics.totals.opportunities;
   return (
@@ -244,16 +292,74 @@ function SavingsHeader({ metrics }: { metrics: OptimizationMetrics }): React.Rea
             {opportunities} opportunit{opportunities === 1 ? 'y' : 'ies'} measured all-time
           </p>
         </div>
-        <div className="flex shrink-0 gap-4 text-right">
-          <SavingsStat label="Realized" value={realized} />
-          <SavingsStat label="Potential" value={potential} />
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <UnitsToggle units={units} onChange={onToggleUnits} />
+          <div className="flex gap-4 text-right">
+            <SavingsStat
+              label="Realized"
+              cost={realizedCost}
+              tokens={realizedTokens}
+              units={units}
+            />
+            <SavingsStat
+              label="Potential"
+              cost={potentialCost}
+              tokens={potentialTokens}
+              units={units}
+            />
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function SavingsStat({ label, value }: { label: string; value: number }): React.ReactElement {
+function UnitsToggle({
+  units,
+  onChange,
+}: {
+  units: SavingsUnits;
+  onChange: (next: SavingsUnits) => void;
+}): React.ReactElement {
+  return (
+    <div
+      className="flex rounded border border-white/10 p-0.5 text-[10px] uppercase tracking-wide"
+      role="group"
+      aria-label="Display units"
+    >
+      <button
+        type="button"
+        aria-pressed={units === 'tokens'}
+        onClick={() => onChange('tokens')}
+        className={`rounded px-2 py-0.5 ${units === 'tokens' ? 'bg-white/15 text-white' : 'text-white/55 hover:text-white/85'}`}
+      >
+        Tokens
+      </button>
+      <button
+        type="button"
+        aria-pressed={units === 'cost'}
+        onClick={() => onChange('cost')}
+        className={`rounded px-2 py-0.5 ${units === 'cost' ? 'bg-white/15 text-white' : 'text-white/55 hover:text-white/85'}`}
+      >
+        Cost
+      </button>
+    </div>
+  );
+}
+
+function SavingsStat({
+  label,
+  cost,
+  tokens,
+  units,
+}: {
+  label: string;
+  cost: number;
+  tokens: number;
+  units: SavingsUnits;
+}): React.ReactElement {
+  const value = units === 'cost' ? cost : tokens;
+  const display = units === 'cost' ? formatUsd(cost) : formatTokens(tokens);
   return (
     <div>
       <div className="text-[10px] uppercase tracking-wide text-white/55">{label}</div>
@@ -265,7 +371,7 @@ function SavingsStat({ label, value }: { label: string; value: number }): React.
             : 'From sessions where the recommended subagent was NOT installed.'
         }`}
       >
-        {formatUsd(value)}
+        {display}
       </div>
     </div>
   );
@@ -292,29 +398,34 @@ function SavingsStat({ label, value }: { label: string; value: number }): React.
 function SubagentSavingsBadge({
   installed,
   subSavings,
+  units,
 }: {
   installed: boolean;
   subSavings: OptimizationMetricsBySubagent | undefined;
+  units: SavingsUnits;
 }): React.ReactElement | null {
   if (!subSavings) return null;
+  const realized = units === 'cost' ? subSavings.savingsRealized : subSavings.tokensRealized;
+  const potential = units === 'cost' ? subSavings.savingsPotential : subSavings.tokensPotential;
+  const fmt = units === 'cost' ? formatUsd : formatTokens;
   if (installed) {
     if (subSavings.opportunities <= 0) return null;
     return (
       <p
-        className={`mt-1 text-[11px] ${colorClass(subSavings.savingsRealized)}`}
+        className={`mt-1 text-[11px] ${colorClass(realized)}`}
         title="Estimated savings from opportunities the analyzer attributed to this subagent while it was installed."
       >
-        Saved {formatUsd(subSavings.savingsRealized)}
+        Saved {fmt(realized)}
       </p>
     );
   }
-  if (subSavings.savingsPotential <= 0) return null;
+  if (potential <= 0) return null;
   return (
     <p
       className="mt-1 text-[11px] text-sky-300"
       title="Estimated savings the analyzer detected for this subagent's pattern, while it was not installed. Install to start realizing them."
     >
-      Could save {formatUsd(subSavings.savingsPotential)}
+      Could save {fmt(potential)}
       <span className="ml-1 text-[10px] text-white/45">
         based on {subSavings.opportunities} opportunit
         {subSavings.opportunities === 1 ? 'y' : 'ies'}
@@ -325,8 +436,10 @@ function SubagentSavingsBadge({
 
 function SavingsChart({
   daily,
+  units,
 }: {
   daily: OptimizationMetrics['daily'];
+  units: SavingsUnits;
 }): React.ReactElement | null {
   if (daily.length === 0) {
     return (
@@ -336,11 +449,16 @@ function SavingsChart({
     );
   }
   // Recharts wants short YYYY-MM-DD → MM/DD labels for the X-axis.
+  // Switch the y-axis values based on the units toggle: dollars are
+  // rounded to 2 decimals, token integers pass through.
   const data = daily.map((d) => ({
     day: d.day.slice(5).replace('-', '/'),
-    realized: Number(d.savingsRealized.toFixed(2)),
-    potential: Number(d.savingsPotential.toFixed(2)),
+    realized:
+      units === 'cost' ? Number(d.savingsRealized.toFixed(2)) : Math.round(d.tokensRealized),
+    potential:
+      units === 'cost' ? Number(d.savingsPotential.toFixed(2)) : Math.round(d.tokensPotential),
   }));
+  const formatAxis = units === 'cost' ? formatUsd : formatTokens;
   return (
     <div className="glass-card px-4 pt-4 pb-3">
       <p className="mb-3 text-[11px] font-semibold text-[#8E8E93]">Daily savings</p>
@@ -356,11 +474,11 @@ function SavingsChart({
             tick={{ fontSize: 10, fill: '#8E8E93' }}
             axisLine={false}
             tickLine={false}
-            tickFormatter={(v: number) => formatUsd(v)}
+            tickFormatter={(v: number) => formatAxis(v)}
           />
           <Tooltip
             cursor={{ fill: 'rgba(0,0,0,0.04)' }}
-            formatter={(v: number, name: string) => [formatUsd(v), name]}
+            formatter={(v: number, name: string) => [formatAxis(v), name]}
             labelStyle={{ color: '#8E8E93', fontSize: 11 }}
             contentStyle={{
               background: 'rgba(20,20,20,0.92)',

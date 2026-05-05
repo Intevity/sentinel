@@ -2308,3 +2308,594 @@ describe('cache_ttl_events', () => {
     expect(rows[0]!.model).toBe('claude-opus-4-7');
   });
 });
+
+describe('listOptimizationEventsWithSources', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = makeTestDb();
+  });
+  afterEach(() => {
+    closeDb();
+    if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
+  });
+
+  async function seedToolCall(args: {
+    id?: number;
+    ts?: number;
+    sessionId?: string | null;
+    toolName?: string;
+    filePath?: string | null;
+    responseSizeBytes?: number | null;
+    denied?: boolean;
+  }): Promise<number> {
+    const { insertToolCall } = await import('./db.js');
+    return insertToolCall(db, {
+      ts: args.ts ?? Date.now(),
+      accountId: 'a1',
+      sessionId: args.sessionId ?? 's1',
+      requestId: 'r1',
+      requestSeqInSession: 1,
+      toolUseId: `toolu_${args.id ?? Math.random()}`,
+      toolName: args.toolName ?? 'Read',
+      filePath: args.filePath ?? '/x.ts',
+      inputSizeBytes: 100,
+      responseSizeBytes: args.responseSizeBytes ?? 50_000,
+      denied: args.denied ?? false,
+      model: 'claude-opus-4-7',
+    });
+  }
+
+  async function seedEvent(args: {
+    ts?: number;
+    curatedId?: string;
+    pattern?: string;
+    kind?: 'measured' | 'dismissed' | 'recommended' | 'installed';
+    savings?: number | null;
+    sourceIds?: number[];
+  }): Promise<void> {
+    const { insertOptimizationEvent } = await import('./db.js');
+    insertOptimizationEvent(db, {
+      ts: args.ts ?? Date.now(),
+      accountId: 'a1',
+      sessionId: 's1',
+      curatedId: args.curatedId ?? 'file-explorer',
+      kind: args.kind ?? 'measured',
+      pattern: args.pattern ?? 'short_turn_after_large_read',
+      savingsUsd: args.savings ?? 0.25,
+      actualInputTokens: 1000,
+      actualCachedTokens: 0,
+      actualCostUsd: 0.5,
+      hypotheticalCostUsd: 0.25,
+      hypotheticalTotalTokens: 600,
+      sourceToolCallIds: args.sourceIds ?? [],
+    });
+  }
+
+  it('hydrates source_tool_call_ids into inline ToolCallSummary[]', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    const id1 = await seedToolCall({ filePath: '/a.ts' });
+    const id2 = await seedToolCall({ filePath: '/b.ts', responseSizeBytes: 12_345 });
+    await seedEvent({ sourceIds: [id1, id2] });
+    const r = listOptimizationEventsWithSources(db);
+    expect(r.events).toHaveLength(1);
+    expect(r.total).toBe(1);
+    expect(r.events[0]?.sourceCalls).toHaveLength(2);
+    const paths = r.events[0]?.sourceCalls.map((c) => c.filePath).sort();
+    expect(paths).toEqual(['/a.ts', '/b.ts']);
+    const sizes = r.events[0]?.sourceCalls.map((c) => c.responseSizeBytes).sort();
+    expect(sizes).toEqual([12345, 50000]);
+  });
+
+  it('marks events realized=true when an active install covers their timestamp', async () => {
+    const { upsertSubagentInstall, listOptimizationEventsWithSources } = await import('./db.js');
+    const t = Date.now();
+    upsertSubagentInstall(db, {
+      name: 'file-explorer',
+      source: 'curated',
+      curatedId: 'file-explorer',
+      gapFingerprint: null,
+      mdPath: '/tmp/fe.md',
+      mdHash: 'h',
+      installedAt: t - 60_000,
+    });
+    await seedEvent({ ts: t, curatedId: 'file-explorer' });
+    const r = listOptimizationEventsWithSources(db);
+    expect(r.events[0]?.realized).toBe(true);
+  });
+
+  it('marks events realized=false when no install covers their timestamp', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    await seedEvent({ curatedId: 'file-explorer' });
+    const r = listOptimizationEventsWithSources(db);
+    expect(r.events[0]?.realized).toBe(false);
+  });
+
+  it('filters by kind=dismissed', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    await seedEvent({ kind: 'measured' });
+    await seedEvent({ kind: 'dismissed', savings: null });
+    const measured = listOptimizationEventsWithSources(db, { kind: 'measured' });
+    const dismissed = listOptimizationEventsWithSources(db, { kind: 'dismissed' });
+    expect(measured.events).toHaveLength(1);
+    expect(measured.total).toBe(1);
+    expect(measured.events[0]?.kind).toBe('measured');
+    expect(dismissed.events).toHaveLength(1);
+    expect(dismissed.events[0]?.kind).toBe('dismissed');
+  });
+
+  it('filters by curatedId', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    await seedEvent({ curatedId: 'file-explorer' });
+    await seedEvent({ curatedId: 'log-analyzer' });
+    const fe = listOptimizationEventsWithSources(db, { curatedId: 'file-explorer' });
+    expect(fe.events).toHaveLength(1);
+    expect(fe.events[0]?.curatedId).toBe('file-explorer');
+  });
+
+  it('filters by realized=true after the LEFT JOIN computes the flag', async () => {
+    const { upsertSubagentInstall, listOptimizationEventsWithSources } = await import('./db.js');
+    const t = Date.now();
+    upsertSubagentInstall(db, {
+      name: 'file-explorer',
+      source: 'curated',
+      curatedId: 'file-explorer',
+      gapFingerprint: null,
+      mdPath: '/tmp/fe.md',
+      mdHash: 'h',
+      installedAt: t - 60_000,
+    });
+    await seedEvent({ ts: t, curatedId: 'file-explorer' });
+    await seedEvent({ ts: t, curatedId: 'log-analyzer' }); // no install -> potential
+    const realized = listOptimizationEventsWithSources(db, { realized: true });
+    expect(realized.events).toHaveLength(1);
+    expect(realized.total).toBe(1);
+    expect(realized.events[0]?.curatedId).toBe('file-explorer');
+    const potential = listOptimizationEventsWithSources(db, { realized: false });
+    expect(potential.events).toHaveLength(1);
+    expect(potential.events[0]?.curatedId).toBe('log-analyzer');
+  });
+
+  it('clamps limit to [1, 500]', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    for (let i = 0; i < 3; i++) await seedEvent({ ts: Date.now() + i });
+    const r0 = listOptimizationEventsWithSources(db, { limit: 0 });
+    expect(r0.events).toHaveLength(1); // clamped to 1
+    expect(r0.total).toBe(3);
+    const rBig = listOptimizationEventsWithSources(db, { limit: 9999 });
+    expect(rBig.events.length).toBeLessThanOrEqual(500);
+  });
+
+  it('returns empty sourceCalls when source_tool_call_ids reference pruned rows', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    await seedEvent({ sourceIds: [99999] });
+    const r = listOptimizationEventsWithSources(db);
+    expect(r.events[0]?.sourceCalls).toEqual([]);
+  });
+
+  it('paginates via offset and reports a stable total across pages', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    // Five rows ordered by ts desc; pages of two should cover them in
+    // exactly three calls and the total stays at 5 throughout.
+    const base = Date.now();
+    for (let i = 0; i < 5; i++) await seedEvent({ ts: base + i });
+    const page1 = listOptimizationEventsWithSources(db, { limit: 2, offset: 0 });
+    const page2 = listOptimizationEventsWithSources(db, { limit: 2, offset: 2 });
+    const page3 = listOptimizationEventsWithSources(db, { limit: 2, offset: 4 });
+    expect(page1.events).toHaveLength(2);
+    expect(page2.events).toHaveLength(2);
+    expect(page3.events).toHaveLength(1);
+    for (const r of [page1, page2, page3]) expect(r.total).toBe(5);
+    // No row appears on more than one page.
+    const ids = [...page1.events, ...page2.events, ...page3.events].map((e) => e.id);
+    expect(new Set(ids).size).toBe(5);
+  });
+
+  it('search matches curated_id, pattern, and session_id (case-insensitive)', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    await seedEvent({ curatedId: 'file-explorer', pattern: 'short_turn_after_large_read' });
+    await seedEvent({ curatedId: 'log-analyzer', pattern: 'bash_log_parse' });
+    // curated_id match (case-insensitive)
+    expect(listOptimizationEventsWithSources(db, { search: 'EXPLORER' }).total).toBe(1);
+    // pattern match
+    expect(listOptimizationEventsWithSources(db, { search: 'bash_log' }).total).toBe(1);
+    // session_id match (seedEvent uses 's1' for both, so this matches everything)
+    expect(listOptimizationEventsWithSources(db, { search: 's1' }).total).toBe(2);
+    // no match
+    expect(listOptimizationEventsWithSources(db, { search: 'nope' }).total).toBe(0);
+  });
+
+  it('regressionsOnly filters to realized rows below the half-cent threshold', async () => {
+    const { upsertSubagentInstall, listOptimizationEventsWithSources } = await import('./db.js');
+    const t = Date.now();
+    upsertSubagentInstall(db, {
+      name: 'file-explorer',
+      source: 'curated',
+      curatedId: 'file-explorer',
+      gapFingerprint: null,
+      mdPath: '/tmp/fe.md',
+      mdHash: 'h',
+      installedAt: t - 60_000,
+    });
+    upsertSubagentInstall(db, {
+      name: 'log-analyzer',
+      source: 'curated',
+      curatedId: 'log-analyzer',
+      gapFingerprint: null,
+      mdPath: '/tmp/la.md',
+      mdHash: 'h',
+      installedAt: t - 60_000,
+    });
+    // Three measured rows under installed subagents. Only the misfit
+    // (negative savings beyond the noise floor) should match.
+    await seedEvent({ ts: t, curatedId: 'file-explorer', savings: 0.42 }); // realized win
+    await seedEvent({ ts: t, curatedId: 'log-analyzer', savings: -0.05 }); // realized regression
+    await seedEvent({ ts: t, curatedId: 'file-explorer', savings: -0.001 }); // sub-noise, not a regression
+
+    const r = listOptimizationEventsWithSources(db, { regressionsOnly: true });
+    expect(r.events).toHaveLength(1);
+    expect(r.total).toBe(1);
+    expect(r.events[0]?.curatedId).toBe('log-analyzer');
+    expect(r.events[0]?.savingsUsd).toBe(-0.05);
+    expect(r.events[0]?.realized).toBe(true);
+  });
+
+  it('regressionsOnly excludes potential rows even if their savings are negative', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    // No install at all → all rows are "potential". Even with negative
+    // savings, none should appear because regressionsOnly pins
+    // realized=true.
+    await seedEvent({ curatedId: 'log-analyzer', savings: -0.5 });
+    const r = listOptimizationEventsWithSources(db, { regressionsOnly: true });
+    expect(r.events).toHaveLength(0);
+    expect(r.total).toBe(0);
+  });
+
+  it('regressionsOnly composes with curatedId and search filters', async () => {
+    const { upsertSubagentInstall, listOptimizationEventsWithSources } = await import('./db.js');
+    const t = Date.now();
+    upsertSubagentInstall(db, {
+      name: 'file-explorer',
+      source: 'curated',
+      curatedId: 'file-explorer',
+      gapFingerprint: null,
+      mdPath: '/tmp/fe.md',
+      mdHash: 'h',
+      installedAt: t - 60_000,
+    });
+    upsertSubagentInstall(db, {
+      name: 'log-analyzer',
+      source: 'curated',
+      curatedId: 'log-analyzer',
+      gapFingerprint: null,
+      mdPath: '/tmp/la.md',
+      mdHash: 'h',
+      installedAt: t - 60_000,
+    });
+    await seedEvent({ ts: t, curatedId: 'file-explorer', savings: -0.1 });
+    await seedEvent({ ts: t, curatedId: 'log-analyzer', savings: -0.2 });
+
+    const fe = listOptimizationEventsWithSources(db, {
+      regressionsOnly: true,
+      curatedId: 'file-explorer',
+    });
+    expect(fe.events).toHaveLength(1);
+    expect(fe.events[0]?.curatedId).toBe('file-explorer');
+
+    const search = listOptimizationEventsWithSources(db, {
+      regressionsOnly: true,
+      search: 'analyzer',
+    });
+    expect(search.events).toHaveLength(1);
+    expect(search.events[0]?.curatedId).toBe('log-analyzer');
+  });
+
+  it('positiveSavingsOnly excludes rows at or below the half-cent floor', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    await seedEvent({ curatedId: 'file-explorer', savings: 0.42 }); // real opportunity
+    await seedEvent({ curatedId: 'file-explorer', savings: 0.001 }); // sub-floor noise
+    await seedEvent({ curatedId: 'log-analyzer', savings: -0.05 }); // misfit warning
+    const r = listOptimizationEventsWithSources(db, { positiveSavingsOnly: true });
+    expect(r.events).toHaveLength(1);
+    expect(r.total).toBe(1);
+    expect(r.events[0]?.savingsUsd).toBe(0.42);
+  });
+
+  it('listOptimizationEventsWithSources returns digestTokens per row from the shared lookup', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    await seedEvent({ curatedId: 'file-explorer' });
+    await seedEvent({ curatedId: 'log-analyzer' });
+    await seedEvent({ curatedId: 'unknown-future-agent' });
+    const r = listOptimizationEventsWithSources(db);
+    const byId = new Map(r.events.map((e) => [e.curatedId, e.digestTokens]));
+    // Numbers must match the shared optimize-digests table; refusing to
+    // duplicate them in the assertion keeps the source-of-truth single.
+    const { getDigestTokens } = await import('@claude-sentinel/shared');
+    expect(byId.get('file-explorer')).toBe(getDigestTokens('file-explorer'));
+    expect(byId.get('log-analyzer')).toBe(getDigestTokens('log-analyzer'));
+    expect(byId.get('unknown-future-agent')).toBe(getDigestTokens('unknown-future-agent'));
+  });
+
+  it('search composes with realized filter and reports the correct total', async () => {
+    const { upsertSubagentInstall, listOptimizationEventsWithSources } = await import('./db.js');
+    const t = Date.now();
+    upsertSubagentInstall(db, {
+      name: 'file-explorer',
+      source: 'curated',
+      curatedId: 'file-explorer',
+      gapFingerprint: null,
+      mdPath: '/tmp/fe.md',
+      mdHash: 'h',
+      installedAt: t - 60_000,
+    });
+    await seedEvent({ ts: t, curatedId: 'file-explorer' }); // realized
+    await seedEvent({ ts: t, curatedId: 'log-analyzer' }); // potential
+    // Search for 'analyzer' AND realized=true → no rows.
+    const r = listOptimizationEventsWithSources(db, {
+      search: 'analyzer',
+      realized: true,
+    });
+    expect(r.events).toHaveLength(0);
+    expect(r.total).toBe(0);
+    // Search for 'analyzer' AND realized=false → the log-analyzer row.
+    const p = listOptimizationEventsWithSources(db, {
+      search: 'analyzer',
+      realized: false,
+    });
+    expect(p.total).toBe(1);
+    expect(p.events[0]?.curatedId).toBe('log-analyzer');
+  });
+});
+
+describe('hypothetical_total_tokens back-fill migration', () => {
+  // Mirrors the schema as it shipped before the column existed. The
+  // back-fill migration only fires on rows where the column is NULL,
+  // so we build a "legacy" DB by hand and read back through getDb()
+  // (which runs the migration on open).
+  const LEGACY_DB = join(tmpdir(), `sentinel-token-backfill-${Date.now()}-${Math.random()}.db`);
+
+  afterEach(() => {
+    closeDb();
+    if (existsSync(LEGACY_DB)) unlinkSync(LEGACY_DB);
+  });
+
+  it('back-fills hypothetical_total_tokens by inverting the savings formula', async () => {
+    // Pre-column schema: optimization_events without hypothetical_total_tokens.
+    const raw = new Database(LEGACY_DB);
+    raw.exec(`
+      CREATE TABLE optimization_events (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts                       INTEGER NOT NULL,
+        account_id               TEXT    NOT NULL,
+        session_id               TEXT,
+        curated_id               TEXT    NOT NULL,
+        kind                     TEXT    NOT NULL,
+        pattern                  TEXT,
+        savings_usd              REAL,
+        actual_input_tokens      INTEGER,
+        actual_cached_tokens     INTEGER,
+        actual_cost_usd          REAL,
+        hypothetical_cost_usd    REAL,
+        source_tool_call_ids     TEXT
+      );
+    `);
+    // Seed three measured rows representative of the curated library.
+    // hypothetical_cost_usd values picked so the inversion produces
+    // round numbers we can assert on.
+    raw
+      .prepare(
+        `INSERT INTO optimization_events
+           (ts, account_id, curated_id, kind, pattern, savings_usd,
+            actual_input_tokens, actual_cached_tokens,
+            actual_cost_usd, hypothetical_cost_usd, source_tool_call_ids)
+         VALUES (?, ?, ?, 'measured', ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        Date.now(),
+        'a1',
+        'file-explorer',
+        'short_turn_after_large_read',
+        0.3,
+        50_000,
+        0,
+        0.5,
+        0.0125, // pre-migration row
+        '[]',
+      );
+    raw
+      .prepare(
+        `INSERT INTO optimization_events
+           (ts, account_id, curated_id, kind, pattern, savings_usd,
+            actual_input_tokens, actual_cached_tokens,
+            actual_cost_usd, hypothetical_cost_usd, source_tool_call_ids)
+         VALUES (?, ?, ?, 'measured', ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        Date.now(),
+        'a1',
+        'log-analyzer',
+        'bash_log_parse',
+        0.2,
+        30_000,
+        0,
+        0.4,
+        0.018, // pre-migration row
+        '[]',
+      );
+    // A 'dismissed' row with no hypothetical cost — must NOT be touched.
+    raw
+      .prepare(
+        `INSERT INTO optimization_events
+           (ts, account_id, curated_id, kind, pattern, source_tool_call_ids)
+         VALUES (?, 'a1', 'file-explorer', 'dismissed', 'short_turn_after_large_read', '[]')`,
+      )
+      .run(Date.now());
+    raw.close();
+
+    // Open via getDb — both the column-add and the back-fill should run.
+    const db = getDb(LEGACY_DB);
+    const cols = db.pragma('table_info(optimization_events)') as Array<{ name: string }>;
+    expect(cols.some((c) => c.name === 'hypothetical_total_tokens')).toBe(true);
+
+    // file-explorer: digest=500, baseActual=15, baseHypo=1
+    //   hypoInputTokens = (0.0125 * 1e6 - 500*15) / 1 = 12500 - 7500 = 5000
+    //   total = 5000 + 500 = 5500
+    const fe = db
+      .prepare(
+        "SELECT hypothetical_total_tokens FROM optimization_events WHERE curated_id='file-explorer' AND kind='measured'",
+      )
+      .get() as { hypothetical_total_tokens: number };
+    expect(fe.hypothetical_total_tokens).toBe(5500);
+
+    // log-analyzer: digest=800
+    //   hypoInputTokens = (0.018 * 1e6 - 800*15) / 1 = 18000 - 12000 = 6000
+    //   total = 6000 + 800 = 6800
+    const la = db
+      .prepare(
+        "SELECT hypothetical_total_tokens FROM optimization_events WHERE curated_id='log-analyzer' AND kind='measured'",
+      )
+      .get() as { hypothetical_total_tokens: number };
+    expect(la.hypothetical_total_tokens).toBe(6800);
+
+    // Dismissed rows are left alone — no hypothetical_cost_usd to invert.
+    const dismissed = db
+      .prepare("SELECT hypothetical_total_tokens FROM optimization_events WHERE kind='dismissed'")
+      .get() as { hypothetical_total_tokens: number | null };
+    expect(dismissed.hypothetical_total_tokens).toBeNull();
+  });
+
+  it('floors at 0 when the hypothetical cost is below the digest baseline', async () => {
+    // A degenerate row whose hypothetical_cost_usd is tiny — the
+    // inversion would otherwise produce a negative input-token count,
+    // which is meaningless. We clamp to 0 so the stored total equals
+    // just the digest size.
+    const raw = new Database(LEGACY_DB);
+    raw.exec(`
+      CREATE TABLE optimization_events (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts                       INTEGER NOT NULL,
+        account_id               TEXT    NOT NULL,
+        session_id               TEXT,
+        curated_id               TEXT    NOT NULL,
+        kind                     TEXT    NOT NULL,
+        pattern                  TEXT,
+        savings_usd              REAL,
+        actual_input_tokens      INTEGER,
+        actual_cached_tokens     INTEGER,
+        actual_cost_usd          REAL,
+        hypothetical_cost_usd    REAL,
+        source_tool_call_ids     TEXT
+      );
+    `);
+    raw
+      .prepare(
+        `INSERT INTO optimization_events
+           (ts, account_id, curated_id, kind, pattern,
+            actual_cost_usd, hypothetical_cost_usd, source_tool_call_ids)
+         VALUES (?, 'a1', 'file-explorer', 'measured', 'short_turn_after_large_read',
+                 0.001, 0.000001, '[]')`,
+      )
+      .run(Date.now());
+    raw.close();
+
+    const db = getDb(LEGACY_DB);
+    const row = db.prepare('SELECT hypothetical_total_tokens FROM optimization_events').get() as {
+      hypothetical_total_tokens: number;
+    };
+    // hypoInputTokens floored to 0 → total = digestTokens(file-explorer) = 500.
+    expect(row.hypothetical_total_tokens).toBe(500);
+  });
+
+  it('uses the default digest size for unknown curated ids', async () => {
+    const raw = new Database(LEGACY_DB);
+    raw.exec(`
+      CREATE TABLE optimization_events (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts                       INTEGER NOT NULL,
+        account_id               TEXT    NOT NULL,
+        session_id               TEXT,
+        curated_id               TEXT    NOT NULL,
+        kind                     TEXT    NOT NULL,
+        pattern                  TEXT,
+        savings_usd              REAL,
+        actual_input_tokens      INTEGER,
+        actual_cached_tokens     INTEGER,
+        actual_cost_usd          REAL,
+        hypothetical_cost_usd    REAL,
+        source_tool_call_ids     TEXT
+      );
+    `);
+    // unknown curated id — should fall back to the 700-token default.
+    // hypoCost=0.014, digest=700
+    //   hypoInputTokens = (0.014 * 1e6 - 700*15) / 1 = 14000 - 10500 = 3500
+    //   total = 3500 + 700 = 4200
+    raw
+      .prepare(
+        `INSERT INTO optimization_events
+           (ts, account_id, curated_id, kind, pattern,
+            actual_cost_usd, hypothetical_cost_usd, source_tool_call_ids)
+         VALUES (?, 'a1', 'future-agent', 'measured', 'unknown_pattern',
+                 0.5, 0.014, '[]')`,
+      )
+      .run(Date.now());
+    raw.close();
+
+    const db = getDb(LEGACY_DB);
+    const row = db.prepare('SELECT hypothetical_total_tokens FROM optimization_events').get() as {
+      hypothetical_total_tokens: number;
+    };
+    expect(row.hypothetical_total_tokens).toBe(4200);
+  });
+
+  it('runs at most once per database (marker-guarded)', async () => {
+    // Run getDb twice on the same legacy DB. After the first run,
+    // re-NULL the column manually; if the migration is properly
+    // marker-guarded, the second open should leave it NULL.
+    const raw = new Database(LEGACY_DB);
+    raw.exec(`
+      CREATE TABLE optimization_events (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts                       INTEGER NOT NULL,
+        account_id               TEXT    NOT NULL,
+        session_id               TEXT,
+        curated_id               TEXT    NOT NULL,
+        kind                     TEXT    NOT NULL,
+        pattern                  TEXT,
+        savings_usd              REAL,
+        actual_input_tokens      INTEGER,
+        actual_cached_tokens     INTEGER,
+        actual_cost_usd          REAL,
+        hypothetical_cost_usd    REAL,
+        source_tool_call_ids     TEXT
+      );
+    `);
+    raw
+      .prepare(
+        `INSERT INTO optimization_events
+           (ts, account_id, curated_id, kind, pattern,
+            actual_cost_usd, hypothetical_cost_usd, source_tool_call_ids)
+         VALUES (?, 'a1', 'file-explorer', 'measured', 'short_turn_after_large_read',
+                 0.5, 0.0125, '[]')`,
+      )
+      .run(Date.now());
+    raw.close();
+
+    // First open → migration fires.
+    let db = getDb(LEGACY_DB);
+    const after1 = db
+      .prepare('SELECT hypothetical_total_tokens FROM optimization_events')
+      .get() as { hypothetical_total_tokens: number };
+    expect(after1.hypothetical_total_tokens).toBe(5500);
+
+    // Force the column back to NULL behind the migration's back.
+    db.prepare('UPDATE optimization_events SET hypothetical_total_tokens = NULL').run();
+    closeDb();
+
+    // Second open — the marker should prevent the back-fill from running again.
+    db = getDb(LEGACY_DB);
+    const after2 = db
+      .prepare('SELECT hypothetical_total_tokens FROM optimization_events')
+      .get() as { hypothetical_total_tokens: number | null };
+    expect(after2.hypothetical_total_tokens).toBeNull();
+  });
+});

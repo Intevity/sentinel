@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   shortTurnAfterLargeRead,
   repeatReadSameFile,
+  repeatReadAcrossSessions,
   explorationGlobGrepWithoutEdit,
   bashLogParse,
   testRunnerNoise,
@@ -9,6 +10,11 @@ import {
   runAllHeuristics,
 } from './heuristics.js';
 import type { ToolCallRow } from '../db.js';
+
+/** A reference clock pinned to the row factory's default `ts`. Used so
+ *  shortTurnAfterLargeRead's grace-period check is deterministic in
+ *  tests that don't care about the grace-period boundary. */
+const NOW = 1_700_000_000_000;
 
 function row(overrides: Partial<ToolCallRow>): ToolCallRow {
   return {
@@ -34,49 +40,163 @@ function row(overrides: Partial<ToolCallRow>): ToolCallRow {
 
 describe('shortTurnAfterLargeRead', () => {
   it('fires on a Read >32KB whose file_path was not quoted later', () => {
-    const out = shortTurnAfterLargeRead([
-      row({
-        id: 1,
-        toolName: 'Read',
-        filePath: '/big.log',
-        responseSizeBytes: 50_000,
-        wasQuotedInLaterTurn: false,
-      }),
-    ]);
+    const out = shortTurnAfterLargeRead(
+      [
+        row({
+          id: 1,
+          toolName: 'Read',
+          filePath: '/big.log',
+          responseSizeBytes: 50_000,
+          wasQuotedInLaterTurn: false,
+        }),
+      ],
+      NOW,
+    );
     expect(out).toHaveLength(1);
     expect(out[0]?.curatedId).toBe('file-explorer');
     expect(out[0]?.pattern).toBe('short_turn_after_large_read');
   });
 
-  it('does not fire when wasQuotedInLaterTurn=null (not yet evaluated)', () => {
-    const out = shortTurnAfterLargeRead([
-      row({ toolName: 'Read', responseSizeBytes: 50_000, wasQuotedInLaterTurn: null }),
-    ]);
+  it('does not fire when wasQuotedInLaterTurn=null and within grace window', () => {
+    const out = shortTurnAfterLargeRead(
+      [
+        row({
+          ts: NOW,
+          toolName: 'Read',
+          responseSizeBytes: 50_000,
+          wasQuotedInLaterTurn: null,
+        }),
+      ],
+      NOW + 1000, // 1s after the read — well inside the 5min grace window
+    );
     expect(out).toHaveLength(0);
   });
 
+  it('fires when wasQuotedInLaterTurn=null and past the grace window', () => {
+    // The proxy backfills was_quoted_in_later_turn on the next request
+    // in the session. Sessions that end without a follow-up leave the
+    // column NULL forever — we wait 5min, then assume not-quoted.
+    const out = shortTurnAfterLargeRead(
+      [
+        row({
+          id: 42,
+          ts: NOW,
+          toolName: 'Read',
+          filePath: '/big.log',
+          responseSizeBytes: 50_000,
+          wasQuotedInLaterTurn: null,
+        }),
+      ],
+      NOW + 6 * 60_000, // 6 minutes after — past the 5min grace
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]?.sourceToolCallIds).toEqual([42]);
+  });
+
   it('does not fire when wasQuotedInLaterTurn=true', () => {
-    const out = shortTurnAfterLargeRead([
-      row({ toolName: 'Read', responseSizeBytes: 50_000, wasQuotedInLaterTurn: true }),
-    ]);
+    const out = shortTurnAfterLargeRead(
+      [row({ toolName: 'Read', responseSizeBytes: 50_000, wasQuotedInLaterTurn: true })],
+      NOW,
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire when wasQuotedInLaterTurn=true even past grace', () => {
+    // Confirmed-quoted always wins, regardless of how much time elapses.
+    const out = shortTurnAfterLargeRead(
+      [
+        row({
+          ts: NOW,
+          toolName: 'Read',
+          responseSizeBytes: 50_000,
+          wasQuotedInLaterTurn: true,
+        }),
+      ],
+      NOW + 60 * 60_000,
+    );
     expect(out).toHaveLength(0);
   });
 
   it('does not fire on small reads', () => {
-    const out = shortTurnAfterLargeRead([
-      row({ toolName: 'Read', responseSizeBytes: 1000, wasQuotedInLaterTurn: false }),
-    ]);
+    const out = shortTurnAfterLargeRead(
+      [row({ toolName: 'Read', responseSizeBytes: 1000, wasQuotedInLaterTurn: false })],
+      NOW,
+    );
     expect(out).toHaveLength(0);
   });
 
   it('does not fire on denied tool calls', () => {
-    const out = shortTurnAfterLargeRead([
-      row({
-        toolName: 'Read',
-        responseSizeBytes: 50_000,
-        wasQuotedInLaterTurn: false,
-        denied: true,
-      }),
+    const out = shortTurnAfterLargeRead(
+      [
+        row({
+          toolName: 'Read',
+          responseSizeBytes: 50_000,
+          wasQuotedInLaterTurn: false,
+          denied: true,
+        }),
+      ],
+      NOW,
+    );
+    expect(out).toHaveLength(0);
+  });
+});
+
+describe('repeatReadAcrossSessions', () => {
+  it('fires when same file is read 5+ times across 2+ sessions', () => {
+    const out = repeatReadAcrossSessions([
+      row({ id: 1, toolName: 'Read', filePath: '/db.ts', sessionId: 's1' }),
+      row({ id: 2, toolName: 'Read', filePath: '/db.ts', sessionId: 's1' }),
+      row({ id: 3, toolName: 'Read', filePath: '/db.ts', sessionId: 's2' }),
+      row({ id: 4, toolName: 'Read', filePath: '/db.ts', sessionId: 's2' }),
+      row({ id: 5, toolName: 'Read', filePath: '/db.ts', sessionId: 's3' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.curatedId).toBe('file-explorer');
+    expect(out[0]?.pattern).toBe('repeat_read_cross_session');
+    expect(out[0]?.sourceToolCallIds).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('does not fire when all reads are within a single session', () => {
+    // Per-session repeats are picked up by repeatReadSameFile; this
+    // heuristic is specifically for cross-session signal.
+    const out = repeatReadAcrossSessions([
+      row({ toolName: 'Read', filePath: '/db.ts', sessionId: 's1' }),
+      row({ toolName: 'Read', filePath: '/db.ts', sessionId: 's1' }),
+      row({ toolName: 'Read', filePath: '/db.ts', sessionId: 's1' }),
+      row({ toolName: 'Read', filePath: '/db.ts', sessionId: 's1' }),
+      row({ toolName: 'Read', filePath: '/db.ts', sessionId: 's1' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not fire below the cross-session threshold', () => {
+    const out = repeatReadAcrossSessions([
+      row({ toolName: 'Read', filePath: '/db.ts', sessionId: 's1' }),
+      row({ toolName: 'Read', filePath: '/db.ts', sessionId: 's2' }),
+      row({ toolName: 'Read', filePath: '/db.ts', sessionId: 's3' }),
+      row({ toolName: 'Read', filePath: '/db.ts', sessionId: 's4' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('skips denied reads and null file paths', () => {
+    const out = repeatReadAcrossSessions([
+      row({ toolName: 'Read', filePath: '/db.ts', sessionId: 's1', denied: true }),
+      row({ toolName: 'Read', filePath: '/db.ts', sessionId: 's2', denied: true }),
+      row({ toolName: 'Read', filePath: null, sessionId: 's3' }),
+      row({ toolName: 'Read', filePath: null, sessionId: 's4' }),
+      row({ toolName: 'Read', filePath: '/db.ts', sessionId: 's5' }),
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  it('skips non-Read tools', () => {
+    const out = repeatReadAcrossSessions([
+      row({ toolName: 'Bash', filePath: '/db.ts', sessionId: 's1' }),
+      row({ toolName: 'Bash', filePath: '/db.ts', sessionId: 's2' }),
+      row({ toolName: 'Bash', filePath: '/db.ts', sessionId: 's3' }),
+      row({ toolName: 'Bash', filePath: '/db.ts', sessionId: 's4' }),
+      row({ toolName: 'Bash', filePath: '/db.ts', sessionId: 's5' }),
     ]);
     expect(out).toHaveLength(0);
   });
@@ -233,9 +353,10 @@ describe('diffPrePass', () => {
 
 describe('heuristics — null response_size_bytes branches', () => {
   it('shortTurnAfterLargeRead skips rows without response_size_bytes', () => {
-    const out = shortTurnAfterLargeRead([
-      row({ toolName: 'Read', responseSizeBytes: null, wasQuotedInLaterTurn: false }),
-    ]);
+    const out = shortTurnAfterLargeRead(
+      [row({ toolName: 'Read', responseSizeBytes: null, wasQuotedInLaterTurn: false })],
+      NOW,
+    );
     expect(out).toHaveLength(0);
   });
 
@@ -294,26 +415,47 @@ describe('heuristics — null response_size_bytes branches', () => {
 
 describe('runAllHeuristics', () => {
   it('combines opportunities from every heuristic', () => {
-    const out = runAllHeuristics([
-      row({
-        id: 1,
-        toolName: 'Read',
-        filePath: '/big.log',
-        responseSizeBytes: 50_000,
-        wasQuotedInLaterTurn: false,
-      }),
-      row({
-        toolName: 'Bash',
-        responseSizeBytes: 60_000,
-        filePath: 'pnpm test',
-      }),
-    ]);
+    const out = runAllHeuristics(
+      [
+        row({
+          id: 1,
+          toolName: 'Read',
+          filePath: '/big.log',
+          responseSizeBytes: 50_000,
+          wasQuotedInLaterTurn: false,
+        }),
+        row({
+          toolName: 'Bash',
+          responseSizeBytes: 60_000,
+          filePath: 'pnpm test',
+        }),
+      ],
+      NOW,
+    );
     const patterns = out.map((o) => o.pattern).sort();
     expect(patterns).toContain('short_turn_after_large_read');
     expect(patterns).toContain('test_runner_noise');
   });
 
   it('returns [] for an empty session', () => {
-    expect(runAllHeuristics([])).toEqual([]);
+    expect(runAllHeuristics([], NOW)).toEqual([]);
+  });
+
+  it('does not include cross-session patterns (those run at the analyzer level)', () => {
+    // repeat_read_cross_session is invoked by the analyzer separately
+    // because it needs the full lookback window, not a per-session
+    // slice. runAllHeuristics must not double-emit it.
+    const out = runAllHeuristics(
+      [
+        row({ toolName: 'Read', filePath: '/x.ts', sessionId: 's1' }),
+        row({ toolName: 'Read', filePath: '/x.ts', sessionId: 's2' }),
+        row({ toolName: 'Read', filePath: '/x.ts', sessionId: 's3' }),
+        row({ toolName: 'Read', filePath: '/x.ts', sessionId: 's4' }),
+        row({ toolName: 'Read', filePath: '/x.ts', sessionId: 's5' }),
+      ],
+      NOW,
+    );
+    const patterns = new Set(out.map((o) => o.pattern));
+    expect(patterns.has('repeat_read_cross_session')).toBe(false);
   });
 });

@@ -23,6 +23,7 @@
  * page so users know to expect approximation, not actuals.
  */
 
+import { getDigestTokens } from '@claude-sentinel/shared';
 import {
   getBaseInputPricePerMillion,
   CACHE_READ_MULTIPLIER,
@@ -36,23 +37,9 @@ import {
  *  payload tokenization cost. */
 const BYTES_PER_TOKEN = 3.5;
 
-/** Per-curated-id digest size estimate, in tokens. The subagent's
- *  digest is what the parent Opus turn replays each subsequent turn,
- *  so this directly drives the hypothetical cost. Tuned to the
- *  curated SOUL bodies — file-explorer caps at 500 tokens, log-
- *  analyzer at 800, etc. */
-const DIGEST_TOKENS_BY_CURATED_ID: Readonly<Record<string, number>> = {
-  'file-explorer': 500,
-  'test-runner-parser': 600,
-  'log-analyzer': 800,
-  'repo-mapper': 1500,
-  'diff-pre-pass': 1000,
-  'output-formatter': 400,
-};
-
-/** Default digest size for unknown curated ids (graceful fallback so
- *  the calculator never throws on a typo). */
-const DEFAULT_DIGEST_TOKENS = 700;
+// Digest sizes are owned by `@claude-sentinel/shared/optimize-digests`
+// so the analyzer, the back-fill migration, and the dashboard all
+// reference the same values without duplicating the constants.
 
 export interface ToolCallContribution {
   /** Approximate input bytes the tool result added to the parent
@@ -83,7 +70,7 @@ export interface SavingsInputs {
   /** Model the parent turn ran on. */
   actualModel: string;
   /** Curated id used for digest sizing and (in v1) hypothetical
-   *  model lookup. Looked up in DIGEST_TOKENS_BY_CURATED_ID. */
+   *  model lookup. Resolved via `getDigestTokens` from shared. */
   curatedId: string;
   /** Hypothetical model the subagent would have run on. Always
    *  Haiku for the v1 curated library; passed in so future curated
@@ -100,6 +87,12 @@ export interface SavingsResult {
   /** Tokens we attributed to the candidate routing decision. */
   attributedInputTokens: number;
   attributedCachedTokens: number;
+  /** Total input tokens the hypothetical path would consume:
+   *  `hypoInputTokens + digestTokens`. Persisted to optimization_events
+   *  so the dashboard can render savings in tokens (input cost only —
+   *  output is comparable across both paths and not attributable to the
+   *  routing decision). */
+  hypotheticalTotalTokens: number;
 }
 
 export function computeSavings(inputs: SavingsInputs): SavingsResult {
@@ -114,6 +107,7 @@ export function computeSavings(inputs: SavingsInputs): SavingsResult {
       shareOfTurn: 0,
       attributedInputTokens: 0,
       attributedCachedTokens: 0,
+      hypotheticalTotalTokens: 0,
     };
   }
 
@@ -139,7 +133,7 @@ export function computeSavings(inputs: SavingsInputs): SavingsResult {
   // turns; v1 estimate counts it once at the actual model's rate.
   const hypoInputTokens = totalToolBytes / BYTES_PER_TOKEN;
   const baseHypo = getBaseInputPricePerMillion(inputs.hypoModel);
-  const digestTokens = DIGEST_TOKENS_BY_CURATED_ID[inputs.curatedId] ?? DEFAULT_DIGEST_TOKENS;
+  const digestTokens = getDigestTokens(inputs.curatedId);
   const hypotheticalCostUsd = (hypoInputTokens * baseHypo + digestTokens * baseActual) / 1_000_000;
 
   const attributedInputTokens = Math.round(split(inputs.parentTurn.totalInputTokens));
@@ -152,5 +146,6 @@ export function computeSavings(inputs: SavingsInputs): SavingsResult {
     shareOfTurn,
     attributedInputTokens,
     attributedCachedTokens,
+    hypotheticalTotalTokens: Math.round(hypoInputTokens + digestTokens),
   };
 }

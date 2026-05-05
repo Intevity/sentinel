@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { unlinkSync } from 'fs';
 import Database from 'better-sqlite3';
 import {
@@ -236,12 +236,15 @@ describe('createToolCallExtractor — flush error tolerance', () => {
 
 describe('applyToolResultBackfill', () => {
   let db: Database.Database;
+  let logSpy: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
     process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB_PATH;
     db = getDb(TMP_DB_PATH);
     db.exec('DELETE FROM tool_calls');
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   });
   afterEach(() => {
+    logSpy.mockRestore();
     closeDb();
     delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
     try {
@@ -475,6 +478,48 @@ describe('applyToolResultBackfill', () => {
     applyToolResultBackfill(db, requestBody, 'sess-1');
     const row = findToolCallByToolUseId(db, 'toolu_set')!;
     expect(row.responseSizeBytes).toBe(9999);
+  });
+
+  it('emits a `[Optimize/Backfill]` diagnostic line on every pass with tool_results', () => {
+    recordToolCall('toolu_diag_match');
+    const requestBody = Buffer.from(
+      JSON.stringify({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'toolu_diag_match', content: 'a'.repeat(100) },
+              // Second tool_use_id has no matching tool_calls row — surfaces as a miss.
+              { type: 'tool_result', tool_use_id: 'toolu_diag_orphan', content: 'b' },
+            ],
+          },
+        ],
+      }),
+    );
+    applyToolResultBackfill(db, requestBody, 'sess-1');
+    const line = logSpy.mock.calls
+      .map((args) => String(args[0] ?? ''))
+      .find((s) => s.startsWith('[Optimize/Backfill]'));
+    expect(line).toBeDefined();
+    // Tool-use IDs found vs missing must both be reported.
+    expect(line).toContain('tool_results=2');
+    expect(line).toContain('hits=1');
+    expect(line).toContain('misses=1');
+    expect(line).toContain('size_backfills=1');
+    // The miss prefix surfaces in the log so the user can match against
+    // their tool_calls rows manually when triaging backfill gaps.
+    expect(line).toContain('miss_prefixes=toolu_diag_');
+  });
+
+  it('does not log when the request has no tool_results to scan', () => {
+    const requestBody = Buffer.from(
+      JSON.stringify({ messages: [{ role: 'user', content: 'plain text turn' }] }),
+    );
+    applyToolResultBackfill(db, requestBody, 'sess-1');
+    const lines = logSpy.mock.calls
+      .map((args) => String(args[0] ?? ''))
+      .filter((s) => s.startsWith('[Optimize/Backfill]'));
+    expect(lines).toHaveLength(0);
   });
 });
 

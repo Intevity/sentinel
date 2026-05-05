@@ -67,6 +67,7 @@ function settings(over: Partial<Settings> = {}): Settings {
     optimizeCaptureEnabled: true,
     optimizeAutoRecommend: true,
     optimizeShowMicroOpportunities: false,
+    optimizeUnits: 'tokens',
     ...over,
   } as Settings;
 }

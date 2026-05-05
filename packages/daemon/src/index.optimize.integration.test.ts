@@ -215,4 +215,159 @@ describe('Optimize IPC end-to-end', () => {
       inspect.close();
     }
   });
+
+  it('list_optimization_events returns measured rows with hydrated source calls', async () => {
+    ctx = await startTestDaemon();
+
+    // Seed a tool_call and a measured optimization_event referencing it,
+    // then verify list_optimization_events can resolve the linkage end-
+    // to-end through the IPC.
+    const seed = new Database(ctx.dbPath);
+    try {
+      const ts = Date.now();
+      const tcInfo = seed
+        .prepare(
+          `INSERT INTO tool_calls
+             (ts, account_id, session_id, request_id, request_seq_in_session,
+              tool_use_id, tool_name, file_path, input_size_bytes,
+              response_size_bytes, was_quoted_in_later_turn, denied, model)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          ts,
+          'acct-x',
+          'sess-x',
+          'req-x',
+          1,
+          'toolu_x',
+          'Read',
+          '/seed.ts',
+          50,
+          99_000,
+          0,
+          0,
+          'claude-opus-4-7',
+        );
+      const tcId = Number(tcInfo.lastInsertRowid);
+      seed
+        .prepare(
+          `INSERT INTO optimization_events
+             (ts, account_id, session_id, curated_id, kind, pattern,
+              savings_usd, actual_input_tokens, actual_cached_tokens,
+              actual_cost_usd, hypothetical_cost_usd, source_tool_call_ids)
+           VALUES (?, ?, ?, ?, 'measured', ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          ts,
+          'acct-x',
+          'sess-x',
+          'file-explorer',
+          'short_turn_after_large_read',
+          0.42,
+          1000,
+          0,
+          0.5,
+          0.08,
+          JSON.stringify([tcId]),
+        );
+    } finally {
+      seed.close();
+    }
+
+    const r = await ctx.request<{
+      events: Array<{
+        curatedId: string;
+        savingsUsd: number | null;
+        realized: boolean;
+        sourceCalls: Array<{ filePath: string | null; responseSizeBytes: number | null }>;
+      }>;
+    }>({ type: 'list_optimization_events' });
+    expect(r.success).toBe(true);
+    expect(r.data?.events).toHaveLength(1);
+    const ev = r.data?.events[0];
+    expect(ev?.curatedId).toBe('file-explorer');
+    expect(ev?.savingsUsd).toBe(0.42);
+    expect(ev?.realized).toBe(false);
+    expect(ev?.sourceCalls).toHaveLength(1);
+    expect(ev?.sourceCalls[0]?.filePath).toBe('/seed.ts');
+    expect(ev?.sourceCalls[0]?.responseSizeBytes).toBe(99_000);
+  });
+
+  it('get_context_inventory returns the empty shape on a fresh daemon', async () => {
+    ctx = await startTestDaemon();
+    const r = await ctx.request<{
+      mcpServers: unknown[];
+      claudeMdFiles: unknown[];
+      memoryDirs: unknown[];
+      plugins: unknown[];
+      globalSubagents: unknown[];
+    }>({ type: 'get_context_inventory' });
+    expect(r.success).toBe(true);
+    // The test daemon's home/CLAUDE_JSON env vars point at empty fixture
+    // dirs, so every section must be a (possibly empty) array.
+    expect(Array.isArray(r.data?.mcpServers)).toBe(true);
+    expect(Array.isArray(r.data?.claudeMdFiles)).toBe(true);
+    expect(Array.isArray(r.data?.memoryDirs)).toBe(true);
+    expect(Array.isArray(r.data?.plugins)).toBe(true);
+    expect(Array.isArray(r.data?.globalSubagents)).toBe(true);
+  });
+
+  it('get_context_inventory surfaces installed subagents in globalSubagents', async () => {
+    ctx = await startTestDaemon();
+    await ctx.request({ type: 'install_curated_subagent', curatedId: 'file-explorer' });
+    const r = await ctx.request<{
+      globalSubagents: Array<{ name: string; source: string }>;
+    }>({ type: 'get_context_inventory' });
+    expect(r.success).toBe(true);
+    const names = (r.data?.globalSubagents ?? []).map((s) => s.name);
+    expect(names).toContain('file-explorer');
+    const fe = r.data?.globalSubagents.find((s) => s.name === 'file-explorer');
+    expect(fe?.source).toBe('curated');
+  });
+
+  it('list_optimization_events filter realized=true narrows to install-covered events', async () => {
+    ctx = await startTestDaemon();
+    // Install file-explorer first so subagent_installs.installed_at <
+    // the seeded event's ts. Without this, the LEFT JOIN's CASE returns 0.
+    await ctx.request({ type: 'install_curated_subagent', curatedId: 'file-explorer' });
+
+    const seed = new Database(ctx.dbPath);
+    try {
+      const ts = Date.now() + 5_000;
+      seed
+        .prepare(
+          `INSERT INTO optimization_events
+             (ts, account_id, session_id, curated_id, kind, pattern,
+              savings_usd, source_tool_call_ids)
+           VALUES (?, ?, ?, 'file-explorer', 'measured', ?, ?, '[]')`,
+        )
+        .run(ts, 'acct-x', 'sess-x', 'short_turn_after_large_read', 0.21);
+      seed
+        .prepare(
+          `INSERT INTO optimization_events
+             (ts, account_id, session_id, curated_id, kind, pattern,
+              savings_usd, source_tool_call_ids)
+           VALUES (?, ?, ?, 'log-analyzer', 'measured', ?, ?, '[]')`,
+        )
+        .run(ts, 'acct-x', 'sess-x', 'bash_log_parse', 0.34);
+    } finally {
+      seed.close();
+    }
+
+    const realizedR = await ctx.request<{
+      events: Array<{ curatedId: string; realized: boolean }>;
+    }>({ type: 'list_optimization_events', realized: true });
+    expect(realizedR.success).toBe(true);
+    const realizedEvents = realizedR.data?.events ?? [];
+    expect(realizedEvents.every((e) => e.realized)).toBe(true);
+    expect(realizedEvents.some((e) => e.curatedId === 'file-explorer')).toBe(true);
+    expect(realizedEvents.some((e) => e.curatedId === 'log-analyzer')).toBe(false);
+
+    const potentialR = await ctx.request<{
+      events: Array<{ curatedId: string; realized: boolean }>;
+    }>({ type: 'list_optimization_events', realized: false });
+    const potentialEvents = potentialR.data?.events ?? [];
+    expect(potentialEvents.every((e) => !e.realized)).toBe(true);
+    expect(potentialEvents.some((e) => e.curatedId === 'log-analyzer')).toBe(true);
+  });
 });

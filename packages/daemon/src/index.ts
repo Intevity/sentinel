@@ -56,7 +56,9 @@ import {
   listSubagentInstalls,
   insertOptimizationEvent,
   getOptimizationMetrics,
+  listOptimizationEventsWithSources,
 } from './db.js';
+import { buildContextInventory } from './context-bloat/inventory.js';
 import {
   loadSettings,
   loadSettingsWithTamper,
@@ -2201,6 +2203,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
               actualCachedTokens: null,
               actualCostUsd: null,
               hypotheticalCostUsd: null,
+              hypotheticalTotalTokens: null,
               sourceToolCallIds: [],
             });
             ipcServer.broadcast({
@@ -2294,9 +2297,45 @@ export async function startDaemon(): Promise<DaemonHandle> {
           actualCachedTokens: null,
           actualCostUsd: null,
           hypotheticalCostUsd: null,
+          hypotheticalTotalTokens: null,
           sourceToolCallIds: [],
         });
         respond({ requestType: 'dismiss_optimization', success: true, data: {} });
+        break;
+      }
+      case 'list_optimization_events': {
+        // Drill-down query: surfaces individual measured / dismissed
+        // opportunities with their source tool_calls so the dashboard
+        // can answer "what triggered this savings number?"
+        // exactOptionalPropertyTypes requires us to elide undefined
+        // keys rather than pass `undefined` through.
+        const opts: Parameters<typeof listOptimizationEventsWithSources>[1] = {};
+        if (msg.kind !== undefined) opts.kind = msg.kind;
+        if (msg.curatedId !== undefined) opts.curatedId = msg.curatedId;
+        if (msg.realized !== undefined) opts.realized = msg.realized;
+        if (msg.regressionsOnly !== undefined) opts.regressionsOnly = msg.regressionsOnly;
+        if (msg.positiveSavingsOnly !== undefined)
+          opts.positiveSavingsOnly = msg.positiveSavingsOnly;
+        if (msg.search !== undefined) opts.search = msg.search;
+        if (msg.limit !== undefined) opts.limit = msg.limit;
+        if (msg.offset !== undefined) opts.offset = msg.offset;
+        const result = listOptimizationEventsWithSources(db, opts);
+        respond({
+          requestType: 'list_optimization_events',
+          success: true,
+          data: result,
+        });
+        break;
+      }
+      case 'get_context_inventory': {
+        // Snapshot every surface contributing to Claude Code's request
+        // context. Read-only — disable controls are deferred to a
+        // follow-up that handles project-vs-global scope explicitly.
+        respond({
+          requestType: 'get_context_inventory',
+          success: true,
+          data: buildContextInventory(db),
+        });
         break;
       }
     }

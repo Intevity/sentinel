@@ -8,6 +8,8 @@
   "packages/daemon/src/ipc.peer-auth.test.ts": 1,
   "packages/daemon/src/logger.test.ts": 2,
   "packages/daemon/src/oauth.integration.test.ts": 3,
+  "packages/daemon/src/optimize/optimization-analyzer.test.ts": 9,
+  "packages/daemon/src/optimize/tool-call-extractor.test.ts": 1,
   "packages/daemon/src/otel-receiver.test.ts": 2,
   "packages/daemon/src/overage.test.ts": 4,
   "packages/daemon/src/proxy-cache-ttl-override.test.ts": 20,

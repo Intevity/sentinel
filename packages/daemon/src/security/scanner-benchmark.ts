@@ -129,6 +129,7 @@ function benchSettings(): Settings {
     optimizeCaptureEnabled: true,
     optimizeAutoRecommend: true,
     optimizeShowMicroOpportunities: false,
+    optimizeUnits: 'tokens',
   };
 }
 
