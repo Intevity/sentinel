@@ -1,4 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { useInfiniteScroll } from '../hooks/useInfiniteScroll.js';
 import {
   Shield,
   ShieldAlert,
@@ -204,6 +205,40 @@ function ProvenanceBadge({
 type SeverityFilter = 'all' | SecuritySeverity;
 type KindFilter = 'all' | SecurityKind;
 
+/** Kinds the scanner can produce. Used when the user has the scanner ON
+ *  and tool permissions OFF — we narrow the daemon query to only return
+ *  scanner-class events. Hoisted to module scope so its identity is
+ *  stable across renders (the daemon-fetch hook would otherwise refetch
+ *  on every render that re-allocates the array). */
+const SCANNER_KINDS: SecurityKind[] = [
+  'secret',
+  'pii',
+  'prompt_injection',
+  'risky_bash',
+  'risky_write',
+  'risky_webfetch',
+  'scan_truncated',
+  'scan_skipped_encoding',
+  'scan_deferred_oversized',
+];
+
+/** Kind set when only tool permissions are on. Single element today, but
+ *  named for symmetry with SCANNER_KINDS so future kinds in this class
+ *  have a clear home. */
+const PERMISSION_KINDS: SecurityKind[] = ['tool_permission_blocked'];
+
+/** Debounce a string value so a parent component fetching off it doesn't
+ *  refire on every keystroke. 250ms is plenty for an SQLite local query
+ *  and matches typical "instant search" feel. */
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(t);
+  }, [value, delayMs]);
+  return debounced;
+}
+
 export default function SecurityPanel({
   viewAccountId,
   onRequestOpenSettings,
@@ -224,11 +259,73 @@ export default function SecurityPanel({
    *  self-timeout 2 s after the flash starts. */
   const [flashEventId, setFlashEventId] = useState<number | null>(null);
 
-  const { events, loading, error, acknowledge, acknowledgeAll, clearAll, addToAllowlist } =
-    useSecurityEvents({
-      ...(viewAccountId !== undefined ? { accountId: viewAccountId } : {}),
-      includeWeakSignals,
+  // Settings drive the scanner-only / permissions-only mode narrowing,
+  // which used to filter the loaded list client-side. With server-side
+  // filtering it must apply BEFORE the kind chip choice, so we resolve
+  // it inline here. Read settings off the existing useSettings result.
+  const scanEnabledForFilter = settings?.securityScanEnabled ?? true;
+  const permissionsEnabledForFilter = settings?.toolPermissionsEnabled ?? false;
+  const scannerOnlyForFilter = scanEnabledForFilter && !permissionsEnabledForFilter;
+  const permissionsOnlyForFilter = !scanEnabledForFilter && permissionsEnabledForFilter;
+
+  // Resolve the `kinds` param the daemon should filter by. Priority:
+  //   1. explicit kind chip → that single kind
+  //   2. scanner-only mode → SCANNER_KINDS
+  //   3. permissions-only mode → PERMISSION_KINDS
+  //   4. otherwise → undefined (no kind constraint)
+  // Memoised on primitive deps so its identity is stable across renders.
+  const kindsForFetch = useMemo<SecurityKind[] | undefined>(() => {
+    if (kindFilter !== 'all') return [kindFilter];
+    if (scannerOnlyForFilter) return SCANNER_KINDS;
+    if (permissionsOnlyForFilter) return PERMISSION_KINDS;
+    return undefined;
+  }, [kindFilter, scannerOnlyForFilter, permissionsOnlyForFilter]);
+
+  const debouncedSearch = useDebouncedValue(search, 250);
+
+  const {
+    events,
+    loading,
+    loadingMore,
+    hasMore,
+    error,
+    loadMore,
+    acknowledge,
+    acknowledgeAll,
+    clearAll,
+    addToAllowlist,
+  } = useSecurityEvents({
+    ...(viewAccountId !== undefined ? { accountId: viewAccountId } : {}),
+    includeWeakSignals,
+    ...(severityFilter !== 'all' ? { severity: severityFilter } : {}),
+    ...(kindsForFetch !== undefined ? { kinds: kindsForFetch } : {}),
+    ...(debouncedSearch.trim() !== '' ? { search: debouncedSearch.trim() } : {}),
+  });
+
+  const sentinelRef = useInfiniteScroll({ hasMore, loading: loadingMore, loadMore });
+
+  // Kinds the chip filter row should offer. With server-side filtering,
+  // a fresh page returned for "kindFilter=secret" only contains secrets
+  // — naively reading kinds from the loaded events would shrink the
+  // chip group to a single chip and trap the user. So we accumulate
+  // every kind we've ever seen across this session (the chip group
+  // monotonically grows) and let the user pick freely.
+  const [kindsEverSeen, setKindsEverSeen] = useState<Set<SecurityKind>>(
+    () => new Set<SecurityKind>(),
+  );
+  useEffect(() => {
+    setKindsEverSeen((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const e of events) {
+        if (!next.has(e.kind)) {
+          next.add(e.kind);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
     });
+  }, [events]);
 
   // Auto-expand + scroll + flash when the parent hands us a target id
   // from a notification click. Runs once per change of
@@ -327,26 +424,10 @@ export default function SecurityPanel({
   // NOTE: all hooks must run unconditionally before any early return below.
   // React error #300 ("Rendered fewer hooks than expected") fires if a
   // render path skips a hook that a previous render called.
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return events.filter((e) => {
-      if (severityFilter !== 'all' && e.severity !== severityFilter) return false;
-      if (kindFilter !== 'all' && e.kind !== kindFilter) return false;
-      if (q) {
-        const hay = [e.title, e.reason, e.matchMask ?? '', e.sourceHint ?? '']
-          .join(' ')
-          .toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-  }, [events, severityFilter, kindFilter, search]);
 
-  const kindsInView = useMemo(() => {
-    const s = new Set<SecurityKind>();
-    for (const e of events) s.add(e.kind);
-    return Array.from(s);
-  }, [events]);
+  // Filter chips list — see kindsEverSeen above for the rationale on
+  // accumulating instead of reading from the current event list.
+  const kindsInView = useMemo(() => Array.from(kindsEverSeen), [kindsEverSeen]);
 
   // One-line chip shown next to "Filters" when collapsed so the user can see
   // what's narrowing the list without needing to expand.
@@ -364,32 +445,16 @@ export default function SecurityPanel({
   // Settings is undefined during the initial load — fall through to
   // the normal render in that window so we don't flash a disabled
   // banner before the real state arrives.
-  const scanEnabled = settings?.securityScanEnabled ?? true;
-  const permissionsEnabled = settings?.toolPermissionsEnabled ?? false;
+  const scanEnabled = scanEnabledForFilter;
+  const permissionsEnabled = permissionsEnabledForFilter;
   const bothOff = settings != null && !scanEnabled && !permissionsEnabled;
   // When exactly one feature is on, the other has nothing to surface —
   // narrow the visible list to that feature's kind set so the user
   // isn't looking at a spurious "no events" message while events of
-  // the OTHER kind are stacking up invisibly.
-  const scannerOnly = scanEnabled && !permissionsEnabled;
-  const permissionsOnly = !scanEnabled && permissionsEnabled;
-  const SCANNER_KINDS = new Set<SecurityKind>([
-    'secret',
-    'pii',
-    'prompt_injection',
-    'risky_bash',
-    'risky_write',
-    'risky_webfetch',
-    'scan_truncated',
-    'scan_skipped_encoding',
-    'scan_deferred_oversized',
-  ]);
-  const modeFilteredEvents = useMemo(() => {
-    if (scannerOnly) return filtered.filter((e) => SCANNER_KINDS.has(e.kind));
-    if (permissionsOnly) return filtered.filter((e) => e.kind === 'tool_permission_blocked');
-    return filtered;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, scannerOnly, permissionsOnly]);
+  // the OTHER kind are stacking up invisibly. The actual narrowing
+  // happens server-side via kindsForFetch (see above).
+  const scannerOnly = scannerOnlyForFilter;
+  const permissionsOnly = permissionsOnlyForFilter;
 
   // Pull permission rules for the status strip's rule count. Hook
   // always runs (mustn't be gated on bothOff) to keep hook order
@@ -438,7 +503,7 @@ export default function SecurityPanel({
     );
   }
 
-  const unreadCount = modeFilteredEvents.filter((e) => !e.acknowledged).length;
+  const unreadCount = events.filter((e) => !e.acknowledged).length;
 
   return (
     <div className="space-y-2 pt-1">
@@ -747,7 +812,7 @@ export default function SecurityPanel({
         </div>
       )}
 
-      {!loading && modeFilteredEvents.length === 0 && !error ? (
+      {!loading && events.length === 0 && !error ? (
         <div className="glass-card px-4 py-10 text-center">
           <p className="text-[13px] font-medium text-black dark:text-white">No security events</p>
           <p className="text-[11px] text-[#8E8E93] mt-1">
@@ -760,7 +825,7 @@ export default function SecurityPanel({
         </div>
       ) : (
         <div className="space-y-2">
-          {modeFilteredEvents.map((event) => (
+          {events.map((event) => (
             <SecurityRow
               key={event.id}
               event={event}
@@ -772,6 +837,11 @@ export default function SecurityPanel({
               onMute={() => handleMute(event)}
             />
           ))}
+          {hasMore && (
+            <div ref={sentinelRef} className="py-3 text-center text-[10px] text-[#8E8E93]">
+              {loadingMore ? 'Loading more…' : ' '}
+            </div>
+          )}
         </div>
       )}
     </div>

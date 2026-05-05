@@ -1213,8 +1213,14 @@ export function getUsageByDayModel(
 
   const rows = db
     .prepare(
+      // 'localtime' bucket boundaries — Metrics and Optimize charts must
+      // render days in the user's local timezone (the daemon runs on the
+      // user's machine, so SQLite's localtime modifier is exactly that).
+      // Without it, late-evening UTC-offset users see "tomorrow" appear
+      // on the rightmost x-axis and same-day usage gets split across the
+      // UTC midnight boundary.
       `SELECT
-         date(ts / 1000, 'unixepoch') AS day,
+         date(ts / 1000, 'unixepoch', 'localtime') AS day,
          model,
          COALESCE(SUM(cost_usd), 0)                                           AS cost_usd,
          COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)    AS tokens
@@ -1378,13 +1384,41 @@ export function acknowledgeAllNotifications(db: Database.Database, accountId?: s
 
 export function listNotifications(
   db: Database.Database,
-  opts: { unacknowledgedOnly?: boolean; limit?: number },
+  opts: {
+    unacknowledgedOnly?: boolean;
+    limit?: number;
+    /** Cursor: when set, restrict to rows with `ts < beforeTs`. Used by the
+     *  Alerts tab's infinite scroll. */
+    beforeTs?: number;
+    /** When set, restrict to rows scoped to this account (or to the global
+     *  bucket where account_id IS NULL). Mirrors the per-account filter the
+     *  AlertsEditor previously did client-side. */
+    accountId?: string;
+    /** When set, only rows whose `type` is in this list are returned.
+     *  Drives the all/usage/security category filter on the Alerts tab. */
+    types?: NotificationType[];
+  },
 ): NotificationRecord[] {
   let sql = 'SELECT * FROM notifications WHERE 1=1';
-  const params: Record<string, number> = {};
+  const params: Record<string, string | number> = {};
 
   if (opts.unacknowledgedOnly === true) {
     sql += ' AND acknowledged = 0';
+  }
+  if (opts.beforeTs !== undefined) {
+    sql += ' AND ts < @beforeTs';
+    params['beforeTs'] = opts.beforeTs;
+  }
+  if (opts.accountId !== undefined) {
+    sql += ' AND (account_id = @accountId OR account_id IS NULL)';
+    params['accountId'] = opts.accountId;
+  }
+  if (opts.types !== undefined && opts.types.length > 0) {
+    const placeholders = opts.types.map((_, i) => `@type${i}`).join(', ');
+    sql += ` AND type IN (${placeholders})`;
+    opts.types.forEach((t, i) => {
+      params[`type${i}`] = t;
+    });
   }
   sql += ' ORDER BY ts DESC';
   if (opts.limit !== undefined) {
@@ -1635,10 +1669,25 @@ export function listSecurityEvents(
   opts: {
     accountId?: string;
     limit?: number;
+    /** Cursor: when set, restrict to rows with `ts < beforeTs`. Used by the
+     *  Security tab's infinite scroll to fetch the next page after the
+     *  oldest currently-loaded event. */
+    beforeTs?: number;
     /** When true, filter out scanner-self-telemetry kinds (see
      *  TELEMETRY_SECURITY_KINDS). Real findings of any severity are always
      *  returned regardless of this flag. */
     excludeTelemetry?: boolean;
+    /** Restrict to a single severity bucket. */
+    severity?: SecuritySeverity;
+    /** Restrict to this set of kinds. Used by the Security tab to push the
+     *  scanner-only / permissions-only mode narrowing AND the user's
+     *  explicit kind chip filter down to SQL in one shot. Pre-intersected
+     *  with the telemetry-exclude list at the call site so we don't have
+     *  to reason about both filters interacting here. */
+    kinds?: SecurityKind[];
+    /** Case-insensitive substring match across title / reason / match_mask /
+     *  source_hint. */
+    search?: string;
   } = {},
 ): SecurityEvent[] {
   let sql = 'SELECT * FROM security_events WHERE 1=1';
@@ -1648,12 +1697,36 @@ export function listSecurityEvents(
     sql += ' AND account_id = @accountId';
     params['accountId'] = opts.accountId;
   }
+  if (opts.beforeTs !== undefined) {
+    sql += ' AND ts < @beforeTs';
+    params['beforeTs'] = opts.beforeTs;
+  }
   if (opts.excludeTelemetry === true) {
     const placeholders = TELEMETRY_SECURITY_KINDS.map((_, i) => `@telemetry${i}`).join(', ');
     sql += ` AND kind NOT IN (${placeholders})`;
     TELEMETRY_SECURITY_KINDS.forEach((k, i) => {
       params[`telemetry${i}`] = k;
     });
+  }
+  if (opts.severity !== undefined) {
+    sql += ' AND severity = @severity';
+    params['severity'] = opts.severity;
+  }
+  if (opts.kinds !== undefined && opts.kinds.length > 0) {
+    const placeholders = opts.kinds.map((_, i) => `@kind${i}`).join(', ');
+    sql += ` AND kind IN (${placeholders})`;
+    opts.kinds.forEach((k, i) => {
+      params[`kind${i}`] = k;
+    });
+  }
+  if (opts.search !== undefined && opts.search.trim() !== '') {
+    // Single-quoted empty string for the COALESCE fallback — SQLite
+    // treats `""` as an identifier reference, not a literal.
+    sql +=
+      ' AND (LOWER(title) LIKE @search OR LOWER(reason) LIKE @search ' +
+      "OR LOWER(COALESCE(match_mask, '')) LIKE @search " +
+      "OR LOWER(COALESCE(source_hint, '')) LIKE @search)";
+    params['search'] = `%${opts.search.trim().toLowerCase()}%`;
   }
 
   sql += ' ORDER BY ts DESC';
@@ -2913,7 +2986,7 @@ export function getTokensByDayModel(
   const rows = db
     .prepare(
       `SELECT
-       date(ts / 1000, 'unixepoch')          AS day,
+       date(ts / 1000, 'unixepoch', 'localtime') AS day,
        model,
        COALESCE(SUM(cost_usd), 0)            AS cost_usd,
        COALESCE(SUM(input_tokens), 0)        AS input_tokens,
@@ -3064,7 +3137,7 @@ export function getCacheTtlByDayModel(
   const rows = db
     .prepare(
       `SELECT
-       date(ts / 1000, 'unixepoch')       AS day,
+       date(ts / 1000, 'unixepoch', 'localtime') AS day,
        model                              AS model,
        COALESCE(SUM(req_markers_5m), 0)   AS req_markers_5m,
        COALESCE(SUM(req_markers_1h), 0)   AS req_markers_1h,
@@ -3197,7 +3270,7 @@ export function getApiErrorsByDay(
   const rows = db
     .prepare(
       `SELECT
-       date(ts / 1000, 'unixepoch') AS day,
+       date(ts / 1000, 'unixepoch', 'localtime') AS day,
        COALESCE(status_code, 'unknown') AS status_code,
        COUNT(*)                    AS n
      FROM api_errors
@@ -3322,7 +3395,7 @@ export function getActivityCounters(
   const rows = db
     .prepare(
       `SELECT
-       date(ts / 1000, 'unixepoch') AS day,
+       date(ts / 1000, 'unixepoch', 'localtime') AS day,
        kind,
        COALESCE(SUM(value), COUNT(*)) AS total
      FROM activity_events
@@ -4155,7 +4228,7 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
     .prepare(
       `
       SELECT
-        date(oe.ts / 1000, 'unixepoch')      AS day,
+        date(oe.ts / 1000, 'unixepoch', 'localtime') AS day,
         oe.curated_id                        AS curated_id,
         oe.savings_usd                       AS savings_usd,
         oe.actual_input_tokens               AS actual_input_tokens,

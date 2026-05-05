@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   NotificationRecord,
+  NotificationType,
   SecuritySeverity,
   SecurityOsNotifyThreshold,
 } from '@claude-sentinel/shared';
 import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
+
+const DEFAULT_PAGE_SIZE = 50;
 import {
   isPermissionGranted,
   requestPermission,
@@ -29,11 +32,25 @@ function shouldFireSecurityOsNotification(
   return SEVERITY_ORDER[severity] >= THRESHOLD_ORDER[threshold];
 }
 
+interface UseNotificationsParams {
+  /** When set, restrict to rows scoped to this account or to the global
+   *  bucket (account_id IS NULL). Mirrors AlertsEditor's per-account
+   *  scoping that previously happened client-side. */
+  accountId?: string;
+  /** Server-side category filter. Empty / undefined returns all types. */
+  types?: NotificationType[];
+  /** Page size for the initial fetch and each `loadMore()`. Default 50. */
+  pageSize?: number;
+}
+
 interface UseNotificationsResult {
   notifications: NotificationRecord[];
   loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
   error: string | null;
   refetch: () => Promise<void>;
+  loadMore: () => Promise<void>;
 }
 
 /**
@@ -183,27 +200,110 @@ export function useNativeAlertNotifications(): void {
  * live events that add rows. Safe to mount/unmount with a tab — the
  * native OS banners are fired by `useNativeAlertNotifications` at the
  * app root, not here.
+ *
+ * Cursor-paginated: the initial fetch returns the newest `pageSize`
+ * rows; `loadMore()` pages older using the oldest row's ts as the
+ * cursor. Live broadcasts (alert_triggered, overage_*, etc.) trigger a
+ * HEAD-refresh that prepends new rows without disturbing scroll
+ * position on already-loaded older pages.
  */
-export function useNotifications(): UseNotificationsResult {
+export function useNotifications(params: UseNotificationsParams = {}): UseNotificationsResult {
+  const { accountId, types, pageSize = DEFAULT_PAGE_SIZE } = params;
+  const typesKey = types ? JSON.stringify(types) : '';
+
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const fetchTokenRef = useRef(0);
+
+  const buildBaseRequest = useCallback((): {
+    type: 'get_notifications';
+    limit: number;
+    accountId?: string;
+    types?: NotificationType[];
+  } => {
+    const req: ReturnType<typeof buildBaseRequest> = {
+      type: 'get_notifications',
+      limit: pageSize,
+    };
+    if (accountId !== undefined) req.accountId = accountId;
+    if (types !== undefined && types.length > 0) req.types = types;
+    return req;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, typesKey, pageSize]);
+
   const refetch = useCallback(async () => {
+    const token = ++fetchTokenRef.current;
+    setLoading(true);
     try {
-      const res = await sendToSentinel<NotificationRecord[]>({ type: 'get_notifications' });
+      const res = await sendToSentinel<NotificationRecord[]>(buildBaseRequest());
+      if (token !== fetchTokenRef.current) return;
       if (res.success) {
-        setNotifications(res.data ?? []);
+        const data = res.data ?? [];
+        setNotifications(data);
+        setHasMore(data.length >= pageSize);
         setError(null);
       } else {
         setError(res.error ?? 'Failed to load notifications');
       }
     } catch (e) {
+      if (token !== fetchTokenRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (token === fetchTokenRef.current) setLoading(false);
     }
-  }, []);
+  }, [buildBaseRequest, pageSize]);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    const oldest = notifications[notifications.length - 1];
+    if (!oldest) return;
+    const token = fetchTokenRef.current;
+    setLoadingMore(true);
+    try {
+      const res = await sendToSentinel<NotificationRecord[]>({
+        ...buildBaseRequest(),
+        beforeTs: oldest.ts,
+      });
+      if (token !== fetchTokenRef.current) return;
+      if (res.success) {
+        const page = res.data ?? [];
+        setNotifications((prev) => {
+          const seen = new Set(prev.map((n) => n.id));
+          return [...prev, ...page.filter((n) => !seen.has(n.id))];
+        });
+        setHasMore(page.length >= pageSize);
+      }
+    } finally {
+      if (token === fetchTokenRef.current) setLoadingMore(false);
+    }
+  }, [buildBaseRequest, notifications, hasMore, loadingMore, pageSize]);
+
+  const refreshHead = useCallback(async () => {
+    const token = fetchTokenRef.current;
+    try {
+      const res = await sendToSentinel<NotificationRecord[]>(buildBaseRequest());
+      if (token !== fetchTokenRef.current) return;
+      if (res.success) {
+        const head = res.data ?? [];
+        setNotifications((prev) => {
+          if (prev.length === 0) return head;
+          // Reconcile the head: any id present in both the new head and the
+          // existing list gets its updated row (acknowledged flag may have
+          // flipped server-side); brand-new ids prepend. Older rows below
+          // the head window are untouched.
+          const headIds = new Set(head.map((n) => n.id));
+          const tail = prev.filter((n) => !headIds.has(n.id));
+          return [...head, ...tail];
+        });
+      }
+    } catch {
+      /* silent — broadcast-driven refresh */
+    }
+  }, [buildBaseRequest]);
 
   useEffect(() => {
     void refetch();
@@ -218,7 +318,7 @@ export function useNotifications(): UseNotificationsResult {
         msg.type === 'account_switched' ||
         msg.type === 'security_event_detected'
       ) {
-        void refetch();
+        void refreshHead();
       }
     })
       .then((fn) => {
@@ -229,9 +329,9 @@ export function useNotifications(): UseNotificationsResult {
     return () => {
       unlisten?.();
     };
-  }, [refetch]);
+  }, [refetch, refreshHead]);
 
-  return { notifications, loading, error, refetch };
+  return { notifications, loading, loadingMore, hasMore, error, refetch, loadMore };
 }
 
 /**

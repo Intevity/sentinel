@@ -1435,7 +1435,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
       }
 
       case 'get_notifications': {
-        const rows = listNotifications(db, { limit: msg.limit ?? 100 });
+        const rows = listNotifications(db, {
+          limit: msg.limit ?? 50,
+          ...(msg.beforeTs !== undefined ? { beforeTs: msg.beforeTs } : {}),
+          ...(msg.accountId !== undefined ? { accountId: msg.accountId } : {}),
+          ...(msg.types !== undefined ? { types: msg.types } : {}),
+        });
         respond({ requestType: 'get_notifications', success: true, data: rows });
         break;
       }
@@ -1443,8 +1448,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
       case 'get_security_events': {
         const rows = listSecurityEvents(db, {
           ...(msg.accountId !== undefined ? { accountId: msg.accountId } : {}),
-          limit: msg.limit ?? 200,
+          limit: msg.limit ?? 50,
+          ...(msg.beforeTs !== undefined ? { beforeTs: msg.beforeTs } : {}),
           excludeTelemetry: msg.includeWeakSignals !== true,
+          ...(msg.severity !== undefined ? { severity: msg.severity } : {}),
+          ...(msg.kinds !== undefined ? { kinds: msg.kinds } : {}),
+          ...(msg.search !== undefined ? { search: msg.search } : {}),
         });
         respond({ requestType: 'get_security_events', success: true, data: rows });
         break;

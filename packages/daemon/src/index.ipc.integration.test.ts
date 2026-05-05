@@ -254,6 +254,64 @@ describe('IPC — notifications', () => {
     expect(r.success).toBe(true);
     expect(r.data?.count).toBe(0);
   });
+
+  it('get_notifications passes through beforeTs / accountId / types to the DB layer', async () => {
+    ctx = await startTestDaemon();
+    // Seed three notifications via the daemon's DB writer so they land
+    // in the same SQLite the IPC handler reads from.
+    const { getDb, insertNotification } = await import('./db.js');
+    const db = getDb();
+    const now = Date.now();
+    insertNotification(db, {
+      ts: now - 3000,
+      accountId: 'acc-a',
+      type: 'overage_entered',
+      title: 'old-acc-a',
+      body: 'B',
+    });
+    insertNotification(db, {
+      ts: now - 2000,
+      accountId: 'acc-b',
+      type: 'security_high',
+      title: 'mid-acc-b',
+      body: 'B',
+    });
+    insertNotification(db, {
+      ts: now - 1000,
+      accountId: null,
+      type: 'account_switched',
+      title: 'global',
+      body: 'B',
+    });
+
+    // accountId scoping: acc-a row + global row, not acc-b row.
+    const scoped = await ctx.request<Array<{ title: string }>>({
+      type: 'get_notifications',
+      accountId: 'acc-a',
+    });
+    expect(scoped.success).toBe(true);
+    expect((scoped.data ?? []).map((n) => n.title).sort()).toEqual(['global', 'old-acc-a']);
+
+    // types restricts to the security set only.
+    const sec = await ctx.request<Array<{ title: string }>>({
+      type: 'get_notifications',
+      types: ['security_low', 'security_medium', 'security_high'],
+    });
+    expect((sec.data ?? []).map((n) => n.title)).toEqual(['mid-acc-b']);
+
+    // beforeTs cursor: skip the newest row.
+    const newest = await ctx.request<Array<{ ts: number; title: string }>>({
+      type: 'get_notifications',
+      limit: 1,
+    });
+    expect((newest.data ?? []).map((n) => n.title)).toEqual(['global']);
+    const next = await ctx.request<Array<{ title: string }>>({
+      type: 'get_notifications',
+      beforeTs: newest.data![0]!.ts,
+      limit: 5,
+    });
+    expect((next.data ?? []).map((n) => n.title)).toEqual(['mid-acc-b', 'old-acc-a']);
+  });
 });
 
 // ─── Alerts ──────────────────────────────────────────────────────────────────
@@ -400,6 +458,110 @@ describe('IPC — security events', () => {
     const allKinds = (allResp.data ?? []).map((e) => e.kind).sort();
     expect(allKinds).toContain('risky_bash');
     expect(allKinds).toContain('scan_truncated');
+  });
+
+  it('get_security_events passes severity / kinds / search / beforeTs through to the DB layer', async () => {
+    ctx = await startTestDaemon();
+    const { getDb, insertSecurityEvent } = await import('./db.js');
+    const db = getDb();
+    const now = Date.now();
+    insertSecurityEvent(db, {
+      ts: now - 3000,
+      accountId: 'acc-a',
+      sessionId: null,
+      direction: 'outbound',
+      severity: 'high',
+      kind: 'secret',
+      detectorId: 'aws-access-key',
+      confidence: 0.95,
+      title: 'AWS access key',
+      reason: 'r',
+      matchMask: 'AKIA[...]',
+      matchHash: 'h-old-secret',
+      contextHash: 'c1',
+      snippet: '[REDACTED:secret]',
+      sourceHint: 'messages[0]',
+      details: null,
+      blocked: false,
+      provenance: 'file-read',
+    });
+    insertSecurityEvent(db, {
+      ts: now - 2000,
+      accountId: 'acc-a',
+      sessionId: null,
+      direction: 'outbound',
+      severity: 'medium',
+      kind: 'pii',
+      detectorId: 'email',
+      confidence: 0.8,
+      title: 'Email address',
+      reason: 'r',
+      matchMask: null,
+      matchHash: 'h-pii',
+      contextHash: 'c2',
+      snippet: null,
+      sourceHint: null,
+      details: null,
+      blocked: false,
+      provenance: 'conversation',
+    });
+    insertSecurityEvent(db, {
+      ts: now - 1000,
+      accountId: 'acc-a',
+      sessionId: null,
+      direction: 'outbound',
+      severity: 'high',
+      kind: 'secret',
+      detectorId: 'github-token',
+      confidence: 0.9,
+      title: 'GitHub token',
+      reason: 'r',
+      matchMask: 'ghp_[...]',
+      matchHash: 'h-new-secret',
+      contextHash: 'c3',
+      snippet: null,
+      sourceHint: null,
+      details: null,
+      blocked: false,
+      provenance: 'file-read',
+    });
+
+    // severity filter
+    const high = await ctx.request<Array<{ matchHash: string }>>({
+      type: 'get_security_events',
+      severity: 'high',
+    });
+    expect((high.data ?? []).map((e) => e.matchHash).sort()).toEqual([
+      'h-new-secret',
+      'h-old-secret',
+    ]);
+
+    // kinds filter
+    const piiOnly = await ctx.request<Array<{ kind: string }>>({
+      type: 'get_security_events',
+      kinds: ['pii'],
+    });
+    expect((piiOnly.data ?? []).map((e) => e.kind)).toEqual(['pii']);
+
+    // search filter (case-insensitive across title/reason/match_mask/source_hint)
+    const aws = await ctx.request<Array<{ matchHash: string }>>({
+      type: 'get_security_events',
+      search: 'aws',
+    });
+    expect((aws.data ?? []).map((e) => e.matchHash)).toEqual(['h-old-secret']);
+
+    // beforeTs cursor — fetch newest, then page older
+    const newest = await ctx.request<Array<{ ts: number; matchHash: string }>>({
+      type: 'get_security_events',
+      limit: 1,
+    });
+    expect((newest.data ?? []).map((e) => e.matchHash)).toEqual(['h-new-secret']);
+    const older = await ctx.request<Array<{ matchHash: string }>>({
+      type: 'get_security_events',
+      beforeTs: newest.data![0]!.ts,
+      limit: 5,
+    });
+    expect((older.data ?? []).map((e) => e.matchHash)).toEqual(['h-pii', 'h-old-secret']);
   });
 
   it('acknowledge_security_event on unknown id returns success=false', async () => {

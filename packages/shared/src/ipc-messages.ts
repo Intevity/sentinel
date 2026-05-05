@@ -6,6 +6,7 @@ import type {
   BudgetAlertScope,
   PauseReason,
   NotificationRecord,
+  NotificationType,
   MetricsSummary,
   OverageCreditGrant,
   SecurityEvent,
@@ -957,7 +958,15 @@ export interface DeleteAlertMessage {
 
 export interface GetNotificationsMessage {
   type: 'get_notifications';
+  /** Page size; with `beforeTs`, returns the next page. */
   limit?: number;
+  /** Cursor: when set, only rows with `ts < beforeTs` are returned. */
+  beforeTs?: number;
+  /** When set, restrict to notifications scoped to this account or to the
+   *  global (account_id IS NULL) bucket. */
+  accountId?: string;
+  /** When set, only notifications whose `type` is in this list are returned. */
+  types?: NotificationType[];
 }
 
 /** Request a manual OAuth token refresh for a specific account. The daemon
@@ -973,12 +982,21 @@ export interface RefreshTokenMessage {
  *  Returns a `SecurityEvent[]`, newest first. */
 export interface GetSecurityEventsMessage {
   type: 'get_security_events';
-  /** Cap the response size. Default 200. */
+  /** Page size; with `beforeTs`, returns the next page. */
   limit?: number;
+  /** Cursor: when set, only rows with `ts < beforeTs` are returned. */
+  beforeTs?: number;
   /** When set, only events for this Sentinel account key are returned. */
   accountId?: string;
   /** When false (default), weak signals (confidence < 0.7) are excluded. */
   includeWeakSignals?: boolean;
+  /** When set, only events with this severity are returned. */
+  severity?: SecuritySeverity;
+  /** When set, only events whose `kind` is in this list are returned. */
+  kinds?: SecurityKind[];
+  /** When set, restrict to rows whose title / reason / matchMask /
+   *  sourceHint contains this substring (case-insensitive). */
+  search?: string;
 }
 
 /** Mark a single security event as acknowledged. */

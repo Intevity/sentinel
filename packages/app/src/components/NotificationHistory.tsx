@@ -3,7 +3,10 @@ import { Check, CheckCheck, Shield, ShieldAlert, ShieldX } from 'lucide-react';
 import type { AccountInfo, NotificationRecord, NotificationType } from '@claude-sentinel/shared';
 import { sendToSentinel } from '../lib/ipc.js';
 import { accountColor } from '../lib/accountColor.js';
+import { useInfiniteScroll } from '../hooks/useInfiniteScroll.js';
 import AccountColorDot from './AccountColorDot.js';
+
+export type NotificationCategoryFilter = 'all' | 'usage' | 'security';
 
 const SECURITY_TYPES: ReadonlySet<NotificationType> = new Set([
   'security_low',
@@ -38,6 +41,18 @@ interface NotificationHistoryProps {
    *  keys each notification to its originating account. Optional so
    *  existing call sites still compile; omitted means muted-gray dots. */
   accounts?: AccountInfo[];
+  /** Category chip state. The filter is now applied server-side via
+   *  useNotifications.types in the parent — these props are wire-only.
+   *  When omitted (legacy callers), the chip group hides. */
+  categoryFilter?: NotificationCategoryFilter;
+  onCategoryFilterChange?: (next: NotificationCategoryFilter) => void;
+  /** Pagination handle. When `loadMore` is provided, the component
+   *  appends an IntersectionObserver sentinel beneath the list so it
+   *  can grow as the user scrolls. Without it, the list renders
+   *  single-shot (legacy callers). */
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  loadMore?: () => void;
   onRefresh?: () => void;
 }
 
@@ -68,10 +83,29 @@ export default function NotificationHistory({
   notifications = [],
   accountId,
   accounts,
+  categoryFilter: categoryFilterProp,
+  onCategoryFilterChange,
+  hasMore = false,
+  loadingMore = false,
+  loadMore,
   onRefresh,
 }: NotificationHistoryProps): React.ReactElement {
   const [acknowledging, setAcknowledging] = useState<number | null>(null);
   const [dismissingAll, setDismissingAll] = useState(false);
+
+  // Local-only fallback for legacy callers that don't pass the lifted
+  // filter state. New call sites (AlertsEditor) own the state above so
+  // it can drive server-side `useNotifications.types`.
+  const [localCategoryFilter, setLocalCategoryFilter] = useState<NotificationCategoryFilter>('all');
+  const categoryFilter = categoryFilterProp ?? localCategoryFilter;
+  const setCategoryFilter = onCategoryFilterChange ?? setLocalCategoryFilter;
+  const filterIsServerDriven = categoryFilterProp !== undefined;
+
+  const sentinelRef = useInfiniteScroll({
+    hasMore,
+    loading: loadingMore,
+    loadMore: loadMore ?? (() => undefined),
+  });
 
   const colorFor = useMemo(() => {
     const map = new Map<string, string>();
@@ -103,25 +137,32 @@ export default function NotificationHistory({
     }
   };
 
-  // Show only notifications tied to the active account, plus global events
-  // that aren't bound to any account (account_id IS NULL).
-  const scoped =
-    accountId !== undefined
+  // Account scoping: server-side when AlertsEditor passes the lifted
+  // categoryFilter (it also passes accountId to the daemon), otherwise
+  // we fall back to client-side scoping for legacy callers.
+  const scoped = filterIsServerDriven
+    ? notifications
+    : accountId !== undefined
       ? notifications.filter((n) => n.accountId === accountId || n.accountId == null)
       : notifications;
 
-  const [categoryFilter, setCategoryFilter] = useState<'all' | 'usage' | 'security'>('all');
-  const filtered = scoped.filter((n) => {
-    if (categoryFilter === 'all') return true;
-    if (categoryFilter === 'security') return isSecurityType(n.type);
-    return !isSecurityType(n.type);
-  });
+  const filtered = filterIsServerDriven
+    ? scoped
+    : scoped.filter((n) => {
+        if (categoryFilter === 'all') return true;
+        if (categoryFilter === 'security') return isSecurityType(n.type);
+        return !isSecurityType(n.type);
+      });
 
   const unread = filtered.filter((n) => !n.acknowledged);
   const read = filtered.filter((n) => n.acknowledged);
   const sorted = [...unread, ...read];
 
-  const hasSecurity = scoped.some((n) => isSecurityType(n.type));
+  // When the parent owns the filter state, always surface the chips —
+  // gating on the loaded set (which is itself filtered) would let the
+  // chip group hide and trap the user on a category they can't escape.
+  // Legacy callers (no lifted state) still use the loaded-set heuristic.
+  const hasSecurity = filterIsServerDriven || scoped.some((n) => isSecurityType(n.type));
 
   return (
     <div className="space-y-2 pt-1">
@@ -234,6 +275,11 @@ export default function NotificationHistory({
               </div>
             );
           })}
+          {loadMore && hasMore && (
+            <div ref={sentinelRef} className="py-3 text-center text-[10px] text-[#8E8E93]">
+              {loadingMore ? 'Loading more…' : ' '}
+            </div>
+          )}
         </div>
       )}
     </div>

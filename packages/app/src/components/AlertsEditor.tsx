@@ -1,14 +1,27 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2, Loader2, Pencil, Bell, BellOff } from 'lucide-react';
-import type { AccountInfo, Alert, OAuthAccount } from '@claude-sentinel/shared';
+import type { AccountInfo, Alert, NotificationType, OAuthAccount } from '@claude-sentinel/shared';
 import { useAlerts, type UseAlertsTarget } from '../hooks/useAlerts.js';
 import { useNotifications } from '../hooks/useNotifications.js';
 import { useSettings } from '../hooks/useSettings.js';
-import NotificationHistory from './NotificationHistory.js';
+import NotificationHistory, { type NotificationCategoryFilter } from './NotificationHistory.js';
 import AccountColorDot from './AccountColorDot.js';
 import { accountColor } from '../lib/accountColor.js';
 import { describeAlertsSummary } from '../lib/alertsSummary.js';
 import { SettingsCard } from './settings/primitives.js';
+
+const SECURITY_NOTIFICATION_TYPES: NotificationType[] = [
+  'security_low',
+  'security_medium',
+  'security_high',
+];
+
+const USAGE_NOTIFICATION_TYPES: NotificationType[] = [
+  'overage_entered',
+  'overage_disabled',
+  'account_switched',
+  'usage_alert',
+];
 
 interface AlertsEditorProps {
   activeAccount: OAuthAccount | null;
@@ -67,7 +80,25 @@ export default function AlertsEditor({
   const perAccountWeekly = useAlerts(weeklyTarget);
   const pool = useAlerts(poolTarget);
   const poolWeekly = useAlerts(poolWeeklyTarget);
-  const { notifications, refetch: refetchNotifications } = useNotifications();
+  // Lifted from NotificationHistory so it can drive server-side filtering
+  // through useNotifications.types — keeps the chip UI in sync with the
+  // paginated daemon query without a client-side post-filter.
+  const [categoryFilter, setCategoryFilter] = useState<NotificationCategoryFilter>('all');
+  const notifTypes = useMemo<NotificationType[] | undefined>(() => {
+    if (categoryFilter === 'security') return SECURITY_NOTIFICATION_TYPES;
+    if (categoryFilter === 'usage') return USAGE_NOTIFICATION_TYPES;
+    return undefined;
+  }, [categoryFilter]);
+  const {
+    notifications,
+    hasMore: notifHasMore,
+    loadingMore: notifLoadingMore,
+    loadMore: notifLoadMore,
+    refetch: refetchNotifications,
+  } = useNotifications({
+    ...(accountId !== undefined ? { accountId } : {}),
+    ...(notifTypes !== undefined ? { types: notifTypes } : {}),
+  });
 
   return (
     <div className="space-y-4 pt-1">
@@ -225,6 +256,11 @@ export default function AlertsEditor({
           notifications={notifications}
           accounts={accounts}
           {...(accountId !== undefined ? { accountId } : {})}
+          categoryFilter={categoryFilter}
+          onCategoryFilterChange={setCategoryFilter}
+          hasMore={notifHasMore}
+          loadingMore={notifLoadingMore}
+          loadMore={notifLoadMore}
           onRefresh={() => {
             void refetchNotifications();
           }}

@@ -706,6 +706,102 @@ describe('Database', () => {
       const limited = listNotifications(db, { limit: 3 });
       expect(limited).toHaveLength(3);
     });
+
+    it('beforeTs cursor pages older notifications', () => {
+      const now = Date.now();
+      // Three notifications at distinct ts; ORDER BY ts DESC → newest first.
+      insertNotification(db, {
+        ts: now - 3000,
+        accountId: null,
+        type: 'account_switched',
+        title: 'old',
+        body: 'B',
+      });
+      insertNotification(db, {
+        ts: now - 2000,
+        accountId: null,
+        type: 'account_switched',
+        title: 'mid',
+        body: 'B',
+      });
+      insertNotification(db, {
+        ts: now - 1000,
+        accountId: null,
+        type: 'account_switched',
+        title: 'new',
+        body: 'B',
+      });
+      const firstPage = listNotifications(db, { limit: 2 });
+      expect(firstPage.map((n) => n.title)).toEqual(['new', 'mid']);
+      const cursor = firstPage[firstPage.length - 1]!.ts;
+      const secondPage = listNotifications(db, { limit: 2, beforeTs: cursor });
+      expect(secondPage.map((n) => n.title)).toEqual(['old']);
+    });
+
+    it('accountId filter includes account-bound + global rows', () => {
+      // Account-bound row.
+      insertNotification(db, {
+        ts: Date.now(),
+        accountId: 'acc-a',
+        type: 'overage_entered',
+        title: 'acc-a row',
+        body: 'B',
+      });
+      // Different-account row — must NOT come back.
+      insertNotification(db, {
+        ts: Date.now(),
+        accountId: 'acc-b',
+        type: 'overage_entered',
+        title: 'acc-b row',
+        body: 'B',
+      });
+      // Global row — must come back regardless of accountId filter.
+      insertNotification(db, {
+        ts: Date.now(),
+        accountId: null,
+        type: 'account_switched',
+        title: 'global row',
+        body: 'B',
+      });
+      const titles = listNotifications(db, { accountId: 'acc-a' })
+        .map((n) => n.title)
+        .sort();
+      expect(titles).toEqual(['acc-a row', 'global row']);
+    });
+
+    it('types filter restricts to the given NotificationType set', () => {
+      insertNotification(db, {
+        ts: Date.now(),
+        accountId: null,
+        type: 'security_high',
+        title: 'sec-high',
+        body: 'B',
+      });
+      insertNotification(db, {
+        ts: Date.now(),
+        accountId: null,
+        type: 'usage_alert',
+        title: 'usage',
+        body: 'B',
+      });
+      insertNotification(db, {
+        ts: Date.now(),
+        accountId: null,
+        type: 'overage_entered',
+        title: 'overage',
+        body: 'B',
+      });
+      const security = listNotifications(db, {
+        types: ['security_low', 'security_medium', 'security_high'],
+      });
+      expect(security.map((n) => n.title)).toEqual(['sec-high']);
+      const usage = listNotifications(db, {
+        types: ['usage_alert', 'overage_entered', 'overage_disabled', 'account_switched'],
+      });
+      expect(usage.map((n) => n.title).sort()).toEqual(['overage', 'usage']);
+      // Empty array = no constraint applied.
+      expect(listNotifications(db, { types: [] })).toHaveLength(3);
+    });
   });
 
   // ── Rate limit queries ────────────────────────────────────────────────────────

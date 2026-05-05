@@ -265,6 +265,124 @@ describe('security_events DB helpers', () => {
     }
     expect(listSecurityEvents(db)[0]!.details).toBeNull();
   });
+
+  // ─── Server-side filters: severity / kinds / search / beforeTs ─────────────
+  // These power the Security tab's infinite-scroll pagination (no offset
+  // because new events can land mid-scroll; ts is the natural cursor) and
+  // the chip-driven filter strip. Tests assert each filter individually
+  // and in combination so the SQL composition stays sound.
+
+  it('filters by severity', () => {
+    const db = getDb(dbPath);
+    insertSecurityEvent(db, makeEvent({ severity: 'high', matchHash: 'h-high' }));
+    insertSecurityEvent(db, makeEvent({ severity: 'medium', matchHash: 'h-med' }));
+    insertSecurityEvent(db, makeEvent({ severity: 'low', kind: 'pii', matchHash: 'h-low' }));
+    expect(listSecurityEvents(db, { severity: 'high' })).toHaveLength(1);
+    expect(listSecurityEvents(db, { severity: 'medium' })[0]!.matchHash).toBe('h-med');
+    expect(listSecurityEvents(db, { severity: 'low' })[0]!.severity).toBe('low');
+  });
+
+  it('filters by kinds set', () => {
+    const db = getDb(dbPath);
+    insertSecurityEvent(db, makeEvent({ kind: 'secret', matchHash: 'h-sec' }));
+    insertSecurityEvent(db, makeEvent({ kind: 'pii', matchHash: 'h-pii' }));
+    insertSecurityEvent(db, makeEvent({ kind: 'tool_permission_blocked', matchHash: 'h-tool' }));
+    const scanner = listSecurityEvents(db, { kinds: ['secret', 'pii'] });
+    expect(scanner.map((e) => e.kind).sort()).toEqual(['pii', 'secret']);
+    const tool = listSecurityEvents(db, { kinds: ['tool_permission_blocked'] });
+    expect(tool).toHaveLength(1);
+    expect(tool[0]!.kind).toBe('tool_permission_blocked');
+    // Empty array is treated as "no filter applied" — falsy length skip.
+    expect(listSecurityEvents(db, { kinds: [] })).toHaveLength(3);
+  });
+
+  it('search matches title / reason / matchMask / sourceHint, case-insensitive', () => {
+    const db = getDb(dbPath);
+    insertSecurityEvent(db, makeEvent({ title: 'AWS access key', matchHash: 'h-title' }));
+    insertSecurityEvent(
+      db,
+      makeEvent({
+        title: 'GitHub token',
+        reason: 'Likely PEM private key in payload',
+        matchHash: 'h-reason',
+      }),
+    );
+    insertSecurityEvent(
+      db,
+      makeEvent({ title: 'Other', matchMask: 'sk-AbCdEf...', matchHash: 'h-mask' }),
+    );
+    insertSecurityEvent(
+      db,
+      makeEvent({ title: 'Other2', sourceHint: '/var/log/secrets.txt', matchHash: 'h-hint' }),
+    );
+    expect(listSecurityEvents(db, { search: 'aws' }).map((e) => e.matchHash)).toEqual(['h-title']);
+    // Case-insensitive: uppercase query hits lowercase content.
+    expect(listSecurityEvents(db, { search: 'PEM' }).map((e) => e.matchHash)).toEqual(['h-reason']);
+    expect(listSecurityEvents(db, { search: 'sk-' }).map((e) => e.matchHash)).toEqual(['h-mask']);
+    expect(listSecurityEvents(db, { search: 'secrets.txt' }).map((e) => e.matchHash)).toEqual([
+      'h-hint',
+    ]);
+    // Whitespace-only search is ignored (no constraint).
+    expect(listSecurityEvents(db, { search: '   ' })).toHaveLength(4);
+    // Non-matching query returns nothing.
+    expect(listSecurityEvents(db, { search: 'no-such-token' })).toHaveLength(0);
+  });
+
+  it('beforeTs cursor pages older events', () => {
+    const db = getDb(dbPath);
+    const now = Date.now();
+    // Three events at distinct ts; ORDER BY ts DESC means newest first.
+    insertSecurityEvent(db, makeEvent({ ts: now - 3000, matchHash: 'h-old' }));
+    insertSecurityEvent(db, makeEvent({ ts: now - 2000, matchHash: 'h-mid' }));
+    insertSecurityEvent(db, makeEvent({ ts: now - 1000, matchHash: 'h-new' }));
+    const firstPage = listSecurityEvents(db, { limit: 2 });
+    expect(firstPage.map((e) => e.matchHash)).toEqual(['h-new', 'h-mid']);
+    const cursor = firstPage[firstPage.length - 1]!.ts;
+    const secondPage = listSecurityEvents(db, { limit: 2, beforeTs: cursor });
+    expect(secondPage.map((e) => e.matchHash)).toEqual(['h-old']);
+    // Cursor at the oldest ts returns no further rows.
+    const empty = listSecurityEvents(db, {
+      limit: 2,
+      beforeTs: secondPage[0]!.ts,
+    });
+    expect(empty).toHaveLength(0);
+  });
+
+  it('combines beforeTs cursor with kinds + severity filters', () => {
+    const db = getDb(dbPath);
+    const now = Date.now();
+    // Mix of severities and kinds; only one row matches "kind=secret AND severity=high
+    // AND ts < cursor".
+    insertSecurityEvent(
+      db,
+      makeEvent({ ts: now - 4000, severity: 'high', kind: 'secret', matchHash: 'older-secret' }),
+    );
+    insertSecurityEvent(
+      db,
+      makeEvent({ ts: now - 3000, severity: 'medium', kind: 'secret', matchHash: 'older-med' }),
+    );
+    insertSecurityEvent(
+      db,
+      makeEvent({ ts: now - 2000, severity: 'high', kind: 'pii', matchHash: 'wrong-kind' }),
+    );
+    insertSecurityEvent(
+      db,
+      makeEvent({ ts: now - 1000, severity: 'high', kind: 'secret', matchHash: 'newest-secret' }),
+    );
+    const newest = listSecurityEvents(db, {
+      limit: 1,
+      severity: 'high',
+      kinds: ['secret'],
+    });
+    expect(newest.map((e) => e.matchHash)).toEqual(['newest-secret']);
+    const next = listSecurityEvents(db, {
+      limit: 5,
+      severity: 'high',
+      kinds: ['secret'],
+      beforeTs: newest[0]!.ts,
+    });
+    expect(next.map((e) => e.matchHash)).toEqual(['older-secret']);
+  });
 });
 
 describe('security_allowlist DB helpers', () => {
