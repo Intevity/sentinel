@@ -8,6 +8,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'fs';
+import { randomUUID } from 'crypto';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import type {
@@ -106,7 +107,43 @@ export const DEFAULT_SETTINGS: Settings = {
   optimizeShowMicroOpportunities: false,
   optimizeUnits: 'tokens',
   optimizeChartView: 'realized',
+  otelForwardingEnabled: false,
+  otelForwardMetrics: true,
+  otelForwardLogs: true,
+  otelEmitSentinelMetrics: true,
+  otelExporterEndpoint: null,
+  otelExporterHeaderName: 'signoz-ingestion-key',
+  // Empty default; `coerce()` substitutes a freshly-generated UUID v4
+  // on every load when the persisted value is blank or malformed, so
+  // existing installs auto-populate on next read without a migration.
+  otelServiceInstanceId: '',
 };
+
+/** RFC 7230 token: `tchar = ALPHA / DIGIT / "!" / "#" / "$" / "%" / "&" /
+ *  "'" / "*" / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~"`. Used to
+ *  validate the OTEL exporter auth-header name. */
+const HTTP_HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/;
+
+/** Hosts considered loopback. Plain `http://` is accepted only for these
+ *  so a misconfigured production setup can't quietly leak the ingestion
+ *  key in plaintext. */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+/** Strict UUID v4 shape (lowercase hex, version nibble = 4, variant
+ *  high-bits = 10xx i.e. one of 8/9/a/b). Anything else is treated as
+ *  invalid and replaced via `randomUUID()` on the next load. Avoids a
+ *  loose-match drift where `'aaaa-…'` would slip through. */
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** Build a fresh `Settings` object with every field at its default value
+ *  AND a freshly-generated `otelServiceInstanceId` (DEFAULT_SETTINGS'
+ *  empty-string sentinel exists only so coerce can detect a missing
+ *  persisted value). Used everywhere a "no file / tampered file" branch
+ *  needs a Settings to return — keeps the instance-id auto-population
+ *  invariant in one place rather than per-callsite. */
+function freshDefaults(): Settings {
+  return { ...DEFAULT_SETTINGS, otelServiceInstanceId: randomUUID() };
+}
 
 const VALID_MODES: readonly SwitchingMode[] = ['off', 'round-robin'];
 const VALID_RR_STRATEGIES: readonly RoundRobinStrategy[] = ['balance', 'earliest-reset'];
@@ -458,6 +495,64 @@ function coerce(raw: unknown): Settings {
   ) {
     next.optimizeChartView = obj['optimizeChartView'];
   }
+  if (typeof obj['otelForwardingEnabled'] === 'boolean') {
+    next.otelForwardingEnabled = obj['otelForwardingEnabled'];
+  }
+  if (typeof obj['otelForwardMetrics'] === 'boolean') {
+    next.otelForwardMetrics = obj['otelForwardMetrics'];
+  }
+  if (typeof obj['otelForwardLogs'] === 'boolean') {
+    next.otelForwardLogs = obj['otelForwardLogs'];
+  }
+  if (typeof obj['otelEmitSentinelMetrics'] === 'boolean') {
+    next.otelEmitSentinelMetrics = obj['otelEmitSentinelMetrics'];
+  }
+  if (obj['otelExporterEndpoint'] === null) {
+    next.otelExporterEndpoint = null;
+  } else if (typeof obj['otelExporterEndpoint'] === 'string') {
+    const trimmed = (obj['otelExporterEndpoint'] as string).trim();
+    if (trimmed === '') {
+      next.otelExporterEndpoint = null;
+    } else {
+      try {
+        const u = new URL(trimmed);
+        const host = u.hostname.toLowerCase();
+        const accept =
+          u.protocol === 'https:' || (u.protocol === 'http:' && LOOPBACK_HOSTS.has(host));
+        if (accept) {
+          // Strip trailing slashes; preserve port + base path so SigNoz-style
+          // `https://ingest.us2.signoz.cloud:443` and vendor-specific base
+          // paths both round-trip.
+          next.otelExporterEndpoint = trimmed.replace(/\/+$/, '');
+        }
+        // else: silently drop. Keeps the previous default of null on a
+        // partial update payload that includes a rejected URL.
+      } catch {
+        // Malformed URL; leave the default (null) intact.
+      }
+    }
+  }
+  if (typeof obj['otelExporterHeaderName'] === 'string') {
+    const candidate = (obj['otelExporterHeaderName'] as string).trim();
+    if (candidate === '') {
+      next.otelExporterHeaderName = DEFAULT_SETTINGS.otelExporterHeaderName;
+    } else if (HTTP_HEADER_NAME_RE.test(candidate)) {
+      next.otelExporterHeaderName = candidate;
+    }
+    // Invalid characters: silently drop, keep default.
+  }
+  // Service-instance-id auto-population: accept a valid persisted UUID
+  // verbatim, otherwise mint a fresh one. The `next` object will be
+  // saved on the next `saveSettings()` call, so a freshly-minted id
+  // gets persisted lazily without a dedicated first-run hook.
+  if (
+    typeof obj['otelServiceInstanceId'] === 'string' &&
+    UUID_V4_RE.test(obj['otelServiceInstanceId'] as string)
+  ) {
+    next.otelServiceInstanceId = obj['otelServiceInstanceId'] as string;
+  } else {
+    next.otelServiceInstanceId = randomUUID();
+  }
   return next;
 }
 
@@ -510,7 +605,7 @@ function sigPath(p: string): string {
 export function loadSettingsWithTamper(path?: string): LoadSettingsResult {
   const p = path ?? currentSettingsPath();
   const empty: LoadSettingsResult = {
-    settings: { ...DEFAULT_SETTINGS },
+    settings: freshDefaults(),
     tamperDetected: false,
     reason: null,
     path: p,
@@ -528,7 +623,7 @@ export function loadSettingsWithTamper(path?: string): LoadSettingsResult {
           `[Settings] Insecure file mode ${mode.toString(8)} on ${p} — falling back to defaults`,
         );
         return {
-          settings: { ...DEFAULT_SETTINGS },
+          settings: freshDefaults(),
           tamperDetected: true,
           reason: 'loose_mode',
           path: p,
@@ -557,7 +652,7 @@ export function loadSettingsWithTamper(path?: string): LoadSettingsResult {
   if (!existsSync(sp)) {
     console.warn(`[Settings] Missing signature file ${sp} — falling back to defaults`);
     return {
-      settings: { ...DEFAULT_SETTINGS },
+      settings: freshDefaults(),
       tamperDetected: true,
       reason: 'missing_sig',
       path: p,
@@ -569,7 +664,7 @@ export function loadSettingsWithTamper(path?: string): LoadSettingsResult {
   } catch {
     /* v8 ignore next 2 */
     return {
-      settings: { ...DEFAULT_SETTINGS },
+      settings: freshDefaults(),
       tamperDetected: true,
       reason: 'missing_sig',
       path: p,
@@ -579,7 +674,7 @@ export function loadSettingsWithTamper(path?: string): LoadSettingsResult {
   if (!verifySettings(bytes, expectedSig)) {
     console.error(`[Settings] HMAC mismatch on ${p} — falling back to defaults`);
     return {
-      settings: { ...DEFAULT_SETTINGS },
+      settings: freshDefaults(),
       tamperDetected: true,
       reason: 'sig_mismatch',
       path: p,

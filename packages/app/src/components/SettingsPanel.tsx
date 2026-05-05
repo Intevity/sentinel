@@ -15,6 +15,7 @@ import { useSettings } from '../hooks/useSettings.js';
 import { useInlineConfirm } from '../hooks/useInlineConfirm.js';
 import { usePermissionBypasses } from '../hooks/usePermissionBypasses.js';
 import { useClaudeSyncStatus } from '../hooks/useClaudeSyncStatus.js';
+import { useOtelExporter } from '../hooks/useOtelExporter.js';
 import { useScanBenchmark } from '../hooks/useScanBenchmark.js';
 import { useDaemon } from '../hooks/useDaemon.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
@@ -185,6 +186,25 @@ export default function SettingsPanel({
   };
   const setOptimizeShowMicroOpportunities = (v: boolean): void => {
     void update({ optimizeShowMicroOpportunities: v }).catch(() => undefined);
+  };
+  const setOtelForwardingEnabled = (v: boolean): void => {
+    void update({ otelForwardingEnabled: v }).catch(() => undefined);
+  };
+  const setOtelForwardMetrics = (v: boolean): void => {
+    void update({ otelForwardMetrics: v }).catch(() => undefined);
+  };
+  const setOtelForwardLogs = (v: boolean): void => {
+    void update({ otelForwardLogs: v }).catch(() => undefined);
+  };
+  const setOtelEmitSentinelMetrics = (v: boolean): void => {
+    void update({ otelEmitSentinelMetrics: v }).catch(() => undefined);
+  };
+  const setOtelExporterEndpoint = (value: string): void => {
+    const trimmed = value.trim();
+    void update({ otelExporterEndpoint: trimmed === '' ? null : trimmed }).catch(() => undefined);
+  };
+  const setOtelExporterHeaderName = (value: string): void => {
+    void update({ otelExporterHeaderName: value }).catch(() => undefined);
   };
   const [requestLogClearConfirm, setRequestLogClearConfirm] = useState(false);
   const clearRequestLogsConfirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -754,6 +774,88 @@ export default function SettingsPanel({
               </Section>
             )}
 
+            {activeTab === 'data' && (
+              <Section title="External OTEL forwarding">
+                <div className="px-3 py-2.5">
+                  <p className="text-[11px] text-[#8E8E93] leading-snug">
+                    Relay Claude Code's OTEL metrics and logs to an external observability backend
+                    like SigNoz Cloud. Sentinel keeps storing telemetry locally for the Metrics tab;
+                    this adds an outbound copy and emits Sentinel-specific signals such as the Cache
+                    TTL breakdown, tagged with service.name=claude-sentinel.
+                  </p>
+                </div>
+                <ToggleRow
+                  label="Enable forwarding"
+                  description="When off, no outbound HTTP fires regardless of the fields below."
+                  checked={settings.otelForwardingEnabled}
+                  onChange={setOtelForwardingEnabled}
+                />
+                <div
+                  className={settings.otelForwardingEnabled ? '' : 'opacity-50 pointer-events-none'}
+                >
+                  <div className="px-3 py-2.5">
+                    <label
+                      htmlFor="otel-endpoint"
+                      className="block text-[13px] font-medium text-black dark:text-white mb-1"
+                    >
+                      OTLP/HTTP endpoint
+                    </label>
+                    <input
+                      id="otel-endpoint"
+                      type="text"
+                      value={settings.otelExporterEndpoint ?? ''}
+                      placeholder="https://ingest.us2.signoz.cloud:443"
+                      onChange={(e) => setOtelExporterEndpoint(e.target.value)}
+                      className="w-full px-2 py-1 text-[12px] border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-black dark:text-white"
+                    />
+                    <p className="text-[11px] text-[#8E8E93] mt-1 leading-snug">
+                      Sentinel appends /v1/metrics and /v1/logs to this base. HTTPS required except
+                      on localhost.
+                    </p>
+                  </div>
+                  <div className="px-3 py-2.5">
+                    <label
+                      htmlFor="otel-header-name"
+                      className="block text-[13px] font-medium text-black dark:text-white mb-1"
+                    >
+                      Auth header name
+                    </label>
+                    <input
+                      id="otel-header-name"
+                      type="text"
+                      value={settings.otelExporterHeaderName}
+                      onChange={(e) => setOtelExporterHeaderName(e.target.value)}
+                      className="w-full px-2 py-1 text-[12px] border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-black dark:text-white"
+                    />
+                    <p className="text-[11px] text-[#8E8E93] mt-1 leading-snug">
+                      The HTTP header name used to carry your ingestion key. SigNoz uses
+                      &quot;signoz-ingestion-key&quot;; other backends differ.
+                    </p>
+                  </div>
+                  <OtelSecretRow />
+                  <ToggleRow
+                    label="Forward metrics"
+                    description="Tee the /v1/metrics OTLP/HTTP bodies Sentinel receives from Claude Code."
+                    checked={settings.otelForwardMetrics}
+                    onChange={setOtelForwardMetrics}
+                  />
+                  <ToggleRow
+                    label="Forward logs"
+                    description="Tee the /v1/logs OTLP/HTTP bodies Sentinel receives from Claude Code."
+                    checked={settings.otelForwardLogs}
+                    onChange={setOtelForwardLogs}
+                  />
+                  <ToggleRow
+                    label="Emit Sentinel custom metrics"
+                    description="Adds Sentinel-specific signals (cache TTL breakdown, per-account 5h usage, account switches, security events, proxy traffic) on a 30s cadence. Tagged with service.name=claude-sentinel so dashboards can split them from the Claude Code stream."
+                    checked={settings.otelEmitSentinelMetrics}
+                    onChange={setOtelEmitSentinelMetrics}
+                  />
+                  <OtelStatusRow />
+                </div>
+              </Section>
+            )}
+
             {activeTab === 'general' && (
               <Section title="Notifications">
                 <ToggleRow
@@ -1150,6 +1252,151 @@ export default function SettingsPanel({
         )}
       </div>
     </OverlayPanel>
+  );
+}
+
+// ─── External OTEL forwarding subcomponents ──────────────────────────────
+
+/** Secret input + Save/Clear buttons + status pill. The secret value
+ *  itself is write-only: the daemon never echoes it back, and the UI
+ *  only ever sees a `secretConfigured` boolean. Mirrors the precedent
+ *  set by `securityWebhookSecret`. */
+function OtelSecretRow(): React.ReactElement {
+  const { status, setSecret, clearSecret, test } = useOtelExporter();
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  const onSave = async (): Promise<void> => {
+    if (draft === '') return;
+    setSaving(true);
+    try {
+      await setSecret(draft);
+      setDraft('');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onClear = async (): Promise<void> => {
+    setSaving(true);
+    try {
+      await clearSecret();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onTest = async (): Promise<void> => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await test();
+      if (!result) {
+        setTestResult('Test failed: no response from daemon');
+        return;
+      }
+      setTestResult(
+        result.ok ? `Test ok (HTTP ${result.status ?? '???'})` : `Test failed: ${result.message}`,
+      );
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const configured = status?.secretConfigured ?? false;
+
+  return (
+    <div className="px-3 py-2.5">
+      <label
+        htmlFor="otel-secret"
+        className="block text-[13px] font-medium text-black dark:text-white mb-1"
+      >
+        Ingestion key (secret)
+      </label>
+      <div className="flex gap-2">
+        <input
+          id="otel-secret"
+          type="password"
+          autoComplete="off"
+          value={draft}
+          placeholder={configured ? 'configured (paste a new value to replace)' : 'paste your key'}
+          onChange={(e) => setDraft(e.target.value)}
+          className="flex-1 px-2 py-1 text-[12px] border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-black dark:text-white"
+        />
+        <button
+          type="button"
+          onClick={() => {
+            void onSave();
+          }}
+          disabled={saving || draft === ''}
+          className="px-2.5 py-1 text-[12px] font-medium rounded bg-ios-blue text-white disabled:opacity-50"
+        >
+          Save
+        </button>
+        {configured && (
+          <button
+            type="button"
+            onClick={() => {
+              void onClear();
+            }}
+            disabled={saving}
+            className="px-2.5 py-1 text-[12px] font-medium rounded border border-gray-300 dark:border-gray-700 text-ios-red disabled:opacity-50"
+          >
+            Clear
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            void onTest();
+          }}
+          disabled={testing || !configured}
+          className="px-2.5 py-1 text-[12px] font-medium rounded border border-gray-300 dark:border-gray-700 text-black dark:text-white disabled:opacity-50"
+          title="Send a synthetic OTLP request to verify the endpoint and key"
+        >
+          Test
+        </button>
+      </div>
+      <div className="flex items-center gap-2 mt-1.5">
+        <span
+          className={`text-[11px] font-medium ${configured ? 'text-ios-green' : 'text-[#8E8E93]'}`}
+        >
+          {configured ? 'Key: configured' : 'Key: not set'}
+        </span>
+        {testResult !== null && (
+          <span
+            className={`text-[11px] ${testResult.startsWith('Test ok') ? 'text-ios-green' : 'text-ios-red'}`}
+          >
+            {testResult}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Compact status row: counters + last-error if any. Reads from the
+ *  same `useOtelExporter` hook so it stays live without polling. */
+function OtelStatusRow(): React.ReactElement {
+  const { status } = useOtelExporter();
+  if (!status) {
+    return <div className="px-3 py-2 text-[11px] text-[#8E8E93]">Loading status…</div>;
+  }
+  const lastOk =
+    status.lastForwardOkAt !== null
+      ? new Date(status.lastForwardOkAt).toLocaleTimeString()
+      : 'never';
+  return (
+    <div className="px-3 py-2 text-[11px] text-[#8E8E93] tabular-nums">
+      <div>
+        Sent {status.sent} · Failed {status.failed} · Dropped {status.dropped} · Last ok {lastOk}
+      </div>
+      {status.lastForwardErr !== null && (
+        <div className="text-ios-red mt-0.5">Last error: {status.lastForwardErr}</div>
+      )}
+    </div>
   );
 }
 

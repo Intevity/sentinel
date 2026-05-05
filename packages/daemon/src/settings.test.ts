@@ -68,18 +68,29 @@ describe('settings', () => {
   });
 
   describe('loadSettings', () => {
+    // The otelServiceInstanceId default is auto-generated on every load when
+    // the persisted value is missing or invalid, so it's deliberately
+    // non-deterministic. Strip it before comparing wholesale to DEFAULT_SETTINGS.
+    const stripInstanceId = (
+      s: ReturnType<typeof loadSettings>,
+    ): Omit<ReturnType<typeof loadSettings>, 'otelServiceInstanceId'> => {
+      const { otelServiceInstanceId: _ignored, ...rest } = s;
+      return rest;
+    };
+    const defaultsWithoutInstanceId = stripInstanceId(DEFAULT_SETTINGS);
+
     it('returns defaults when the file does not exist', () => {
-      expect(loadSettings(path)).toEqual(DEFAULT_SETTINGS);
+      expect(stripInstanceId(loadSettings(path))).toEqual(defaultsWithoutInstanceId);
     });
 
     it('returns defaults when the file is unparseable', () => {
       writeRawWithSig(path, 'not json at all', 'utf-8');
-      expect(loadSettings(path)).toEqual(DEFAULT_SETTINGS);
+      expect(stripInstanceId(loadSettings(path))).toEqual(defaultsWithoutInstanceId);
     });
 
     it('returns defaults when the file contains a non-object', () => {
       writeRawWithSig(path, '"a string"', 'utf-8');
-      expect(loadSettings(path)).toEqual(DEFAULT_SETTINGS);
+      expect(stripInstanceId(loadSettings(path))).toEqual(defaultsWithoutInstanceId);
     });
 
     it('preserves valid fields and backfills invalid ones with defaults', () => {
@@ -309,6 +320,125 @@ describe('settings', () => {
       expect(bad.securitySetupCompleted).toBe(DEFAULT_SETTINGS.securitySetupCompleted);
       expect(bad.tourCompleted).toBe(DEFAULT_SETTINGS.tourCompleted);
     });
+
+    it('OTEL: defaults the forwarding fields to off/null/signoz on a fresh install', () => {
+      const got = loadSettings(path);
+      expect(got.otelForwardingEnabled).toBe(false);
+      expect(got.otelForwardMetrics).toBe(true);
+      expect(got.otelForwardLogs).toBe(true);
+      expect(got.otelEmitSentinelMetrics).toBe(true);
+      expect(got.otelExporterEndpoint).toBe(null);
+      expect(got.otelExporterHeaderName).toBe('signoz-ingestion-key');
+    });
+
+    it('OTEL: accepts an https endpoint and strips trailing slashes', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({ otelExporterEndpoint: 'https://ingest.us2.signoz.cloud:443/' }),
+      );
+      expect(loadSettings(path).otelExporterEndpoint).toBe('https://ingest.us2.signoz.cloud:443');
+    });
+
+    it('OTEL: accepts http on loopback (localhost / 127.0.0.1)', () => {
+      writeRawWithSig(path, JSON.stringify({ otelExporterEndpoint: 'http://localhost:4318' }));
+      expect(loadSettings(path).otelExporterEndpoint).toBe('http://localhost:4318');
+      writeRawWithSig(path, JSON.stringify({ otelExporterEndpoint: 'http://127.0.0.1:4318' }));
+      expect(loadSettings(path).otelExporterEndpoint).toBe('http://127.0.0.1:4318');
+    });
+
+    it('OTEL: rejects http to a non-loopback host (TLS-required gate)', () => {
+      writeRawWithSig(path, JSON.stringify({ otelExporterEndpoint: 'http://example.com:4318' }));
+      expect(loadSettings(path).otelExporterEndpoint).toBe(DEFAULT_SETTINGS.otelExporterEndpoint);
+    });
+
+    it('OTEL: rejects malformed URLs', () => {
+      writeRawWithSig(path, JSON.stringify({ otelExporterEndpoint: 'not a url' }));
+      expect(loadSettings(path).otelExporterEndpoint).toBe(DEFAULT_SETTINGS.otelExporterEndpoint);
+    });
+
+    it('OTEL: empty endpoint string maps to null', () => {
+      writeRawWithSig(path, JSON.stringify({ otelExporterEndpoint: '' }));
+      expect(loadSettings(path).otelExporterEndpoint).toBe(null);
+    });
+
+    it('OTEL: header name accepts RFC 7230 tokens', () => {
+      writeRawWithSig(path, JSON.stringify({ otelExporterHeaderName: 'x-honeycomb-team' }));
+      expect(loadSettings(path).otelExporterHeaderName).toBe('x-honeycomb-team');
+    });
+
+    it('OTEL: header name rejects invalid characters and falls back to default', () => {
+      writeRawWithSig(path, JSON.stringify({ otelExporterHeaderName: 'has spaces' }));
+      expect(loadSettings(path).otelExporterHeaderName).toBe(
+        DEFAULT_SETTINGS.otelExporterHeaderName,
+      );
+    });
+
+    it('OTEL: empty header name resets to the default rather than wiping', () => {
+      writeRawWithSig(path, JSON.stringify({ otelExporterHeaderName: '' }));
+      expect(loadSettings(path).otelExporterHeaderName).toBe(
+        DEFAULT_SETTINGS.otelExporterHeaderName,
+      );
+    });
+
+    it('OTEL: round-trips the boolean toggles', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          otelForwardingEnabled: true,
+          otelForwardMetrics: false,
+          otelForwardLogs: false,
+          otelEmitSentinelMetrics: false,
+        }),
+      );
+      const got = loadSettings(path);
+      expect(got.otelForwardingEnabled).toBe(true);
+      expect(got.otelForwardMetrics).toBe(false);
+      expect(got.otelForwardLogs).toBe(false);
+      expect(got.otelEmitSentinelMetrics).toBe(false);
+    });
+
+    it('OTEL: otelServiceInstanceId is generated when missing, with a UUID v4 shape', () => {
+      // Empty file → coerce mints a fresh UUID.
+      const got = loadSettings(path);
+      expect(got.otelServiceInstanceId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+    });
+
+    it('OTEL: otelServiceInstanceId round-trips a valid UUID v4 verbatim', () => {
+      const uuid = '12345678-90ab-4cde-8f01-234567890abc';
+      writeRawWithSig(path, JSON.stringify({ otelServiceInstanceId: uuid }));
+      expect(loadSettings(path).otelServiceInstanceId).toBe(uuid);
+    });
+
+    it('OTEL: otelServiceInstanceId regenerates on a malformed value', () => {
+      writeRawWithSig(path, JSON.stringify({ otelServiceInstanceId: 'not-a-uuid' }));
+      const got = loadSettings(path);
+      expect(got.otelServiceInstanceId).not.toBe('not-a-uuid');
+      expect(got.otelServiceInstanceId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+    });
+
+    it('OTEL: otelServiceInstanceId regenerates on an empty string', () => {
+      writeRawWithSig(path, JSON.stringify({ otelServiceInstanceId: '' }));
+      const got = loadSettings(path);
+      expect(got.otelServiceInstanceId).not.toBe('');
+      expect(got.otelServiceInstanceId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+    });
+
+    it('OTEL: otelServiceInstanceId rejects a non-v4 UUID (wrong version nibble)', () => {
+      // v1-shaped UUID — version nibble is 1, not 4. coerce should regen.
+      const v1 = '11111111-1111-1111-8111-111111111111';
+      writeRawWithSig(path, JSON.stringify({ otelServiceInstanceId: v1 }));
+      const got = loadSettings(path);
+      expect(got.otelServiceInstanceId).not.toBe(v1);
+      expect(got.otelServiceInstanceId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+    });
   });
 
   describe('saveSettings', () => {
@@ -320,6 +450,10 @@ describe('settings', () => {
         alertSoundName: 'Glass',
         autoUpdate: true,
         poolExcludedIds: [],
+        // Persist a valid UUID so loadSettings preserves it verbatim;
+        // DEFAULT_SETTINGS' empty-string sentinel would be regenerated
+        // by coerce on load and break the round-trip equality check.
+        otelServiceInstanceId: '12345678-90ab-4cde-8f01-234567890abc',
       };
       saveSettings(wanted, path);
       expect(existsSync(path)).toBe(true);

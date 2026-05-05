@@ -760,6 +760,74 @@ describe('IPC — probes and purges', () => {
   });
 });
 
+// ─── External OTEL forwarder ────────────────────────────────────────────────
+
+describe('IPC — OTEL exporter', () => {
+  it('get_otel_exporter_status returns a not-configured status on fresh install', async () => {
+    ctx = await startTestDaemon();
+    const r = await ctx.request<{
+      secretConfigured: boolean;
+      ready: boolean;
+      sent: number;
+      failed: number;
+      dropped: number;
+      lastForwardOkAt: number | null;
+      lastForwardErr: string | null;
+      inFlight: number;
+    }>({ type: 'get_otel_exporter_status' });
+    expect(r.success).toBe(true);
+    expect(r.data?.secretConfigured).toBe(false);
+    expect(r.data?.ready).toBe(false);
+    expect(r.data?.sent).toBe(0);
+  });
+
+  it('set_otel_exporter_secret + get_otel_exporter_status flips configured to true', async () => {
+    ctx = await startTestDaemon();
+    const setResp = await ctx.request({
+      type: 'set_otel_exporter_secret',
+      value: 'my-ingestion-key',
+    });
+    expect(setResp.success).toBe(true);
+    const r = await ctx.request<{ secretConfigured: boolean }>({
+      type: 'get_otel_exporter_status',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.secretConfigured).toBe(true);
+  });
+
+  it('clear_otel_exporter_secret flips configured back to false', async () => {
+    ctx = await startTestDaemon();
+    await ctx.request({ type: 'set_otel_exporter_secret', value: 'k' });
+    await ctx.request({ type: 'clear_otel_exporter_secret' });
+    const r = await ctx.request<{ secretConfigured: boolean }>({
+      type: 'get_otel_exporter_status',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.secretConfigured).toBe(false);
+  });
+
+  it('set_otel_exporter_secret with empty value clears the slot', async () => {
+    ctx = await startTestDaemon();
+    await ctx.request({ type: 'set_otel_exporter_secret', value: 'abc' });
+    await ctx.request({ type: 'set_otel_exporter_secret', value: '' });
+    const r = await ctx.request<{ secretConfigured: boolean }>({
+      type: 'get_otel_exporter_status',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.secretConfigured).toBe(false);
+  });
+
+  it('test_otel_exporter reports no-endpoint cleanly', async () => {
+    ctx = await startTestDaemon();
+    const r = await ctx.request<{ ok: boolean; status: number | null; message: string }>({
+      type: 'test_otel_exporter',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.ok).toBe(false);
+    expect(r.data?.message).toBe('no endpoint configured');
+  });
+});
+
 // ─── Scan benchmark ─────────────────────────────────────────────────────────
 
 describe('IPC — scan benchmark', () => {

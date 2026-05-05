@@ -501,6 +501,54 @@ export interface Settings {
    *  renders. */
   optimizeChartView: OptimizeChartView;
 
+  // ─── External OTEL forwarding ──────────────────────────────────────
+  /** Master switch for forwarding the OTLP/HTTP request bodies that
+   *  Sentinel receives from Claude Code (at `/v1/metrics` and
+   *  `/v1/logs`) to a user-configured external observability backend
+   *  (e.g. SigNoz Cloud). Off by default; even with a URL and secret
+   *  configured, no traffic egresses until this is on. The receiver
+   *  keeps parsing and persisting locally either way, so the Metrics,
+   *  Optimize, and Spend tabs are unaffected. */
+  otelForwardingEnabled: boolean;
+  /** When true, `/v1/metrics` POST bodies are relayed. Independent so
+   *  users can forward only logs (or only metrics) without splitting
+   *  Claude Code's OTEL config. Gated by `otelForwardingEnabled`. */
+  otelForwardMetrics: boolean;
+  /** When true, `/v1/logs` POST bodies are relayed. Gated by
+   *  `otelForwardingEnabled`. */
+  otelForwardLogs: boolean;
+  /** When true, Sentinel emits its own derived signals (cache TTL
+   *  breakdown, per-account 5h usage, rotation events, security
+   *  events, proxy traffic counters) on a 30s cadence to the same
+   *  external endpoint. Tagged with `service.name=claude-sentinel` so
+   *  dashboards can split them from Claude Code's own metrics
+   *  (`service.name=claude-code`). Gated by `otelForwardingEnabled`. */
+  otelEmitSentinelMetrics: boolean;
+  /** OTLP/HTTP base endpoint. The forwarder appends `/v1/metrics` or
+   *  `/v1/logs` to this when relaying, so configure the base only.
+   *  Stored with no trailing slash. Must be `https:`; `http:` is
+   *  accepted only when the host is `localhost`/`127.0.0.1`/`::1`
+   *  to keep production users on TLS by default. `null` (default)
+   *  disables forwarding regardless of the toggles above. */
+  otelExporterEndpoint: string | null;
+  /** Name of the auth header that carries the user's secret on every
+   *  forwarded request. Examples: `signoz-ingestion-key`,
+   *  `authorization`, `x-honeycomb-team`. Validated as a valid HTTP
+   *  header name (RFC 7230 token). The secret VALUE itself is stored
+   *  in the OS keychain (service `Claude Sentinel-otel-exporter`,
+   *  account `default`), never in this file. Default
+   *  `'signoz-ingestion-key'`. */
+  otelExporterHeaderName: string;
+  /** Stable per-install UUID emitted as `service.instance.id` on every
+   *  Sentinel-originated OTEL payload. Generated once on first launch
+   *  (via `crypto.randomUUID()`) and persisted in settings.json so it
+   *  survives daemon restarts. An empty string or a value that doesn't
+   *  match the UUID v4 shape is regenerated on the next `loadSettings()`
+   *  pass, so existing installs auto-populate without a migration step.
+   *  Lets dashboards on a shared SigNoz tenant disambiguate per-install
+   *  even when team members share a hostname. */
+  otelServiceInstanceId: string;
+
   // ─── Onboarding state ──────────────────────────────────────────────
   /** True once the user has either applied a risk-profile preset in the
    *  Security Setup Wizard or explicitly dismissed it. The wizard fires
@@ -511,6 +559,41 @@ export interface Settings {
    *  tour. The tour can always be replayed via the help icon next to
    *  the Sentinel header. */
   tourCompleted: boolean;
+}
+
+/** Runtime status for the external OTEL forwarder. Returned by the IPC
+ *  `get_otel_exporter_status` request and broadcast on every secret
+ *  write/clear and at counter milestones. The secret value itself is
+ *  never included. */
+export interface OtelForwarderStatus {
+  /** True when a non-empty secret is present in the keychain. */
+  secretConfigured: boolean;
+  /** True when forwarding is fully configured: master toggle on,
+   *  endpoint set, secret configured. Renders the green "ready"
+   *  affordance in the Settings UI. */
+  ready: boolean;
+  /** Number of relayed requests that received a 2xx response, since
+   *  daemon start. */
+  sent: number;
+  /** Number of requests dropped because the in-flight cap was full. */
+  dropped: number;
+  /** Number of relayed requests that errored or returned a non-2xx
+   *  response. */
+  failed: number;
+  /** Unix ms of the most recent successful forward, or null. */
+  lastForwardOkAt: number | null;
+  /** Brief description of the most recent failure. Null after any
+   *  subsequent success. */
+  lastForwardErr: string | null;
+  /** Current in-flight count (0 when idle). */
+  inFlight: number;
+}
+
+/** Result of the `test_otel_exporter` IPC. */
+export interface OtelExporterTestResult {
+  ok: boolean;
+  status: number | null;
+  message: string;
 }
 
 /** Structured log entry emitted by the daemon logger and streamed to the

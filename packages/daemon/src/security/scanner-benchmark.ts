@@ -130,6 +130,13 @@ function benchSettings(): Settings {
     optimizeAutoRecommend: true,
     optimizeShowMicroOpportunities: false,
     optimizeUnits: 'tokens',
+    otelForwardingEnabled: false,
+    otelForwardMetrics: true,
+    otelForwardLogs: true,
+    otelEmitSentinelMetrics: true,
+    otelExporterEndpoint: null,
+    otelExporterHeaderName: 'signoz-ingestion-key',
+    otelServiceInstanceId: '00000000-0000-4000-8000-000000000000',
     optimizeChartView: 'realized',
   };
 }

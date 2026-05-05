@@ -5,6 +5,12 @@ import type { ActiveAccountId } from './proxy.js';
 import type { IpcServer } from './ipc.js';
 import type { RequestAccountMap } from './request-account-map.js';
 
+/** Minimal contract the receiver needs from a forwarder. Lets the
+ *  receiver stay testable without a hard dependency on `OtelForwarder`. */
+export interface ReceiverForwarder {
+  forward(path: '/v1/metrics' | '/v1/logs', contentType: string, body: Buffer): void;
+}
+
 /**
  * Known Claude Code OTEL metric names. Full list:
  *   https://code.claude.com/docs/en/monitoring-usage
@@ -194,6 +200,11 @@ export class OtelReceiver {
      *  from `activeAccountId`. When no hit (or no map), we fall through to
      *  the active-account path so single-account setups still work. */
     private readonly requestAccountMap?: RequestAccountMap,
+    /** Optional external forwarder. When set, every successfully-parsed
+     *  metrics/logs body is also relayed to the user-configured external
+     *  endpoint AFTER local persist + the 200 response. Fire-and-forget;
+     *  a hung upstream cannot stall Claude Code's exporter. */
+    private readonly forwarder?: ReceiverForwarder,
   ) {}
 
   /** Register a callback invoked after every batch that persisted at least
@@ -221,6 +232,8 @@ export class OtelReceiver {
   async handleMetrics(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const body = await readBody(req);
+      const contentType =
+        (req.headers?.['content-type'] as string | undefined) ?? 'application/json';
       const payload = JSON.parse(body.toString('utf-8')) as OtelMetricsBody;
       this.wroteInBatch = false;
       this.processMetrics(payload);
@@ -230,6 +243,11 @@ export class OtelReceiver {
         this.ipcServer?.broadcast({ type: 'metrics_updated' });
         this.fireBatchSubscribers();
       }
+      // Tee AFTER local work + after responding. Fire-and-forget; the
+      // forwarder owns its own timeout + in-flight cap. Malformed bodies
+      // hit the catch and are NOT forwarded — passing JSON we couldn't
+      // parse to the upstream would just produce 4xx noise there.
+      this.forwarder?.forward('/v1/metrics', contentType, body);
     } catch (err) {
       console.error('[OTEL] Metrics parse error:', err);
       res.writeHead(400);
@@ -243,6 +261,8 @@ export class OtelReceiver {
   async handleLogs(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const body = await readBody(req);
+      const contentType =
+        (req.headers?.['content-type'] as string | undefined) ?? 'application/json';
       const payload = JSON.parse(body.toString('utf-8')) as OtelLogsBody;
       this.wroteInBatch = false;
       this.processLogs(payload);
@@ -252,6 +272,7 @@ export class OtelReceiver {
         this.ipcServer?.broadcast({ type: 'metrics_updated' });
         this.fireBatchSubscribers();
       }
+      this.forwarder?.forward('/v1/logs', contentType, body);
     } catch (err) {
       console.error('[OTEL] Logs parse error:', err);
       res.writeHead(400);

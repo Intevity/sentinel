@@ -25,6 +25,8 @@ import type {
   AutoModeStatus,
   RequestDetail,
   SecurityBenchmarkResult,
+  OtelForwarderStatus,
+  OtelExporterTestResult,
 } from './types.js';
 
 // ─── Daemon → App messages ────────────────────────────────────────────────────
@@ -145,6 +147,16 @@ export interface RateLimitsOauthForbiddenMessage {
 export interface SettingsChangedMessage {
   type: 'settings_changed';
   settings: Settings;
+}
+
+/** Broadcast on every change to the OTEL exporter's runtime status:
+ *  secret added/removed, dispatch outcome (success or failure), drop
+ *  on backpressure. Coalesce-friendly — the UI just refetches via
+ *  `get_otel_exporter_status` if it loses track. The secret value is
+ *  never included. */
+export interface OtelForwarderStatusBroadcastMessage {
+  type: 'otel_forwarder_status';
+  status: OtelForwarderStatus;
 }
 
 /** Broadcast when a user-configured usage alert crosses its threshold. The
@@ -511,7 +523,8 @@ export type DaemonToAppMessage =
   | PermissionsStatusMessage
   | SettingsTamperDetectedMessage
   | AuditLogTamperedMessage
-  | TestOAuthUrlOpenedMessage;
+  | TestOAuthUrlOpenedMessage
+  | OtelForwarderStatusBroadcastMessage;
 
 // ─── App → Daemon messages ────────────────────────────────────────────────────
 
@@ -1379,6 +1392,37 @@ export interface ListRecentWorkingDirsMessage {
   type: 'list_recent_working_dirs';
 }
 
+/** Write the user's OTEL exporter ingestion-key value to the OS keychain.
+ *  Replaces any existing value. An empty `value` clears the slot. The
+ *  daemon broadcasts `otel_forwarder_status` after the write so the
+ *  Settings UI's "configured" pill updates without a refetch. The secret
+ *  is never echoed back to the UI. */
+export interface SetOtelExporterSecretMessage {
+  type: 'set_otel_exporter_secret';
+  value: string;
+}
+
+/** Delete the OTEL exporter secret from the OS keychain. The daemon
+ *  broadcasts `otel_forwarder_status` afterwards. */
+export interface ClearOtelExporterSecretMessage {
+  type: 'clear_otel_exporter_secret';
+}
+
+/** Read the current OTEL forwarder runtime status. UI calls this on
+ *  mount; thereafter it relies on `otel_forwarder_status` broadcasts to
+ *  stay current. Response payload is `OtelForwarderStatus`. */
+export interface GetOtelExporterStatusMessage {
+  type: 'get_otel_exporter_status';
+}
+
+/** Send a tiny synthesized OTLP/HTTP metrics request to the configured
+ *  endpoint to verify the URL and ingestion key are accepted. Response
+ *  is `OtelExporterTestResult`. Counters are NOT bumped — this is a
+ *  one-shot probe distinct from the production tee. */
+export interface TestOtelExporterMessage {
+  type: 'test_otel_exporter';
+}
+
 export type AppToDaemonMessage =
   | GetAccountsMessage
   | GetCredentialsMessage
@@ -1453,7 +1497,11 @@ export type AppToDaemonMessage =
   | UpsertPermissionRuleMessage
   | DeletePermissionRuleMessage
   | GetPermissionsStatusMessage
-  | ListRecentWorkingDirsMessage;
+  | ListRecentWorkingDirsMessage
+  | SetOtelExporterSecretMessage
+  | ClearOtelExporterSecretMessage
+  | GetOtelExporterStatusMessage
+  | TestOtelExporterMessage;
 
 /** Response payload alias re-exports for convenience in consumers. */
 export type {
@@ -1476,6 +1524,8 @@ export type {
   AutoModeStatus,
   RequestDetail,
   SecurityBenchmarkResult,
+  OtelForwarderStatus,
+  OtelExporterTestResult,
 };
 
 // ─── All IPC messages ─────────────────────────────────────────────────────────

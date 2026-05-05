@@ -66,6 +66,9 @@ import {
 } from './settings.js';
 import { IpcServer } from './ipc.js';
 import { OtelReceiver } from './otel-receiver.js';
+import { OtelForwarder } from './otel-forwarder.js';
+import { OtelEmitter } from './otel-emitter.js';
+import { deleteOtelExporterSecret, writeOtelExporterSecret } from './otel-forwarder-secret.js';
 import { RequestAccountMap } from './request-account-map.js';
 import { OverageStateMachine } from './overage.js';
 import { SonnetSaturationMachine, buildSonnetSaturationBody } from './sonnet-saturation.js';
@@ -95,7 +98,7 @@ import { createClaudeSyncEngine } from './security/permissions/claude-sync.js';
 import { createAgentsSyncEngine } from './optimize/agents-sync.js';
 import { getCuratedLibrary, getCuratedSubagent } from './optimize/curated-library.js';
 import { createOptimizationAnalyzer } from './optimize/optimization-analyzer.js';
-import { homedir } from 'os';
+import { homedir, hostname } from 'os';
 import { join } from 'path';
 import { runScanBenchmark } from './security/scanner-benchmark.js';
 import { parseRule as parsePermissionRule } from './security/permissions/parser.js';
@@ -182,6 +185,19 @@ function isDaemonAlreadyRunning(): Promise<boolean> {
  */
 function sentinelKey(orgUuid: string, accountUuid: string): string {
   return orgUuid || accountUuid;
+}
+
+/** Stable host identifier emitted as a resource attribute on every
+ *  Sentinel-originated OTEL payload. Lets a multi-machine SigNoz instance
+ *  disambiguate. Uses os.hostname() which is stable across daemon restarts;
+ *  doesn't need to be globally unique, just consistent for one user. */
+function hostUuidForOtel(): string {
+  try {
+    return hostname() || 'unknown-host';
+  } catch {
+    /* v8 ignore next */
+    return 'unknown-host';
+  }
 }
 
 function inferPlanType(account: OAuthAccount, creds?: ClaudeCodeCredentials | null): PlanType {
@@ -513,7 +529,6 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // when an `api_request`/`api_error` event arrives carrying the same id.
   // Required for correct OTEL attribution in round-robin mode.
   const requestAccountMap = new RequestAccountMap();
-  const otelReceiver = new OtelReceiver(db, activeAccountId, ipcServer, requestAccountMap);
   const rateLimitStore = new RateLimitStore();
 
   // In-memory mirror of settings — read at startup, updated on every
@@ -538,6 +553,37 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // subsystems read the same live in-memory snapshot that `update_settings`
   // mutates. Declared up-front so it can be referenced in constructors below.
   const getSettings = (): Settings => currentSettings;
+
+  // External OTEL forwarder. Reads endpoint + header name from live
+  // settings on every call; secret from the OS keychain (cached). Wired
+  // into the receiver below so every OTLP/HTTP body Sentinel accepts is
+  // also tee'd to the user's external backend, AND used by the periodic
+  // emitter for Sentinel's own derived signals.
+  const otelForwarder = new OtelForwarder({ getSettings });
+  otelForwarder.onStatusChange((status) => {
+    ipcServer.broadcast({ type: 'otel_forwarder_status', status });
+  });
+  const otelReceiver = new OtelReceiver(
+    db,
+    activeAccountId,
+    ipcServer,
+    requestAccountMap,
+    otelForwarder,
+  );
+  const otelEmitter = new OtelEmitter({
+    forwarder: otelForwarder,
+    getSettings,
+    db,
+    serviceVersion: '0.1.0',
+    hostUuid: hostUuidForOtel(),
+    // Live readers — settings.otelServiceInstanceId stays stable across
+    // restarts (auto-generated + persisted by `coerce()`); active-account
+    // changes pick up at the next 30s tick automatically.
+    getServiceInstanceId: () => currentSettings.otelServiceInstanceId,
+    getActiveAccount,
+  });
+  otelEmitter.attachToIpc(ipcServer);
+  otelEmitter.start();
 
   // Round-robin token pool. Only consulted when switchingMode === 'round-robin'.
   // The excluded-ids getter reads the live in-memory settings so pool-membership
@@ -936,6 +982,54 @@ export async function startDaemon(): Promise<DaemonHandle> {
       case 'store_credentials': {
         credentialStore.set(msg.email, msg.blob);
         respond({ requestType: 'store_credentials', success: true });
+        break;
+      }
+
+      case 'set_otel_exporter_secret': {
+        // Empty value is treated as "clear" — convenient for the UI's
+        // single-input save flow.
+        if (typeof msg.value === 'string' && msg.value.length > 0) {
+          writeOtelExporterSecret(msg.value);
+        } else {
+          deleteOtelExporterSecret();
+        }
+        otelForwarder.onSecretChanged();
+        respond({ requestType: 'set_otel_exporter_secret', success: true });
+        break;
+      }
+
+      case 'clear_otel_exporter_secret': {
+        deleteOtelExporterSecret();
+        otelForwarder.onSecretChanged();
+        respond({ requestType: 'clear_otel_exporter_secret', success: true });
+        break;
+      }
+
+      case 'get_otel_exporter_status': {
+        respond({
+          requestType: 'get_otel_exporter_status',
+          success: true,
+          data: otelForwarder.getStatus(),
+        });
+        break;
+      }
+
+      case 'test_otel_exporter': {
+        // User-initiated probe; bounded by the forwarder's per-request
+        // timeout. Don't block the IPC switch — respond from the .then().
+        void otelForwarder
+          .testConnection()
+          .then((result) => {
+            respond({ requestType: 'test_otel_exporter', success: true, data: result });
+          })
+          .catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            respond({
+              requestType: 'test_otel_exporter',
+              success: false,
+              error: message,
+            });
+          });
         break;
       }
 

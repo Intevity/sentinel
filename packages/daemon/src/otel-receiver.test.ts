@@ -1025,4 +1025,89 @@ describe('OtelReceiver', () => {
       void code;
     });
   });
+
+  describe('forwarder tee', () => {
+    it('relays the raw body to the forwarder AFTER local persist + 200 response', async () => {
+      const calls: Array<{ path: string; contentType: string; body: Buffer }> = [];
+      const fakeForwarder = {
+        forward: (path: '/v1/metrics' | '/v1/logs', contentType: string, body: Buffer): void => {
+          calls.push({ path, contentType, body });
+        },
+      };
+      const teeReceiver = new OtelReceiver(db, undefined, undefined, undefined, fakeForwarder);
+
+      const payload = {
+        resourceMetrics: [
+          {
+            scopeMetrics: [
+              {
+                metrics: [
+                  {
+                    name: OTEL_METRIC_COST,
+                    sum: {
+                      dataPoints: [
+                        {
+                          attributes: [
+                            { key: 'user.account_uuid', value: { stringValue: 'acct-tee-1' } },
+                          ],
+                          asDouble: 0.05,
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+      const req = makeRequest(payload);
+      const { res } = mockRes();
+      await teeReceiver.handleMetrics(req, res);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.path).toBe('/v1/metrics');
+      expect(calls[0]!.contentType).toBe('application/json');
+      // Body must be forwarded verbatim — preserves Claude Code's
+      // resource attributes that downstream depends on.
+      expect(JSON.parse(calls[0]!.body.toString('utf-8'))).toEqual(payload);
+    });
+
+    it('does not call the forwarder when the body fails to parse', async () => {
+      const calls: Array<{ path: string }> = [];
+      const fakeForwarder = {
+        forward: (path: '/v1/metrics' | '/v1/logs'): void => {
+          calls.push({ path });
+        },
+      };
+      const teeReceiver = new OtelReceiver(db, undefined, undefined, undefined, fakeForwarder);
+
+      // Bypass makeRequest helper to deliver invalid JSON.
+      const listeners: Record<string, Array<(arg?: unknown) => void>> = {};
+      const req = {
+        url: '/v1/metrics',
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        on: (event: string, cb: (arg?: unknown) => void) => {
+          listeners[event] = listeners[event] ?? [];
+          listeners[event]?.push(cb);
+          return req;
+        },
+        emit: (event: string, arg?: unknown) => listeners[event]?.forEach((cb) => cb(arg)),
+      } as unknown as IncomingMessage;
+      setImmediate(() => {
+        req.emit('data', Buffer.from('{ definitely not valid json'));
+        req.emit('end');
+      });
+      const { res } = mockRes();
+      await teeReceiver.handleMetrics(req, res);
+
+      // Forwarder is never called for unparseable bodies — passing
+      // garbage to the upstream would just produce 4xx noise there.
+      // (The receiver's catch path logs to console.error; that noise
+      // is acceptable in the test stream and avoids adding a third
+      // console spy past the mock-budget floor.)
+      expect(calls).toHaveLength(0);
+    });
+  });
 });
