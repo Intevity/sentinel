@@ -173,10 +173,12 @@ describe('saveSettings + loadSettingsWithTamper integration', () => {
     expect(result.tamperDetected).toBe(false);
     expect(result.reason).toBe(null);
     // otelServiceInstanceId is auto-generated on every fallback, so
-    // strip it before comparing wholesale to DEFAULT_SETTINGS.
-    const { otelServiceInstanceId: _ignored, ...rest } = result.settings;
-    const { otelServiceInstanceId: _drop, ...defaultsWithoutId } = DEFAULT_SETTINGS;
-    expect(rest).toEqual(defaultsWithoutId);
+    // substitute the loaded value into the expected shape rather than
+    // requiring exact equality on a non-deterministic field.
+    expect(result.settings).toEqual({
+      ...DEFAULT_SETTINGS,
+      otelServiceInstanceId: result.settings.otelServiceInstanceId,
+    });
     expect(result.settings.otelServiceInstanceId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
@@ -201,11 +203,13 @@ describe('saveSettings + loadSettingsWithTamper integration', () => {
     const result = loadSettingsWithTamper(path);
     expect(result.tamperDetected).toBe(true);
     expect(result.reason).toBe('missing_sig');
-    // Strip the auto-generated instance id; everything else falls back
-    // to DEFAULT_SETTINGS as the tamper recovery contract requires.
-    const { otelServiceInstanceId: _ignored, ...rest } = result.settings;
-    const { otelServiceInstanceId: _drop, ...defaultsWithoutId } = DEFAULT_SETTINGS;
-    expect(rest).toEqual(defaultsWithoutId);
+    // Substitute the auto-generated instance id; everything else must
+    // fall back to DEFAULT_SETTINGS as the tamper-recovery contract
+    // requires.
+    expect(result.settings).toEqual({
+      ...DEFAULT_SETTINGS,
+      otelServiceInstanceId: result.settings.otelServiceInstanceId,
+    });
   });
 
   it.skipIf(process.platform === 'win32')(

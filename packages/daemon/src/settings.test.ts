@@ -70,27 +70,27 @@ describe('settings', () => {
   describe('loadSettings', () => {
     // The otelServiceInstanceId default is auto-generated on every load when
     // the persisted value is missing or invalid, so it's deliberately
-    // non-deterministic. Strip it before comparing wholesale to DEFAULT_SETTINGS.
-    const stripInstanceId = (
-      s: ReturnType<typeof loadSettings>,
-    ): Omit<ReturnType<typeof loadSettings>, 'otelServiceInstanceId'> => {
-      const { otelServiceInstanceId: _ignored, ...rest } = s;
-      return rest;
+    // non-deterministic. Substitute the loaded value into the expected
+    // shape before equality-checking the rest.
+    const expectDefaultsWithGeneratedId = (loaded: ReturnType<typeof loadSettings>): void => {
+      expect(loaded).toEqual({
+        ...DEFAULT_SETTINGS,
+        otelServiceInstanceId: loaded.otelServiceInstanceId,
+      });
     };
-    const defaultsWithoutInstanceId = stripInstanceId(DEFAULT_SETTINGS);
 
     it('returns defaults when the file does not exist', () => {
-      expect(stripInstanceId(loadSettings(path))).toEqual(defaultsWithoutInstanceId);
+      expectDefaultsWithGeneratedId(loadSettings(path));
     });
 
     it('returns defaults when the file is unparseable', () => {
       writeRawWithSig(path, 'not json at all', 'utf-8');
-      expect(stripInstanceId(loadSettings(path))).toEqual(defaultsWithoutInstanceId);
+      expectDefaultsWithGeneratedId(loadSettings(path));
     });
 
     it('returns defaults when the file contains a non-object', () => {
       writeRawWithSig(path, '"a string"', 'utf-8');
-      expect(stripInstanceId(loadSettings(path))).toEqual(defaultsWithoutInstanceId);
+      expectDefaultsWithGeneratedId(loadSettings(path));
     });
 
     it('preserves valid fields and backfills invalid ones with defaults', () => {
