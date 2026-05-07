@@ -903,6 +903,98 @@ export function getDb(
     END
   `);
 
+  // Backfill chain hashes for rows that pre-date `security_events_chain_v1`.
+  // The chain_v1 migration ALTERed the table to add `prev_hash` and
+  // `payload_hash` with `DEFAULT ''`, but did not populate existing rows;
+  // the very first integrity check at startup then trips on row id=1 with
+  // "payload_hash mismatch on event id=1" because the recomputed SHA-256
+  // doesn't match the empty string. Walk those rows in id order, compute
+  // each row's chain hashes (first row = genesis with prev_hash=''; each
+  // subsequent row chains off the prior backfilled hash), and write them
+  // through the sweep gate so the append-only triggers above let the
+  // UPDATE through. Filtered on `payload_hash = ''` only so a torn state
+  // (partial earlier backfill) is also healed. Idempotent: marker check
+  // short-circuits the SELECT/UPDATE on the second open.
+  const chainBackfillApplied = _db
+    .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+    .get('security_events_chain_backfill_v1') as { ok: number } | undefined;
+  if (!chainBackfillApplied) {
+    const legacyRows = _db
+      .prepare(
+        `SELECT id, ts, account_id, session_id, direction, severity, kind,
+                detector_id, confidence, title, reason, match_mask, match_hash,
+                context_hash, snippet, source_hint, details_json, provenance
+           FROM security_events
+           WHERE payload_hash = ''
+           ORDER BY id ASC`,
+      )
+      .all() as Array<{
+      id: number;
+      ts: number;
+      account_id: string;
+      session_id: string | null;
+      direction: string;
+      severity: string;
+      kind: string;
+      detector_id: string;
+      confidence: number;
+      title: string;
+      reason: string;
+      match_mask: string | null;
+      match_hash: string;
+      context_hash: string | null;
+      snippet: string | null;
+      source_hint: string | null;
+      details_json: string | null;
+      provenance: string;
+    }>;
+
+    if (legacyRows.length > 0) {
+      const update = _db.prepare(
+        'UPDATE security_events SET prev_hash = ?, payload_hash = ? WHERE id = ?',
+      );
+      const txn = _db.transaction(() => {
+        let prev = '';
+        for (const r of legacyRows) {
+          const payloadHash = computePayloadHash({
+            ts: r.ts,
+            accountId: r.account_id,
+            sessionId: r.session_id,
+            direction: r.direction,
+            severity: r.severity,
+            kind: r.kind,
+            detectorId: r.detector_id,
+            confidence: r.confidence,
+            title: r.title,
+            reason: r.reason,
+            matchMask: r.match_mask,
+            matchHash: r.match_hash,
+            contextHash: r.context_hash,
+            snippet: r.snippet,
+            sourceHint: r.source_hint,
+            detailsJson: r.details_json,
+            provenance: r.provenance,
+            prevHash: prev,
+          });
+          update.run(prev, payloadHash, r.id);
+          prev = payloadHash;
+        }
+      });
+      sweepActive = true;
+      try {
+        txn();
+      } finally {
+        sweepActive = false;
+      }
+      console.log(
+        `[DB] security_events_chain_backfill_v1: rehydrated chain for ${legacyRows.length} pre-chain row(s)`,
+      );
+    }
+    _db
+      .prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)')
+      .run('security_events_chain_backfill_v1', Date.now());
+  }
+
   // Optimize feature schema marker. The CREATE TABLE statements in SCHEMA
   // are idempotent (IF NOT EXISTS) so a fresh install gets the tables
   // created automatically. The marker exists so retention sweeps and
