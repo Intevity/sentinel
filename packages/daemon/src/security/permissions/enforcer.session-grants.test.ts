@@ -43,7 +43,6 @@ function defaultSettings(over: Partial<Settings> = {}): Settings {
     securityOsNotifyThreshold: 'high',
     securityPersistSnippet: true,
     securityEventRetentionDays: 30,
-    securityBlockHoldEnabled: false,
     securityApproveHoldSec: 60,
     toolPermissionsEnabled: true,
     toolPermissionDefaultAction: 'allow',
@@ -281,7 +280,6 @@ describe('Sprint 9 — enforcer integration: session grants + recent cwd', () =>
       raw: 'WebFetch',
     });
     const settings = defaultSettings({
-      securityBlockHoldEnabled: true,
       securityApproveHoldSec: 30,
     });
     const enforcer = createPermissionsEnforcer({
@@ -358,7 +356,6 @@ describe('Sprint 9 — enforcer integration: session grants + recent cwd', () =>
       raw: 'Bash(rm *)',
     });
     const settings = defaultSettings({
-      securityBlockHoldEnabled: true,
       securityApproveHoldSec: 30,
     });
     const enforcer = createPermissionsEnforcer({
@@ -424,7 +421,6 @@ describe('Sprint 9 — enforcer integration: session grants + recent cwd', () =>
       });
     }
     const settings = defaultSettings({
-      securityBlockHoldEnabled: true,
       securityApproveHoldSec: 30,
     });
     const ipc = ipcStub();
@@ -505,7 +501,6 @@ describe('Sprint 9 — enforcer integration: session grants + recent cwd', () =>
       });
     }
     const settings = defaultSettings({
-      securityBlockHoldEnabled: true,
       securityApproveHoldSec: 30,
     });
     const ipc = ipcStub();
@@ -559,7 +554,6 @@ describe('Sprint 9 — enforcer integration: session grants + recent cwd', () =>
       raw: 'Bash(rm *)',
     });
     const settings = defaultSettings({
-      securityBlockHoldEnabled: true,
       securityApproveHoldSec: 30,
     });
     const ipc = ipcStub();
@@ -617,7 +611,6 @@ describe('Sprint 9 — enforcer integration: session grants + recent cwd', () =>
 
   it('resolvePending with mode=session writes a grant and recordApprovalEvent fires', async () => {
     const settings = defaultSettings({
-      securityBlockHoldEnabled: true,
       securityApproveHoldSec: 30,
     });
     const enforcer = createPermissionsEnforcer({

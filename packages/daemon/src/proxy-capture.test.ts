@@ -459,6 +459,7 @@ describe('proxy request capture', () => {
       push: vi.fn(),
       flush: vi.fn(),
       destroy: vi.fn(),
+      awaitSettlement: vi.fn(() => Promise.resolve()),
     };
     const enforcer = {
       isEnabled: () => false,
@@ -496,10 +497,13 @@ describe('proxy request capture', () => {
     const req = makeReq('/v1/messages');
     const { res } = makeRes();
     handler?.(req, res);
-    await new Promise((r) => setTimeout(r, 40));
+    // awaitSettlement is awaited after the upstream end fires; give
+    // the microtask a couple of ticks to land before assertions.
+    await new Promise((r) => setTimeout(r, 80));
 
     expect(interceptor.push).toHaveBeenCalled();
     expect(interceptor.flush).toHaveBeenCalled();
+    expect(interceptor.awaitSettlement).toHaveBeenCalled();
     expect(records).toHaveLength(1);
     server.close();
   });

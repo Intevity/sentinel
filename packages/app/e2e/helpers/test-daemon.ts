@@ -122,7 +122,6 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
         securityOsNotifyThreshold: 'off',
         securityPersistSnippet: true,
         securityEventRetentionDays: 30,
-        securityBlockHoldEnabled: false,
         securityApproveHoldSec: 60,
         toolPermissionsEnabled: false,
         toolPermissionDefaultAction: 'allow',

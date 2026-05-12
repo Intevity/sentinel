@@ -67,21 +67,30 @@ function toolUseSseEvents(
   ];
 }
 
-// `securityBlockHoldEnabled: false` puts us on the synchronous
-// immediate-block path. The async hold path is correctness-tested
-// in sse-interceptor.test.ts at the unit level; integrating it
-// against a real upstream involves a fundamental race between the
-// upstream stream closing and the user's IPC resolve, which is not
-// deterministically testable without harness changes.
+// Force-hold (the default since the security UI unification) routes
+// every block through the pending registry. Integration tests drive
+// the user-decision step by polling the registry and calling
+// resolvePending on the captured enforcer reference.
 const SYNC_BLOCK: {
   toolPermissionsEnabled: true;
   toolPermissionDefaultAction: 'allow' | 'deny';
-  securityBlockHoldEnabled: false;
 } = {
   toolPermissionsEnabled: true,
   toolPermissionDefaultAction: 'allow',
-  securityBlockHoldEnabled: false,
 };
+
+/** Poll the enforcer's pending registry, then resolve every entry with
+ *  the given outcome. Use to drive a deny-on-hold from a test that
+ *  fired postThroughProxy and is awaiting its response. */
+async function resolveAllPending(ctx: StartedProxy, outcome: 'approve' | 'deny'): Promise<void> {
+  if (!ctx.enforcer) throw new Error('enforcer not enabled');
+  for (let i = 0; i < 100 && ctx.enforcer.listPending().length === 0; i += 1) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  for (const p of ctx.enforcer.listPending()) {
+    ctx.enforcer.resolvePending(p.pendingId, outcome);
+  }
+}
 
 describe('proxy permissions e2e: response-side tool_use interception', () => {
   it('denied tool_use → client receives a synthetic [Blocked by Claude Sentinel] text block', async () => {
@@ -104,7 +113,9 @@ describe('proxy permissions e2e: response-side tool_use interception', () => {
       sseEvents: toolUseSseEvents(0, 'Bash', { command: 'rm -rf /' }),
     });
 
-    const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    const resPromise = postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    await resolveAllPending(ctx, 'deny');
+    const res = await resPromise;
     expect(res.status).toBe(200);
     const body = await res.text();
 
@@ -221,7 +232,9 @@ describe('proxy permissions e2e: response-side tool_use interception', () => {
       ],
     });
 
-    const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    const resPromise = postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    await resolveAllPending(ctx, 'deny');
+    const res = await resPromise;
     expect(res.status).toBe(200);
     const body = await res.text();
 
@@ -258,7 +271,9 @@ describe('proxy permissions e2e: response-side tool_use interception', () => {
       sseChunking: 'byte-split',
     });
 
-    const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    const resPromise = postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    await resolveAllPending(ctx, 'deny');
+    const res = await resPromise;
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain('Blocked by Claude Sentinel');
@@ -274,10 +289,9 @@ describe('proxy permissions e2e: outbound tool[] stripping', () => {
         settings: {
           toolPermissionsEnabled: true,
           toolPermissionDefaultAction: 'allow',
-          // Disable hold so the strip happens synchronously and we can
-          // observe the rewritten request body without orchestrating
-          // an approve/deny IPC.
-          securityBlockHoldEnabled: false,
+          // Force-hold: deny via the in-process enforcer reference so
+          // the strip outcome reflects what happens when the user
+          // denies the held block in the UI.
         },
       }),
     );
@@ -290,7 +304,7 @@ describe('proxy permissions e2e: outbound tool[] stripping', () => {
     });
     ctx.enforcer!.invalidate();
 
-    const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', {
+    const resPromise = postThroughProxy(ctx.proxyPort, '/v1/messages', {
       messages: [{ role: 'user', content: 'hi' }],
       tools: [
         { name: 'Bash', description: 'run shell' },
@@ -298,6 +312,8 @@ describe('proxy permissions e2e: outbound tool[] stripping', () => {
         { name: 'Read', description: 'read a file' },
       ],
     });
+    await resolveAllPending(ctx, 'deny');
+    const res = await resPromise;
     expect(res.status).toBe(200);
 
     // Inspect the body the fake-Anthropic actually saw.
@@ -343,7 +359,9 @@ describe('proxy permissions e2e: rule mutation reflects between requests', () =>
     ctx.fake.queueResponse('/v1/messages', {
       sseEvents: toolUseSseEvents(0, 'Bash', { command: 'rm -rf /' }),
     });
-    const res2 = await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    const res2Promise = postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    await resolveAllPending(ctx, 'deny');
+    const res2 = await res2Promise;
     const body2 = await res2.text();
     expect(body2).toContain('Blocked by Claude Sentinel');
     expect(body2).not.toContain('rm -rf /');
@@ -366,7 +384,6 @@ describe('proxy permissions e2e: ask rule still surfaces a pending block to the 
         settings: {
           toolPermissionsEnabled: true,
           toolPermissionDefaultAction: 'allow',
-          securityBlockHoldEnabled: true,
           securityApproveHoldSec: 60,
         },
       }),
@@ -384,29 +401,21 @@ describe('proxy permissions e2e: ask rule still surfaces a pending block to the 
       sseEvents: toolUseSseEvents(0, 'Bash', { command: 'rm -rf /tmp/build' }),
     });
 
-    // Fire the request and let it run to completion (fail-open path is
-    // expected here — we're not asserting on the response body, only
-    // on whether the registry observed the tool_use).
-    const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
-    await res.text();
-
-    // The registry's onFinalized hook records a security event on
-    // settle (timeout/approve/deny). For an unresolved ask that
-    // fail-opened, the entry stays live until settle fires. Either
-    // way, a row in security_events with kind='tool_permission_blocked'
-    // and source='permissions_tool_use' is the durable signal that
-    // the ask wiring fired.
-    //
-    // The pending entry itself is in-memory; assert via listPending
-    // that it was registered. The fail-open scenario leaves the
-    // entry in place since the timer hasn't tripped yet.
+    // Fire the request, wait for the ask rule to register a pending
+    // entry, and assert on the registry. Force-hold means the proxy
+    // is now awaiting settlement before res.end(), so we resolve the
+    // pending here before reading the response body.
+    const resPromise = postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    for (let i = 0; i < 100 && ctx.enforcer!.listPending().length === 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     const pendings = ctx.enforcer!.listPending();
     expect(pendings.some((p) => p.toolName === 'Bash' && p.matchMask === 'Bash(rm -rf *)')).toBe(
       true,
     );
-
-    // Resolve so the cleanup tear-down doesn't dangle.
     for (const p of pendings) ctx.enforcer!.resolvePending(p.pendingId, 'deny');
+    const res = await resPromise;
+    await res.text();
   });
 });
 

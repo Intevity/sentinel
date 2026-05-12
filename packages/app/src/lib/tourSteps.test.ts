@@ -87,4 +87,21 @@ describe('TOUR_STEPS', () => {
       expect(step.body).not.toMatch(/—/);
     }
   });
+
+  it('describes the unified security vocabulary (Mute, Always allow, pinned approval row)', () => {
+    const securityStep = TOUR_STEPS.find((s) => s.targetId === 'tab-security');
+    expect(securityStep).toBeDefined();
+    // The Security tab step should mention the action vocabulary so
+    // first-run users learn the difference between Mute (observe-only
+    // findings) and Always allow (blocks they want to bypass).
+    expect(securityStep?.body).toMatch(/Mute/);
+    expect(securityStep?.body).toMatch(/Always allow/);
+
+    const permissionsStep = TOUR_STEPS.find((s) => s.targetId === 'tour-permissions');
+    expect(permissionsStep).toBeDefined();
+    // The permissions step should describe that every block now holds
+    // for approval (no more "block immediately" path).
+    expect(permissionsStep?.body).toMatch(/Approve/);
+    expect(permissionsStep?.body).toMatch(/(once|for session|always)/i);
+  });
 });

@@ -398,11 +398,7 @@ export default function SecuritySetupWizard({
                 />
                 <Row
                   label="Hold blocked requests"
-                  value={
-                    selected.settings.securityBlockHoldEnabled
-                      ? `Up to ${selected.settings.securityApproveHoldSec}s for approval`
-                      : 'No, block immediately'
-                  }
+                  value={`Up to ${selected.settings.securityApproveHoldSec}s for approval`}
                 />
                 <Row
                   label="Tool permissions"

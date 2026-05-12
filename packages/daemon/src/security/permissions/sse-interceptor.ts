@@ -131,6 +131,11 @@ export interface PermissionsSseInterceptor {
   push(chunk: Buffer | string): void;
   flush(): void;
   destroy(): void;
+  /** Resolves once every in-flight hold has settled (user-approve,
+   *  user-deny, or timeout). The proxy awaits this before calling
+   *  `flush()` + `res.end()` so a fast upstream SSE that arrives
+   *  before the user can decide doesn't fail-open to the client. */
+  awaitSettlement(): Promise<void>;
 }
 
 export interface CreateInterceptorOptions {
@@ -185,6 +190,14 @@ export function createPermissionsSseInterceptor(
    *  buffer back onto `rawBuffer` and re-drain as if nothing happened. */
   let holdBuffer = '';
   let holdActive = false;
+  /** Tracks every in-flight awaitDecision Promise so awaitSettlement
+   *  can resolve once they've all completed. Added so the proxy can
+   *  wait for the user's decision before res.end() — without this, a
+   *  fast upstream SSE that arrives before the user can respond
+   *  fail-opens (the original tool_use leaks through to the client).
+   *  The user wants every block to actually offer an approval window,
+   *  so the proxy now awaits this before flushing. */
+  const pendingDecisions: Promise<unknown>[] = [];
 
   const push = (chunk: Buffer | string): void => {
     if (killed) return;
@@ -392,13 +405,27 @@ export function createPermissionsSseInterceptor(
     // so frame ordering stays correct.
     holdActive = true;
     let outcome: 'approve' | 'deny' | 'timeout';
-    try {
-      outcome = await opts.awaitDecision({
+    // Capture the hook so the .then() closure below sees a non-
+    // nullable reference (TS narrowing from `if (!opts.awaitDecision)`
+    // above doesn't survive the callback boundary).
+    const awaitDecision = opts.awaitDecision;
+    // Wrap awaitDecision call in Promise.resolve so a synchronous
+    // throw inside the hook still produces a Promise that the catch
+    // below + awaitSettlement can both observe. Without this, a
+    // sync throw bypasses the catch and crashes the interceptor.
+    const decisionPromise = Promise.resolve().then(() =>
+      awaitDecision({
         toolName: state.toolName,
         toolInput,
         matchedRule,
         accountId: opts.accountId,
-      });
+      }),
+    );
+    // Track this decision so awaitSettlement() can wait for it before
+    // the proxy ends the response.
+    pendingDecisions.push(decisionPromise.catch(() => undefined));
+    try {
+      outcome = await decisionPromise;
     } catch {
       // If the hook itself throws, treat as deny — better to over-
       // block than to accidentally leak a tool_use the evaluator said
@@ -501,5 +528,19 @@ export function createPermissionsSseInterceptor(
     blocks.clear();
   };
 
-  return { push, flush, destroy };
+  const awaitSettlement = async (): Promise<void> => {
+    // Drain in waves: each awaited decision may itself trigger new
+    // hold paths during the post-resolve drain (rare in practice, but
+    // safe to handle). Loop until no new in-flight Promises appear.
+    while (pendingDecisions.length > 0) {
+      const wave = pendingDecisions.splice(0, pendingDecisions.length);
+      await Promise.all(wave);
+      // Yield once so any continuation that pushes a new decision
+      // (e.g. a second tool_use that arrived during the hold) has a
+      // chance to register before we check the list again.
+      await new Promise((r) => setImmediate(r));
+    }
+  };
+
+  return { push, flush, destroy, awaitSettlement };
 }

@@ -57,26 +57,39 @@ describe('proxy securityScanner.scanOutbound (real detector, real HTTP)', () => 
     if (ctx) await ctx.cleanup();
   });
 
-  it('returns 403 and never forwards when an outbound scan finds a high-severity secret with hold disabled', async () => {
+  async function waitForPending(): Promise<string> {
+    if (!ctx.scanner) throw new Error('scanner not enabled');
+    for (let i = 0; i < 50; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      const pending = ctx.scanner.listPending();
+      if (pending.length > 0) return pending[0]!.pendingId;
+    }
+    throw new Error('scanner never reached pending state');
+  }
+
+  it('returns 403 and never forwards when the user denies a held high-severity secret block', async () => {
     ctx = await startProxyWithFake({
       enableSecurityScanner: true,
       settings: {
         securityScanEnabled: true,
         securityScanSecrets: true,
         securityEnforcementMode: 'block_high',
-        securityBlockHoldEnabled: false,
       },
     });
 
     const body = bodyWithFileReadSecret('/home/alice/secrets.txt', REAL_LOOKING_AWS_KEY);
-    const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', body);
-    expect(res.status).toBe(403);
+    const resPromise = postThroughProxy(ctx.proxyPort, '/v1/messages', body);
+    const pendingId = await waitForPending();
+    // Upstream MUST NOT have been called yet — the hold pauses the proxy.
+    expect(ctx.fake.requests().some((r) => r.url.startsWith('/v1/messages'))).toBe(false);
+    ctx.scanner!.resolvePending(pendingId, 'deny');
 
+    const res = await resPromise;
+    expect(res.status).toBe(403);
     const text = await res.text();
     expect(text).toContain('Blocked by Claude Sentinel');
     expect(text).toContain('AWS access key');
-
-    // Upstream MUST NOT have seen the request.
+    // Upstream MUST NOT have seen the request after deny.
     expect(ctx.fake.requests().some((r) => r.url.startsWith('/v1/messages'))).toBe(false);
   });
 
@@ -122,7 +135,6 @@ describe('proxy securityScanner held-block approve/deny (real detector, real HTT
         securityScanEnabled: true,
         securityScanSecrets: true,
         securityEnforcementMode: 'block_high',
-        securityBlockHoldEnabled: true,
         securityApproveHoldSec: 60,
       },
     });
@@ -147,7 +159,6 @@ describe('proxy securityScanner held-block approve/deny (real detector, real HTT
         securityScanEnabled: true,
         securityScanSecrets: true,
         securityEnforcementMode: 'block_high',
-        securityBlockHoldEnabled: true,
         securityApproveHoldSec: 60,
       },
     });

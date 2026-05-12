@@ -40,7 +40,6 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     securityOsNotifyThreshold: 'high',
     securityPersistSnippet: true,
     securityEventRetentionDays: 30,
-    securityBlockHoldEnabled: false,
     securityApproveHoldSec: 60,
     toolPermissionsEnabled: false,
     toolPermissionDefaultAction: 'allow',
@@ -303,7 +302,13 @@ describe('scanner — Sprint 8 incident replay wiring', () => {
         ],
       }),
     );
-    scanner.scanOutbound(body, 'acc-a', 'sess-replay');
+    const decision = scanner.scanOutbound(body, 'acc-a', 'sess-replay');
+    // Force-hold: the block routes through a pending entry. Resolve
+    // it (deny) so the finalize path runs persistAndBroadcast, which
+    // is what writes the replay row.
+    if (decision.action === 'pending') {
+      scanner.resolvePending(decision.pendingId, 'deny');
+    }
     // The buffer was populated by recordRequestForReplay and the
     // capture should have fired against the resulting event id.
     const events = ipc.broadcasts

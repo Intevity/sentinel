@@ -37,7 +37,6 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     securityOsNotifyThreshold: 'high',
     securityPersistSnippet: true,
     securityEventRetentionDays: 30,
-    securityBlockHoldEnabled: false,
     securityApproveHoldSec: 60,
     toolPermissionsEnabled: true,
     toolPermissionDefaultAction: 'allow',

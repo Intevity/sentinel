@@ -271,7 +271,8 @@ CREATE TABLE IF NOT EXISTS security_events (
   blocked         INTEGER NOT NULL DEFAULT 0,
   approved        INTEGER NOT NULL DEFAULT 0,
   acknowledged    INTEGER NOT NULL DEFAULT 0,
-  provenance      TEXT NOT NULL DEFAULT 'conversation'
+  provenance      TEXT NOT NULL DEFAULT 'conversation',
+  resolution      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sec_ts          ON security_events(ts DESC);
@@ -577,6 +578,17 @@ export function getDb(
     _db.exec(
       "ALTER TABLE security_events ADD COLUMN provenance TEXT NOT NULL DEFAULT 'conversation'",
     );
+  }
+
+  // resolution: explicit signal for how a block-or-hold was settled.
+  // NULL for observe-only findings that never held the request.
+  // 'user_approve' | 'user_deny' | 'timeout' for held requests.
+  // The frontend StatusPill needs this to distinguish "Allowed by you"
+  // from "Blocked" and to label timed-out denies. Approved + blocked
+  // alone can't carry the timeout vs user-deny distinction.
+  const seCols3 = _db.pragma('table_info(security_events)') as Array<{ name: string }>;
+  if (seCols3.length > 0 && !seCols3.some((c) => c.name === 'resolution')) {
+    _db.exec('ALTER TABLE security_events ADD COLUMN resolution TEXT');
   }
 
   // Migrate alerts for the `scope` column (added for pooled round-robin
@@ -1526,12 +1538,17 @@ export function listNotifications(
 
 export type InsertSecurityEvent = Omit<
   SecurityEvent,
-  'id' | 'occurrences' | 'acknowledged' | 'lastSeenTs' | 'approved'
+  'id' | 'occurrences' | 'acknowledged' | 'lastSeenTs' | 'approved' | 'resolution'
 > & {
   /** Optional on insert — defaults to false. Set true when the user has
    *  explicitly approved a pending block via the in-app banner; mirrored
    *  into the security_allowlist in that case. */
   approved?: boolean;
+  /** Optional on insert — null for observe-only findings. Set to
+   *  'user_approve' | 'user_deny' | 'timeout' when a pending hold
+   *  settled. Drives the Security tab's StatusPill (Allowed by you vs
+   *  Blocked vs timed-out Blocked). */
+  resolution?: SecurityEvent['resolution'];
 };
 
 /** Dedup window in ms. Identical findings seen within this window bump
@@ -1702,13 +1719,13 @@ export function insertSecurityEvent(
            ts, last_seen_ts, account_id, session_id, direction,
            severity, kind, detector_id, confidence, title, reason,
            match_mask, match_hash, context_hash, snippet, source_hint,
-           details_json, blocked, approved, provenance,
+           details_json, blocked, approved, provenance, resolution,
            prev_hash, payload_hash
          ) VALUES (
            @ts, @ts, @accountId, @sessionId, @direction,
            @severity, @kind, @detectorId, @confidence, @title, @reason,
            @matchMask, @matchHash, @contextHash, @snippet, @sourceHint,
-           @detailsJson, @blocked, @approved, @provenance,
+           @detailsJson, @blocked, @approved, @provenance, @resolution,
            @prevHash, @payloadHash
          )`,
       )
@@ -1735,6 +1752,7 @@ export function insertSecurityEvent(
         // above does not touch it, so the first observation's origin
         // category stays authoritative.
         provenance: event.provenance,
+        resolution: event.resolution ?? null,
         prevHash,
         payloadHash,
       });
@@ -2839,6 +2857,7 @@ interface DbSecurityEventRow {
   approved: number;
   acknowledged: number;
   provenance: string;
+  resolution: string | null;
 }
 
 function rowToAccount(row: DbAccountRow): AccountInfo {
@@ -2932,6 +2951,7 @@ function rowToSecurityEvent(row: DbSecurityEventRow): SecurityEvent {
     approved: row.approved === 1,
     acknowledged: row.acknowledged === 1,
     provenance: row.provenance as SecurityEvent['provenance'],
+    resolution: row.resolution as SecurityEvent['resolution'],
   };
 }
 

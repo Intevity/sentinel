@@ -26,6 +26,7 @@ const baseEvent: SecurityEvent = {
   approved: false,
   acknowledged: false,
   provenance: 'file-read',
+  resolution: null,
 };
 
 describe('stripSnippetMarkers', () => {

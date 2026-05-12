@@ -60,8 +60,17 @@ function toolUseSseEvents(
 const SYNC_BLOCK = {
   toolPermissionsEnabled: true as const,
   toolPermissionDefaultAction: 'allow' as const,
-  securityBlockHoldEnabled: false as const,
 };
+
+async function resolveAllPending(ctx: StartedProxy, outcome: 'approve' | 'deny'): Promise<void> {
+  if (!ctx.enforcer) throw new Error('enforcer not enabled');
+  for (let i = 0; i < 100 && ctx.enforcer.listPending().length === 0; i += 1) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  for (const p of ctx.enforcer.listPending()) {
+    ctx.enforcer.resolvePending(p.pendingId, outcome);
+  }
+}
 
 describe('proxy network-egress: synthetic default-deny end-to-end', () => {
   it('WebFetch to 169.254.169.254 → blocked with no user rule seeded', async () => {
@@ -79,7 +88,9 @@ describe('proxy network-egress: synthetic default-deny end-to-end', () => {
       }),
     });
 
-    const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    const resPromise = postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    await resolveAllPending(ctx, 'deny');
+    const res = await resPromise;
     expect(res.status).toBe(200);
     const body = await res.text();
 
@@ -115,7 +126,9 @@ describe('proxy network-egress: synthetic default-deny end-to-end', () => {
       sseEvents: toolUseSseEvents(0, 'WebFetch', { url: 'http://169.254.169.254/' }),
     });
 
-    const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    const resPromise = postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    await resolveAllPending(ctx, 'deny');
+    const res = await resPromise;
     expect(res.status).toBe(200);
     const body = await res.text();
 
@@ -137,7 +150,9 @@ describe('proxy network-egress: synthetic default-deny end-to-end', () => {
     onCtx.fake.queueResponse('/v1/messages', {
       sseEvents: toolUseSseEvents(0, 'WebFetch', { url: 'http://10.1.2.3/admin' }),
     });
-    const onRes = await postThroughProxy(onCtx.proxyPort, '/v1/messages', { messages: [] });
+    const onResPromise = postThroughProxy(onCtx.proxyPort, '/v1/messages', { messages: [] });
+    await resolveAllPending(onCtx, 'deny');
+    const onRes = await onResPromise;
     const onBody = await onRes.text();
     expect(onBody).toContain(
       `[Blocked by Claude Sentinel: ${SYNTHETIC_NETWORK_EGRESS_DENY_ID}(10.1.2.3)`,

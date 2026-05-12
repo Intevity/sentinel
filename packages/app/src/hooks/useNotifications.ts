@@ -170,12 +170,10 @@ export function useNativeAlertNotifications(): void {
         }
       } else if (msg.type === 'security_block_pending') {
         // Held outbound block. The OS banner is a "Details" pointer —
-        // tapping it brings the app forward where the
-        // PendingBlockBanner (mounted at the App root) owns the
-        // actual Approve / Deny UI. We don't pass an eventId: the
-        // security-event row isn't persisted until the pending
-        // resolves, and the in-app banner is always visible while
-        // pending so per-row deep linking is redundant.
+        // tapping it brings the app forward to the Security tab where
+        // the pending block renders as a pinned LiveSecurityRow with
+        // the Approve / Deny controls. No eventId: the security-event
+        // row isn't persisted until the pending resolves.
         const holdSec = Math.max(0, Math.ceil((msg.pending.expiresAt - Date.now()) / 1000));
         void fireNativeSecurity(
           `Sentinel blocked: ${msg.pending.title}`,
@@ -364,9 +362,9 @@ async function fireNativeStandard(
  * tray window. When `eventId` is provided, the Rust delegate also
  * emits `security_notification_details` so the Security tab can scroll
  * to the matching row. For pending blocks we omit `eventId` because
- * the row isn't persisted until resolve, and rely on
- * `PendingBlockBanner` (always mounted) to surface Approve / Deny on
- * app focus. Fires via the native NSUserNotification bridge so the
+ * the row isn't persisted until resolve, and the LiveSecurityRow at
+ * the top of the Security tab carries the Approve / Deny controls.
+ * Fires via the native NSUserNotification bridge so the
  * banner carries our app icon + bundle attribution — unlike the old
  * osascript path which showed as "Script Editor". Sound plays through
  * `play_system_sound` (afplay-backed) for the same reason security

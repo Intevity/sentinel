@@ -33,7 +33,6 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     securityOsNotifyThreshold: 'high',
     securityPersistSnippet: true,
     securityEventRetentionDays: 30,
-    securityBlockHoldEnabled: false,
     securityApproveHoldSec: 60,
     toolPermissionsEnabled: false,
     toolPermissionDefaultAction: 'allow',
@@ -200,14 +199,16 @@ describe('SecurityScanner — scanOutbound', () => {
     });
     const body = bodyWithFileRead('AKI' + 'AVPGH9P8X2MZTYQRK');
     const decision = scanner.scanOutbound(body, 'acc-a');
-    expect(decision.action).toBe('block_immediate');
-    if (decision.action !== 'block_immediate') throw new Error('unreachable');
+    expect(decision.action).toBe('pending');
+    if (decision.action !== 'pending') throw new Error('unreachable');
     expect(decision.blockReason).toContain('AWS access key');
-    // In block mode, persistence is synchronous — no need to tick.
+    // Force-hold: persistence happens at resolution, not at scan time.
+    scanner.resolvePending(decision.pendingId, 'deny');
     const events = listSecurityEvents(db);
     expect(events).toHaveLength(1);
     expect(events[0]!.blocked).toBe(true);
     expect(events[0]!.provenance).toBe('file-read');
+    expect(events[0]!.resolution).toBe('user_deny');
   });
 
   it('block_medium_high mode blocks on medium-severity findings with confidence ≥ 0.7', () => {
@@ -230,7 +231,10 @@ describe('SecurityScanner — scanOutbound', () => {
       'key1 ghp_' + 'F7K2mQ9xNp4R8tVj6LsW1Zyc3BdHYaGeMnRs key2 AKI' + 'AVPGH9P8X2MZTYQRK',
     );
     const decision = scanner.scanOutbound(body, 'acc-a');
-    expect(decision.action).toBe('block_immediate');
+    expect(decision.action).toBe('pending');
+    if (decision.action === 'pending') {
+      scanner.resolvePending(decision.pendingId, 'deny');
+    }
   });
 
   it('does not block when enforcement mode is block_high and only MEDIUM findings exist', async () => {
@@ -504,7 +508,6 @@ describe('SecurityScanner — pending-block flow', () => {
       getSettings: () =>
         defaultSettings({
           securityEnforcementMode: 'block_high',
-          securityBlockHoldEnabled: true,
           securityApproveHoldSec: 60,
         }),
     });
@@ -608,7 +611,6 @@ describe('SecurityScanner — pending-block flow', () => {
       getSettings: () =>
         defaultSettings({
           securityEnforcementMode: 'block_high',
-          securityBlockHoldEnabled: true,
           securityApproveHoldSec: 60,
         }),
     });
@@ -633,7 +635,6 @@ describe('SecurityScanner — pending-block flow', () => {
       getSettings: () =>
         defaultSettings({
           securityEnforcementMode: 'block_high',
-          securityBlockHoldEnabled: true,
           // Short hold — 200ms.
           securityApproveHoldSec: 0.2 as unknown as number,
         }),
@@ -670,7 +671,6 @@ describe('SecurityScanner — pending-block flow', () => {
       getSettings: () =>
         defaultSettings({
           securityEnforcementMode: 'block_high',
-          securityBlockHoldEnabled: true,
           // Very short hold so the timer fires inside the test.
           securityApproveHoldSec: 0.1 as unknown as number,
         }),
@@ -699,7 +699,6 @@ describe('SecurityScanner — pending-block flow', () => {
       getSettings: () =>
         defaultSettings({
           securityEnforcementMode: 'block_high',
-          securityBlockHoldEnabled: true,
         }),
     });
     const body = bodyWithFileRead('AKI' + 'AVPGH9P8X2MZTYQRK');
@@ -732,15 +731,19 @@ describe('SecurityScanner — pending-block flow', () => {
       getSettings: () =>
         defaultSettings({
           securityEnforcementMode: 'block_high',
-          securityBlockHoldEnabled: false,
         }),
     });
     const body = bodyWithFileRead('AKI' + 'AVPGH9P8X2MZTYQRK');
-    // First block: fresh row + broadcast.
-    scanner.scanOutbound(body, 'acc-a');
+    // Force-hold: each block opens a pending entry. We deny each to
+    // exercise the persist+broadcast path that used to fire sync.
+    const d1 = scanner.scanOutbound(body, 'acc-a');
+    if (d1.action !== 'pending') throw new Error('expected pending');
+    scanner.resolvePending(d1.pendingId, 'deny');
     // Second block: dedup UPDATE path. Must still broadcast + notify.
     ipc.broadcasts.length = 0;
-    scanner.scanOutbound(body, 'acc-a');
+    const d2 = scanner.scanOutbound(body, 'acc-a');
+    if (d2.action !== 'pending') throw new Error('expected pending');
+    scanner.resolvePending(d2.pendingId, 'deny');
 
     const detected = ipc.broadcasts.filter(
       (m) => (m as { type: string }).type === 'security_event_detected',
@@ -770,25 +773,26 @@ describe('SecurityScanner — pending-block flow', () => {
     expect(events).toHaveLength(1);
     expect(events[0]!.blocked).toBe(false);
 
-    // Now block-immediate the same match. The event row should update to
-    // blocked=1 (not stay at 0).
+    // Now block the same match via the force-hold path. The event row
+    // should update to blocked=1 (not stay at 0).
     const blockScanner = createSecurityScanner({
       db,
       ipcServer: ipc as never,
       getSettings: () =>
         defaultSettings({
           securityEnforcementMode: 'block_high',
-          securityBlockHoldEnabled: false,
         }),
     });
-    blockScanner.scanOutbound(body, 'acc-a');
+    const d = blockScanner.scanOutbound(body, 'acc-a');
+    if (d.action !== 'pending') throw new Error('expected pending');
+    blockScanner.resolvePending(d.pendingId, 'deny');
     events = listSecurityEvents(db);
     expect(events).toHaveLength(1);
     expect(events[0]!.blocked).toBe(true);
     expect(events[0]!.occurrences).toBe(2);
   });
 
-  it('block_immediate fires when securityBlockHoldEnabled is false', () => {
+  it('every block routes through the hold path (decision.action === "pending")', () => {
     const ipc = ipcStub();
     const scanner = createSecurityScanner({
       db: getDb(dbPath),
@@ -796,12 +800,15 @@ describe('SecurityScanner — pending-block flow', () => {
       getSettings: () =>
         defaultSettings({
           securityEnforcementMode: 'block_high',
-          securityBlockHoldEnabled: false,
         }),
     });
     const body = bodyWithFileRead('AKI' + 'AVPGH9P8X2MZTYQRK');
     const decision = scanner.scanOutbound(body, 'acc-a');
-    expect(decision.action).toBe('block_immediate');
+    expect(decision.action).toBe('pending');
+    if (decision.action === 'pending') {
+      // Resolve the hold so the test doesn't leave a live timer.
+      scanner.resolvePending(decision.pendingId, 'deny');
+    }
   });
 });
 
@@ -970,10 +977,7 @@ describe('SecurityScanner — triggerTestScenario', () => {
       ipcServer: ipc as never,
       // Block-hold off in settings — the scenario should still hold since
       // triggerTestScenario is explicit intent, not an enforcement decision.
-      getSettings: () =>
-        defaultSettings({
-          securityBlockHoldEnabled: false,
-        }),
+      getSettings: () => defaultSettings({}),
     });
     scanner.triggerTestScenario('pending-block', 'acc-a');
     const pending = scanner.listPending();
@@ -1301,7 +1305,9 @@ describe('SecurityScanner — provenance gate', () => {
     });
     const body = bodyWithFileRead('AKI' + 'AVPGH9P8X2MZTYQRK', '/tmp/creds.env');
     const decision = scanner.scanOutbound(body, 'acc-a');
-    expect(decision.action).toBe('block_immediate');
+    expect(decision.action).toBe('pending');
+    if (decision.action !== 'pending') throw new Error('unreachable');
+    scanner.resolvePending(decision.pendingId, 'deny');
     const events = listSecurityEvents(db);
     expect(events[0]!.provenance).toBe('file-read');
     expect(events[0]!.blocked).toBe(true);
@@ -1316,7 +1322,6 @@ describe('SecurityScanner — provenance gate', () => {
       getSettings: () =>
         defaultSettings({
           securityEnforcementMode: 'block_high',
-          securityBlockHoldEnabled: false,
         }),
     });
     // risky_bash is observed via the response tap on tool_use blocks,

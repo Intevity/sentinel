@@ -268,9 +268,6 @@ export default function SettingsPanel({
   const setRetentionDays = (d: number): void => {
     void update({ securityEventRetentionDays: d }).catch(() => undefined);
   };
-  const setBlockHoldEnabled = (v: boolean): void => {
-    void update({ securityBlockHoldEnabled: v }).catch(() => undefined);
-  };
   const setApproveHoldSec = (n: number): void => {
     void update({ securityApproveHoldSec: n }).catch(() => undefined);
   };
@@ -975,35 +972,28 @@ export default function SettingsPanel({
                         <div className="px-3 pt-2.5 pb-1">
                           <p className="text-[11px] text-[#8E8E93] mb-1">Approve window</p>
                         </div>
-                        <ToggleRow
-                          label="Hold blocked requests for approval"
-                          description="When a block fires, keep the request open briefly so you can approve it from a pop-up. Disabling this reverts to an immediate 403."
-                          checked={settings.securityBlockHoldEnabled}
-                          onChange={setBlockHoldEnabled}
-                        />
-                        {settings.securityBlockHoldEnabled && (
-                          <div className="px-3 py-2.5">
-                            <div className="flex items-center justify-between text-[11px] text-[#8E8E93] mb-1">
-                              <span>Approve timeout</span>
-                              <span className="font-semibold text-black dark:text-white tabular-nums">
-                                {settings.securityApproveHoldSec}s
-                              </span>
-                            </div>
-                            <input
-                              type="range"
-                              min={10}
-                              max={300}
-                              step={5}
-                              value={settings.securityApproveHoldSec}
-                              onChange={(e) => setApproveHoldSec(Number(e.target.value))}
-                              className="w-full accent-ios-blue"
-                            />
-                            <p className="text-[10px] text-[#8E8E93] mt-1 leading-snug">
-                              Claude Code's own timeout is 10 minutes per request, so even a 5-min
-                              hold leaves ample headroom.
-                            </p>
+                        <div className="px-3 py-2.5">
+                          <div className="flex items-center justify-between text-[11px] text-[#8E8E93] mb-1">
+                            <span>Approve timeout</span>
+                            <span className="font-semibold text-black dark:text-white tabular-nums">
+                              {settings.securityApproveHoldSec}s
+                            </span>
                           </div>
-                        )}
+                          <input
+                            type="range"
+                            min={10}
+                            max={300}
+                            step={5}
+                            value={settings.securityApproveHoldSec}
+                            onChange={(e) => setApproveHoldSec(Number(e.target.value))}
+                            className="w-full accent-ios-blue"
+                          />
+                          <p className="text-[10px] text-[#8E8E93] mt-1 leading-snug">
+                            Every block is held briefly so you can approve it. Claude Code's own
+                            timeout is 10 minutes per request, so even a 5 minute hold leaves ample
+                            headroom.
+                          </p>
+                        </div>
                       </>
                     )}
                     <div className="px-3 pt-2.5 pb-1">

@@ -57,7 +57,6 @@ export const DEFAULT_SETTINGS: Settings = {
   securityOsNotifyThreshold: 'high',
   securityPersistSnippet: true,
   securityEventRetentionDays: 30,
-  securityBlockHoldEnabled: true,
   securityApproveHoldSec: 60,
   toolPermissionsEnabled: false,
   toolPermissionDefaultAction: 'allow',
@@ -304,9 +303,6 @@ function coerce(raw: unknown): Settings {
     // that demand long-horizon audit retention. Default stays 30; the value
     // is purely a user-configurable cap on retention sweep cutoffs.
     if (n >= 1 && n <= 3650) next.securityEventRetentionDays = n;
-  }
-  if (typeof obj['securityBlockHoldEnabled'] === 'boolean') {
-    next.securityBlockHoldEnabled = obj['securityBlockHoldEnabled'];
   }
   if (typeof obj['securityApproveHoldSec'] === 'number') {
     const n = Math.floor(obj['securityApproveHoldSec']);

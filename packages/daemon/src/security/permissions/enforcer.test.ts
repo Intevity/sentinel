@@ -46,7 +46,6 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     securityOsNotifyThreshold: 'high',
     securityPersistSnippet: true,
     securityEventRetentionDays: 30,
-    securityBlockHoldEnabled: false,
     securityApproveHoldSec: 60,
     toolPermissionsEnabled: true,
     toolPermissionDefaultAction: 'allow',
@@ -119,6 +118,27 @@ function makeQuietResponse(): ServerResponse {
   const res = new ServerResponse(req);
   res.assignSocket(sock);
   return res;
+}
+
+/** Drive a strip-or-interceptor pending hold to deny. Force-hold (the
+ *  default since the unification of the security UI) opens a pending
+ *  entry on every block, so tests that previously expected a sync
+ *  strip/block must now drive the resolution explicitly. Polls for
+ *  the pending entry to appear (handles the async drain inside
+ *  push()), then resolves it with the requested outcome. */
+async function denyPendingHold(
+  enforcer: ReturnType<typeof createPermissionsEnforcer>,
+  outcome: 'approve' | 'deny' = 'deny',
+): Promise<void> {
+  for (let i = 0; i < 100 && enforcer.listPending().length === 0; i += 1) {
+    await new Promise((r) => setImmediate(r));
+  }
+  const pending = enforcer.listPending();
+  for (const p of pending) {
+    enforcer.resolvePending(p.pendingId, outcome);
+  }
+  // Yield so onFinalized's DB writes settle before assertions.
+  await new Promise((r) => setImmediate(r));
 }
 
 describe('summarizeToolInput', () => {
@@ -260,13 +280,17 @@ describe('PermissionsEnforcer', () => {
         messages: [],
       }),
     );
-    const out = await enforcer.stripDeniedTools(body, 'acc-1');
+    const stripPromise = enforcer.stripDeniedTools(body, 'acc-1');
+    await denyPendingHold(enforcer, 'deny');
+    const out = await stripPromise;
     expect(out).not.toBe(body);
     const parsed = JSON.parse(out.toString('utf-8'));
     expect(parsed.tools).toHaveLength(1);
     expect(parsed.tools[0].name).toBe('Bash');
-    expect(ipc.broadcasts.length).toBe(1);
-    expect((ipc.broadcasts[0] as { type: string }).type).toBe('security_event_detected');
+    expect(
+      ipc.broadcasts.filter((m) => (m as { type: string }).type === 'security_event_detected')
+        .length,
+    ).toBe(1);
     const events = listSecurityEvents(db);
     expect(events).toHaveLength(1);
     expect(events[0]!.snippet).toMatch(/WebFetch stripped from the tool list/);
@@ -288,7 +312,9 @@ describe('PermissionsEnforcer', () => {
       getSettings: () => settings,
     });
     const body = Buffer.from(JSON.stringify({ tools: [{ name: 'WebFetch' }], messages: [] }));
-    await enforcer.stripDeniedTools(body, 'acc-1');
+    const stripPromise = enforcer.stripDeniedTools(body, 'acc-1');
+    await denyPendingHold(enforcer, 'deny');
+    await stripPromise;
     const events = listSecurityEvents(db);
     expect(events[0]!.snippet).toContain('Matched rule: WebFetch');
   });
@@ -387,7 +413,9 @@ describe('PermissionsEnforcer', () => {
         tools: [{ name: 123 }, null, { name: 'Bash' }],
       }),
     );
-    const out = await enforcer.stripDeniedTools(body, 'acc');
+    const stripPromise = enforcer.stripDeniedTools(body, 'acc');
+    await denyPendingHold(enforcer, 'deny');
+    const out = await stripPromise;
     // The * whole-tool deny strips "Bash"; the malformed entries pass through.
     const parsed = JSON.parse(out.toString('utf-8'));
     expect(parsed.tools.find((t: { name: string }) => t?.name === 'Bash')).toBeUndefined();
@@ -468,7 +496,7 @@ describe('PermissionsEnforcer', () => {
     expect(rules).toHaveLength(2);
   });
 
-  it('onBlocked hook fires when the interceptor blocks a tool_use — persists event + broadcasts', () => {
+  it('blocked tool_use persists event + broadcasts after user deny on hold', async () => {
     upsertPermissionRule(db, {
       decision: 'deny',
       tool: 'Bash',
@@ -489,6 +517,18 @@ describe('PermissionsEnforcer', () => {
       'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"command\\":\\"rm file\\"}"}}\n\n' +
       'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n';
     it?.push(stream);
+    // Force-hold: the interceptor opens a pending block and awaits the
+    // user's decision. Resolve it as a deny to drive the persist +
+    // broadcast path the test asserts on. Wait for the pending entry
+    // to appear first since `push()` triggers an async drain.
+    for (let i = 0; i < 50 && enforcer.listPending().length === 0; i += 1) {
+      await new Promise((r) => setImmediate(r));
+    }
+    const pending = enforcer.listPending();
+    expect(pending).toHaveLength(1);
+    enforcer.resolvePending(pending[0]!.pendingId, 'deny');
+    // Yield once so onFinalized's DB writes complete before assertion.
+    await new Promise((r) => setImmediate(r));
     it?.flush();
     const events = listSecurityEvents(db, { limit: 10 });
     expect(events.some((e) => e.kind === 'tool_permission_blocked')).toBe(true);
@@ -593,7 +633,9 @@ describe('PermissionsEnforcer', () => {
       throw new Error('boom');
     }) as never;
     const body = Buffer.from(JSON.stringify({ tools: [{ name: 'WebFetch' }] }));
-    await enforcer.stripDeniedTools(body, 'acc-1');
+    const stripPromise = enforcer.stripDeniedTools(body, 'acc-1');
+    await denyPendingHold(enforcer, 'deny');
+    await stripPromise;
     expect(errorSpy).toHaveBeenCalled();
     // Row still persisted despite the broadcast failure.
     const events = listSecurityEvents(db, { limit: 10 });
@@ -609,7 +651,6 @@ describe('PermissionsEnforcer', () => {
         pattern: null,
         raw: 'WebFetch',
       });
-      settings = defaultSettings({ securityBlockHoldEnabled: true, securityApproveHoldSec: 60 });
       const ipc = ipcStub();
       const enforcer = createPermissionsEnforcer({
         db,
@@ -640,7 +681,6 @@ describe('PermissionsEnforcer', () => {
         raw: 'WebFetch',
       });
       upsertPermissionRule(db, { decision: 'deny', tool: 'Bash', pattern: null, raw: 'Bash' });
-      settings = defaultSettings({ securityBlockHoldEnabled: true, securityApproveHoldSec: 60 });
       const ipc = ipcStub();
       const enforcer = createPermissionsEnforcer({
         db,
@@ -678,7 +718,7 @@ describe('PermissionsEnforcer', () => {
   });
 
   describe('createInterceptor — hold path wiring', () => {
-    it('installs an awaitDecision hook when securityBlockHoldEnabled is true', () => {
+    it('installs an awaitDecision hook for every deny rule (force-hold)', () => {
       upsertPermissionRule(db, {
         decision: 'deny',
         tool: 'Bash',
@@ -687,7 +727,6 @@ describe('PermissionsEnforcer', () => {
       });
       settings = defaultSettings({
         toolPermissionsEnabled: true,
-        securityBlockHoldEnabled: true,
         securityApproveHoldSec: 60,
       });
       const ipc = ipcStub();
@@ -700,7 +739,7 @@ describe('PermissionsEnforcer', () => {
       expect(interceptor).not.toBeNull();
     });
 
-    it('installs an awaitDecision hook when an `ask` rule is present even if hold is off', () => {
+    it('installs an awaitDecision hook for ask rules too', () => {
       upsertPermissionRule(db, {
         decision: 'ask',
         tool: 'Bash',
@@ -709,7 +748,6 @@ describe('PermissionsEnforcer', () => {
       });
       settings = defaultSettings({
         toolPermissionsEnabled: true,
-        securityBlockHoldEnabled: false,
       });
       const ipc = ipcStub();
       const enforcer = createPermissionsEnforcer({
@@ -717,26 +755,6 @@ describe('PermissionsEnforcer', () => {
         ipcServer: ipc as never,
         getSettings: () => settings,
       });
-      const interceptor = enforcer.createInterceptor(makeQuietResponse(), 'acc');
-      expect(interceptor).not.toBeNull();
-    });
-
-    it('leaves awaitDecision unset when no ask rule exists and hold is disabled', () => {
-      upsertPermissionRule(db, {
-        decision: 'deny',
-        tool: 'Bash',
-        pattern: 'rm -rf *',
-        raw: 'Bash(rm -rf *)',
-      });
-      settings = defaultSettings({ toolPermissionsEnabled: true, securityBlockHoldEnabled: false });
-      const ipc = ipcStub();
-      const enforcer = createPermissionsEnforcer({
-        db,
-        ipcServer: ipc as never,
-        getSettings: () => settings,
-      });
-      // The interceptor itself is still installed for sync deny enforcement;
-      // we're just asserting it doesn't explode without the hold wiring.
       const interceptor = enforcer.createInterceptor(makeQuietResponse(), 'acc');
       expect(interceptor).not.toBeNull();
     });
@@ -851,7 +869,9 @@ describe('PermissionsEnforcer', () => {
       }) as typeof db.prepare;
 
       const body = Buffer.from(JSON.stringify({ tools: [{ name: 'WebFetch' }] }));
-      await expect(enforcer.stripDeniedTools(body, 'acc-err')).resolves.toBeDefined();
+      const stripPromise = enforcer.stripDeniedTools(body, 'acc-err');
+      await denyPendingHold(enforcer, 'deny');
+      await expect(stripPromise).resolves.toBeInstanceOf(Buffer);
       // Restore so afterEach can close cleanly.
       db.prepare = origPrepare;
       errorSpy.mockRestore();

@@ -97,7 +97,6 @@ function benchSettings(): Settings {
     securityOsNotifyThreshold: 'high',
     securityPersistSnippet: false,
     securityEventRetentionDays: 30,
-    securityBlockHoldEnabled: false,
     securityApproveHoldSec: 60,
     toolPermissionsEnabled: false,
     toolPermissionDefaultAction: 'allow',

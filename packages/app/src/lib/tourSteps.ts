@@ -104,7 +104,7 @@ export const TOUR_STEPS: TourStep[] = [
   {
     targetId: 'tab-security',
     title: 'Security scanning, built in',
-    body: 'Sentinel inspects outbound requests and model responses for secrets, prompt injection, and risky tool calls. Pick observe-only or block on high or medium severity; OS notifications are gated to the levels you care about.',
+    body: 'Sentinel inspects outbound requests and model responses for secrets, prompt injection, and risky tool calls. Pick observe only or block on high or medium severity. Detected events you want to ignore get a Mute button; blocks get an Always allow button. Live holds appear as a pinned row at the top of this tab with Approve and Deny.',
     placement: 'bottom',
     icon: ShieldCheck,
     accent: 'red',
@@ -135,7 +135,7 @@ export const TOUR_STEPS: TourStep[] = [
   {
     targetId: 'tour-permissions',
     title: 'Tool permission rules',
-    body: 'Allow or deny specific Claude Code tools by name and arguments. Held blocks surface a 60-second approval banner with approve, deny, or always-allow. Rules sync both ways with Claude Code’s settings.json.',
+    body: 'Allow or deny specific Claude Code tools by name and arguments. Every block holds the request for up to 60 seconds and appears as a pinned row at the top of the Security tab with Approve (once, for session, or always) and Deny. Rules sync both ways with Claude Code settings.json.',
     placement: 'bottom',
     icon: ShieldAlert,
     accent: 'violet',

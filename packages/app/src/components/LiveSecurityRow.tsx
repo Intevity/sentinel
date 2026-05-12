@@ -1,9 +1,15 @@
 import React, { useState } from 'react';
 import { Shield, ShieldAlert, ShieldX, ShieldCheck, X } from 'lucide-react';
 import type { PendingSecurityBlock, SecuritySeverity } from '@claude-sentinel/shared';
-import { usePendingSecurityBlocks } from '../hooks/usePendingSecurityBlocks.js';
 import { orderedToolInputRows } from '../lib/toolInputFields.js';
 
+/**
+ * Renders one live pending security block as a pinned row at the top of
+ * the Security tab. Replaces the old top-of-screen banner so every
+ * security surface lives in one place. Same controls as before
+ * (countdown, Approve with mode picker, Deny) but inline with the
+ * history list.
+ */
 const SEVERITY_ICON: Record<SecuritySeverity, typeof Shield> = {
   low: Shield,
   medium: ShieldAlert,
@@ -35,43 +41,6 @@ function formatCountdown(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-/**
- * Renders one banner per pending outbound-block held by the proxy. The banner
- * shows a live countdown and Approve / Deny buttons. Approving adds the
- * match to the allowlist AND releases the held upstream request; denying
- * synthesizes the 403 immediately.
- *
- * Mounted once in App.tsx above the tab bar so the user sees it regardless
- * of which tab they're currently viewing.
- */
-export default function PendingBlockBanner(): React.ReactElement | null {
-  const { pending, approve, deny, secondsRemaining } = usePendingSecurityBlocks();
-  if (pending.length === 0) return null;
-
-  return (
-    <div className="mx-4 mt-1 mb-1 space-y-2">
-      {pending.map((entry) => (
-        <PendingRow
-          key={entry.pendingId}
-          entry={entry}
-          remaining={secondsRemaining(entry.pendingId)}
-          onApprove={(opts) => void approve(entry.pendingId, opts)}
-          onDeny={() => void deny(entry.pendingId)}
-        />
-      ))}
-    </div>
-  );
-}
-
-interface PendingRowProps {
-  entry: PendingSecurityBlock;
-  remaining: number;
-  onApprove: (opts?: { mode?: 'once' | 'session' | 'always' }) => void | Promise<void>;
-  onDeny: () => void | Promise<void>;
-}
-
-type ApproveMode = 'once' | 'session' | 'always';
-
 function formatProvenance(createdAt: number, source: 'local' | 'claude-code'): string {
   const ageMs = Date.now() - createdAt;
   const minutes = Math.floor(ageMs / 60_000);
@@ -86,13 +55,27 @@ function formatProvenance(createdAt: number, source: 'local' | 'claude-code'): s
   return `Rule added ${when} ${origin}`;
 }
 
-function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): React.ReactElement {
+type ApproveMode = 'once' | 'session' | 'always';
+
+export interface LiveSecurityRowProps {
+  entry: PendingSecurityBlock;
+  remaining: number;
+  onApprove: (opts?: { mode?: ApproveMode }) => void | Promise<void>;
+  onDeny: () => void | Promise<void>;
+}
+
+export default function LiveSecurityRow({
+  entry,
+  remaining,
+  onApprove,
+  onDeny,
+}: LiveSecurityRowProps): React.ReactElement {
   const [busy, setBusy] = useState<null | 'approve' | 'deny'>(null);
-  // Sprint 9: only the tool_use permission path supports the durable
-  // "session" / "always" modes — the scanner variant has its own
-  // implicit allowlist-on-approve path, and `permissions_strip`
+  // Only the tool_use permission path supports the durable
+  // "session" / "always" modes. The scanner variant has its own
+  // implicit allowlist-on-approve path; `permissions_strip`
   // doesn't have a stable per-input key. The radio is hidden for
-  // those sources; the approve button still works as a one-shot.
+  // those sources.
   const canPickMode = entry.source === 'permissions_tool_use';
   const [mode, setMode] = useState<ApproveMode>('once');
   const Icon = SEVERITY_ICON[entry.severity];
@@ -116,8 +99,10 @@ function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): R
 
   return (
     <div
+      id={`security-pending-${entry.pendingId}`}
       className={`rounded-2xl ring-1 ${SEVERITY_RING[entry.severity]} ${SEVERITY_BG[entry.severity]} p-3`}
       role="alert"
+      data-testid="live-security-row"
     >
       <div className="flex items-start gap-3">
         <div className="flex-shrink-0 w-8 h-8 rounded-full bg-white/60 dark:bg-black/30 flex items-center justify-center">
@@ -125,12 +110,15 @@ function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): R
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-[13px] font-semibold text-black dark:text-white truncate">
-              Sentinel blocked: {entry.title}
-            </p>
-            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-black/10 dark:bg-white/15 text-black/70 dark:text-white/80 tabular-nums">
-              {formatCountdown(remaining)}
+            <span
+              className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-ios-orange text-white tabular-nums"
+              data-testid="status-pill"
+            >
+              Pending · {formatCountdown(remaining)}
             </span>
+            <p className="text-[13px] font-semibold text-black dark:text-white truncate">
+              {entry.title}
+            </p>
           </div>
           <p className="text-[11px] text-[#8E8E93] mt-0.5 leading-snug">
             {canPickMode
@@ -170,9 +158,8 @@ function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): R
             </div>
           )}
         </div>
-        {/* Quick-dismiss X — same effect as letting the timer expire,
-            for users who want to get rid of the banner fast without
-            hunting for the Deny button below. Reuses the deny path. */}
+        {/* Quick-dismiss X. Same effect as letting the timer expire,
+            for users who want to get rid of the row fast. Reuses deny. */}
         <button
           onClick={handleDeny}
           disabled={busy !== null}
@@ -201,7 +188,7 @@ function PendingRow({ entry, remaining, onApprove, onDeny }: PendingRowProps): R
                   ? 'Approve only this single call'
                   : m === 'session'
                     ? 'Approve every matching call in this Claude Code session for the next 12 hours'
-                    : 'Approve and add a permanent bypass so future identical inputs skip the banner'
+                    : 'Approve and add a permanent bypass so future identical inputs skip the approval row'
               }
             >
               <input

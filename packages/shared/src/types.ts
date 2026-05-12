@@ -304,12 +304,9 @@ export interface Settings {
   securityPersistSnippet: boolean;
   /** Rows older than this many days are purged at daemon startup. */
   securityEventRetentionDays: number;
-  /** When true, outbound blocks are held open in the proxy for up to
-   *  `securityApproveHoldSec` while the user can approve the request in
-   *  the UI. When false, blocks 403 Claude Code immediately (v1.1 behavior). */
-  securityBlockHoldEnabled: boolean;
   /** How long a held block waits for an approve click before the proxy
-   *  synthesizes the 403. Clamped to [10, 300]. Default 60. */
+   *  synthesizes the 403. Clamped to [10, 300]. Default 60. Every block
+   *  goes through this hold so the user always has a chance to approve. */
   securityApproveHoldSec: number;
 
   // ─── Tool permission enforcement ───────────────────────────────────
@@ -727,7 +724,16 @@ export interface SecurityEvent {
    *  secret/PII findings. Everything else is observe-only. See
    *  packages/daemon/src/security/detectors.ts:classifyProvenance. */
   provenance: FindingProvenance;
+  /** How a held request was settled. Null for observe-only findings
+   *  that never held the request. The StatusPill on the Security tab
+   *  uses this to label timed-out denies separately from user denies
+   *  and to show "Allowed by you" when the user approved the hold. */
+  resolution: SecurityEventResolution | null;
 }
+
+/** Settlement signal for a held permissions/scanner block. Null on the
+ *  row means the event was observe-only and never held. */
+export type SecurityEventResolution = 'user_approve' | 'user_deny' | 'timeout';
 
 /** Provenance categories for security findings.
  *

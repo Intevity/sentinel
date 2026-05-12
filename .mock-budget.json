@@ -16,7 +16,7 @@
   "packages/daemon/src/otel-receiver.test.ts": 2,
   "packages/daemon/src/overage.test.ts": 4,
   "packages/daemon/src/proxy-cache-ttl-override.test.ts": 20,
-  "packages/daemon/src/proxy-capture.test.ts": 46,
+  "packages/daemon/src/proxy-capture.test.ts": 47,
   "packages/daemon/src/proxy.integration.test.ts": 5,
   "packages/daemon/src/proxy.routing.integration.test.ts": 1,
   "packages/daemon/src/proxy.test.ts": 7,

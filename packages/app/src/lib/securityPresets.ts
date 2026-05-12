@@ -20,7 +20,6 @@ export type PresetSettingsPatch = Pick<
   | 'securityScanInjection'
   | 'securityScanToolUse'
   | 'securityOsNotifyThreshold'
-  | 'securityBlockHoldEnabled'
   | 'securityApproveHoldSec'
   | 'toolPermissionsEnabled'
   | 'toolPermissionDefaultAction'
@@ -611,7 +610,6 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       securityScanInjection: false,
       securityScanToolUse: false,
       securityOsNotifyThreshold: 'high' as SecurityOsNotifyThreshold,
-      securityBlockHoldEnabled: false,
       securityApproveHoldSec: 60,
       // Even in Low we keep tool permissions on so the config-protection
       // denies fire. The default-action is still allow, so nothing else
@@ -642,7 +640,6 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       securityScanInjection: false,
       securityScanToolUse: true,
       securityOsNotifyThreshold: 'medium' as SecurityOsNotifyThreshold,
-      securityBlockHoldEnabled: true,
       securityApproveHoldSec: 60,
       toolPermissionsEnabled: true,
       toolPermissionDefaultAction: 'allow' as PermissionDecision,
@@ -677,7 +674,6 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       securityScanInjection: true,
       securityScanToolUse: true,
       securityOsNotifyThreshold: 'low' as SecurityOsNotifyThreshold,
-      securityBlockHoldEnabled: true,
       securityApproveHoldSec: 120,
       toolPermissionsEnabled: true,
       toolPermissionDefaultAction: 'deny' as PermissionDecision,
@@ -711,7 +707,6 @@ export const PRESETS: Record<RiskProfile, Preset> = {
       securityScanInjection: true,
       securityScanToolUse: true,
       securityOsNotifyThreshold: 'low' as SecurityOsNotifyThreshold,
-      securityBlockHoldEnabled: true,
       // Paranoid users want a longer review window before a held block
       // auto-denies; 180s gives room to walk away from the screen.
       securityApproveHoldSec: 180,

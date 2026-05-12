@@ -30,6 +30,9 @@ import { useSecurityEvents } from '../hooks/useSecurityEvents.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { useAutoModeStatus } from '../hooks/useAutoModeStatus.js';
 import { usePermissionRules } from '../hooks/usePermissionRules.js';
+import { usePendingSecurityBlocks } from '../hooks/usePendingSecurityBlocks.js';
+import LiveSecurityRow from './LiveSecurityRow.js';
+import SecurityStatusPill from './SecurityStatusPill.js';
 import {
   QuickSegmented,
   QuickChipToggle,
@@ -303,6 +306,17 @@ export default function SecurityPanel({
   });
 
   const sentinelRef = useInfiniteScroll({ hasMore, loading: loadingMore, loadMore });
+
+  // Live pending blocks render as pinned rows at the top of the events
+  // list. Replaces the old top-of-screen banner so every security
+  // decision and history item lives in one place. Cross-tab visibility
+  // is handled in App.tsx via the Security tab badge.
+  const {
+    pending: pendingBlocks,
+    approve: approvePending,
+    deny: denyPending,
+    secondsRemaining,
+  } = usePendingSecurityBlocks();
 
   // Kinds the chip filter row should offer. With server-side filtering,
   // a fresh page returned for "kindFilter=secret" only contains secrets
@@ -812,7 +826,21 @@ export default function SecurityPanel({
         </div>
       )}
 
-      {!loading && events.length === 0 && !error ? (
+      {pendingBlocks.length > 0 && (
+        <div className="space-y-2" data-testid="live-security-pending">
+          {pendingBlocks.map((entry) => (
+            <LiveSecurityRow
+              key={entry.pendingId}
+              entry={entry}
+              remaining={secondsRemaining(entry.pendingId)}
+              onApprove={(opts) => void approvePending(entry.pendingId, opts)}
+              onDeny={() => void denyPending(entry.pendingId)}
+            />
+          ))}
+        </div>
+      )}
+
+      {!loading && events.length === 0 && pendingBlocks.length === 0 && !error ? (
         <div className="glass-card px-4 py-10 text-center">
           <p className="text-[13px] font-medium text-black dark:text-white">No security events</p>
           <p className="text-[11px] text-[#8E8E93] mt-1">
@@ -1157,11 +1185,7 @@ function SecurityRow({
             <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#8E8E93]/10 text-[#8E8E93]">
               {KIND_LABEL[event.kind]}
             </span>
-            {event.blocked && (
-              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-ios-red text-white">
-                BLOCKED
-              </span>
-            )}
+            <SecurityStatusPill event={event} />
             {event.occurrences > 1 && (
               <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#8E8E93]/10 text-[#8E8E93]">
                 ×{event.occurrences}
@@ -1274,7 +1298,7 @@ function SecurityRow({
                 <ShieldOff size={10} strokeWidth={2.5} />
                 Mute these
               </button>
-            ) : (
+            ) : event.resolution === 'user_approve' ? null : (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1282,24 +1306,36 @@ function SecurityRow({
                 }}
                 className={`flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 ${
                   allowConfirm.pending
-                    ? 'bg-ios-orange text-white'
-                    : 'bg-ios-orange/10 text-ios-orange hover:bg-ios-orange/20'
+                    ? event.blocked
+                      ? 'bg-ios-orange text-white'
+                      : 'bg-[#8E8E93] text-white'
+                    : event.blocked
+                      ? 'bg-ios-orange/10 text-ios-orange hover:bg-ios-orange/20'
+                      : 'bg-[#8E8E93]/15 text-[#8E8E93] hover:bg-[#8E8E93]/25'
                 }`}
                 title={
                   allowConfirm.pending
-                    ? 'Click again to allow'
-                    : 'Suppress all future matches of this exact value'
+                    ? event.blocked
+                      ? 'Click again to allow'
+                      : 'Click again to mute'
+                    : event.blocked
+                      ? 'Suppress all future matches of this exact value'
+                      : 'Stop alerting on this exact value in the future'
                 }
               >
                 <ShieldOff size={10} strokeWidth={2.5} />
-                {allowConfirm.pending ? 'Confirm?' : 'Always allow'}
+                {allowConfirm.pending ? 'Confirm?' : event.blocked ? 'Always allow' : 'Mute'}
               </button>
             )}
           </div>
           <p className="text-[10px] text-[#8E8E93] leading-snug">
             {isSynthetic
               ? 'Informational telemetry, not a detection. "Mute these" hides future alerts of this kind until you re-enable them in Settings.'
-              : '"Always allow" adds this exact match to your allowlist so future detections of the same value are silently suppressed.'}
+              : event.resolution === 'user_approve'
+                ? 'You approved this held request. The match was added to your allowlist so future identical calls skip the approval banner.'
+                : event.blocked
+                  ? '"Always allow" adds this exact match to your allowlist so future identical calls skip the approval banner.'
+                  : '"Mute" adds this exact match to your allowlist so future detections are silently suppressed. The request was not blocked.'}
           </p>
         </div>
       )}

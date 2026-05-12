@@ -48,13 +48,12 @@ export interface ScannerDeps {
 /** Returned by `scanOutbound`. Discriminated by `action`:
  *  - `allow`: forward upstream immediately (no block conditions met, or
  *    scanning is disabled, or mode is observe).
- *  - `block_immediate`: synthesize a 403 now (user has block-hold
- *    disabled, or the caller opted out of holding).
  *  - `pending`: a block triggered and the proxy should await the user's
- *    approve/deny decision via `awaitPendingResolution(pendingId)`. */
+ *    approve/deny decision via `awaitPendingResolution(pendingId)`.
+ *    Every block goes through this path — the user always gets a chance
+ *    to approve. On timeout the proxy synthesizes a 403. */
 export type OutboundDecision =
   | { action: 'allow'; findings: Finding[] }
-  | { action: 'block_immediate'; blockReason: string; findings: Finding[] }
   | { action: 'pending'; pendingId: string; blockReason: string; findings: Finding[] };
 
 export interface ResponseTapHandle {
@@ -187,7 +186,11 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     accountId: string,
     finding: Finding,
     direction: 'outbound' | 'tool_use',
-    flags: { blocked?: boolean; approved?: boolean } = {},
+    flags: {
+      blocked?: boolean;
+      approved?: boolean;
+      resolution?: 'user_approve' | 'user_deny' | 'timeout';
+    } = {},
   ): void => {
     const settings = deps.getSettings();
     const now = Date.now();
@@ -224,6 +227,7 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
       blocked,
       approved,
       provenance: finding.provenance,
+      ...(flags.resolution !== undefined ? { resolution: flags.resolution } : {}),
     };
 
     let result: { id: number; isNew: boolean };
@@ -354,6 +358,8 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     // Mirror findings into the DB with the appropriate flags, and on approve
     // also add each block-cause match to the allowlist so the next Claude
     // Code operation carrying the same content doesn't hit the block again.
+    const resolution: 'user_approve' | 'user_deny' | 'timeout' =
+      outcome === 'approve' ? 'user_approve' : outcome === 'deny' ? 'user_deny' : 'timeout';
     if (outcome === 'approve') {
       for (const f of entry.blockCauseFindings) {
         try {
@@ -373,6 +379,7 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
         persistAndBroadcast(entry.accountId, f, 'outbound', {
           blocked: false,
           approved: isCause,
+          ...(isCause ? { resolution } : {}),
         });
       }
     } else {
@@ -381,6 +388,7 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
         const isCause = entry.blockCauseFindings.includes(f);
         persistAndBroadcast(entry.accountId, f, 'outbound', {
           blocked: isCause,
+          ...(isCause ? { resolution } : {}),
         });
       }
     }
@@ -550,36 +558,27 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
             f.confidence >= BLOCK_CONFIDENCE_FLOOR,
         );
 
-        // Hold the request open and wait for user input, unless block-hold is
-        // disabled or the hold window is zero — then 403 immediately.
-        if (settings.securityBlockHoldEnabled && settings.securityApproveHoldSec > 0) {
-          const pending = createPending({
-            accountId,
-            severity: blockDecision.severity,
-            title: blockCauseFindings[0]?.title ?? blockDecision.reason,
-            blockReason: blockDecision.reason,
-            matchMask: blockCauseFindings[0]?.matchMask ?? null,
-            detectorId: blockCauseFindings[0]?.detectorId ?? '',
-            blockCauseFindings,
-            allFindings: findings,
-            holdSec: settings.securityApproveHoldSec,
-          });
-          return {
-            action: 'pending',
-            pendingId: pending.id,
-            blockReason: blockDecision.reason,
-            findings,
-          };
-        }
-
-        // Immediate 403 path — persist synchronously so the row exists by
-        // the time the UI queries it.
-        for (const f of findings) {
-          const isBlockCause = blockCauseFindings.includes(f);
-          persistAndBroadcast(accountId, f, 'outbound', { blocked: isBlockCause });
-        }
+        // Every block goes through the hold path. The user gets up to
+        // `securityApproveHoldSec` seconds to approve before the proxy
+        // synthesizes a 403. The pending registry floors small values so
+        // a misconfigured 0 still gives the user a minimum window. The
+        // settings coerce already clamps persisted values to >= 10s; this
+        // guard exists for in-test settings that bypass coerce.
+        const holdSec = Math.max(1, settings.securityApproveHoldSec);
+        const pending = createPending({
+          accountId,
+          severity: blockDecision.severity,
+          title: blockCauseFindings[0]?.title ?? blockDecision.reason,
+          blockReason: blockDecision.reason,
+          matchMask: blockCauseFindings[0]?.matchMask ?? null,
+          detectorId: blockCauseFindings[0]?.detectorId ?? '',
+          blockCauseFindings,
+          allFindings: findings,
+          holdSec,
+        });
         return {
-          action: 'block_immediate',
+          action: 'pending',
+          pendingId: pending.id,
           blockReason: blockDecision.reason,
           findings,
         };

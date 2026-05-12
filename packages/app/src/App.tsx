@@ -41,7 +41,7 @@ import SecuritySetupWizard from './components/SecuritySetupWizard.js';
 import Tour from './components/Tour.js';
 import type { TourStep } from './lib/tourSteps.js';
 import LogsViewer from './components/LogsViewer.js';
-import PendingBlockBanner from './components/PendingBlockBanner.js';
+import { usePendingSecurityBlocks } from './hooks/usePendingSecurityBlocks.js';
 import AuditTamperBanner from './components/AuditTamperBanner.js';
 import Footer from './components/Footer.js';
 import { useAutoResizeWindow } from './hooks/useAutoResizeWindow.js';
@@ -68,6 +68,13 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
 
 export default function App(): React.ReactElement {
   const [activeTab, setActiveTab] = useState<Tab>('accounts');
+  // Cross-tab visibility for live security holds. The unified security
+  // UI moved pending blocks from a top banner into the Security tab
+  // itself; this hook lets the tab show a red dot when a hold is
+  // waiting and the user is looking elsewhere. OS notifications still
+  // fire (daemon-side) so a fully-backgrounded app also signals.
+  const { pending: pendingSecurityBlocks } = usePendingSecurityBlocks();
+  const securityNeedsAttention = pendingSecurityBlocks.length > 0 && activeTab !== 'security';
   // Deep-link target for the Security tab, set by the "Details"
   // action on an OS security notification. SecurityPanel reads this
   // prop, expands the matching row on mount/change, and calls
@@ -451,10 +458,10 @@ export default function App(): React.ReactElement {
               behind a stack of routine banners. */}
             <AuditTamperBanner />
 
-            {/* ── Security: pending block approval banner ──────────── */}
-            {/* Rendered above the other banners so a blocked request can't be
-              missed. Takes visual priority while any block is held. */}
-            <PendingBlockBanner />
+            {/* Pending blocks now render as pinned rows inside the
+              Security tab itself (see SecurityPanel + LiveSecurityRow).
+              Cross-tab visibility comes from the Security tab dot
+              indicator below + the OS notification (daemon-side). */}
 
             {/* ── Activation banner (patches ~/.claude/settings.json) ─ */}
             <ActivationBanner />
@@ -467,6 +474,7 @@ export default function App(): React.ReactElement {
               <div className="flex bg-black/[0.06] dark:bg-white/[0.08] rounded-xl p-[3px]">
                 {TABS.map(({ id, label, icon: Icon }) => {
                   const active = activeTab === id;
+                  const showDot = id === 'security' && securityNeedsAttention;
                   return (
                     <button
                       key={id}
@@ -488,6 +496,13 @@ export default function App(): React.ReactElement {
                       <span className="relative z-10 flex items-center gap-1 transform-gpu">
                         <Icon size={11} strokeWidth={2.2} />
                         {label}
+                        {showDot && (
+                          <span
+                            className="ml-0.5 w-1.5 h-1.5 rounded-full bg-ios-red animate-pulse"
+                            aria-label="Pending security decision"
+                            title="A security block is waiting for your decision"
+                          />
+                        )}
                       </span>
                     </button>
                   );

@@ -957,13 +957,11 @@ async function proxyToAnthropic(
   }
 
   // Security scan — runs against the outbound JSON before we forward. In
-  // block-mode, a finding at or above the severity floor triggers one of:
-  //  - `pending`: the request is held open up to `securityApproveHoldSec`
-  //    while the user decides whether to approve. On approve, the held
-  //    body is forwarded upstream as if nothing happened. On deny or
-  //    timeout, a 403 is synthesized.
-  //  - `block_immediate`: 403 fires without any hold (user disabled the
-  //    hold feature).
+  // block-mode, a finding at or above the severity floor returns
+  // `pending`: the request is held open up to `securityApproveHoldSec`
+  // while the user decides whether to approve. On approve, the held
+  // body is forwarded upstream as if nothing happened. On deny or
+  // timeout, a 403 is synthesized.
   if (securityScanner && req.method === 'POST' && req.url?.startsWith('/v1/messages')) {
     // Extract sessionInfo so the scanner can populate the Sprint 8
     // forensic incident-replay buffer when the user opted in. Cheap
@@ -985,11 +983,6 @@ async function proxyToAnthropic(
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(payload);
     };
-
-    if (decision.action === 'block_immediate') {
-      synthesize403(decision.blockReason, 'BLOCKED');
-      return;
-    }
 
     if (decision.action === 'pending') {
       // Abandon the hold if Claude Code hangs up before we decide, so the
@@ -1388,11 +1381,23 @@ async function proxyToAnthropic(
           feedCacheTtl(chunk);
         });
         proxyRes.on('end', () => {
-          interceptor.flush();
-          res.end();
-          if (tapActive && tap !== null) tap.flush();
-          finalizeCapture();
-          resolve();
+          // Await every in-flight hold before flush + res.end. Without
+          // this wait, a fast upstream stream that completes before
+          // the user can decide would cause the interceptor's flush()
+          // to fail-open (let the original tool_use through). The
+          // user-stated contract is that every block offers an
+          // approval window — honoring that requires holding the
+          // response open until the decision settles.
+          void interceptor
+            .awaitSettlement()
+            .catch(() => undefined)
+            .then(() => {
+              interceptor.flush();
+              res.end();
+              if (tapActive && tap !== null) tap.flush();
+              finalizeCapture();
+              resolve();
+            });
         });
         // Mid-stream upstream error in the permissions-interceptor path.
         // The no-tap variant of this cleanup-and-reject pattern IS

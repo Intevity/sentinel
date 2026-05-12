@@ -19,6 +19,7 @@ import type {
   AutoModeStatus,
   PermissionRule,
   Settings,
+  SecurityEvent,
   SecurityKind,
   SecuritySeverity,
   NotificationType,
@@ -110,11 +111,10 @@ export interface PermissionsEnforcer {
   /** Rewrite an outbound /v1/messages body so any whole-tool deny rules
    *  strip the matching entries from its `tools` array. Returns the new
    *  Buffer (or the original when no stripping occurred or when the
-   *  user approves the held block). When hold is enabled
-   *  (`securityBlockHoldEnabled` + `securityApproveHoldSec > 0`), opens
-   *  a pending block and awaits the user's decision before proceeding —
-   *  approve forwards the body as-is, deny/timeout strips the tools.
-   *  Persists `tool_permission_blocked` events at resolution time. */
+   *  user approves the held block). Every strip opens a pending block
+   *  and awaits the user's decision before proceeding — approve
+   *  forwards the body as-is, deny/timeout strips the tools. Persists
+   *  `tool_permission_blocked` events at resolution time. */
   stripDeniedTools(body: Buffer, accountId: string, headers?: IncomingHttpHeaders): Promise<Buffer>;
   /** Install an interceptor on the response stream. Returns null when the
    *  feature is disabled or auto-mode-skipped — caller should pipe raw.
@@ -641,11 +641,13 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
     matchedRule: PermissionRule;
     toolInput: unknown;
     direction: 'outbound' | 'tool_use';
-    outcome: 'block_immediate' | PendingOutcome;
+    outcome: PendingOutcome;
   }): void => {
     const { accountId, toolName, matchedRule, toolInput, direction, outcome } = args;
     const approved = outcome === 'approve';
     const blocked = !approved;
+    const resolution: SecurityEvent['resolution'] =
+      outcome === 'approve' ? 'user_approve' : outcome === 'deny' ? 'user_deny' : 'timeout';
     const now = Date.now();
     const kind: SecurityKind = 'tool_permission_blocked';
     const severity: SecuritySeverity = 'medium';
@@ -699,6 +701,7 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
         blocked,
         approved,
         provenance: direction === 'outbound' ? 'tool-use' : 'tool-use',
+        resolution,
       });
       insertedEventId = inserted.id;
     } catch (err) {
@@ -768,7 +771,11 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
 
   const pendingRegistry: PermissionsPendingRegistry = createPermissionsPendingRegistry({
     ipcServer: deps.ipcServer,
-    getHoldSec: () => deps.getSettings().securityApproveHoldSec,
+    // Floor the hold at 1s. Coerce already clamps persisted values to
+    // >= 10s; the floor here covers tests that bypass coerce and pass
+    // 0 (e.g. legacy fast-deny tests rewritten to exercise the hold
+    // path). Production users never see < 10s.
+    getHoldSec: () => Math.max(1, deps.getSettings().securityApproveHoldSec),
     onFinalized: (entry, outcome, opts) => {
       const toolInput = pendingToolInputs.get(entry.id) ?? null;
       pendingToolInputs.delete(entry.id);
@@ -849,15 +856,6 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
   const evaluatorIsBypassed = (ruleId: string, inputHash: string): boolean =>
     isPermissionBypassed(deps.db, ruleId, inputHash);
 
-  /** Feature gate: pending flow runs only when the user enabled it AND
-   *  the configured hold window is > 0 seconds. Matches the scanner's
-   *  `securityBlockHoldEnabled` semantics so both subsystems share one
-   *  toggle in Settings. */
-  const isHoldEnabled = (): boolean => {
-    const s = deps.getSettings();
-    return s.securityBlockHoldEnabled === true && s.securityApproveHoldSec > 0;
-  };
-
   const stripDeniedTools = async (
     body: Buffer,
     accountId: string,
@@ -912,25 +910,6 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
       }
     }
     if (stripped.length === 0) return body;
-
-    // Fast path — hold disabled, fall back to immediate strip + record.
-    // Preserves the pre-refactor behaviour when the user explicitly
-    // opts out of the approval window.
-    if (!isHoldEnabled()) {
-      obj['tools'] = kept;
-      for (const { toolName, rule } of stripped) {
-        recordBlockOutcome({
-          accountId,
-          toolName,
-          matchedRule: rule,
-          toolInput: null,
-          direction: 'outbound',
-          outcome: 'block_immediate',
-        });
-        console.log(`[Permissions] stripped tool ${toolName} from outbound (rule: ${rule.raw})`);
-      }
-      return Buffer.from(JSON.stringify(obj), 'utf-8');
-    }
 
     // Hold path — one pending entry per request. If multiple tools
     // match, we surface the first in the banner; approve forwards the
@@ -1045,31 +1024,26 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
       // silent for previously-approved inputs.
       evaluatorHooks: { isBypassed: evaluatorIsBypassed },
       onBlocked: ({ toolName, toolInput, matchedRule, accountId: acc }) => {
-        // Immediate-block path: fires when hold is disabled, or when
-        // the interceptor decides without an awaitDecision callback.
-        // Pending path records its own outcome via the registry's
-        // onFinalized hook — don't double-record here.
+        // Safety net for the SSE interceptor's sync path. Production
+        // always wires the awaitDecision hook below, so this branch is
+        // effectively unreachable in real traffic. Recorded as a
+        // timeout outcome so the resulting Security event matches the
+        // shape of a hold that expired without user input.
         recordBlockOutcome({
           accountId: acc,
           toolName,
           matchedRule,
           toolInput,
           direction: 'tool_use',
-          outcome: 'block_immediate',
+          outcome: 'timeout',
         });
         console.log(`[Permissions] blocked tool_use ${toolName} (rule: ${matchedRule.raw})`);
       },
     };
 
-    // Wire the pending gate whenever hold is enabled OR any 'ask'
-    // rule is configured. 'ask' forces user approval regardless of
-    // the global hold setting, matching Claude Code's semantics —
-    // without this condition, an imported ask rule would silently
-    // degrade to an immediate block.
-    const hasAskRule = Array.isArray(rules)
-      ? rules.some((r) => r.decision === 'ask' && r.enabled)
-      : false;
-    if (isHoldEnabled() || hasAskRule) {
+    // Always wire the pending gate. Every block (deny or ask rule)
+    // routes through a user-decision window so the user can override.
+    {
       interceptorOpts.awaitDecision = async ({
         toolName,
         toolInput,
@@ -1188,13 +1162,16 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
       return;
     }
 
+    // Synthetic test row for UI demos. Tagged as a timed-out hold so
+    // the row's resolution flavour matches the new force-hold contract
+    // (every block in production went through the hold path).
     recordBlockOutcome({
       accountId,
       toolName: syntheticRule.tool,
       matchedRule: syntheticRule,
       toolInput: syntheticInput,
       direction: isStrip ? 'outbound' : 'tool_use',
-      outcome: 'block_immediate',
+      outcome: 'timeout',
     });
   };
 
