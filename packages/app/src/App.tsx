@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Users,
   Activity,
@@ -49,6 +49,8 @@ import { useDaemon } from './hooks/useDaemon.js';
 import { useDaemonErrors } from './hooks/useDaemonErrors.js';
 import { useSettings } from './hooks/useSettings.js';
 import { useNativeAlertNotifications } from './hooks/useNotifications.js';
+import { useSecurityBanner } from './hooks/useSecurityBanner.js';
+import SecurityAlertBanner from './components/SecurityAlertBanner.js';
 import { planLabel, planColor } from './lib/plan.js';
 import { DUR, EASE_STD } from './lib/motion.js';
 import { sendToSentinel } from './lib/ipc.js';
@@ -114,6 +116,21 @@ export default function App(): React.ReactElement {
   // window is hidden in the tray.
   useNativeAlertNotifications();
 
+  // In-app slip banner state for security broadcasts. Mounted at App
+  // level alongside the OS-notification listener so it reacts on any
+  // tab. Renders only when the user is NOT already on the Security
+  // tab — there's no point shouting at them about an event they're
+  // already looking at.
+  const { banner: securityBanner, dismiss: dismissSecurityBanner } = useSecurityBanner();
+
+  // Navigate the user to the Security tab and (when we have one) auto-expand
+  // the event row. Shared by the OS-notification Details handler and the
+  // in-app banner click so both routes converge on identical behavior.
+  const navigateToSecurityEvent = useCallback((eventId: number | null): void => {
+    setActiveTab('security');
+    setSecurityExpandEventId(eventId);
+  }, []);
+
   // Listen for the Details-action event fired by
   // `display_os_notification` when the user taps the Details button
   // or the notification body (and an eventId was present on the
@@ -126,8 +143,7 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     listen<{ eventId: number }>('security_notification_details', (event) => {
-      setActiveTab('security');
-      setSecurityExpandEventId(event.payload.eventId);
+      navigateToSecurityEvent(event.payload.eventId);
     })
       .then((fn) => {
         unlisten = fn;
@@ -136,7 +152,15 @@ export default function App(): React.ReactElement {
     return () => {
       unlisten?.();
     };
-  }, []);
+  }, [navigateToSecurityEvent]);
+
+  // Dismiss the slip banner whenever the user arrives at the Security
+  // tab by any path (clicking the tab, the red dot, the banner itself,
+  // or a direct deep-link from an OS notification). The banner has
+  // served its purpose once the user is looking at the Security panel.
+  useEffect(() => {
+    if (activeTab === 'security') dismissSecurityBanner();
+  }, [activeTab, dismissSecurityBanner]);
   const isRoundRobin = settings?.switchingMode === 'round-robin';
   // Picker status props — pulled once here so every tab's AccountViewPicker
   // renders identical status pills (Active / Excluded) driven by the same
@@ -468,6 +492,28 @@ export default function App(): React.ReactElement {
 
             {/* ── One-time persistence explanation ─────────────────── */}
             <PersistenceBanner />
+
+            {/* ── In-app slip banner for live security broadcasts ───── */}
+            {/* Suppressed when the user is already on the Security tab —
+              the panel itself surfaces new events (prepended row, unread
+              badge, pinned LiveSecurityRow for pending blocks). Click
+              routes via navigateToSecurityEvent, the same wiring the OS
+              notification's Details action uses. */}
+            <AnimatePresence>
+              {securityBanner && activeTab !== 'security' && (
+                <SecurityAlertBanner
+                  key={`${securityBanner.kind}:${securityBanner.title}`}
+                  banner={securityBanner}
+                  onView={() => {
+                    navigateToSecurityEvent(
+                      securityBanner.kind === 'event' ? (securityBanner.eventId ?? null) : null,
+                    );
+                    dismissSecurityBanner();
+                  }}
+                  onDismiss={dismissSecurityBanner}
+                />
+              )}
+            </AnimatePresence>
 
             {/* ── Segmented tab control ───────────────────────────── */}
             <div className="px-4 py-2">

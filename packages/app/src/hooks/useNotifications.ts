@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   NotificationRecord,
   NotificationType,
-  SecuritySeverity,
   SecurityOsNotifyThreshold,
 } from '@claude-sentinel/shared';
 import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
+import { shouldFireSecurityOsNotification } from '../lib/security-threshold.js';
 
 const DEFAULT_PAGE_SIZE = 50;
 import {
@@ -15,22 +15,6 @@ import {
   sendNotification,
 } from '@tauri-apps/plugin-notification';
 import { useSettings } from './useSettings.js';
-
-const SEVERITY_ORDER: Record<SecuritySeverity, number> = { low: 0, medium: 1, high: 2 };
-const THRESHOLD_ORDER: Record<SecurityOsNotifyThreshold, number> = {
-  low: 0,
-  medium: 1,
-  high: 2,
-  off: 99,
-};
-
-function shouldFireSecurityOsNotification(
-  severity: SecuritySeverity,
-  threshold: SecurityOsNotifyThreshold,
-): boolean {
-  if (threshold === 'off') return false;
-  return SEVERITY_ORDER[severity] >= THRESHOLD_ORDER[threshold];
-}
 
 interface UseNotificationsParams {
   /** When set, restrict to rows scoped to this account or to the global
