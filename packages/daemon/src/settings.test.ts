@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
-import { loadSettings, saveSettings, updateSettings, DEFAULT_SETTINGS } from './settings.js';
+import {
+  loadSettings,
+  saveSettings,
+  updateSettings,
+  resolveSecurityContextWindow,
+  DEFAULT_SETTINGS,
+} from './settings.js';
 import { signSettings, resetSettingsHmacKeyCache } from './settings-integrity.js';
 
 function tempSettingsPath(): string {
@@ -560,6 +566,48 @@ describe('settings', () => {
       const got = loadSettings(path);
       expect(got.launchAtLogin).toBe(false);
       expect(got.switchingMode).toBe('round-robin');
+    });
+
+    it('round-trips securityContextVerbosity and coerces unknown values to the default', () => {
+      saveSettings(DEFAULT_SETTINGS, path);
+      // Default lives at 'standard'.
+      expect(loadSettings(path).securityContextVerbosity).toBe('standard');
+      const verbose = updateSettings({ securityContextVerbosity: 'verbose' }, path);
+      expect(verbose.securityContextVerbosity).toBe('verbose');
+      expect(loadSettings(path).securityContextVerbosity).toBe('verbose');
+      const compact = updateSettings({ securityContextVerbosity: 'compact' }, path);
+      expect(compact.securityContextVerbosity).toBe('compact');
+      // Unknown string drops in coerce; reverts to DEFAULT_SETTINGS value,
+      // matching how every other enum field behaves (see daemonHealthFailMode
+      // test above).
+      const bogus = updateSettings(
+        { securityContextVerbosity: 'forensic' as unknown as 'verbose' },
+        path,
+      );
+      expect(bogus.securityContextVerbosity).toBe(DEFAULT_SETTINGS.securityContextVerbosity);
+    });
+
+    it('resolveSecurityContextWindow returns 0 when securityPersistSnippet is off, regardless of verbosity', () => {
+      expect(
+        resolveSecurityContextWindow({
+          ...DEFAULT_SETTINGS,
+          securityPersistSnippet: false,
+          securityContextVerbosity: 'verbose',
+        }),
+      ).toBe(0);
+    });
+
+    it('resolveSecurityContextWindow maps each verbosity preset to its char-per-side window', () => {
+      const base = { ...DEFAULT_SETTINGS, securityPersistSnippet: true };
+      expect(resolveSecurityContextWindow({ ...base, securityContextVerbosity: 'compact' })).toBe(
+        40,
+      );
+      expect(resolveSecurityContextWindow({ ...base, securityContextVerbosity: 'standard' })).toBe(
+        200,
+      );
+      expect(resolveSecurityContextWindow({ ...base, securityContextVerbosity: 'verbose' })).toBe(
+        800,
+      );
     });
 
     it('round-trips the autoUpdate toggle', () => {

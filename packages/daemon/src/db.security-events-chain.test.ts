@@ -112,6 +112,46 @@ describe('security_events hash chain', () => {
     if (result.ok) expect(result.eventCount).toBe(1);
   });
 
+  it('dedup propagates a fresh resolution onto a previously-unresolved row', () => {
+    const db = getDb(path);
+    // First insert is observe-only: no resolution, not blocked, not approved.
+    const initial = insertSecurityEvent(db, ev({ matchHash: 'resolve-m' }));
+    const before = db
+      .prepare('SELECT approved, resolution FROM security_events WHERE id = ?')
+      .get(initial.id) as { approved: number; resolution: string | null };
+    expect(before.resolution).toBeNull();
+    expect(before.approved).toBe(0);
+
+    // Same match comes back through finalizePending('user_approve'): the
+    // dedup branch must carry both `approved=1` and `resolution='user_approve'`.
+    insertSecurityEvent(
+      db,
+      ev({ matchHash: 'resolve-m', approved: true, resolution: 'user_approve' }),
+    );
+    const after = db
+      .prepare('SELECT approved, resolution FROM security_events WHERE id = ?')
+      .get(initial.id) as { approved: number; resolution: string | null };
+    expect(after.approved).toBe(1);
+    expect(after.resolution).toBe('user_approve');
+  });
+
+  it('dedup keeps an existing resolution sticky against a later observe-only hit', () => {
+    const db = getDb(path);
+    // Start with an already-approved row.
+    const first = insertSecurityEvent(
+      db,
+      ev({ matchHash: 'sticky-m', approved: true, resolution: 'user_approve' }),
+    );
+    // Later observe-only hit (no resolution, not approved) must not clear
+    // the existing "Allowed by you" badge.
+    insertSecurityEvent(db, ev({ matchHash: 'sticky-m' }));
+    const row = db
+      .prepare('SELECT approved, resolution FROM security_events WHERE id = ?')
+      .get(first.id) as { approved: number; resolution: string | null };
+    expect(row.approved).toBe(1);
+    expect(row.resolution).toBe('user_approve');
+  });
+
   it('retention sweep with one summary bridges the chain', () => {
     const db = getDb(path);
     const oldTs = Date.now() - 1_000_000;

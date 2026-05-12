@@ -163,6 +163,10 @@ export default function SettingsPanel({
     void update({ telemetryRetentionDays: days }).catch(() => undefined);
   };
 
+  const setSecurityContextVerbosity = (v: 'compact' | 'standard' | 'verbose'): void => {
+    void update({ securityContextVerbosity: v }).catch(() => undefined);
+  };
+
   const setRequestLoggingEnabled = (enabled: boolean): void => {
     void update({ requestLoggingEnabled: enabled }).catch(() => undefined);
   };
@@ -1049,10 +1053,34 @@ export default function SettingsPanel({
                     </div>
                     <ToggleRow
                       label="Store redacted snippet"
-                      description="Keep a 40-char window around each match with the secret replaced by [REDACTED]. Disable for minimal persistence."
+                      description="Keep a window of redacted context around each match. The size is the same for every alert regardless of severity; pick the verbosity below."
                       checked={settings.securityPersistSnippet}
                       onChange={setPersistSnippet}
                     />
+                    <div
+                      className={
+                        settings.securityPersistSnippet ? '' : 'opacity-50 pointer-events-none'
+                      }
+                    >
+                      <RadioRow
+                        label="Compact (40 chars per side)"
+                        description="Minimal context. Smallest database footprint."
+                        checked={settings.securityContextVerbosity === 'compact'}
+                        onChange={() => setSecurityContextVerbosity('compact')}
+                      />
+                      <RadioRow
+                        label="Standard (200 chars per side)"
+                        description="Recommended. Enough surrounding prose to read the match in situ."
+                        checked={settings.securityContextVerbosity === 'standard'}
+                        onChange={() => setSecurityContextVerbosity('standard')}
+                      />
+                      <RadioRow
+                        label="Verbose (800 chars per side)"
+                        description="Forensic-grade context for investigation. Best when alerts are rare."
+                        checked={settings.securityContextVerbosity === 'verbose'}
+                        onChange={() => setSecurityContextVerbosity('verbose')}
+                      />
+                    </div>
                     <ToggleRow
                       label="Capture forensic incident replay"
                       description="When a high-severity event blocks a request, snapshot the recent tool-use messages from that session to help reconstruct what happened. Privacy-sensitive: messages persist until retention sweeps them. Off by default."

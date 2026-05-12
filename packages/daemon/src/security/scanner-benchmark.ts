@@ -96,6 +96,7 @@ function benchSettings(): Settings {
     securityScanToolUse: true,
     securityOsNotifyThreshold: 'high',
     securityPersistSnippet: false,
+    securityContextVerbosity: 'standard',
     securityEventRetentionDays: 30,
     securityApproveHoldSec: 60,
     toolPermissionsEnabled: false,

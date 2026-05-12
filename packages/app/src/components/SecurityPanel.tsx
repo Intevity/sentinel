@@ -1164,7 +1164,7 @@ function SecurityRow({
     <div
       id={`security-event-${event.id}`}
       className={`glass-card transition-opacity duration-300 ${
-        event.acknowledged ? 'opacity-45' : ''
+        event.acknowledged ? 'opacity-75' : ''
       } ${flashing ? 'security-row-flash' : ''}`}
     >
       <button

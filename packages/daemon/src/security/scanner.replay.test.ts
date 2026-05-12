@@ -39,6 +39,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     securityScanToolUse: true,
     securityOsNotifyThreshold: 'high',
     securityPersistSnippet: true,
+    securityContextVerbosity: 'standard',
     securityEventRetentionDays: 30,
     securityApproveHoldSec: 60,
     toolPermissionsEnabled: false,

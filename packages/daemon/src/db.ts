@@ -1663,6 +1663,12 @@ export function insertSecurityEvent(
     // the sweep gate — that lets the legitimate internal mutation
     // through without weakening the protection against external
     // `UPDATE security_events SET blocked = 0` tamper attempts.
+    // resolution propagates one-way: NULL → user_approve|user_deny|timeout.
+    // Once a row has been resolved we keep that resolution sticky — a
+    // subsequent observe-only repeat of the same match must not clear the
+    // "Allowed by you" badge. This is the fix for approved/denied rows
+    // that visibly fell back to "Detected" because the dedup branch never
+    // carried the resolution column from the finalizePending call.
     sweepActive = true;
     try {
       db.prepare(
@@ -1670,12 +1676,18 @@ export function insertSecurityEvent(
          SET occurrences = occurrences + 1,
              last_seen_ts = @lastSeenTs,
              blocked  = CASE WHEN @blocked  = 1 THEN 1 ELSE blocked  END,
-             approved = CASE WHEN @approved = 1 THEN 1 ELSE approved END
+             approved = CASE WHEN @approved = 1 THEN 1 ELSE approved END,
+             resolution = CASE
+               WHEN resolution IS NOT NULL THEN resolution
+               WHEN @resolution IS NOT NULL THEN @resolution
+               ELSE NULL
+             END
          WHERE id = @id`,
       ).run({
         lastSeenTs: event.ts,
         blocked: event.blocked ? 1 : 0,
         approved: event.approved ? 1 : 0,
+        resolution: event.resolution ?? null,
         id: existing.id,
       });
     } finally {

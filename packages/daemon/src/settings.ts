@@ -17,9 +17,11 @@ import type {
   RoundRobinStrategy,
   SecurityEnforcementMode,
   SecurityOsNotifyThreshold,
+  SecurityContextVerbosity,
   LogLevel,
   PermissionDecision,
 } from '@claude-sentinel/shared';
+import { SECURITY_CONTEXT_WINDOW_CHARS } from '@claude-sentinel/shared';
 import { signSettings, verifySettings } from './settings-integrity.js';
 
 /** Default settings-file path. Tests can override via
@@ -56,6 +58,7 @@ export const DEFAULT_SETTINGS: Settings = {
   securityScanToolUse: true,
   securityOsNotifyThreshold: 'high',
   securityPersistSnippet: true,
+  securityContextVerbosity: 'standard',
   securityEventRetentionDays: 30,
   securityApproveHoldSec: 60,
   toolPermissionsEnabled: false,
@@ -156,6 +159,11 @@ const VALID_NOTIFY_THRESHOLDS: readonly SecurityOsNotifyThreshold[] = [
   'high',
   'medium',
   'low',
+];
+const VALID_CONTEXT_VERBOSITIES: readonly SecurityContextVerbosity[] = [
+  'compact',
+  'standard',
+  'verbose',
 ];
 const VALID_LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
 const VALID_PERMISSION_DECISIONS: readonly PermissionDecision[] = ['allow', 'deny'];
@@ -296,6 +304,12 @@ function coerce(raw: unknown): Settings {
   }
   if (typeof obj['securityPersistSnippet'] === 'boolean') {
     next.securityPersistSnippet = obj['securityPersistSnippet'];
+  }
+  if (
+    typeof obj['securityContextVerbosity'] === 'string' &&
+    VALID_CONTEXT_VERBOSITIES.includes(obj['securityContextVerbosity'] as SecurityContextVerbosity)
+  ) {
+    next.securityContextVerbosity = obj['securityContextVerbosity'] as SecurityContextVerbosity;
   }
   if (typeof obj['securityEventRetentionDays'] === 'number') {
     const n = Math.floor(obj['securityEventRetentionDays']);
@@ -562,6 +576,14 @@ const VALID_CHART_VIEWS: readonly Settings['optimizeChartView'][] = [
 
 function isOptimizeChartView(v: string): v is Settings['optimizeChartView'] {
   return (VALID_CHART_VIEWS as readonly string[]).includes(v);
+}
+
+/** Resolved snippet-window size (chars per side) for the current
+ *  Settings. Returns 0 when persistence is off so the scanner can
+ *  treat "off" and "zero-size" as one path. */
+export function resolveSecurityContextWindow(s: Settings): number {
+  if (!s.securityPersistSnippet) return 0;
+  return SECURITY_CONTEXT_WINDOW_CHARS[s.securityContextVerbosity];
 }
 
 /** Why a `loadSettingsWithTamper` call returned defaults instead of the

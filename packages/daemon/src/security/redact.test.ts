@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import {
   maskSecret,
   buildSnippet,
@@ -6,6 +6,7 @@ import {
   hashText,
   contextHashOf,
   PATTERN_SNIPPET_WINDOW,
+  setSecurityContextWindow,
 } from './redact.js';
 
 describe('redact helpers', () => {
@@ -179,5 +180,109 @@ describe('buildPatternSnippet', () => {
     const end = start + literal.length;
     const out = buildPatternSnippet({ fullText: full, matchStart: start, matchEnd: end });
     expect(out.match).toBe(full.slice(start, end));
+  });
+});
+
+describe('configurable context window', () => {
+  // Tests reset the scanner-configured window after each case so a failure
+  // in one case can't leak into another (the variable is module-level).
+  afterEach(() => setSecurityContextWindow(null));
+
+  it('buildSnippet honors a per-call windowChars override', () => {
+    const full = 'a'.repeat(1000) + 'SECRET' + 'b'.repeat(1000);
+    const start = 1000;
+    const end = start + 6;
+    const compact = buildSnippet({
+      fullText: full,
+      matchStart: start,
+      matchEnd: end,
+      kind: 'secret',
+      windowChars: 40,
+    });
+    const verbose = buildSnippet({
+      fullText: full,
+      matchStart: start,
+      matchEnd: end,
+      kind: 'secret',
+      windowChars: 800,
+    });
+    expect(verbose.length).toBeGreaterThan(compact.length);
+    // verbose has ~800 chars on each side; compact has ~40. Lower bound
+    // checks the verbose snippet really grew (we add markers + ellipsis).
+    expect(compact.length).toBeLessThan(120);
+    expect(verbose.length).toBeGreaterThan(1500);
+  });
+
+  it('buildPatternSnippet honors a per-call windowChars override', () => {
+    const full = 'a '.repeat(500) + 'execute this' + ' b'.repeat(500);
+    const start = full.indexOf('execute this');
+    const end = start + 'execute this'.length;
+    const compact = buildPatternSnippet({
+      fullText: full,
+      matchStart: start,
+      matchEnd: end,
+      windowChars: 40,
+    });
+    const verbose = buildPatternSnippet({
+      fullText: full,
+      matchStart: start,
+      matchEnd: end,
+      windowChars: 800,
+    });
+    expect(verbose.snippet.length).toBeGreaterThan(compact.snippet.length);
+    expect(compact.snippet).toContain('«execute this»');
+    expect(verbose.snippet).toContain('«execute this»');
+  });
+
+  it('setSecurityContextWindow applies the same window to both builders', () => {
+    const full = 'a'.repeat(500) + 'SECRET' + 'b'.repeat(500);
+    const start = 500;
+    const end = start + 6;
+    setSecurityContextWindow(100);
+    const secretSnip = buildSnippet({
+      fullText: full,
+      matchStart: start,
+      matchEnd: end,
+      kind: 'secret',
+    });
+    const patternFull = 'a'.repeat(500) + 'execute' + 'b'.repeat(500);
+    const patternSnip = buildPatternSnippet({
+      fullText: patternFull,
+      matchStart: 500,
+      matchEnd: 507,
+    });
+    // Both should reflect the 100-char window: roughly 100 chars of context
+    // on each side plus a small bounded amount of marker/ellipsis overhead.
+    expect(secretSnip.length).toBeGreaterThan(180);
+    expect(secretSnip.length).toBeLessThan(240);
+    expect(patternSnip.snippet.length).toBeGreaterThan(180);
+    expect(patternSnip.snippet.length).toBeLessThan(240);
+  });
+
+  it('per-call windowChars beats the scanner-configured window', () => {
+    const full = 'a'.repeat(500) + 'SECRET' + 'b'.repeat(500);
+    setSecurityContextWindow(40);
+    const overridden = buildSnippet({
+      fullText: full,
+      matchStart: 500,
+      matchEnd: 506,
+      kind: 'secret',
+      windowChars: 400,
+    });
+    // 400 per side, not 40 — the per-call value wins.
+    expect(overridden.length).toBeGreaterThan(500);
+  });
+
+  it('setSecurityContextWindow(null) falls back to legacy per-kind defaults', () => {
+    const full = 'a'.repeat(500) + 'SECRET' + 'b'.repeat(500);
+    setSecurityContextWindow(null);
+    const snip = buildSnippet({
+      fullText: full,
+      matchStart: 500,
+      matchEnd: 506,
+      kind: 'secret',
+    });
+    // Legacy SNIPPET_WINDOW is 40 per side.
+    expect(snip.length).toBeLessThan(120);
   });
 });

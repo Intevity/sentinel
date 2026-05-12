@@ -4,7 +4,11 @@ import { securityStatusInfo, type SecurityStatusVariant } from '../lib/securityS
 
 const VARIANT_CLASS: Record<SecurityStatusVariant, string> = {
   diagnostic: 'text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#8E8E93]/15 text-[#8E8E93]',
-  allowed: 'text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#8E8E93]/20 text-[#8E8E93]',
+  allowed: 'text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-ios-green/15 text-ios-green',
+  denied: 'text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-ios-red/15 text-ios-red',
+  'timed-out':
+    'text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#8E8E93]/15 text-[#8E8E93]',
+  muted: 'text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#8E8E93]/15 text-[#8E8E93]',
   blocked: 'text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-ios-red text-white',
   detected: 'text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-ios-orange/15 text-ios-orange',
 };

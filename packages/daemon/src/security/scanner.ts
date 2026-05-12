@@ -26,7 +26,8 @@ import {
 } from './detectors.js';
 import type { IncidentReplayRecorder } from './incident-replay.js';
 import { ResponseTap, DEFAULT_TAP_BUDGET_BYTES } from './response-tap.js';
-import { hashText } from './redact.js';
+import { hashText, setSecurityContextWindow } from './redact.js';
+import { resolveSecurityContextWindow } from '../settings.js';
 
 export type PendingOutcome = 'approve' | 'deny' | 'timeout';
 
@@ -477,6 +478,11 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
       scanInjection: settings.securityScanInjection,
       scanToolUse: settings.securityScanToolUse,
     };
+
+    // Uniform context window across every detector kind / severity for
+    // this scan. Set before any detector runs so secrets, patterns, and
+    // tool-use findings all see the same windowChars value.
+    setSecurityContextWindow(resolveSecurityContextWindow(settings));
 
     // Oversized bodies normally bypass synchronous scanning to avoid
     // blowing the proxy latency budget — we defer to setImmediate and
@@ -956,6 +962,7 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     } catch {
       return;
     }
+    setSecurityContextWindow(resolveSecurityContextWindow(deps.getSettings()));
     const findings = scanRequestBody(parsed, options).filter(
       (f) => !isSecurityAllowlisted(deps.db, f.matchHash, f.detectorId),
     );
@@ -989,6 +996,7 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
             scanInjection: settings.securityScanInjection,
             scanToolUse: settings.securityScanToolUse,
           };
+          setSecurityContextWindow(resolveSecurityContextWindow(settings));
           const { blocks, truncated } = tap.flush();
           if (truncated) {
             emitSynthetic(

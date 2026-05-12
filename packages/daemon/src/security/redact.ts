@@ -4,9 +4,36 @@ import { createHash } from 'crypto';
  *  in `maskSecret`. "AKIA[...16 chars redacted...]AB12" has 4 + 4 visible. */
 const MASK_VISIBLE_EDGE = 4;
 
-/** 40 chars on each side of a match is plenty of signal for a human to
- *  recognize the context while still being small enough to store. */
+/** Legacy default char-window for secret snippets. Kept as the fallback
+ *  the snippet builders use when no per-call or scanner-configured window
+ *  is supplied — so existing tests and ad-hoc callers see the historical
+ *  behavior. In production every call originates inside `processSecurityEvent`,
+ *  which calls `setSecurityContextWindow` first; the active window is then
+ *  the same for every detector kind and every severity. */
 export const SNIPPET_WINDOW = 40;
+
+/** Scanner-configured override, populated by `setSecurityContextWindow` at
+ *  the start of each scan. `null` means "use the per-kind legacy constant"
+ *  (tests, direct callers). A number means "every detector uses this same
+ *  char-per-side window so context shape is uniform across alerts." */
+let activeContextWindow: number | null = null;
+
+/** Set the symmetric char-per-side window every snippet builder will use
+ *  until the next call. Scanner calls this once per scan operation with
+ *  the resolved value from `settings.securityContextVerbosity`. Synchronous
+ *  scans + single-threaded JS make this safe without a per-call parameter
+ *  thread. Pass `null` (or do not call) to fall back to legacy defaults. */
+export function setSecurityContextWindow(chars: number | null): void {
+  activeContextWindow = chars;
+}
+
+/** The window size a builder should use this call: per-call override wins,
+ *  then scanner-configured, then the legacy default for the kind. */
+function effectiveWindow(perCall: number | undefined, legacyDefault: number): number {
+  if (typeof perCall === 'number' && perCall >= 0) return perCall;
+  if (activeContextWindow !== null && activeContextWindow >= 0) return activeContextWindow;
+  return legacyDefault;
+}
 
 /**
  * Return a short sha256 hex digest. Used as a dedup key — not suitable for
@@ -46,10 +73,12 @@ export function buildSnippet(params: {
   matchStart: number;
   matchEnd: number;
   kind: string;
+  windowChars?: number;
 }): string {
-  const { fullText, matchStart, matchEnd, kind } = params;
-  const windowStart = Math.max(0, matchStart - SNIPPET_WINDOW);
-  const windowEnd = Math.min(fullText.length, matchEnd + SNIPPET_WINDOW);
+  const { fullText, matchStart, matchEnd, kind, windowChars } = params;
+  const w = effectiveWindow(windowChars, SNIPPET_WINDOW);
+  const windowStart = Math.max(0, matchStart - w);
+  const windowEnd = Math.min(fullText.length, matchEnd + w);
   const before = fullText.slice(windowStart, matchStart);
   const after = fullText.slice(matchEnd, windowEnd);
   const prefix = windowStart > 0 ? '…' : '';
@@ -121,12 +150,14 @@ export function buildPatternSnippet(params: {
   fullText: string;
   matchStart: number;
   matchEnd: number;
+  windowChars?: number;
 }): { snippet: string; match: string } {
-  const { fullText, matchStart, matchEnd } = params;
+  const { fullText, matchStart, matchEnd, windowChars } = params;
   const match = fullText.slice(matchStart, matchEnd);
 
-  const windowStart = Math.max(0, matchStart - PATTERN_SNIPPET_WINDOW);
-  const windowEnd = Math.min(fullText.length, matchEnd + PATTERN_SNIPPET_WINDOW);
+  const w = effectiveWindow(windowChars, PATTERN_SNIPPET_WINDOW);
+  const windowStart = Math.max(0, matchStart - w);
+  const windowEnd = Math.min(fullText.length, matchEnd + w);
 
   // Trim the left edge inward to a sentence boundary strictly outside the
   // match. Always search the window — even when it already reaches the

@@ -1,31 +1,59 @@
 import type { SecurityEvent } from '@claude-sentinel/shared';
 
-export type SecurityStatusVariant = 'diagnostic' | 'allowed' | 'blocked' | 'detected';
+export type SecurityStatusVariant =
+  | 'diagnostic'
+  | 'allowed'
+  | 'denied'
+  | 'timed-out'
+  | 'muted'
+  | 'blocked'
+  | 'detected';
+
+export type SecurityStatusLabel =
+  | 'Diagnostic'
+  | 'Allowed by you'
+  | 'Denied by you'
+  | 'Timed out'
+  | 'Muted'
+  | 'Blocked'
+  | 'Detected';
 
 export interface SecurityStatusInfo {
-  label: 'Diagnostic' | 'Allowed by you' | 'Blocked' | 'Detected';
+  label: SecurityStatusLabel;
   variant: SecurityStatusVariant;
 }
 
 /** Pure mapping from a SecurityEvent to its status-pill label + variant.
  *
- *  The decision matrix the StatusPill component renders:
+ *  The decision matrix the StatusPill component renders, evaluated top-down:
  *    - synthetic `scan_*` kinds                  → Diagnostic
  *    - resolution === 'user_approve'             → Allowed by you
+ *    - resolution === 'user_deny'                → Denied by you
+ *    - resolution === 'timeout'                  → Timed out
+ *    - acknowledged === true (no resolution set) → Muted
  *    - blocked === true                          → Blocked
  *    - otherwise (observe-only)                  → Detected
  *
- *  Extracted from the SecurityStatusPill component so the decision
- *  matrix is unit-testable without bringing React-DOM into the test
- *  setup (the app has no @testing-library install). */
+ *  Resolved (approve / deny / timeout / muted) rows stay visible inline
+ *  with a status pill so the user can see their past actions; the row
+ *  is not removed from the list. */
 export function securityStatusInfo(
-  event: Pick<SecurityEvent, 'blocked' | 'kind' | 'resolution'>,
+  event: Pick<SecurityEvent, 'blocked' | 'kind' | 'resolution' | 'acknowledged'>,
 ): SecurityStatusInfo {
   if (event.kind.startsWith('scan_')) {
     return { label: 'Diagnostic', variant: 'diagnostic' };
   }
   if (event.resolution === 'user_approve') {
     return { label: 'Allowed by you', variant: 'allowed' };
+  }
+  if (event.resolution === 'user_deny') {
+    return { label: 'Denied by you', variant: 'denied' };
+  }
+  if (event.resolution === 'timeout') {
+    return { label: 'Timed out', variant: 'timed-out' };
+  }
+  if (event.acknowledged) {
+    return { label: 'Muted', variant: 'muted' };
   }
   if (event.blocked) {
     return { label: 'Blocked', variant: 'blocked' };

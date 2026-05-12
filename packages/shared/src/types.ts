@@ -299,9 +299,14 @@ export interface Settings {
   securityScanToolUse: boolean;
   /** Severity floor for native OS notifications. `off` silences all. */
   securityOsNotifyThreshold: SecurityOsNotifyThreshold;
-  /** When false, the redacted 40-char snippet column is dropped on persist —
+  /** When false, the redacted snippet column is dropped on persist —
    *  only mask + hashes remain. Mask + hash are always stored. */
   securityPersistSnippet: boolean;
+  /** Snippet window size when `securityPersistSnippet` is on. Applied
+   *  uniformly to every detector kind / severity so context shape is
+   *  consistent across alerts. See `SECURITY_CONTEXT_WINDOW_CHARS` for
+   *  the per-preset char-per-side numbers. */
+  securityContextVerbosity: SecurityContextVerbosity;
   /** Rows older than this many days are purged at daemon startup. */
   securityEventRetentionDays: number;
   /** How long a held block waits for an approve click before the proxy
@@ -663,6 +668,25 @@ export type SecurityEnforcementMode =
   | 'block_medium_high'; // block on MEDIUM or HIGH findings
 
 export type SecurityOsNotifyThreshold = 'off' | 'high' | 'medium' | 'low';
+
+/** How much context the scanner captures around a finding. Maps to a
+ *  symmetric char-window applied uniformly across detector kinds and
+ *  severities so a high-severity secret and a low-severity pattern
+ *  carry the same shape of evidence. `compact` = 40 chars per side
+ *  (legacy secret-snippet behavior), `standard` = 200 chars per side
+ *  (legacy pattern-snippet behavior, our new default), `verbose` =
+ *  800 chars per side for forensic investigation. The verbosity knob
+ *  is independent of `securityPersistSnippet`: that boolean is the
+ *  master on/off; this picks the size when it's on. */
+export type SecurityContextVerbosity = 'compact' | 'standard' | 'verbose';
+
+/** Resolved char-per-side window for a given verbosity preset. Single
+ *  source of truth so detectors, scanner, and tests agree. */
+export const SECURITY_CONTEXT_WINDOW_CHARS: Record<SecurityContextVerbosity, number> = {
+  compact: 40,
+  standard: 200,
+  verbose: 800,
+};
 
 /** A detected security incident surfaced by the scanner. One row in the
  *  `security_events` SQLite table. Secrets are NEVER persisted verbatim —
