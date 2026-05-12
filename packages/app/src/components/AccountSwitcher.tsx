@@ -233,6 +233,12 @@ export default function AccountSwitcher({
 
   // Snapshot of account IDs when login started — used by the polling fallback
   const initialAccountIdsRef = useRef<Set<string>>(new Set());
+  // Tracks which entry point started the in-flight login. `'reauth'` means
+  // the user clicked Re-authenticate on a specific expired card; the
+  // `login_complete` handler reads this to show concise success copy
+  // instead of the verbose Add-Account-edge-case banner. Reset whenever
+  // a login terminates (success, failure, cancel) or a new flow starts.
+  const reauthIntentRef = useRef<'reauth' | 'add' | null>(null);
   // Ref so the focus handler always reads the current loggingIn value
   const loggingInRef = useRef(false);
   useEffect(() => {
@@ -282,12 +288,25 @@ export default function AccountSwitcher({
     onDaemonMessage((msg) => {
       if (msg.type === 'login_complete') {
         setLoggingIn(false);
+        // Capture intent before any branch returns, then clear so a later
+        // event (cancel, retry) can't pick up a stale value.
+        const intent = reauthIntentRef.current;
+        reauthIntentRef.current = null;
         if (!msg.email) {
           setStatusMessage({ text: 'Login failed or was cancelled.', kind: 'error' });
           return;
         }
         const orgLabel = msg.orgName ? ` (${msg.orgName})` : '';
-        if (msg.reauth) {
+        if (msg.reauth && intent === 'reauth') {
+          // Explicit Re-authenticate click on an expired card. The user
+          // already knows which account they're refreshing; the verbose
+          // org-switch guidance below would be off-topic here.
+          setStatusMessage({
+            text: `Re-authenticated ${msg.email}. Token refreshed.`,
+            kind: 'success',
+          });
+          setTimeout(() => setStatusMessage(null), 6000);
+        } else if (msg.reauth) {
           // Same org was already in the DB — OAuth just refreshed the token.
           // This usually means the user wanted to add a *different* org but
           // their claude.ai browser was still on the one they already had.
@@ -352,7 +371,14 @@ export default function AccountSwitcher({
     const newAccount = accounts.find((a) => !initialAccountIdsRef.current.has(a.id));
     if (newAccount) {
       setLoggingIn(false);
-      setStatusMessage({ text: `${newAccount.email} added to Sentinel.`, kind: 'success' });
+      // Only synthesize the generic "added" toast when this flow wasn't
+      // started by a Re-authenticate click. (A reauth never adds a new
+      // account row anyway, so this branch usually wouldn't fire, but the
+      // guard keeps the message correct if the polling races login_complete.)
+      if (reauthIntentRef.current !== 'reauth') {
+        setStatusMessage({ text: `${newAccount.email} added to Sentinel.`, kind: 'success' });
+      }
+      reauthIntentRef.current = null;
     }
   }, [accounts, loggingIn]);
 
@@ -602,6 +628,7 @@ export default function AccountSwitcher({
                 onClick={() => {
                   void sendToSentinel({ type: 'cancel_login' }).catch(() => {});
                   setLoggingIn(false);
+                  reauthIntentRef.current = null;
                 }}
                 className="text-[11px] text-ios-blue/60 hover:text-ios-blue ml-2 shrink-0"
               >
@@ -736,7 +763,14 @@ export default function AccountSwitcher({
             onRefreshToken={(id) => void handleRefreshToken(id)}
             refreshing={refreshingId === account.id}
             needsReauth={expired}
-            onReauth={() => void startLogin(true)}
+            reauthIncognito={settings?.reauthIncognitoDefault ?? true}
+            onReauthIncognitoChange={(next) => {
+              void update({ reauthIncognitoDefault: next }).catch(() => undefined);
+            }}
+            onReauth={(_id, incognito) => {
+              reauthIntentRef.current = 'reauth';
+              void startLogin(incognito);
+            }}
             isRoundRobin={isRoundRobin}
             inPool={inPool}
             canExclude={poolMemberCount > 1}

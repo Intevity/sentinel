@@ -52,6 +52,7 @@ function benchSettings(overrides: Partial<Settings> = {}): Settings {
     autoUpdate: false,
     alternateApiUrl: null,
     poolExcludedIds: [],
+    reauthIncognitoDefault: true,
     overageEnabledIds: [],
     budgetWeeklyUsdByAccount: {},
     budgetWeeklyUsdGlobal: null,

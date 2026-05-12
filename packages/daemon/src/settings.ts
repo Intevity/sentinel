@@ -44,6 +44,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoUpdate: false,
   alternateApiUrl: null,
   poolExcludedIds: [],
+  reauthIncognitoDefault: true,
   overageEnabledIds: [],
   budgetWeeklyUsdByAccount: {},
   budgetWeeklyUsdGlobal: null,
@@ -225,6 +226,9 @@ function coerce(raw: unknown): Settings {
   }
   if (Array.isArray(obj['poolExcludedIds'])) {
     next.poolExcludedIds = obj['poolExcludedIds'].filter((v): v is string => typeof v === 'string');
+  }
+  if (typeof obj['reauthIncognitoDefault'] === 'boolean') {
+    next.reauthIncognitoDefault = obj['reauthIncognitoDefault'];
   }
   if (Array.isArray(obj['overageEnabledIds'])) {
     next.overageEnabledIds = obj['overageEnabledIds'].filter(

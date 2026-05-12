@@ -504,6 +504,18 @@ describe('settings', () => {
       expect(got.switchingMode).toBe(DEFAULT_SETTINGS.switchingMode);
     });
 
+    it('round-trips reauthIncognitoDefault and rejects non-boolean values', () => {
+      saveSettings(DEFAULT_SETTINGS, path);
+      expect(loadSettings(path).reauthIncognitoDefault).toBe(true);
+      const off = updateSettings({ reauthIncognitoDefault: false }, path);
+      expect(off.reauthIncognitoDefault).toBe(false);
+      // Non-boolean values are dropped by coerce; the result reverts to the
+      // DEFAULT_SETTINGS value (the per-field fallback in coerce, same
+      // behavior as daemonHealthFailMode below).
+      const bogus = updateSettings({ reauthIncognitoDefault: 'yes' as unknown as boolean }, path);
+      expect(bogus.reauthIncognitoDefault).toBe(DEFAULT_SETTINGS.reauthIncognitoDefault);
+    });
+
     it('Sprint 9: validates daemonHealthFailMode and rejects unknown values', () => {
       saveSettings(DEFAULT_SETTINGS, path);
       const closedMode = updateSettings({ daemonHealthFailMode: 'closed' }, path);

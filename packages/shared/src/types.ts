@@ -239,6 +239,13 @@ export interface Settings {
    *  original "RR just works" behavior and auto-enrolls newly added
    *  accounts. Ignored unless `switchingMode === 'round-robin'`. */
   poolExcludedIds: string[];
+  /** Default state of the "Private window" checkbox in the per-account
+   *  Re-authenticate banner on the Accounts page. Sticky across cards and
+   *  across sessions: toggling on one card persists, so every other expired
+   *  card reflects the same value on next render. Default `true` because
+   *  the typical reauth failure mode is claude.ai holding a stale session
+   *  for a different identity; a fresh cookie jar is the safe default. */
+  reauthIncognitoDefault: boolean;
   /** Sentinel account IDs explicitly allowed to draw on Anthropic's overage
    *  budget when their subscription quota is exhausted. Opt-IN — an account
    *  NOT on this list is treated as "never spend overage". Default [].
