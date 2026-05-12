@@ -43,6 +43,56 @@ const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 /** Per-channel ring buffer cap for log events. Drops oldest on overflow. */
 const EVENT_RING_CAP = 1024;
 
+/**
+ * Human-readable metadata for every metric Sentinel originates. Surfaced in
+ * SigNoz hover-docs (`description`) and axis labels (`unit`). Units use UCUM
+ * where possible (`tokens`, `USD`) and OTEL's curly-brace form for
+ * dimensionless counts (`{events}`, `{requests}`). Exported so the test
+ * suite can iterate it and catch newly-added metrics that forgot a
+ * registration.
+ */
+export const METRIC_METADATA: Record<string, { description: string; unit: string }> = {
+  'sentinel.cache.tokens_by_ttl': {
+    description:
+      "Prompt-cache token volume over the rolling 5h subscription window, broken down by TTL bucket (5m vs 1h cache writes) and aggregate cache reads. Computed by Sentinel from response parsing; Claude Code's own stream only reports flat cache counts without TTL.",
+    unit: 'tokens',
+  },
+  'sentinel.account.usage.tokens': {
+    description:
+      "Per-account token usage in the rolling 5h subscription window, split by kind (input, output, cache_read, cache_create). In round-robin mode this attributes usage to the account actually drained, which Claude Code's own stream cannot see.",
+    unit: 'tokens',
+  },
+  'sentinel.account.usage.cost_usd': {
+    description: 'Per-account estimated API cost over the rolling 5h subscription window.',
+    unit: 'USD',
+  },
+  'sentinel.account.switch.count': {
+    description:
+      'Cumulative count of account switches since Sentinel started, labeled by destination account.',
+    unit: '{switches}',
+  },
+  'sentinel.proxy.requests.count': {
+    description:
+      'Cumulative count of upstream Anthropic API requests proxied since Sentinel started, labeled by account and HTTP status class (2xx, 4xx, 5xx, other).',
+    unit: '{requests}',
+  },
+  'sentinel.proxy.errors.count': {
+    description:
+      'Cumulative count of upstream proxy errors since Sentinel started, labeled by account and error kind (connection, timeout, etc.).',
+    unit: '{errors}',
+  },
+  'sentinel.security.event.count': {
+    description:
+      'Cumulative count of security-scanner detections since Sentinel started, labeled by kind, severity (low, medium, high, critical), and outcome (blocked, allowed).',
+    unit: '{events}',
+  },
+  'sentinel.permission.decision.count': {
+    description:
+      'Cumulative count of tool-permission decisions since Sentinel started, labeled by decision (allow, deny, ask) and source (local, claude-code).',
+    unit: '{decisions}',
+  },
+};
+
 export interface OtelEmitterDeps {
   forwarder: Pick<OtelForwarder, 'forward'>;
   getSettings: () => Settings;
@@ -489,9 +539,11 @@ function renderMetrics(grouped: Record<string, OtlpNumberDataPoint[]>): unknown[
       timeUnixNano: nowNano,
       ...(Number.isInteger(p.value) ? { asInt: p.value } : { asDouble: p.value }),
     }));
+    const meta = METRIC_METADATA[name];
+    const base = meta ? { name, description: meta.description, unit: meta.unit } : { name };
     if (isSum) {
       metrics.push({
-        name,
+        ...base,
         sum: {
           dataPoints: renderedPoints,
           aggregationTemporality: 2, // CUMULATIVE
@@ -500,7 +552,7 @@ function renderMetrics(grouped: Record<string, OtlpNumberDataPoint[]>): unknown[
       });
     } else {
       metrics.push({
-        name,
+        ...base,
         gauge: { dataPoints: renderedPoints },
       });
     }

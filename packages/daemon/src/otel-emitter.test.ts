@@ -12,7 +12,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import type Database from 'better-sqlite3';
-import { OtelEmitter } from './otel-emitter.js';
+import { OtelEmitter, METRIC_METADATA } from './otel-emitter.js';
 import { OtelForwarder } from './otel-forwarder.js';
 import { writeOtelExporterSecret } from './otel-forwarder-secret.js';
 import { DEFAULT_SETTINGS } from './settings.js';
@@ -795,5 +795,107 @@ describe('OtelEmitter', () => {
     expect(idOf(metricBatches[metricBatches.length - 1]!)).toBe(
       '11111111-2222-4333-8444-555555555555',
     );
+  });
+
+  it('every emitted metric carries the registered description and unit', async () => {
+    build(makeSettings({ otelExporterEndpoint: fake.url }));
+    const now = Date.now();
+
+    // Seed enough state that every name in METRIC_METADATA emits in a single tick.
+    insertCacheTtlEvent(db, {
+      ts: now - 60_000,
+      accountId: 'acct-A',
+      sessionId: null,
+      model: 'claude-sonnet',
+      requestId: null,
+      reqMarkers5m: 0,
+      reqMarkers1h: 0,
+      cacheCreate5m: 10,
+      cacheCreate1h: 20,
+      cacheRead: 5,
+      inputTokens: 0,
+      cost5mWrite: 0,
+      cost1hWrite: 0,
+      costRead: 0,
+    });
+    insertUsageEvent(db, {
+      ts: now - 30_000,
+      accountId: 'acct-A',
+      sessionId: null,
+      model: 'claude-sonnet',
+      costUsd: 0.42,
+      inputTokens: 11,
+      outputTokens: 22,
+      cacheRead: 3,
+      cacheCreate: 4,
+      durationMs: 1000,
+    });
+
+    const listeners: Array<(msg: DaemonToAppMessage) => void> = [];
+    const fakeIpc: Pick<IpcServer, 'onBroadcast'> = {
+      onBroadcast: (l) => {
+        listeners.push(l);
+      },
+    };
+    emitter.attachToIpc(fakeIpc as IpcServer);
+    const acct: OAuthAccount = {
+      accountUuid: 'uuid-target',
+      emailAddress: 't@example.com',
+      organizationUuid: 'org',
+      hasExtraUsageEnabled: false,
+      billingType: 'subscription',
+      accountCreatedAt: '2024-01-01T00:00:00Z',
+      subscriptionCreatedAt: '2024-01-01T00:00:00Z',
+      displayName: 'T',
+      organizationRole: 'user',
+      workspaceRole: null,
+      organizationName: 'Org',
+    };
+    listeners.forEach((l) => l({ type: 'account_switched', to: acct }));
+    listeners.forEach((l) =>
+      l({
+        type: 'security_event_detected',
+        accountId: 'acct-A',
+        severity: 'low',
+        kind: 'secret',
+        title: 'x',
+        blocked: false,
+      }),
+    );
+    emitter.bumpProxyRequest({ accountId: 'acct-A', statusClass: '2xx', errorKind: null });
+    emitter.bumpProxyRequest({
+      accountId: 'acct-A',
+      statusClass: '5xx',
+      errorKind: 'upstream_500',
+    });
+    emitter.bumpPermissionDecision({
+      ts: now,
+      accountId: 'acct-A',
+      toolName: 'Bash',
+      decision: 'allow',
+      source: 'local',
+    });
+
+    emitter.tick();
+    await waitFor(() => fake.received.some((r) => r.url === '/v1/metrics'));
+
+    const payload = JSON.parse(
+      fake.received.find((r) => r.url === '/v1/metrics')!.body.toString('utf-8'),
+    );
+    const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics as Array<{
+      name: string;
+      description?: string;
+      unit?: string;
+    }>;
+
+    // Every registered metric is present in this tick and carries matching
+    // description + unit. Iterates the registry so a future addition
+    // automatically extends coverage.
+    for (const [name, meta] of Object.entries(METRIC_METADATA)) {
+      const m = metrics.find((x) => x.name === name);
+      expect(m, `expected metric ${name} in tick`).toBeDefined();
+      expect(m!.description).toBe(meta.description);
+      expect(m!.unit).toBe(meta.unit);
+    }
   });
 });
