@@ -30,6 +30,10 @@ export interface ResetCountdownProps {
   /** Override the leading verb. Default "resets in". Useful when the
    *  caller wants wording like "paused until". */
   label?: string;
+  /** Override the hover tooltip text on the pill variant. Default
+   *  "5-hour window reset". Callers showing a weekly or pause-clear
+   *  countdown should pass the appropriate context here. */
+  tooltip?: string;
 }
 
 function formatRemaining(epochSec: number, now: number): string {
@@ -60,6 +64,7 @@ export default function ResetCountdown({
   variant = 'inline',
   className = '',
   label = 'resets in',
+  tooltip = '5-hour window reset',
 }: ResetCountdownProps): React.ReactElement | null {
   // A tick counter forces re-render once per second. We could do Date.now()
   // in render and avoid the state entirely, but React won't re-render on
@@ -89,7 +94,7 @@ export default function ResetCountdown({
         </span>
         <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
           <div className="bg-black/85 dark:bg-white/90 text-white dark:text-black text-[10px] font-medium px-2 py-1 rounded-md whitespace-nowrap shadow-lg">
-            5-hour window reset
+            {tooltip}
           </div>
         </div>
       </div>

@@ -25,6 +25,13 @@ interface AccountCardProps {
    *  / undefined suppresses the pill so cards without observed reset data
    *  don't show a bare "resets in …". */
   fiveHourResetAt?: number | null;
+  /** Unix-seconds timestamp when the current pause clears (from the
+   *  daemon's `account_paused` broadcast). When `paused` is true, this
+   *  replaces the 5h reset in the countdown pill — for weekly rate-limit
+   *  pauses it's the 7-day window reset; for other pause reasons it's
+   *  the same 5h timestamp but worded as "resumes in" instead of
+   *  "resets in". Null when the daemon hasn't cached window data yet. */
+  pausedResetsAt?: number | null;
   /** Effective Sentinel cap for this account in USD (per-account override
    *  falling back to global). 0 or undefined suppresses the Sentinel chip. */
   weeklyCapUsd?: number | null;
@@ -97,6 +104,7 @@ export default function AccountCard({
   paused,
   pauseReason,
   fiveHourResetAt,
+  pausedResetsAt,
   refreshUsageStatus,
   refreshUsageError,
 }: AccountCardProps): React.ReactElement {
@@ -306,9 +314,24 @@ export default function AccountCard({
                     </div>
                   </div>
                 </div>
-                {!needsReauth && fiveHourResetAt != null && fiveHourResetAt > 0 && (
-                  <ResetCountdown epochSec={fiveHourResetAt} variant="pill" />
-                )}
+                {!needsReauth &&
+                  (paused && pausedResetsAt != null && pausedResetsAt > 0 ? (
+                    <ResetCountdown
+                      epochSec={pausedResetsAt}
+                      variant="pill"
+                      label="resumes in"
+                      tooltip={
+                        pauseReason === 'sentinel_weekly_rate_limit'
+                          ? 'Weekly (7-day) rate limit reset'
+                          : 'Pause clears at'
+                      }
+                    />
+                  ) : (
+                    fiveHourResetAt != null &&
+                    fiveHourResetAt > 0 && (
+                      <ResetCountdown epochSec={fiveHourResetAt} variant="pill" />
+                    )
+                  ))}
                 {refreshUsageStatus === 'ok' && (
                   <Check
                     size={12}

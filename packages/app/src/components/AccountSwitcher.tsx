@@ -780,6 +780,7 @@ export default function AccountSwitcher({
             weeklyCapUsd={weeklyCap}
             paused={paused}
             pauseReason={pauseReason}
+            pausedResetsAt={pausedState?.resetsAt ?? null}
             {...(cardStatus ? { refreshUsageStatus: cardStatus.status } : {})}
             refreshUsageError={cardStatus?.status === 'err' ? cardStatus.error : null}
           />
