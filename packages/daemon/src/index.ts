@@ -51,6 +51,8 @@ import {
   upsertPermissionRule,
   deletePermissionRule,
   insertNotification,
+  runDetectorTuningMigration,
+  listDetectorStats,
   getCacheTtlByDayModel,
   getCacheTtlBySession,
   listSubagentInstalls,
@@ -544,6 +546,49 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // broadcast here would land before any clients connect.
   const initialLoad = loadSettingsWithTamper();
   let currentSettings: Settings = initialLoad.settings;
+
+  // One-time auto-demote of provably-noisy detectors. Identifies every
+  // detector that fired ≥20 times in the last 30 days with 0 blocks AND
+  // 0 approvals, bulk-acknowledges their historical rows, and demotes
+  // them to `'informational'` in settings so future matches still persist
+  // for audit but skip the banner/notification path. Idempotent — the
+  // `detector_tuning_v1` row in `_migrations` makes subsequent boots a
+  // no-op. Skips ids the user has already explicitly tuned (Active or
+  // Disabled) so the migration never overwrites an explicit choice.
+  try {
+    const result = runDetectorTuningMigration(db);
+    if (result && result.demotedIds.length > 0) {
+      const merged = { ...currentSettings.detectorOverrides };
+      const newlyDemoted: string[] = [];
+      for (const id of result.demotedIds) {
+        if (merged[id] === undefined) {
+          merged[id] = 'informational';
+          newlyDemoted.push(id);
+        }
+      }
+      if (newlyDemoted.length > 0) {
+        currentSettings = writeSettings({ detectorOverrides: merged });
+        const idList = newlyDemoted.join(', ');
+        insertNotification(db, {
+          ts: Date.now(),
+          accountId: null,
+          type: 'security_low',
+          title: `Tuned ${newlyDemoted.length} noisy detector${newlyDemoted.length === 1 ? '' : 's'}`,
+          body: `Auto-demoted to Low-signal observations after firing without ever blocking or being approved: ${idList}. Re-enable any in Settings > Security > Detectors.`,
+        });
+        console.log(
+          `[Security] detector_tuning_v1: demoted ${newlyDemoted.length} detector(s) to informational: ${idList} (acknowledged ${result.acknowledgedRowCount} backlog row(s))`,
+        );
+      } else {
+        console.log(
+          '[Security] detector_tuning_v1: every candidate already had an explicit override; no changes',
+        );
+      }
+    }
+    /* v8 ignore next 3 */
+  } catch (err) {
+    console.error('[Security] detector_tuning_v1 failed:', err);
+  }
 
   // Assigned after the proxy is listening — update_settings references it
   // via optional-chain so handler registration order doesn't matter.
@@ -1550,6 +1595,21 @@ export async function startDaemon(): Promise<DaemonHandle> {
           ...(msg.search !== undefined ? { search: msg.search } : {}),
         });
         respond({ requestType: 'get_security_events', success: true, data: rows });
+        break;
+      }
+
+      case 'get_detector_stats': {
+        const DEFAULT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+        const rows = listDetectorStats(db, msg.windowMs ?? DEFAULT_WINDOW_MS);
+        const overrides = currentSettings.detectorOverrides ?? {};
+        const data = rows.map((r) => ({
+          ...r,
+          override: (overrides[r.detectorId] ?? 'active') as
+            | 'active'
+            | 'informational'
+            | 'disabled',
+        }));
+        respond({ requestType: 'get_detector_stats', success: true, data });
         break;
       }
 

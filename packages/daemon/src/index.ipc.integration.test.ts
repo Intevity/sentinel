@@ -564,6 +564,108 @@ describe('IPC — security events', () => {
     expect((older.data ?? []).map((e) => e.matchHash)).toEqual(['h-pii', 'h-old-secret']);
   });
 
+  it('get_detector_stats returns one row per detector with override merged from settings', async () => {
+    ctx = await startTestDaemon();
+    // Seed two distinct detectors. One blocked, one approved, one
+    // pure-noise — so the aggregate row shapes are testable.
+    const { getDb, insertSecurityEvent } = await import('./db.js');
+    const db = getDb();
+    const now = Date.now();
+    insertSecurityEvent(db, {
+      ts: now - 1000,
+      accountId: 'acc-a',
+      sessionId: null,
+      direction: 'outbound',
+      severity: 'medium',
+      kind: 'prompt_injection',
+      detectorId: 'noisy-detector',
+      confidence: 0.7,
+      title: 't',
+      reason: 'r',
+      matchMask: null,
+      matchHash: 'h1',
+      contextHash: 'c1',
+      snippet: null,
+      sourceHint: null,
+      details: null,
+      blocked: false,
+      provenance: 'tool-result',
+    });
+    insertSecurityEvent(db, {
+      ts: now - 500,
+      accountId: 'acc-a',
+      sessionId: null,
+      direction: 'outbound',
+      severity: 'medium',
+      kind: 'prompt_injection',
+      detectorId: 'noisy-detector',
+      confidence: 0.6,
+      title: 't',
+      reason: 'r',
+      matchMask: null,
+      matchHash: 'h2',
+      contextHash: 'c2',
+      snippet: null,
+      sourceHint: null,
+      details: null,
+      blocked: false,
+      provenance: 'tool-result',
+    });
+    insertSecurityEvent(db, {
+      ts: now - 100,
+      accountId: 'acc-a',
+      sessionId: null,
+      direction: 'outbound',
+      severity: 'high',
+      kind: 'secret',
+      detectorId: 'real-detector',
+      confidence: 0.95,
+      title: 't',
+      reason: 'r',
+      matchMask: null,
+      matchHash: 'h3',
+      contextHash: 'c3',
+      snippet: null,
+      sourceHint: null,
+      details: null,
+      blocked: true,
+      provenance: 'file-read',
+    });
+
+    // Demote one of the two via settings so the override field is
+    // observable. (We don't trigger the auto-migration here because the
+    // seed data is below its 20-event floor; this is a direct
+    // user-driven update_settings.)
+    await ctx.request({
+      type: 'update_settings',
+      settings: { detectorOverrides: { 'noisy-detector': 'informational' } },
+    });
+
+    const r = await ctx.request<
+      Array<{
+        detectorId: string;
+        total: number;
+        blocked: number;
+        approved: number;
+        avgConfidence: number;
+        override: string;
+      }>
+    >({ type: 'get_detector_stats' });
+    expect(r.success).toBe(true);
+    // Sorted by total DESC: noisy-detector (2) > real-detector (1).
+    expect(r.data).toHaveLength(2);
+    expect(r.data![0]!.detectorId).toBe('noisy-detector');
+    expect(r.data![0]!.total).toBe(2);
+    expect(r.data![0]!.blocked).toBe(0);
+    expect(r.data![0]!.approved).toBe(0);
+    expect(r.data![0]!.override).toBe('informational');
+    expect(r.data![1]!.detectorId).toBe('real-detector');
+    expect(r.data![1]!.total).toBe(1);
+    expect(r.data![1]!.blocked).toBe(1);
+    // No explicit override → default 'active'.
+    expect(r.data![1]!.override).toBe('active');
+  });
+
   it('acknowledge_security_event on unknown id returns success=false', async () => {
     ctx = await startTestDaemon();
     const r = await ctx.request({ type: 'acknowledge_security_event', id: 99999 });

@@ -3,7 +3,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync, unlinkSync } from 'fs';
 import Database from 'better-sqlite3';
-import { getDb, closeDb } from './db.js';
+import { getDb, closeDb, runDetectorTuningMigration } from './db.js';
 
 /** Seed a DB with an intentionally-pre-migration schema, then let getDb()
  *  run its migration block. Covers the conditional branches that only fire
@@ -259,5 +259,146 @@ describe('getDb migrations on a legacy database', () => {
         'INSERT INTO permission_rules (id, decision, tool, pattern, raw, priority, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       ).run('r-dup', 'ask', 'Bash', 'rm -rf *', 'Bash(rm -rf *)', 100, 400, 'local');
     }).toThrow(/UNIQUE/);
+  });
+});
+
+describe('runDetectorTuningMigration (detector_tuning_v1)', () => {
+  let dbPath: string;
+
+  beforeEach(() => {
+    dbPath = join(
+      tmpdir(),
+      `sentinel-detector-tuning-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+    );
+  });
+  afterEach(() => {
+    closeDb();
+    if (existsSync(dbPath)) unlinkSync(dbPath);
+  });
+
+  /** Seed a row in security_events with the minimum required columns. */
+  function seedEvent(
+    db: Database.Database,
+    opts: {
+      detectorId: string;
+      ts: number;
+      blocked?: boolean;
+      approved?: boolean;
+      acknowledged?: boolean;
+    },
+  ): void {
+    // Direct INSERT bypasses insertSecurityEvent / the chain trigger;
+    // the migration only reads/writes regular columns so this is enough.
+    // payload_hash is left at its DEFAULT ('' from the chain backfill
+    // migration) — that's fine since we never walk the chain in these
+    // tests. match_hash needs to be unique-ish so the dedup index
+    // doesn't collapse rows.
+    db.prepare(
+      `INSERT INTO security_events
+         (ts, last_seen_ts, account_id, direction, severity, kind,
+          detector_id, confidence, title, reason, match_hash,
+          occurrences, blocked, approved, acknowledged, provenance)
+       VALUES (?, ?, 'acc-a', 'outbound', 'medium', 'prompt_injection',
+               ?, 0.7, 'title', 'reason', ?, 1, ?, ?, ?, 'tool-result')`,
+    ).run(
+      opts.ts,
+      opts.ts,
+      opts.detectorId,
+      `hash-${opts.detectorId}-${opts.ts}`,
+      opts.blocked ? 1 : 0,
+      opts.approved ? 1 : 0,
+      opts.acknowledged ? 1 : 0,
+    );
+  }
+
+  it('demotes detectors with >=20 events / 0 blocked / 0 approved in last 30 days', () => {
+    const db = getDb(dbPath);
+    const now = Date.now();
+    // 25 noisy events for `noisy-rule` — never blocked, never approved.
+    for (let i = 0; i < 25; i++) {
+      seedEvent(db, { detectorId: 'noisy-rule', ts: now - i * 60_000 });
+    }
+    // 25 events for `loud-but-real-rule` — 2 of them blocked. Should NOT
+    // be demoted because the rule has demonstrated value.
+    for (let i = 0; i < 25; i++) {
+      seedEvent(db, {
+        detectorId: 'loud-but-real-rule',
+        ts: now - i * 60_000,
+        blocked: i < 2,
+      });
+    }
+    // 5 events for `quiet-rule` — below the 20-event floor, should not
+    // be demoted regardless of disposition.
+    for (let i = 0; i < 5; i++) {
+      seedEvent(db, { detectorId: 'quiet-rule', ts: now - i * 60_000 });
+    }
+    // 25 noisy events for `ancient-rule` but all older than 30 days —
+    // out of the migration's window, should not be demoted.
+    for (let i = 0; i < 25; i++) {
+      seedEvent(db, {
+        detectorId: 'ancient-rule',
+        ts: now - 31 * 24 * 3600 * 1000 - i * 60_000,
+      });
+    }
+
+    const result = runDetectorTuningMigration(db, now);
+    expect(result).not.toBeNull();
+    expect(result!.demotedIds).toEqual(['noisy-rule']);
+    // 25 unacknowledged noisy rows → 25 acknowledged.
+    expect(result!.acknowledgedRowCount).toBe(25);
+
+    // Idempotent: second run returns null (marker present).
+    const second = runDetectorTuningMigration(db, now);
+    expect(second).toBeNull();
+
+    // Marker recorded under _migrations.
+    const marker = db
+      .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+      .get('detector_tuning_v1') as { ok: number } | undefined;
+    expect(marker?.ok).toBe(1);
+  });
+
+  it('only bulk-acknowledges still-unacknowledged rows of the demoted detectors', () => {
+    const db = getDb(dbPath);
+    const now = Date.now();
+    // 25 noisy events, half already acknowledged → only 13 flips expected.
+    for (let i = 0; i < 25; i++) {
+      seedEvent(db, {
+        detectorId: 'noisy-rule',
+        ts: now - i * 60_000,
+        acknowledged: i % 2 === 0, // i=0,2,4,…,24 already acked (13 of 25)
+      });
+    }
+    const result = runDetectorTuningMigration(db, now);
+    expect(result).not.toBeNull();
+    // 25 total - 13 already acked = 12 flipped.
+    expect(result!.acknowledgedRowCount).toBe(12);
+
+    // Final state: every noisy-rule row is acknowledged=1.
+    const counts = db
+      .prepare(
+        `SELECT SUM(CASE WHEN acknowledged=1 THEN 1 ELSE 0 END) AS acked,
+                COUNT(*) AS total
+           FROM security_events
+          WHERE detector_id = 'noisy-rule'`,
+      )
+      .get() as { acked: number; total: number };
+    expect(counts.acked).toBe(25);
+    expect(counts.total).toBe(25);
+  });
+
+  it('returns demotedIds=[] when no rule meets the threshold (still marks migration applied)', () => {
+    const db = getDb(dbPath);
+    const now = Date.now();
+    // Single rule, 19 events — one below threshold.
+    for (let i = 0; i < 19; i++) {
+      seedEvent(db, { detectorId: 'barely-quiet', ts: now - i * 60_000 });
+    }
+    const result = runDetectorTuningMigration(db, now);
+    expect(result).not.toBeNull();
+    expect(result!.demotedIds).toEqual([]);
+    expect(result!.acknowledgedRowCount).toBe(0);
+    // Idempotent on next run.
+    expect(runDetectorTuningMigration(db, now)).toBeNull();
   });
 });

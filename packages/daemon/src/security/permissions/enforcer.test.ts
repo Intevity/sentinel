@@ -49,6 +49,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     securityContextVerbosity: 'standard',
     securityEventRetentionDays: 30,
     securityApproveHoldSec: 60,
+    detectorOverrides: {},
     toolPermissionsEnabled: true,
     toolPermissionDefaultAction: 'allow',
     toolPermissionSkipInAutoMode: true,

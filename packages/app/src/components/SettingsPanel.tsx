@@ -14,6 +14,7 @@ import { sendToSentinel } from '../lib/ipc.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { useInlineConfirm } from '../hooks/useInlineConfirm.js';
 import { usePermissionBypasses } from '../hooks/usePermissionBypasses.js';
+import { DetectorTuning } from './DetectorTuning.js';
 import { useClaudeSyncStatus } from '../hooks/useClaudeSyncStatus.js';
 import { useOtelExporter } from '../hooks/useOtelExporter.js';
 import { useScanBenchmark } from '../hooks/useScanBenchmark.js';
@@ -1255,6 +1256,12 @@ export default function SettingsPanel({
                   tool call appears.
                 </div>
                 <BypassesManager />
+              </Section>
+            )}
+
+            {activeTab === 'security' && settings.securityScanEnabled && (
+              <Section title="Detectors">
+                <DetectorTuning settings={settings} onUpdate={update} />
               </Section>
             )}
 

@@ -73,6 +73,16 @@ export interface DetectorOptions {
   scanSecrets: boolean;
   scanInjection: boolean;
   scanToolUse: boolean;
+  /** Detector ids set to `'disabled'` in `Settings.detectorOverrides`.
+   *  When present, the scan loop skips the rule entirely — no CPU spent
+   *  evaluating the regex, no event row. `'informational'` overrides are
+   *  NOT in this set; they still run so their findings can be queried
+   *  under the "Low-signal observations" UI disclosure. The gate for that
+   *  tier lives in scanner.ts (`persistAndBroadcast`). Accepts `undefined`
+   *  explicitly so callers can pass through `computeDisabledDetectorIds`'s
+   *  result without an extra branch (this codebase's tsconfig enables
+   *  `exactOptionalPropertyTypes`). */
+  disabledDetectorIds?: ReadonlySet<string> | undefined;
 }
 
 // ─── Allowlist ────────────────────────────────────────────────────────────
@@ -192,6 +202,22 @@ const PLACEHOLDER_PATTERNS: Array<{ pattern: RegExp; drop: number; label: string
 const MAX_CONTEXT_WINDOW = 200;
 const CONTEXT_DROP_CAP = 0.4;
 
+/** Optional hint identifying which detector family the call site belongs
+ *  to. When set, additional confidence-drop signals tuned for that family
+ *  are applied on top of the generic CONTEXT_MARKERS / PLACEHOLDER_PATTERNS
+ *  set. Used to silence the two highest-FP-rate detectors (verified from
+ *  30-day dogfood data) without removing them — both fire on benign
+ *  code/doc contexts that the generic signals undershoot. */
+export type ContextKindHint = 'tool-call-shape' | 'base64-proximity';
+
+/** Self-referential text in the surrounding window — a Sentinel permission
+ *  rule rendered to the user, a settings.json excerpt, the literal phrase
+ *  "rule:" appearing in the agent's explanation. Either we're reading our
+ *  own data back, or the agent is describing/auditing the configuration —
+ *  in neither case is the match a real injection attempt. */
+const SELF_REFERENTIAL_RE =
+  /(?:^|\W)(rule:|allowlist|Sentinel|permission_rules|settings\.json|detector_id|matchHash|claude-sentinel)(?:\W|$)/i;
+
 /** Inspect the ±200 char window + matched text and return a total
  *  confidence drop plus an explanation string. Never drops below 0. */
 function computeConfidenceDrop(
@@ -199,6 +225,7 @@ function computeConfidenceDrop(
   matchStart: number,
   matchEnd: number,
   matched: string,
+  kindHint?: ContextKindHint,
 ): { drop: number; reasons: string[] } {
   const windowStart = Math.max(0, matchStart - MAX_CONTEXT_WINDOW);
   const windowEnd = Math.min(fullText.length, matchEnd + MAX_CONTEXT_WINDOW);
@@ -217,6 +244,30 @@ function computeConfidenceDrop(
     if (pattern.test(matched)) {
       drop += d;
       reasons.push(label);
+    }
+  }
+
+  if (kindHint === 'tool-call-shape' || kindHint === 'base64-proximity') {
+    // Self-referential context: agent describing Sentinel's own
+    // configuration, or our data echoing back to us in a tool_result.
+    // Heavy drop (0.4) because the surrounding generic CONTEXT_MARKERS
+    // alone don't move medium-confidence rules below the user-visibility
+    // floor — verified by the 268 acknowledged-only events for the two
+    // loud rules over 30 days.
+    if (SELF_REFERENTIAL_RE.test(ctx)) {
+      drop += 0.4;
+      reasons.push('self-referential context');
+    }
+    // Upstream backtick fence within 20 chars: a stronger signal than
+    // the generic ```-in-window marker, because it implies the match is
+    // immediately wrapped by a fenced code block. The generic marker
+    // (drop 0.25) fires when ``` appears anywhere in ±200 chars; this
+    // stricter form adds another 0.2 when the fence is right before
+    // the match.
+    const upstreamWindow = fullText.slice(Math.max(0, matchStart - 20), matchStart);
+    if (upstreamWindow.includes('```')) {
+      drop += 0.2;
+      reasons.push('immediate code fence');
     }
   }
 
@@ -1127,6 +1178,7 @@ function scanBase64NearInstruction(
   options: DetectorOptions,
 ): Finding[] {
   if (!options.scanInjection) return [];
+  if (options.disabledDetectorIds?.has('tool-result-base64-payload-near-instruction')) return [];
   if (isAllowlistedPath(sourceHint)) return [];
   // Collect verb positions first so we can answer "any verb within window?"
   // in O(verbs * chunks) instead of re-scanning the full text per chunk.
@@ -1156,7 +1208,13 @@ function scanBase64NearInstruction(
     });
     if (!within) continue;
     if (hasAllowlistedContext(fullText, start, end)) continue;
-    const { drop, reasons } = computeConfidenceDrop(fullText, start, end, match);
+    const { drop, reasons } = computeConfidenceDrop(
+      fullText,
+      start,
+      end,
+      match,
+      'base64-proximity',
+    );
     const adjustedConfidence = Math.max(0.1, 0.7 - drop);
     const adjustedReason =
       reasons.length > 0
@@ -1197,6 +1255,7 @@ function scanInjectionIn(
   const findings: Finding[] = [];
   for (const rule of rules) {
     if (!options.scanInjection && !rule.alwaysOn) continue;
+    if (options.disabledDetectorIds?.has(rule.id)) continue;
     rule.regex.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = rule.regex.exec(fullText)) !== null) {
@@ -1205,7 +1264,13 @@ function scanInjectionIn(
       const end = start + match.length;
       if (hasAllowlistedContext(fullText, start, end)) continue;
 
-      const { drop, reasons } = computeConfidenceDrop(fullText, start, end, match);
+      // Pass the tool-call-shape hint only for the high-FP detector; the
+      // others (jailbreak-persona, role-impersonation, etc.) get plain
+      // generic drops so a real injection attempt that uses the phrase
+      // "settings.json" in passing isn't silenced.
+      const kindHint =
+        rule.id === 'tool-result-tool-injection' ? ('tool-call-shape' as const) : undefined;
+      const { drop, reasons } = computeConfidenceDrop(fullText, start, end, match, kindHint);
       const adjustedConfidence = Math.max(0.1, rule.confidence - drop);
       const adjustedReason =
         reasons.length > 0

@@ -2014,6 +2014,139 @@ export function purgeSecurityEventsOlderThan(db: Database.Database, cutoffMs: nu
   });
 }
 
+/** One-time auto-demotion of provably-noisy detectors. Selects any
+ *  detector that has fired ≥20 times in the last 30 days with **zero**
+ *  blocks and **zero** approvals — the dogfood data fingerprint for "pure
+ *  acknowledged noise". The caller (daemon startup) merges the returned
+ *  ids into `settings.detectorOverrides` as `'informational'`, so future
+ *  matches still persist for audit but skip the banner + notification +
+ *  broadcast path.
+ *
+ *  Also bulk-acknowledges existing rows for those detectors so the Alerts
+ *  badge stops counting them — the user has already implicitly seen
+ *  them. Returns `null` if the migration has already run (idempotent).
+ *
+ *  Threshold rationale (n=20 / 30d / 0 blocks / 0 approvals):
+ *    - n=20 catches truly chronic offenders; one-off bursts (e.g. a
+ *      single bad fetch) stay active.
+ *    - 0 blocks AND 0 approvals = the user never had to act on this
+ *      finding kind. If even one row had been approved by a pending
+ *      block, the rule has live value and stays active.
+ *
+ *  Not called from `getDb`. The daemon entrypoint invokes this after
+ *  settings are loaded so it can decide which ids to demote vs. leave
+ *  alone (explicit user `'active'`/`'disabled'` choices stick). */
+export interface DetectorTuningMigrationResult {
+  /** Detector ids the heuristic identified as noisy. */
+  demotedIds: string[];
+  /** Number of existing `security_events` rows flipped from
+   *  acknowledged=0 to 1. Informational only — drives the
+   *  one-time notification body. */
+  acknowledgedRowCount: number;
+}
+
+/** One aggregate row per detector that has fired in the window. Joins
+ *  with `settings.detectorOverrides` at the daemon-handler level for the
+ *  `override` field — db.ts itself stays settings-agnostic. */
+export interface DetectorStatsRowDb {
+  detectorId: string;
+  total: number;
+  blocked: number;
+  approved: number;
+  acknowledged: number;
+  avgConfidence: number;
+}
+
+export function listDetectorStats(
+  db: Database.Database,
+  windowMs: number,
+  nowMs: number = Date.now(),
+): DetectorStatsRowDb[] {
+  const cutoff = nowMs - windowMs;
+  const rows = db
+    .prepare(
+      `SELECT detector_id AS detectorId,
+              COUNT(*) AS total,
+              SUM(blocked) AS blocked,
+              SUM(approved) AS approved,
+              SUM(acknowledged) AS acknowledged,
+              AVG(confidence) AS avgConfidence
+         FROM security_events
+        WHERE ts >= ?
+        GROUP BY detector_id
+        ORDER BY total DESC`,
+    )
+    .all(cutoff) as Array<{
+    detectorId: string;
+    total: number;
+    blocked: number;
+    approved: number;
+    acknowledged: number;
+    avgConfidence: number;
+  }>;
+  // SUM() returns null for an empty group; the WHERE+GROUP BY guarantees
+  // total ≥ 1, but the type system can't see that. Coerce defensively.
+  return rows.map((r) => ({
+    detectorId: r.detectorId,
+    total: r.total,
+    blocked: r.blocked ?? 0,
+    approved: r.approved ?? 0,
+    acknowledged: r.acknowledged ?? 0,
+    avgConfidence: Math.round((r.avgConfidence ?? 0) * 100) / 100,
+  }));
+}
+
+export function runDetectorTuningMigration(
+  db: Database.Database,
+  nowMs: number = Date.now(),
+): DetectorTuningMigrationResult | null {
+  const MIGRATION_NAME = 'detector_tuning_v1';
+  const applied = db
+    .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+    .get(MIGRATION_NAME) as { ok: number } | undefined;
+  if (applied) return null;
+
+  const cutoff = nowMs - 30 * 24 * 3600 * 1000;
+  const noisy = db
+    .prepare(
+      `SELECT detector_id, COUNT(*) AS n
+         FROM security_events
+        WHERE ts >= ?
+        GROUP BY detector_id
+       HAVING COUNT(*) >= 20
+          AND SUM(blocked) = 0
+          AND SUM(approved) = 0
+        ORDER BY COUNT(*) DESC`,
+    )
+    .all(cutoff) as Array<{ detector_id: string; n: number }>;
+
+  const demotedIds = noisy.map((r) => r.detector_id);
+  let acknowledgedRowCount = 0;
+  if (demotedIds.length > 0) {
+    const placeholders = demotedIds.map(() => '?').join(',');
+    // Update only unacknowledged rows so we don't churn the index for
+    // already-acknowledged entries. Restricted to the demoted ids so a
+    // user re-promoting a detector later doesn't inherit a silenced
+    // backlog for other still-active detectors.
+    const result = db
+      .prepare(
+        `UPDATE security_events
+            SET acknowledged = 1
+          WHERE acknowledged = 0
+            AND detector_id IN (${placeholders})`,
+      )
+      .run(...demotedIds);
+    acknowledgedRowCount = result.changes;
+  }
+
+  db.prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)').run(
+    MIGRATION_NAME,
+    nowMs,
+  );
+
+  return { demotedIds, acknowledgedRowCount };
+}
+
 /** Walk the audit log chain from oldest to newest, recomputing each
  *  row's payload_hash and verifying every prev_hash links to a known
  *  chain element (event row OR summary row). Returns the first break

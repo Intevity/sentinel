@@ -18,10 +18,11 @@ import type {
   SecurityEnforcementMode,
   SecurityOsNotifyThreshold,
   SecurityContextVerbosity,
+  DetectorTier,
   LogLevel,
   PermissionDecision,
 } from '@claude-sentinel/shared';
-import { SECURITY_CONTEXT_WINDOW_CHARS } from '@claude-sentinel/shared';
+import { SECURITY_CONTEXT_WINDOW_CHARS, VALID_DETECTOR_TIERS } from '@claude-sentinel/shared';
 import { signSettings, verifySettings } from './settings-integrity.js';
 
 /** Default settings-file path. Tests can override via
@@ -62,6 +63,7 @@ export const DEFAULT_SETTINGS: Settings = {
   securityContextVerbosity: 'standard',
   securityEventRetentionDays: 30,
   securityApproveHoldSec: 60,
+  detectorOverrides: {},
   toolPermissionsEnabled: false,
   toolPermissionDefaultAction: 'allow',
   toolPermissionSkipInAutoMode: true,
@@ -325,6 +327,26 @@ function coerce(raw: unknown): Settings {
   if (typeof obj['securityApproveHoldSec'] === 'number') {
     const n = Math.floor(obj['securityApproveHoldSec']);
     if (n >= 10 && n <= 300) next.securityApproveHoldSec = n;
+  }
+  if (
+    obj['detectorOverrides'] &&
+    typeof obj['detectorOverrides'] === 'object' &&
+    !Array.isArray(obj['detectorOverrides'])
+  ) {
+    // Replace-semantics: each `updateSettings` patch fully specifies the
+    // override map. To re-promote a detector back to `'active'`, send
+    // an object without its key (or with the value `'active'`). The
+    // outer `{...current, ...patch}` merge in `updateSettings` already
+    // overwrites the whole field when present in the patch, so all that
+    // matters here is shape-validating each value.
+    const out: Record<string, DetectorTier> = {};
+    for (const [k, v] of Object.entries(obj['detectorOverrides'] as Record<string, unknown>)) {
+      if (typeof k !== 'string' || !k) continue;
+      if (typeof v !== 'string') continue;
+      if (!VALID_DETECTOR_TIERS.includes(v as DetectorTier)) continue;
+      out[k] = v as DetectorTier;
+    }
+    next.detectorOverrides = out;
   }
   if (typeof obj['toolPermissionsEnabled'] === 'boolean') {
     next.toolPermissionsEnabled = obj['toolPermissionsEnabled'];

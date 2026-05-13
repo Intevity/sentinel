@@ -174,6 +174,19 @@ interface PendingBlockEntry {
 export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
   const pendingBlocks = new Map<string, PendingBlockEntry>();
 
+  /** Resolve the set of detector ids currently marked `'disabled'` in
+   *  settings. Rebuilt per scan so toggles take effect immediately. Empty
+   *  set when no overrides are configured, which is the common case. The
+   *  settings parse layer guarantees detectorOverrides is always an
+   *  object (`{}` on a fresh install), so no null-guard is needed. */
+  const computeDisabledDetectorIds = (settings: Settings): ReadonlySet<string> | undefined => {
+    const out = new Set<string>();
+    for (const [id, tier] of Object.entries(settings.detectorOverrides)) {
+      if (tier === 'disabled') out.add(id);
+    }
+    return out.size > 0 ? out : undefined;
+  };
+
   /** Persist a finding and (conditionally) fire the in-app notification + IPC
    *  broadcast. Historically we short-circuited on dedup-repeat to avoid
    *  notification spam — but that silenced *block* events when the same
@@ -197,6 +210,19 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
     const now = Date.now();
     const blocked = flags.blocked === true;
     const approved = flags.approved === true;
+
+    // Per-detector tier (see `Settings.detectorOverrides`):
+    //   'disabled'      → drop entirely (no row, no broadcast). Belt to the
+    //                     `disabledDetectorIds` suspenders in the detectors
+    //                     themselves; if a finding ever reaches here the
+    //                     scanner short-circuits the same way.
+    //   'informational' → INSERT the row (so audit/Low-signal queries see
+    //                     it), but skip notification + broadcast.
+    //   'active' / unknown → current behavior.
+    // Block/approve flags bypass `informational`: if the user is acting on
+    // a pending block of a demoted detector, the resolution still surfaces.
+    const tier = settings.detectorOverrides[finding.detectorId] ?? 'active';
+    if (tier === 'disabled' && !blocked && !approved) return;
 
     // Sprint 8 redaction-at-write-time: every value going into
     // `details_json` is run through the secret detectors and any
@@ -238,6 +264,12 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
       console.error('[Security] insertSecurityEvent failed:', err);
       return;
     }
+
+    // Informational tier: row is persisted (above) for audit + Low-signal
+    // disclosure, but no notification, no broadcast. Block/approve events
+    // override — if the user resolved a pending block of a demoted
+    // detector, they still see the disposition.
+    if (tier === 'informational' && !blocked && !approved) return;
 
     const isMeaningful = blocked || approved;
     const isSynthetic = finding.kind.startsWith('scan_');
@@ -477,6 +509,7 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
       scanSecrets: settings.securityScanSecrets,
       scanInjection: settings.securityScanInjection,
       scanToolUse: settings.securityScanToolUse,
+      disabledDetectorIds: computeDisabledDetectorIds(settings),
     };
 
     // Uniform context window across every detector kind / severity for
@@ -995,6 +1028,7 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
             scanSecrets: settings.securityScanSecrets,
             scanInjection: settings.securityScanInjection,
             scanToolUse: settings.securityScanToolUse,
+            disabledDetectorIds: computeDisabledDetectorIds(settings),
           };
           setSecurityContextWindow(resolveSecurityContextWindow(settings));
           const { blocks, truncated } = tap.flush();

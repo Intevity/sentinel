@@ -70,6 +70,7 @@ function benchSettings(overrides: Partial<Settings> = {}): Settings {
     securityContextVerbosity: 'standard',
     securityEventRetentionDays: 30,
     securityApproveHoldSec: 60,
+    detectorOverrides: {},
     toolPermissionsEnabled: false,
     toolPermissionDefaultAction: 'allow',
     toolPermissionSkipInAutoMode: true,

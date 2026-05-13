@@ -321,6 +321,22 @@ export interface Settings {
    *  goes through this hold so the user always has a chance to approve. */
   securityApproveHoldSec: number;
 
+  /** Per-detector visibility tier. Keyed by `Finding.detectorId`. Missing
+   *  or `'active'` is the current behavior: persist + IPC broadcast +
+   *  notification, and the finding counts toward the OS-notification
+   *  threshold gate. `'informational'` still persists to `security_events`
+   *  for audit, but skips the broadcast and the notification row — the UI
+   *  surfaces these under a collapsed "Low-signal observations" disclosure.
+   *  `'disabled'` short-circuits the detector at scan time: no event row,
+   *  no broadcast, no notification.
+   *
+   *  The `detector_tuning_v1` migration auto-demotes any detector that
+   *  fired ≥20 times in the last 30 days with 0 blocks and 0 approvals to
+   *  `'informational'` on first run, then surfaces a one-time notification
+   *  naming the affected ids. Re-promotion is by the user, in Settings →
+   *  Security → Detectors. */
+  detectorOverrides: Record<string, DetectorTier>;
+
   // ─── Tool permission enforcement ───────────────────────────────────
   /** Master switch for the tool-permissions subsystem. When false, the
    *  rule evaluator short-circuits to allow and no proxy interception runs.
@@ -675,6 +691,22 @@ export type SecurityEnforcementMode =
   | 'block_medium_high'; // block on MEDIUM or HIGH findings
 
 export type SecurityOsNotifyThreshold = 'off' | 'high' | 'medium' | 'low';
+
+/** Per-detector visibility tier (see `Settings.detectorOverrides`).
+ *  `'active'`        : current behavior; persist + broadcast + notify.
+ *  `'informational'` : persist only; UI surfaces under "Low-signal observations".
+ *  `'disabled'`      : skip the detector entirely; no event row produced.
+ *
+ *  Blocking is independent of this tier: high-confidence findings (≥0.9)
+ *  still pass through the existing block-decision path. The tier only
+ *  controls user-visible noise (and, for `'disabled'`, CPU). */
+export type DetectorTier = 'active' | 'informational' | 'disabled';
+
+export const VALID_DETECTOR_TIERS: readonly DetectorTier[] = [
+  'active',
+  'informational',
+  'disabled',
+];
 
 /** How much context the scanner captures around a finding. Maps to a
  *  symmetric char-window applied uniformly across detector kinds and

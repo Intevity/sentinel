@@ -1037,6 +1037,30 @@ export interface GetSecurityEventsMessage {
   search?: string;
 }
 
+/** Fetch per-detector activity counts over a rolling window for the
+ *  Settings → Security → Detectors tuning UI. Counts are computed from
+ *  `security_events` grouped by `detector_id`; the `override` field is
+ *  merged from `Settings.detectorOverrides` at response time. Rows for
+ *  detectors that have never fired (no events in window) are not
+ *  returned — the UI should also surface user-configured overrides for
+ *  ids absent from this list. */
+export interface GetDetectorStatsMessage {
+  type: 'get_detector_stats';
+  /** Window size in milliseconds. Defaults to 30 days. */
+  windowMs?: number;
+}
+
+/** One row per detector in the response. */
+export interface DetectorStatsRow {
+  detectorId: string;
+  total: number;
+  blocked: number;
+  approved: number;
+  acknowledged: number;
+  avgConfidence: number;
+  override: 'active' | 'informational' | 'disabled';
+}
+
 /** Mark a single security event as acknowledged. */
 export interface AcknowledgeSecurityEventMessage {
   type: 'acknowledge_security_event';
@@ -1463,6 +1487,7 @@ export type AppToDaemonMessage =
   | GetNotificationsMessage
   | RefreshTokenMessage
   | GetSecurityEventsMessage
+  | GetDetectorStatsMessage
   | AcknowledgeSecurityEventMessage
   | AcknowledgeAllSecurityEventsMessage
   | ClearSecurityEventsMessage

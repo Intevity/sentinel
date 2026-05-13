@@ -5,6 +5,13 @@ on:
     tags:
       - 'v*'
 
+# A re-push of the same tag is rare but happens (e.g., draft release re-cut).
+# Deduplicate retries on the same tag, but never cancel a mid-flight macOS
+# notarize — that wastes 10x ubuntu-equivalent minutes.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -12,6 +19,7 @@ jobs:
   build-tauri:
     name: Build Tauri app (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       matrix:
         include:
@@ -46,6 +54,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-arm64' && 'aarch64-apple-darwin' || matrix.platform == 'macos-x64' && 'x86_64-apple-darwin' || '' }}
+
+      # Cache ~/.cargo/{registry,git} + packages/app/src-tauri/target keyed on
+      # Cargo.lock + the matrix triple. Saves ~5–10 min per leg on a hit;
+      # the macOS legs bill at 10x so the effective savings is larger.
+      # Bump the key prefix (e.g. tauri-release-v2) to invalidate.
+      - name: Cache Cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/app/src-tauri -> target
+          key: ${{ matrix.platform }}
+          shared-key: tauri-release
 
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-22.04'
@@ -100,6 +119,7 @@ jobs:
     name: Publish GitHub Release
     needs: [build-tauri]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@v4

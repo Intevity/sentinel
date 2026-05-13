@@ -3,8 +3,23 @@ name: CI
 on:
   push:
     branches: [main]
+    # No branch protection on `main` requires this workflow, so skipping
+    # docs-only commits doesn't strand any PR on a missing required check.
+    # (Verified via `gh api repos/.../branches/main/protection` → 404.)
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'CHANGELOG.md'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'CHANGELOG.md'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -14,6 +29,7 @@ jobs:
   lint-test:
     name: Quality Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +50,23 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Build outputs (dist/) + the platform-built better-sqlite3 binary are
+      # deterministic for a given source tree + lockfile. Cache so the `e2e`
+      # job downstream can hit the same key and skip rebuilding. Bump the
+      # `build-v1-` prefix to invalidate.
+      - name: Cache built packages + better-sqlite3 binary
+        id: build-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/shared/dist
+            packages/daemon/dist
+            packages/test-harness/dist
+            node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3/build
+          key: build-v1-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'packages/shared/src/**', 'packages/daemon/src/**', 'packages/test-harness/src/**') }}
+
       - name: Build better-sqlite3 native module
+        if: steps.build-cache.outputs.cache-hit != 'true'
         run: |
           cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3
           npm run build-release
@@ -46,18 +78,24 @@ jobs:
       # it but produce no dist, so the daemon typecheck then fails with
       # TS2307 "Cannot find module '@claude-sentinel/shared'".
       - name: Build shared (emits dist/ for daemon typecheck)
+        if: steps.build-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @claude-sentinel/shared run build
 
       # Same rule as shared above: test-harness exposes types via dist/
       # (package.json `types` → ./dist/index.d.ts). Daemon's
       # *.integration.test.ts files import from @claude-sentinel/test-harness,
-      # so the daemon typecheck step below will fail with TS2307 unless dist
+      # so the daemon build step below will fail with TS2307 unless dist
       # exists on disk.
-      - name: Build test-harness (emits dist/ for daemon typecheck)
+      - name: Build test-harness (emits dist/ for daemon build)
+        if: steps.build-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @claude-sentinel/test-harness run build
 
-      - name: Typecheck daemon
-        run: pnpm --filter @claude-sentinel/daemon exec tsc --noEmit
+      # Daemon build serves dual purpose: typecheck (tsc fails on type
+      # errors regardless of --noEmit) AND populates packages/daemon/dist
+      # for the downstream e2e job's build-output cache hit.
+      - name: Build daemon
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @claude-sentinel/daemon run build
 
       - name: Lint
         run: pnpm exec eslint packages/daemon/src packages/shared/src
@@ -88,6 +126,7 @@ jobs:
   e2e:
     name: Playwright E2E
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: lint-test
     if: github.event_name == 'pull_request'
 
@@ -106,19 +145,36 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Mirror the lint-test cache step — same key, so a successful lint-test
+      # populates the entry and this job hits and skips the rebuilds below.
+      - name: Cache built packages + better-sqlite3 binary
+        id: build-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/shared/dist
+            packages/daemon/dist
+            packages/test-harness/dist
+            node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3/build
+          key: build-v1-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'packages/shared/src/**', 'packages/daemon/src/**', 'packages/test-harness/src/**') }}
+
       - name: Build better-sqlite3 native module
+        if: steps.build-cache.outputs.cache-hit != 'true'
         run: |
           cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3
           npm run build-release
         shell: bash
 
       - name: Build shared
+        if: steps.build-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @claude-sentinel/shared run build
 
       - name: Build daemon
+        if: steps.build-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @claude-sentinel/daemon run build
 
       - name: Build test-harness
+        if: steps.build-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @claude-sentinel/test-harness run build
 
       - name: Install Playwright browsers

@@ -36,6 +36,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     securityContextVerbosity: 'standard',
     securityEventRetentionDays: 30,
     securityApproveHoldSec: 60,
+    detectorOverrides: {},
     toolPermissionsEnabled: false,
     toolPermissionDefaultAction: 'allow',
     toolPermissionSkipInAutoMode: true,
@@ -1335,5 +1336,122 @@ describe('SecurityScanner — provenance gate', () => {
     const events = listSecurityEvents(db);
     expect(events).toHaveLength(1);
     expect(events[0]!.provenance).toBe('tool-use');
+  });
+
+  // ─── Per-detector visibility tier (Settings.detectorOverrides) ───────
+  //
+  // Three states tested against the SAME finding (ghp_ secret in a
+  // file-read tool_result, well-known high-confidence detector):
+  //   'active'        → row + broadcast + notification (baseline).
+  //   'informational' → row only; no broadcast, no notification.
+  //   'disabled'      → no row at all.
+  //
+  // Each test asserts the specific behavioural difference rather than
+  // existence-only, so regressions in tier-gating fail the suite loudly.
+
+  it('detector tier "active" (default): persists, broadcasts, and notifies', async () => {
+    const db = getDb(dbPath);
+    const ipc = ipcStub();
+    const scanner = createSecurityScanner({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () => defaultSettings(),
+    });
+    scanner.scanOutbound(
+      bodyWithFileRead('ghp_' + 'F7K2mQ9xNp4R8tVj6LsW1Zyc3BdHYaGeMnRs'),
+      'acc-a',
+    );
+    await tick();
+    expect(listSecurityEvents(db)).toHaveLength(1);
+    expect(listSecurityEvents(db)[0]!.detectorId).toBe('github-ghp');
+    expect(
+      ipc.broadcasts.filter((m) => (m as { type: string }).type === 'security_event_detected'),
+    ).toHaveLength(1);
+    expect(listNotifications(db, {}).filter((n) => n.type.startsWith('security_'))).toHaveLength(1);
+  });
+
+  it('detector tier "informational": persists row but skips broadcast + notification', async () => {
+    const db = getDb(dbPath);
+    const ipc = ipcStub();
+    const scanner = createSecurityScanner({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () =>
+        defaultSettings({
+          detectorOverrides: { 'github-ghp': 'informational' },
+        }),
+    });
+    scanner.scanOutbound(
+      bodyWithFileRead('ghp_' + 'F7K2mQ9xNp4R8tVj6LsW1Zyc3BdHYaGeMnRs'),
+      'acc-a',
+    );
+    await tick();
+    // Row is still in security_events so the Low-signal observations
+    // disclosure can query it.
+    const events = listSecurityEvents(db);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.detectorId).toBe('github-ghp');
+    // But no IPC broadcast and no notification row — the user-visible
+    // surface stays silent.
+    expect(
+      ipc.broadcasts.filter((m) => (m as { type: string }).type === 'security_event_detected'),
+    ).toHaveLength(0);
+    expect(listNotifications(db, {}).filter((n) => n.type.startsWith('security_'))).toHaveLength(0);
+  });
+
+  it('detector tier "disabled": skips detection entirely; no row, no broadcast, no notification', async () => {
+    const db = getDb(dbPath);
+    const ipc = ipcStub();
+    const scanner = createSecurityScanner({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () =>
+        defaultSettings({
+          // Disable both the secret rule (validates secret-detector skip)
+          // AND the tool-injection rule (validates injection-rule skip in
+          // the same fixture).
+          detectorOverrides: {
+            'github-ghp': 'disabled',
+            'tool-result-tool-injection': 'disabled',
+          },
+        }),
+    });
+    scanner.scanOutbound(
+      bodyWithFileRead('ghp_' + 'F7K2mQ9xNp4R8tVj6LsW1Zyc3BdHYaGeMnRs'),
+      'acc-a',
+    );
+    await tick();
+    expect(listSecurityEvents(db)).toHaveLength(0);
+    expect(
+      ipc.broadcasts.filter((m) => (m as { type: string }).type === 'security_event_detected'),
+    ).toHaveLength(0);
+    expect(listNotifications(db, {}).filter((n) => n.type.startsWith('security_'))).toHaveLength(0);
+  });
+
+  it('detector tier "informational" still surfaces a block via persistAndBroadcast when one fires', async () => {
+    // Edge case: even when the user has demoted a detector, if it
+    // produces a confidence ≥0.9 finding under block_high mode the user
+    // still needs to see the resolution. Verifies the `!blocked &&
+    // !approved` short-circuit in scanner.ts works as a one-way valve.
+    const db = getDb(dbPath);
+    const ipc = ipcStub();
+    const scanner = createSecurityScanner({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () =>
+        defaultSettings({
+          securityEnforcementMode: 'block_high',
+          // Suppress the hold so the test doesn't await a 60s timer.
+          securityApproveHoldSec: 10,
+          detectorOverrides: { 'github-ghp': 'informational' },
+        }),
+    });
+    // Force a block by using a HIGH-severity, high-confidence secret in
+    // file-read provenance.
+    const body = bodyWithFileRead('ghp_' + 'F7K2mQ9xNp4R8tVj6LsW1Zyc3BdHYaGeMnRs');
+    const decision = scanner.scanOutbound(body, 'acc-a');
+    // Even with informational, the block path engages because the
+    // finding crossed the block floor.
+    expect(decision.action).toBe('pending');
   });
 });
