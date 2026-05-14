@@ -175,7 +175,7 @@ Claude Code  ──→  localhost:47284  ──→  api.anthropic.com
 
 ### Prerequisites
 
-- macOS 12+, Windows 10+, or Linux (libsecret required on Linux)
+- macOS 12+, Windows 10+, or Linux (see [Linux notes](#linux-notes) below)
 - [Claude Code](https://claude.ai/code) installed
 - Node.js 24+ (for Claude Code itself; the Sentinel daemon ships its own runtime)
 
@@ -202,6 +202,20 @@ Claude Code  ──→  localhost:47284  ──→  api.anthropic.com
 4. **Restart Claude Code.** From this point on, every Claude Code session routes through the Sentinel proxy.
 
 5. **Enroll accounts** via the tray app → **Add Account**, then follow the OAuth flow. In the browser OAuth consent page, make sure you're signed in to the org you want to add — the token is scoped to whichever org claude.ai is currently showing.
+
+### Linux notes
+
+**Required system libraries:**
+
+| Distro | Command                                              |
+| ------ | ---------------------------------------------------- |
+| Arch   | `sudo pacman -S webkit2gtk-4.1 libsecret`            |
+| Debian | `sudo apt install libwebkit2gtk-4.1-0 libsecret-1-0` |
+| Fedora | `sudo dnf install webkit2gtk4.1 libsecret`           |
+
+`webkit2gtk-4.1` powers the app window; `libsecret` is the keychain backend used to store credentials.
+
+**Wayland:** Supported natively — no manual configuration needed. The app detects Wayland at startup and disables WebKit's DMA-BUF renderer, which triggers a protocol error (`EPROTO`) on some compositors.
 
 ### Uninstall
 
@@ -243,12 +257,9 @@ Sentinel is a tray-only app (no Dock icon). Closing the window with the red ⨉ 
 git clone https://github.com/Intevity/claude-sentinel
 cd claude-sentinel
 pnpm install
-
-# Build the better-sqlite3 native module
-cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3
-npm run build-release
-cd -
 ```
+
+`pnpm install` automatically compiles the `better-sqlite3` native addon and `esbuild` for your platform.
 
 ### Build the Tauri app (includes the daemon)
 
