@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Shield, ShieldAlert, ShieldX, ShieldCheck, X } from 'lucide-react';
 import type { PendingSecurityBlock, SecuritySeverity } from '@claude-sentinel/shared';
 import { orderedToolInputRows } from '../lib/toolInputFields.js';
+import HighlightedSnippet from './HighlightedSnippet.js';
 
 /**
  * Renders one live pending security block as a pinned row at the top of
@@ -143,6 +144,17 @@ export default function LiveSecurityRow({
               {entry.matchMask}
             </code>
           )}
+          {entry.snippet && (
+            <div className="mt-1.5 text-[10px] leading-snug">
+              <span className="text-[#8E8E93]">Context: </span>
+              <HighlightedSnippet text={entry.snippet} />
+            </div>
+          )}
+          {entry.sourceHint && (
+            <div className="mt-1 text-[10px] text-[#8E8E93] truncate" title={entry.sourceHint}>
+              Source: <code className="font-mono">{entry.sourceHint}</code>
+            </div>
+          )}
           {entry.toolInputFields && (
             <div className="mt-1.5 space-y-1">
               {orderedToolInputRows(entry.toolInputFields).map(({ key, value }) => (
@@ -188,7 +200,7 @@ export default function LiveSecurityRow({
                   ? 'Approve only this single call'
                   : m === 'session'
                     ? 'Approve every matching call in this Claude Code session for the next 12 hours'
-                    : 'Approve and add a permanent bypass so future identical inputs skip the approval row'
+                    : 'Approve and stop asking about anything else matching this rule'
               }
             >
               <input

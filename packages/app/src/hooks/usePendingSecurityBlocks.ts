@@ -13,8 +13,11 @@ interface UsePendingBlocksResult {
    *    - 'session' — also write a session_approval_grants row so
    *                  future matching calls in the same Claude Code
    *                  session skip the banner for 12 hours.
-   *    - 'always'  — write a permission_bypass row so future
-   *                  identical inputs skip the banner permanently.
+   *    - 'always'  — write a rule-wide permission_bypass row so
+   *                  every future tool call matching the same deny
+   *                  rule is silently allowed. (Older "per-input"
+   *                  bypass rows keep working as a fallback if any
+   *                  exist from prior versions.)
    *  Legacy `addBypass: true` is mapped to `mode: 'always'`. */
   approve: (
     pendingId: string,

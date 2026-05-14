@@ -598,12 +598,20 @@ describe('Sprint 9 — enforcer integration: session grants + recent cwd', () =>
     expect(pendingId).toBeDefined();
     const ok = enforcer.resolvePending(pendingId!, 'approve', { mode: 'always' });
     expect(ok).toBe(true);
-    // The legacy path inserts into permission_bypass and emits a
-    // permission_bypasses_updated broadcast.
-    const bypasses = db
-      .prepare("SELECT COUNT(*) AS n FROM permission_bypass WHERE rule_id != ''")
-      .get() as { n: number };
-    expect(bypasses.n).toBe(1);
+    // mode=always now writes a rule-wide bypass — the row uses the
+    // wildcard sentinel for input_hash so every future input matching
+    // the same deny rule is allowed, not just the exact command the
+    // user approved.
+    const row = db
+      .prepare(
+        "SELECT input_hash, mask, note, tool_name FROM permission_bypass WHERE rule_id != ''",
+      )
+      .get() as { input_hash: string; mask: string; note: string; tool_name: string } | undefined;
+    expect(row).toBeDefined();
+    expect(row!.input_hash).toBe('*');
+    expect(row!.tool_name).toBe('Bash');
+    expect(row!.mask).toContain('Bash(rm *)');
+    expect(row!.note).toMatch(/rule-wide/i);
     const bypassBroadcast = ipc.broadcasts.some(
       (m) => (m as { type: string }).type === 'permission_bypasses_updated',
     );

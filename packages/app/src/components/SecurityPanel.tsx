@@ -16,7 +16,6 @@ import {
   Info,
   ChevronDown,
   ChevronRight,
-  Zap,
   X,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -33,6 +32,7 @@ import { usePermissionRules } from '../hooks/usePermissionRules.js';
 import { usePendingSecurityBlocks } from '../hooks/usePendingSecurityBlocks.js';
 import LiveSecurityRow from './LiveSecurityRow.js';
 import SecurityStatusPill from './SecurityStatusPill.js';
+import HighlightedSnippet from './HighlightedSnippet.js';
 import {
   QuickSegmented,
   QuickChipToggle,
@@ -885,76 +885,46 @@ function formatAgo(ts: number, now: number = Date.now()): string {
   return `${hours}h ago`;
 }
 
-function buildBannerCopy(
-  status: AutoModeStatus,
-  skipInAutoMode: boolean,
-): { headline: string; meta: string } {
+function buildBannerCopy(status: AutoModeStatus, skipInAutoMode: boolean): { headline: string } {
   const { activeSessions, autoModeSessions, source } = status;
   const sessionsLabel = (n: number): string => `${n} session${n === 1 ? '' : 's'}`;
 
   // When enforcement is NOT being skipped, the banner is informational: we
-  // detected auto mode but Sentinel is still gating tool calls. Headline +
-  // meta both reflect that.
+  // detected auto mode but Sentinel is still gating tool calls. The
+  // explanatory paragraph below the headline covers the "still enforcing"
+  // semantics, so the headline alone carries the state.
   if (!skipInAutoMode) {
     if (source === 'manual' && autoModeSessions === 0) {
-      return {
-        headline: 'Auto mode · manual override',
-        meta:
-          activeSessions > 0
-            ? `${sessionsLabel(activeSessions)} tracked · still enforcing`
-            : 'Still enforcing',
-      };
+      return { headline: 'Auto mode · manual override' };
     }
     if (autoModeSessions > 0 && autoModeSessions < activeSessions) {
       return {
         headline: `Auto mode detected · ${autoModeSessions} of ${activeSessions} sessions`,
-        meta: 'Rules still enforced on every session',
       };
     }
     if (autoModeSessions === 1 && activeSessions === 1) {
-      return { headline: 'Auto mode detected', meta: 'Rules still enforced · 1 session' };
+      return { headline: 'Auto mode detected' };
     }
     if (autoModeSessions > 0 && autoModeSessions === activeSessions) {
-      return {
-        headline: `Auto mode · ${sessionsLabel(autoModeSessions)}`,
-        meta: 'Rules still enforced on every session',
-      };
+      return { headline: `Auto mode · ${sessionsLabel(autoModeSessions)}` };
     }
-    return {
-      headline: 'Auto mode active',
-      meta: 'Rules still enforced; toggle "Skip enforcement in auto mode" in Settings to bypass',
-    };
+    return { headline: 'Auto mode active' };
   }
 
   // Skipping path — Sentinel is standing down on auto-mode sessions.
   if (source === 'manual' && autoModeSessions === 0) {
-    return {
-      headline: 'Auto mode · manual override',
-      meta:
-        activeSessions > 0
-          ? `${sessionsLabel(activeSessions)} tracked · forced bypass`
-          : 'Forced bypass',
-    };
+    return { headline: 'Auto mode · manual override' };
   }
   if (autoModeSessions === 1 && activeSessions === 1) {
-    return { headline: 'Auto mode · Sentinel standing down', meta: '1 session' };
+    return { headline: 'Auto mode · Sentinel standing down' };
   }
   if (autoModeSessions > 0 && autoModeSessions < activeSessions) {
-    return {
-      headline: `Auto mode · ${autoModeSessions} of ${activeSessions} sessions`,
-      meta: 'Enforcement skipped only on auto sessions',
-    };
+    return { headline: `Auto mode · ${autoModeSessions} of ${activeSessions} sessions` };
   }
   if (autoModeSessions > 0 && autoModeSessions === activeSessions) {
-    return {
-      headline: `Auto mode · ${sessionsLabel(autoModeSessions)}`,
-      meta: 'Sentinel standing down on every session',
-    };
+    return { headline: `Auto mode · ${sessionsLabel(autoModeSessions)}` };
   }
-  return {
-    headline: 'Auto mode active',
-    meta: source === 'manual' ? 'manual override' : 'detected from request headers',
-  };
+  return { headline: 'Auto mode active' };
 }
 
 /**
@@ -1024,18 +994,18 @@ function AutoModeBanner({
                   : undefined
               }
             >
-              <span className="relative inline-flex items-center justify-center mt-0.5 flex-shrink-0">
-                <span
-                  aria-hidden
-                  className={`animate-ping absolute inline-block w-2.5 h-2.5 rounded-full opacity-50 ${accent.dot}`}
-                />
-                <span className={`relative inline-block w-2.5 h-2.5 rounded-full ${accent.dot}`} />
-              </span>
               <div className="flex-1 min-w-0">
-                <p className="text-[11px] font-semibold text-black dark:text-white leading-tight flex items-center gap-1">
-                  <Zap size={11} strokeWidth={2.5} className={accent.icon} />
-                  {copy.headline}
-                  <span className="text-[10px] font-normal text-[#8E8E93]">· {copy.meta}</span>
+                <p className="text-[11px] font-semibold text-black dark:text-white leading-tight flex items-center gap-1.5">
+                  <span
+                    aria-hidden
+                    className="relative inline-flex items-center justify-center flex-shrink-0"
+                  >
+                    <span
+                      className={`animate-ping absolute inline-block w-2 h-2 rounded-full opacity-50 ${accent.dot}`}
+                    />
+                    <span className={`relative inline-block w-2 h-2 rounded-full ${accent.dot}`} />
+                  </span>
+                  <span className="whitespace-nowrap">{copy.headline}</span>
                 </p>
                 <p className="text-[10.5px] text-[#8E8E93] leading-snug mt-0.5">
                   {skipInAutoMode
@@ -1439,37 +1409,6 @@ function ReplayContextSection({ eventId }: { eventId: number }): React.ReactElem
  *  the on-screen rendering and the Copy-to-clipboard payload stay in sync. */
 const DETAILS_INTERNAL_KEYS = COPY_INTERNAL_KEYS;
 const DETAILS_LABEL = COPY_DETAILS_LABEL;
-
-/** Renders the `Context:` snippet. Two formats arrive from the daemon:
- *  - Sensitive findings (secret/PII/unicode-tag/base64): a 40-char window
- *    with `[REDACTED:kind]` in place of the match. No markers — falls
- *    through to plain rendering.
- *  - Non-secret pattern findings: ~200 chars trimmed to a sentence boundary,
- *    with the literal match wrapped in `«…»` markers. We split on the
- *    first `«` and last `»` (so any inner literals survive as text) and
- *    render the matched span with a yellow highlight.
- *  Old DB rows pre-dating the marker format also fall through cleanly. */
-function HighlightedSnippet({ text }: { text: string }): React.ReactElement {
-  const open = text.indexOf('«');
-  const close = text.lastIndexOf('»');
-  if (open === -1 || close === -1 || close <= open) {
-    return (
-      <code className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded break-all">
-        {text}
-      </code>
-    );
-  }
-  const before = text.slice(0, open);
-  const match = text.slice(open + 1, close);
-  const after = text.slice(close + 1);
-  return (
-    <code className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded break-all">
-      {before}
-      <span className="bg-ios-orange/20 text-ios-orange font-semibold px-0.5 rounded">{match}</span>
-      {after}
-    </code>
-  );
-}
 
 function DetailsList({
   details,

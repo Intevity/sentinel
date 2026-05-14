@@ -886,6 +886,24 @@ export interface PendingSecurityBlock {
    *  cannot attribute the request to a session (no parseable
    *  metadata.user_id). */
   recentApproveCount?: number;
+  /** Highlighted context window around the match: ~200 chars on each
+   *  side trimmed to a sentence boundary, with the matched substring
+   *  wrapped in `«…»` markers. Present when the underlying finding is a
+   *  pattern detection that opted into context preservation (e.g.
+   *  prompt-injection markers like `[INST]`). Absent for permission
+   *  blocks and secret detections, which carry their context via
+   *  `matchMask` / `toolInputFields` instead. Pending entries are
+   *  in-memory only, so this field is independent of the
+   *  `securityPersistSnippet` setting that governs DB persistence —
+   *  the snippet is the same content the user is being asked to
+   *  approve, so withholding it from the decision UI would be
+   *  counterproductive. */
+  snippet?: string | null;
+  /** Where in the request/response the match was located, e.g.
+   *  `messages[3].tool_result[0].content` or a filesystem path. Helps
+   *  the user trace which tool returned the suspicious content.
+   *  Mirrors {@link SecurityEvent.sourceHint}. */
+  sourceHint?: string | null;
 }
 
 /** Per-field character cap for {@link PendingSecurityBlock.toolInputFields}.

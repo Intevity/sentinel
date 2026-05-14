@@ -374,17 +374,26 @@ export function createSecurityScanner(deps: ScannerDeps): SecurityScanner {
   };
 
   // Helper: build the pending block summary used by the broadcast and the
-  // list_pending_blocks IPC response.
-  const toPendingSnapshot = (entry: PendingBlockEntry): PendingSecurityBlock => ({
-    pendingId: entry.id,
-    accountId: entry.accountId,
-    severity: entry.severity,
-    title: entry.title,
-    blockReason: entry.blockReason,
-    matchMask: entry.matchMask,
-    detectorId: entry.detectorId,
-    expiresAt: entry.expiresAt,
-  });
+  // list_pending_blocks IPC response. Pull snippet/sourceHint from the
+  // first block-cause finding so the banner has enough context for the
+  // user to make an informed approve/deny decision — otherwise prompt-
+  // injection blocks surface only the bare match (e.g. "[INST]") which
+  // is meaningless to a user.
+  const toPendingSnapshot = (entry: PendingBlockEntry): PendingSecurityBlock => {
+    const cause = entry.blockCauseFindings[0];
+    return {
+      pendingId: entry.id,
+      accountId: entry.accountId,
+      severity: entry.severity,
+      title: entry.title,
+      blockReason: entry.blockReason,
+      matchMask: entry.matchMask,
+      detectorId: entry.detectorId,
+      expiresAt: entry.expiresAt,
+      snippet: cause?.snippet || null,
+      sourceHint: cause?.sourceHint ?? null,
+    };
+  };
 
   const finalizePending = (entry: PendingBlockEntry, outcome: PendingOutcome): void => {
     clearTimeout(entry.timeoutHandle);

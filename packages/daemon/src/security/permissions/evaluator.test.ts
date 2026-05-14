@@ -300,7 +300,10 @@ describe('evaluateToolCall — per-rule input bypass', () => {
 
   it('hashes identical inputs to the same digest regardless of key order', () => {
     // Two tool inputs that differ only in key order must hash identically
-    // so a bypass registered with one ordering still catches the other.
+    // so a per-input bypass registered with one ordering still catches the
+    // other. The evaluator now consults the wildcard sentinel ('*') first
+    // and falls back to the canonical hash, so we filter wildcard entries
+    // out of `seen` before comparing.
     const compiled = compileRules([
       rule({ id: 'd', decision: 'deny', tool: 'Write', pattern: '*', raw: 'Write(*)' }),
     ]);
@@ -313,8 +316,9 @@ describe('evaluateToolCall — per-rule input bypass', () => {
     };
     evaluateToolCall('Write', { path: '/tmp/a', content: 'x' }, compiled, settings(), hook);
     evaluateToolCall('Write', { content: 'x', path: '/tmp/a' }, compiled, settings(), hook);
-    expect(seen).toHaveLength(2);
-    expect(seen[0]).toBe(seen[1]);
+    const canonical = seen.filter((h) => h !== '*');
+    expect(canonical).toHaveLength(2);
+    expect(canonical[0]).toBe(canonical[1]);
   });
 
   it('skips the hash + bypass check entirely when no hook is provided', () => {

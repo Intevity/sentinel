@@ -199,6 +199,21 @@ export function hashCanonicalToolInput(toolName: string, toolInput: unknown): st
   return createHash('sha256').update(canonical).digest('hex');
 }
 
+/**
+ * Sentinel `input_hash` value used to mark a bypass as rule-wide: any
+ * input matching the bypass's `rule_id` is allowed, not just one
+ * specific canonicalised input. Stored in `permission_bypass.input_hash`
+ * exactly like a real hash — the value is a single byte (`'*'`) so it
+ * can never collide with a real SHA-256 hex digest (which is 64 hex
+ * characters). The evaluator consults this row first when a deny rule
+ * matches, short-circuiting the canonical-hash check.
+ *
+ * Picked when the user clicks "Always" in the approval banner. The
+ * legacy per-input bypass shape is still supported — it just isn't
+ * what the UI writes by default any more.
+ */
+export const WILDCARD_INPUT_HASH = '*';
+
 function canonicalStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
   if (Array.isArray(value)) {
@@ -262,11 +277,23 @@ export function evaluateToolCall(
   for (const rule of compiled.denies) {
     if (!ruleScopeMatchesCwd(rule.projectScope, cwd)) continue;
     if (ruleMatches(rule, toolName, toolInput, matchOpts)) {
-      // Per-rule input bypass short-circuit. Computed lazily — a user
-      // without any bypass rows pays zero hash cost on every deny
-      // match. `hooks?.isBypassed` is the gate; only hash when it's
-      // present.
+      // Bypass short-circuits. Checked in order:
+      //   1. Rule-wide wildcard ("Always" approval — any matching input).
+      //   2. Per-input canonical hash (legacy "exact input" approvals
+      //      and tests that pin the older behaviour).
+      // Both are gated on `hooks?.isBypassed` so callers that don't
+      // care about bypass (unit tests, one-off evaluations) pay zero
+      // DB cost. The wildcard check runs first because it short-circuits
+      // without the SHA-256 hash; on a user who's ticked "Always" we
+      // want the cheaper lookup.
       if (hooks?.isBypassed) {
+        if (hooks.isBypassed(rule.id, WILDCARD_INPUT_HASH)) {
+          return {
+            decision: 'allow',
+            matchedRule: rule,
+            reason: `bypassed by rule-wide approval for ${rule.raw}`,
+          };
+        }
         const inputHash = hashCanonicalToolInput(toolName, toolInput);
         if (hooks.isBypassed(rule.id, inputHash)) {
           return {

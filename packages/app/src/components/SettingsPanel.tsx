@@ -1730,8 +1730,8 @@ function BypassesManager(): React.ReactElement {
   if (entries.length === 0) {
     return (
       <div className="px-3 py-3 text-[11px] text-[#8E8E93]">
-        No bypasses yet. Tick <span className="font-semibold">Always allow this exact input</span>{' '}
-        on a pending tool-use banner to add one.
+        No bypasses yet. Pick <span className="font-semibold">Always</span> on a pending tool-use
+        banner to add one: it silences every future tool call matching the same rule.
       </div>
     );
   }

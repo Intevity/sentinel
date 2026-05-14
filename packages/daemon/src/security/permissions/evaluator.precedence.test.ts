@@ -349,10 +349,15 @@ describe('evaluator precedence: bypass hook', () => {
     const compiled = compileRules([denyRule]);
     const input = { command: 'rm -rf /tmp/build' };
     const expectedHash = hashCanonicalToolInput('Bash', input);
+    // The evaluator probes the wildcard sentinel ('*') first to honour
+    // "Always" rule-wide approvals, then falls through to the canonical
+    // input hash for legacy per-input bypasses. Returning false on '*'
+    // exercises the per-input branch; returning true on `expectedHash`
+    // is the assertion that the hook receives the right (ruleId, hash)
+    // pair on the second probe.
     const isBypassed = (ruleId: string, hash: string): boolean => {
-      // Pinning that the hook receives the right rule id and hash —
-      // a regression here would silently break the per-input bypass UI.
       expect(ruleId).toBe('deny-rm');
+      if (hash === '*') return false;
       expect(hash).toBe(expectedHash);
       return true;
     };
@@ -395,5 +400,84 @@ describe('evaluator precedence: bypass hook', () => {
     ]);
     const result = evaluateToolCall('Bash', { command: 'rm -rf /' }, compiled, settings());
     expect(result.decision).toBe('deny');
+  });
+
+  it('wildcard bypass flips deny→allow for ANY matching input, not just the approved one', () => {
+    // Regression: "Always" approval used to write a bypass keyed by
+    // the canonical SHA-256 of the exact input the user approved, so
+    // a follow-up call with a different command matching the same
+    // rule re-prompted. The wildcard sentinel ('*') lets a single
+    // approval cover every future input matching the rule, matching
+    // the user's mental model of "Always".
+    const denyRule = rule({
+      id: 'deny-rm',
+      decision: 'deny',
+      tool: 'Bash',
+      pattern: 'rm *',
+      raw: 'Bash(rm *)',
+    });
+    const compiled = compileRules([denyRule]);
+    const calls: Array<[string, string]> = [];
+    const isBypassed = (ruleId: string, hash: string): boolean => {
+      calls.push([ruleId, hash]);
+      // Only the wildcard probe returns true. If the evaluator wasn't
+      // calling with '*' first, this hook would never short-circuit.
+      return hash === '*';
+    };
+    // Two distinct commands that both match the rule but hash
+    // differently. Both must be allowed off the same wildcard row.
+    const a = evaluateToolCall('Bash', { command: 'rm -rf /tmp/a' }, compiled, settings(), {
+      isBypassed,
+    });
+    const b = evaluateToolCall('Bash', { command: 'rm -rf /tmp/b' }, compiled, settings(), {
+      isBypassed,
+    });
+    expect(a.decision).toBe('allow');
+    expect(b.decision).toBe('allow');
+    expect(a.reason).toContain('rule-wide');
+    expect(b.reason).toContain('rule-wide');
+    // The wildcard probe must precede the canonical-hash probe so
+    // a user with an "Always" row pays the cheaper lookup first.
+    // Both probes for both calls saw the wildcard as the first
+    // entry (short-circuit means we never see the canonical entries).
+    expect(calls).toEqual([
+      ['deny-rm', '*'],
+      ['deny-rm', '*'],
+    ]);
+  });
+
+  it('falls back to per-input bypass when no wildcard row exists', () => {
+    // The legacy per-input bypass shape stays valid: a user with an
+    // older bypass row (canonical hash) keeps getting it honoured
+    // even though new approvals write wildcards. Without this
+    // fallback the migration would silently invalidate every
+    // pre-existing bypass.
+    const denyRule = rule({
+      id: 'deny-write',
+      decision: 'deny',
+      tool: 'Write',
+      pattern: '*',
+      raw: 'Write(*)',
+    });
+    const compiled = compileRules([denyRule]);
+    const input = { path: '/etc/hosts', content: 'x' };
+    const expectedHash = hashCanonicalToolInput('Write', input);
+    const isBypassed = (ruleId: string, hash: string): boolean => {
+      expect(ruleId).toBe('deny-write');
+      if (hash === '*') return false;
+      return hash === expectedHash;
+    };
+    const result = evaluateToolCall('Write', input, compiled, settings(), { isBypassed });
+    expect(result.decision).toBe('allow');
+    expect(result.reason).toContain('per-input allowlist');
+    // A different input on the same rule still denies.
+    const other = evaluateToolCall(
+      'Write',
+      { path: '/etc/passwd', content: 'x' },
+      compiled,
+      settings(),
+      { isBypassed },
+    );
+    expect(other.decision).toBe('deny');
   });
 });

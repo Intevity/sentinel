@@ -44,8 +44,8 @@ import {
   compileRules,
   compileRulesContentHash,
   findWholeToolDeny,
-  hashCanonicalToolInput,
   ruleKey,
+  WILDCARD_INPUT_HASH,
   type CompiledRuleSet,
   type EvaluatorSettingsView,
 } from './evaluator.js';
@@ -71,6 +71,11 @@ export interface PermissionsEnforcerDeps {
    *  block triggers a snapshot of the most-recent session's tool-use
    *  buffer for that account into `incident_replays`. */
   incidentReplay?: import('../incident-replay.js').IncidentReplayRecorder;
+  /** Override for the live process-count scan. Production leaves this
+   *  unset and the enforcer uses {@link countClaudeCodeProcesses}. Tests
+   *  inject a stub so the prune cycle is deterministic instead of
+   *  racing a real `pgrep` subprocess. */
+  countProcesses?: () => Promise<number | null>;
 }
 
 /** How long a header-based auto-mode detection keeps the legacy freshness
@@ -289,28 +294,78 @@ export function extractCwd(body: Buffer): string | null {
 const execAsync = promisify(exec);
 
 /**
- * Count currently-running Claude Code processes across platforms. Matches
- * on the `@anthropic-ai/claude-code` npm package path which appears in every
- * supported install form (global npm, npx, homebrew). Returns `null` if the
- * scan itself failed — the caller should treat that as "don't prune by
- * process count this round" rather than "zero processes running".
+ * Count currently-running Claude Code processes across platforms.
+ *
+ * Claude Code ships through several install channels and the canonical
+ * binary name / path differs across them, so we union two pgrep probes:
+ *
+ *   1. `pgrep -x claude` (exact command name) — catches the macOS Claude
+ *      desktop bundled binary at
+ *      `~/Library/Application Support/Claude/claude-code/<ver>/claude.app/Contents/MacOS/claude`
+ *      and the global npm shim, both of which present as a process named
+ *      `claude` with no path in the argv.
+ *   2. `pgrep -f "@anthropic-ai/claude-code"` (full command line) —
+ *      catches `npx @anthropic-ai/claude-code` invocations and the rare
+ *      package-path-in-argv form.
+ *
+ * Returns `null` if the scan itself failed — the caller treats that as
+ * "don't prune by process count this round" rather than "zero processes
+ * running". A successful scan that simply matched nothing returns 0 so
+ * the prune cycle can drain stale tracked sessions.
+ *
+ * The Unix path deliberately does NOT use `pgrep -c`: that flag is
+ * Linux-only. BSD `pgrep` (macOS) prints a usage error and exits 2,
+ * which the historical implementation silently swallowed — so on every
+ * macOS install pruning was permanently skipped.
  */
 export async function countClaudeCodeProcesses(): Promise<number | null> {
+  if (process.platform === 'win32') {
+    try {
+      // PowerShell CIM: union on either the executable name being
+      // `claude.exe` (the bundled binary) or the command line including
+      // the npm package path. .Count short-circuits the zero case.
+      const { stdout } = await execAsync(
+        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'claude.exe' -or $_.CommandLine -like '*@anthropic-ai/claude-code*' }).Count"`,
+        { timeout: 5_000 },
+      );
+      const n = parseInt(stdout.trim(), 10);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    } catch {
+      return null;
+    }
+  }
+  // Run both pgrep probes, union the PID sets so a process matching
+  // both patterns isn't double-counted. We accept "no matches" (exit
+  // 1 with empty stdout) from either probe as a real zero; any other
+  // failure on EITHER probe abandons the round so we don't prune
+  // based on partial data.
+  const [byName, byArgv] = await Promise.all([
+    runPgrep('-x', 'claude'),
+    runPgrep('-f', '@anthropic-ai/claude-code'),
+  ]);
+  if (byName === null || byArgv === null) return null;
+  const pids = new Set<string>();
+  for (const pid of byName) pids.add(pid);
+  for (const pid of byArgv) pids.add(pid);
+  return pids.size;
+}
+
+/** Internal helper: run one pgrep invocation and return its PID list,
+ *  null on real failure, empty set on no-match. */
+async function runPgrep(flag: string, pattern: string): Promise<Set<string> | null> {
   try {
-    const isWin = process.platform === 'win32';
-    const cmd = isWin
-      ? // PowerShell CIM doesn't require admin and works on every supported
-        // Windows build. The parenthesized `.Count` short-circuits the zero
-        // case to `0` without requiring us to post-process the output.
-        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*@anthropic-ai/claude-code*' }).Count"`
-      : // `pgrep -cf` = count of matches against the full command line.
-        // Works identically on macOS and Linux.
-        `pgrep -cf "@anthropic-ai/claude-code"`;
-    const { stdout } = await execAsync(cmd, { timeout: 5_000 });
-    const n = parseInt(stdout.trim(), 10);
-    if (!Number.isFinite(n) || n < 0) return null;
-    return n;
-  } catch {
+    const { stdout } = await execAsync(`pgrep ${flag} ${JSON.stringify(pattern)}`, {
+      timeout: 5_000,
+    });
+    return new Set(
+      stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => /^\d+$/.test(l)),
+    );
+  } catch (err) {
+    const e = err as { code?: number; stdout?: string };
+    if (e?.code === 1 && (e.stdout ?? '').trim() === '') return new Set();
     return null;
   }
 }
@@ -530,8 +585,9 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
     }
   };
 
+  const countProcessesFn = deps.countProcesses ?? countClaudeCodeProcesses;
   const runProcessPoll = async (): Promise<void> => {
-    const count = await countClaudeCodeProcesses();
+    const count = await countProcessesFn();
     if (count !== null) {
       lastProcessCount = count;
       pruneToProcessCount(count);
@@ -788,28 +844,33 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
         outcome,
       });
       // Sprint 9: durable approval-mode dispatch.
-      //   'always' (or legacy addBypass: true) — insert permission_bypass.
+      //   'always' — insert a rule-wide permission_bypass (input_hash =
+      //     WILDCARD_INPUT_HASH). Approving "always" once silences any
+      //     future input matching the same deny rule, which is what
+      //     users intuitively expect. Pre-existing per-input bypasses
+      //     (input_hash = SHA-256 hex) keep working as a fallback in
+      //     the evaluator, so older rows aren't invalidated.
       //   'session' — insert session_approval_grants (12h TTL).
       //   'once' / undefined — no-op beyond the resolve.
+      // The legacy `addBypass: true` flag (with no mode) maps to the
+      // same rule-wide branch since callers that pass it (the older
+      // banner action and replay harness) want the strongest scope.
       // Also record an approval_events row regardless of mode so the
       // banner's "approved 5 times in 5min" pill has a stable feed.
       if (outcome === 'approve') {
         const wantsAlways =
           opts?.mode === 'always' || (opts?.addBypass === true && opts?.mode === undefined);
-        if (wantsAlways && entry.source === 'permissions_tool_use' && toolInput !== null) {
-          const inputHash = hashCanonicalToolInput(entry.toolName, toolInput);
-          const mask = summarizeToolInput(
-            entry.toolName,
-            toolInput,
-            'tool_use',
-            entry.matchedRule.raw,
-          );
+        if (wantsAlways && entry.source === 'permissions_tool_use') {
+          // toolInput is irrelevant for a rule-wide bypass: the
+          // wildcard row covers every future input, including the
+          // null-input case. We write the row whether or not a
+          // toolInput was parsed off the request.
           addPermissionBypass(deps.db, {
             ruleId: entry.matchedRule.id,
             toolName: entry.toolName,
-            inputHash,
-            mask,
-            note: 'Added via banner approve',
+            inputHash: WILDCARD_INPUT_HASH,
+            mask: `Any input matching ${entry.matchedRule.raw}`,
+            note: 'Always: rule-wide approval from banner',
           });
           deps.ipcServer.broadcast({ type: 'permission_bypasses_updated' });
         }

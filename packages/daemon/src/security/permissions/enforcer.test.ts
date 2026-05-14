@@ -1263,6 +1263,54 @@ describe('per-session auto-mode tracking', () => {
     enforcer.shutdown();
   });
 
+  it('prunes tracked sessions down to the live process count via the dep override', async () => {
+    // Regression: macOS `pgrep -cf` doesn't exist, so the historical
+    // implementation returned null and skipped pruning. Sessions
+    // accumulated until the 4 h hard timeout, causing the banner to
+    // show e.g. 32 sessions when only 5 processes were alive. This
+    // test exercises the dep-injected counter to assert the prune
+    // path actually fires.
+    let liveCount = 3;
+    const enforcer = createPermissionsEnforcer({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () => settings,
+      countProcesses: async () => liveCount,
+    });
+    enforcer.observeRequest(autoHeaders, { sessionId: 's1', accountUuid: null });
+    enforcer.observeRequest(autoHeaders, { sessionId: 's2', accountUuid: null });
+    enforcer.observeRequest(autoHeaders, { sessionId: 's3', accountUuid: null });
+    enforcer.observeRequest(autoHeaders, { sessionId: 's4', accountUuid: null });
+    enforcer.observeRequest(autoHeaders, { sessionId: 's5', accountUuid: null });
+    expect(enforcer.getAutoModeStatus().activeSessions).toBe(5);
+    // Advance one poll interval and yield so the async poll completes.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(enforcer.getAutoModeStatus().activeSessions).toBe(3);
+    // Drop to zero — pruning should drain all remaining sessions.
+    liveCount = 0;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(enforcer.getAutoModeStatus().activeSessions).toBe(0);
+    enforcer.shutdown();
+  });
+
+  it('skips pruning when the counter returns null (real failure)', async () => {
+    // The complementary path: if the scan itself fails (timeout,
+    // missing binary, weird exit code), the counter returns null and
+    // the prune step is skipped so sessions live out their hard
+    // timeout instead of being wiped on a transient error.
+    const enforcer = createPermissionsEnforcer({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () => settings,
+      countProcesses: async () => null,
+    });
+    enforcer.observeRequest(autoHeaders, { sessionId: 'a', accountUuid: null });
+    enforcer.observeRequest(autoHeaders, { sessionId: 'b', accountUuid: null });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(enforcer.getAutoModeStatus().activeSessions).toBe(2);
+    enforcer.shutdown();
+  });
+
   it('broadcasts permissions_status when session counts change', () => {
     const enforcer = createPermissionsEnforcer({
       db,
