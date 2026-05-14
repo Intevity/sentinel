@@ -152,6 +152,22 @@ fn restore_tray_window_size(
 }
 
 fn main() {
+    // WebKit2GTK's DMA-BUF renderer triggers EPROTO (Error 71) on some Wayland
+    // compositors — the compositor rejects the zwp_linux_dmabuf_v1 buffer-sharing
+    // protocol. Falling back to wl_shm transport works universally. Must be set
+    // before Tauri initialises the GTK/WebKit runtime. Skipped if the user has
+    // already set this env var (so WEBKIT_DISABLE_DMABUF_RENDERER=0 opts out).
+    #[cfg(target_os = "linux")]
+    {
+        let on_wayland = std::env::var("WAYLAND_DISPLAY").is_ok()
+            || std::env::var("XDG_SESSION_TYPE")
+                .map(|v| v == "wayland")
+                .unwrap_or(false);
+        if on_wayland && std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
