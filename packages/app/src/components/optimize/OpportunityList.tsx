@@ -192,7 +192,7 @@ export default function OpportunityList({ units }: { units: SavingsUnits }): Rea
           </div>
 
           {error !== null && (
-            <div className="mb-2 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            <div className="mb-2 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">
               {error}
             </div>
           )}
@@ -376,7 +376,7 @@ function StatusPill({
     if (savings < -SAVINGS_REGRESSION_THRESHOLD) {
       return (
         <span
-          className="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-300"
+          className="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-700 dark:text-red-300"
           title="The subagent was installed at detection time but cost more than the inline tool calls would have. Consider uninstalling."
         >
           regression
@@ -384,13 +384,15 @@ function StatusPill({
       );
     }
     return (
-      <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-300">
+      <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-300">
         realized
       </span>
     );
   }
   return (
-    <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] text-sky-300">potential</span>
+    <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] text-sky-700 dark:text-sky-300">
+      potential
+    </span>
   );
 }
 

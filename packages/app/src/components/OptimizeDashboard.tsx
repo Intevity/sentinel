@@ -186,7 +186,9 @@ export default function OptimizeDashboard(): React.ReactElement {
       </div>
       {renderChart(chartView, metrics, units)}
 
-      {error !== null && <div className="glass-card px-4 py-3 text-sm text-red-300">{error}</div>}
+      {error !== null && (
+        <div className="glass-card px-4 py-3 text-sm text-red-700 dark:text-red-300">{error}</div>
+      )}
 
       <div className="glass-card px-4 py-3">
         <h3 className="section-label mb-2">Curated subagents</h3>
@@ -208,7 +210,7 @@ export default function OptimizeDashboard(): React.ReactElement {
               >
                 <div className="min-w-0 flex-1 pr-3">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-white">{entry.name}</span>
+                    <span className="text-sm font-medium text-foreground">{entry.name}</span>
                     <span className="rounded bg-surface-overlay/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-foreground/70">
                       {entry.model}
                     </span>
@@ -260,7 +262,7 @@ export default function OptimizeDashboard(): React.ReactElement {
                   key={s.id}
                   className="flex items-center gap-2 rounded-md border border-border-subtle/10 px-3 py-1.5 text-sm text-foreground/80"
                 >
-                  <CheckCircle2 className="h-3 w-3 text-emerald-400" />
+                  <CheckCircle2 className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
                   {s.name}
                 </li>
               ))}
@@ -283,8 +285,8 @@ function formatUsd(n: number): string {
 /** Color a savings value: emerald when positive, red when negative,
  *  neutral when zero. Tailwind classes only. */
 function colorClass(n: number): string {
-  if (n > 0) return 'text-emerald-300';
-  if (n < 0) return 'text-red-400';
+  if (n > 0) return 'text-emerald-700 dark:text-emerald-300';
+  if (n < 0) return 'text-red-600 dark:text-red-400';
   return 'text-foreground/70';
 }
 
@@ -307,7 +309,7 @@ function SavingsHeader({
     <div className="glass-card px-4 py-3">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h2 className="text-base font-semibold text-white">Optimize</h2>
+          <h2 className="text-base font-semibold text-foreground">Optimize</h2>
           <p className="text-xs text-foreground/60">
             Reduce token costs by routing routine tasks to cheaper-model subagents.
             {opportunities > 0 &&
@@ -449,7 +451,7 @@ function SubagentSavingsBadge({
   if (potential <= 0) return null;
   return (
     <p
-      className="mt-1 text-[11px] text-sky-300"
+      className="mt-1 text-[11px] text-sky-700 dark:text-sky-300"
       title="Estimated savings the analyzer detected for this subagent's pattern, while it was not installed. Install to start realizing them."
     >
       Could save {fmt(potential)}

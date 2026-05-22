@@ -76,7 +76,7 @@ export default function ContextInventoryPanel(): React.ReactElement {
           </p>
 
           {error !== null && (
-            <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">
               {error}
             </div>
           )}
@@ -98,7 +98,7 @@ export default function ContextInventoryPanel(): React.ReactElement {
                       </span>
                     </span>
                     {s.enabled ? (
-                      <span className="rounded bg-emerald-500/15 px-1 py-px text-[9px] uppercase text-emerald-300">
+                      <span className="rounded bg-emerald-500/15 px-1 py-px text-[9px] uppercase text-emerald-700 dark:text-emerald-300">
                         enabled
                       </span>
                     ) : (
@@ -189,7 +189,7 @@ export default function ContextInventoryPanel(): React.ReactElement {
                     key={s.name}
                     className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
                       s.source === 'curated'
-                        ? 'bg-sky-500/15 text-sky-200'
+                        ? 'bg-sky-500/15 text-sky-800 dark:text-sky-200'
                         : 'bg-surface-overlay/10 text-foreground/80'
                     }`}
                   >

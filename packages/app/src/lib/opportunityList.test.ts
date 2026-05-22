@@ -121,13 +121,13 @@ describe('formatUsd', () => {
 
 describe('savingsColorClass', () => {
   it('reads emerald for meaningful gains', () => {
-    expect(savingsColorClass(0.5)).toBe('text-emerald-300');
-    expect(savingsColorClass(0.005)).toBe('text-emerald-300');
+    expect(savingsColorClass(0.5)).toBe('text-emerald-700 dark:text-emerald-300');
+    expect(savingsColorClass(0.005)).toBe('text-emerald-700 dark:text-emerald-300');
   });
 
   it('reads red for meaningful losses', () => {
-    expect(savingsColorClass(-0.5)).toBe('text-red-400');
-    expect(savingsColorClass(-0.005)).toBe('text-red-400');
+    expect(savingsColorClass(-0.5)).toBe('text-red-600 dark:text-red-400');
+    expect(savingsColorClass(-0.005)).toBe('text-red-600 dark:text-red-400');
   });
 
   it('stays neutral inside the noise floor (matches formatUsd)', () => {

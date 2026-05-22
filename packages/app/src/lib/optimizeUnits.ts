@@ -32,7 +32,7 @@ export function formatTokens(n: number): string {
 /** Color class for a token savings number. Same emerald/red/neutral
  *  rule as the cost view. */
 export function tokensColorClass(n: number): string {
-  if (n >= TOKEN_NOISE_FLOOR) return 'text-emerald-300';
-  if (n <= -TOKEN_NOISE_FLOOR) return 'text-red-400';
+  if (n >= TOKEN_NOISE_FLOOR) return 'text-emerald-700 dark:text-emerald-300';
+  if (n <= -TOKEN_NOISE_FLOOR) return 'text-red-600 dark:text-red-400';
   return 'text-foreground/70';
 }
