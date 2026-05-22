@@ -149,18 +149,18 @@ export default function OpportunityList({ units }: { units: SavingsUnits }): Rea
         aria-expanded={open}
       >
         {open ? (
-          <ChevronDown className="h-3 w-3 text-white/55" />
+          <ChevronDown className="h-3 w-3 text-foreground/55" />
         ) : (
-          <ChevronRight className="h-3 w-3 text-white/55" />
+          <ChevronRight className="h-3 w-3 text-foreground/55" />
         )}
-        <ListTree className="h-3 w-3 text-white/65" />
+        <ListTree className="h-3 w-3 text-foreground/65" />
         <h3 className="section-label">Opportunities analyzed</h3>
-        <span className="ml-auto text-[10px] text-white/55">{summary}</span>
+        <span className="ml-auto text-[10px] text-foreground/55">{summary}</span>
       </button>
 
       {open && (
         <div className="mt-3">
-          <p className="mb-3 text-[11px] text-white/55">
+          <p className="mb-3 text-[11px] text-foreground/55">
             The events that drive the totals above. Click a row to see the source tool calls.
           </p>
 
@@ -170,7 +170,7 @@ export default function OpportunityList({ units }: { units: SavingsUnits }): Rea
               <select
                 value={curatedFilter}
                 onChange={(e) => setCuratedFilter(e.target.value)}
-                className="rounded border border-white/15 bg-white/5 px-2 py-1 text-xs text-white/80"
+                className="rounded border border-border-subtle/15 bg-surface-overlay/5 px-2 py-1 text-xs text-foreground/80"
                 aria-label="Filter by curated subagent"
               >
                 <option value="all">All subagents</option>
@@ -187,7 +187,7 @@ export default function OpportunityList({ units }: { units: SavingsUnits }): Rea
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search subagent, pattern, session"
               aria-label="Search opportunities"
-              className="ml-auto min-w-[180px] flex-1 rounded border border-white/15 bg-white/5 px-2 py-1 text-xs text-white/80 placeholder:text-white/35 focus:border-white/30 focus:outline-none"
+              className="ml-auto min-w-[180px] flex-1 rounded border border-border-subtle/15 bg-surface-overlay/5 px-2 py-1 text-xs text-foreground/80 placeholder:text-foreground/35 focus:border-border-subtle/30 focus:outline-none"
             />
           </div>
 
@@ -198,13 +198,13 @@ export default function OpportunityList({ units }: { units: SavingsUnits }): Rea
           )}
 
           {events.length === 0 && !loading ? (
-            <p className="py-6 text-center text-xs text-white/55">
+            <p className="py-6 text-center text-xs text-foreground/55">
               {search.length > 0 || statusFilter !== 'all' || curatedFilter !== 'all'
                 ? 'No opportunities match these filters.'
                 : 'No opportunities detected yet. Sentinel scans every minute; check back after a session.'}
             </p>
           ) : (
-            <ul className="divide-y divide-white/5">
+            <ul className="divide-y divide-border-subtle/5">
               {events.map((ev) => (
                 <OpportunityRow
                   key={ev.id}
@@ -218,12 +218,12 @@ export default function OpportunityList({ units }: { units: SavingsUnits }): Rea
           )}
 
           {total > PAGE_SIZE && (
-            <div className="mt-3 flex items-center justify-between text-[11px] text-white/55">
+            <div className="mt-3 flex items-center justify-between text-[11px] text-foreground/55">
               <button
                 type="button"
                 onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
                 disabled={!canPrev}
-                className="rounded border border-white/15 px-2 py-1 text-white/70 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded border border-border-subtle/15 px-2 py-1 text-foreground/70 hover:bg-surface-overlay/5 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Prev
               </button>
@@ -234,7 +234,7 @@ export default function OpportunityList({ units }: { units: SavingsUnits }): Rea
                 type="button"
                 onClick={() => setOffset(offset + PAGE_SIZE)}
                 disabled={!canNext}
-                className="rounded border border-white/15 px-2 py-1 text-white/70 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded border border-border-subtle/15 px-2 py-1 text-foreground/70 hover:bg-surface-overlay/5 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Next
               </button>
@@ -274,8 +274,8 @@ function FilterChips({
           onClick={() => onChange(opt.id)}
           className={`rounded px-2 py-1 text-[11px] ${
             value === opt.id
-              ? 'bg-white/15 text-white'
-              : 'border border-white/10 text-white/60 hover:bg-white/5'
+              ? 'bg-surface-overlay/15 text-foreground'
+              : 'border border-border-subtle/10 text-foreground/60 hover:bg-surface-overlay/5'
           }`}
         >
           {opt.label}
@@ -312,24 +312,24 @@ function OpportunityRow({
       <button
         type="button"
         onClick={onToggle}
-        className="grid w-full grid-cols-[20px_1fr_auto_auto_auto_auto] items-center gap-2 text-left text-[11px] text-white/80"
+        className="grid w-full grid-cols-[20px_1fr_auto_auto_auto_auto] items-center gap-2 text-left text-[11px] text-foreground/80"
         aria-expanded={expanded}
       >
         {expanded ? (
-          <ChevronDown className="h-3 w-3 text-white/55" />
+          <ChevronDown className="h-3 w-3 text-foreground/55" />
         ) : (
-          <ChevronRight className="h-3 w-3 text-white/55" />
+          <ChevronRight className="h-3 w-3 text-foreground/55" />
         )}
-        <span className="truncate text-white/85">{patternLabel}</span>
-        <span className="font-mono text-[10px] text-white/45">{sessionLabel}</span>
-        <span className="text-[10px] text-white/55">{ev.curatedId}</span>
+        <span className="truncate text-foreground/85">{patternLabel}</span>
+        <span className="font-mono text-[10px] text-foreground/45">{sessionLabel}</span>
+        <span className="text-[10px] text-foreground/55">{ev.curatedId}</span>
         {units === 'cost' ? (
           <span className={`tabular-nums ${savingsColorClass(savingsCost)}`}>
             {formatUsd(savingsCost)}
           </span>
         ) : tokensSaved === null ? (
           <span
-            className="tabular-nums text-white/40"
+            className="tabular-nums text-foreground/40"
             title="Pre-migration row — token savings not recorded."
           >
             n/a
@@ -367,7 +367,9 @@ function StatusPill({
 }): React.ReactElement {
   if (kind === 'dismissed') {
     return (
-      <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-white/55">dismissed</span>
+      <span className="rounded bg-surface-overlay/10 px-1.5 py-0.5 text-[10px] text-foreground/55">
+        dismissed
+      </span>
     );
   }
   if (realized) {
@@ -406,21 +408,21 @@ function SourceCalls({
 }): React.ReactElement {
   if (calls.length === 0) {
     return (
-      <p className="ml-5 mt-1 text-[10px] text-white/40">
+      <p className="ml-5 mt-1 text-[10px] text-foreground/40">
         Source tool calls were pruned from the request log; can't show details.
       </p>
     );
   }
   return (
-    <ul className="ml-5 mt-1 space-y-0.5 text-[10px] text-white/55">
+    <ul className="ml-5 mt-1 space-y-0.5 text-[10px] text-foreground/55">
       {calls.map((c) => (
         <li key={c.id} className="flex items-baseline gap-2">
-          <span className="font-mono text-white/70">{c.toolName}</span>
-          <span className="truncate font-mono text-white/50">{c.filePath ?? '(no path)'}</span>
-          <span className="ml-auto tabular-nums text-white/45">
+          <span className="font-mono text-foreground/70">{c.toolName}</span>
+          <span className="truncate font-mono text-foreground/50">{c.filePath ?? '(no path)'}</span>
+          <span className="ml-auto tabular-nums text-foreground/45">
             {formatBytes(c.responseSizeBytes)}
           </span>
-          <span className="tabular-nums text-white/35">{relativeTime(c.ts, ts)}</span>
+          <span className="tabular-nums text-foreground/35">{relativeTime(c.ts, ts)}</span>
         </li>
       ))}
     </ul>

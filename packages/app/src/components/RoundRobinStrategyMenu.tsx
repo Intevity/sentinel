@@ -72,7 +72,7 @@ export default function RoundRobinStrategyMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         title={`Rotation strategy: ${activeLabel}. Click to change.`}
-        className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5 flex items-center"
+        className="text-muted hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5 flex items-center"
       >
         <ChevronDown
           size={12}
@@ -91,7 +91,7 @@ export default function RoundRobinStrategyMenu({
             className="absolute left-0 top-full mt-1 z-30 min-w-[240px] rounded-xl bg-white dark:bg-[#2A2A2C] shadow-lg ring-1 ring-black/10 dark:ring-white/10 overflow-hidden"
           >
             <div className="px-3 py-2 border-b border-black/5 dark:border-white/5">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-[#8E8E93]">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">
                 Rotation strategy
               </p>
             </div>
@@ -108,7 +108,7 @@ export default function RoundRobinStrategyMenu({
                 >
                   <span
                     className={`flex-shrink-0 mt-[5px] w-2 h-2 rounded-full ${
-                      active ? 'bg-ios-blue' : 'bg-[#8E8E93]/30'
+                      active ? 'bg-ios-blue' : 'bg-muted/30'
                     }`}
                     aria-hidden
                   />
@@ -116,7 +116,7 @@ export default function RoundRobinStrategyMenu({
                     <span className="block text-[12px] font-medium text-black dark:text-white">
                       {opt.label}
                     </span>
-                    <span className="block text-[10px] text-[#8E8E93] leading-snug">
+                    <span className="block text-[10px] text-muted leading-snug">
                       {opt.description}
                     </span>
                   </span>

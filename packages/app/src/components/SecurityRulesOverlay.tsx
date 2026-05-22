@@ -92,7 +92,7 @@ export default function SecurityRulesOverlay({
         </span>
         <button
           onClick={onClose}
-          className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5"
+          className="text-muted hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5"
           title="Close"
           aria-label="Close security overlay"
         >
@@ -118,7 +118,7 @@ export default function SecurityRulesOverlay({
               aria-selected={active}
               onClick={() => setActiveTab(tab.id)}
               className={`relative flex-1 text-[11px] font-semibold px-2 py-1 rounded-full transition-colors ${
-                active ? 'text-white' : 'text-[#8E8E93] hover:text-black dark:hover:text-white'
+                active ? 'text-white' : 'text-muted hover:text-black dark:hover:text-white'
               }`}
             >
               {active && (
@@ -292,7 +292,7 @@ function PermissionRulesView(): React.ReactElement {
 
   return (
     <>
-      <p className="text-[11px] text-[#8E8E93] leading-snug px-1">
+      <p className="text-[11px] text-muted leading-snug px-1">
         Rules are evaluated deny-first, then allow. The first matching rule wins. Example patterns:{' '}
         <code className="text-[10.5px]">Bash(rm -rf *)</code>,{' '}
         <code className="text-[10.5px]">WebFetch(domain:example.com)</code>,{' '}
@@ -301,7 +301,7 @@ function PermissionRulesView(): React.ReactElement {
       </p>
 
       {loading && (
-        <div className="flex items-center justify-center py-6 gap-2 text-[#8E8E93]">
+        <div className="flex items-center justify-center py-6 gap-2 text-muted">
           <Loader2 size={12} className="animate-spin" />
           <span className="text-[11px]">Loading rules…</span>
         </div>
@@ -316,19 +316,19 @@ function PermissionRulesView(): React.ReactElement {
                 <Search
                   size={11}
                   strokeWidth={2.5}
-                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8E8E93] pointer-events-none"
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none"
                 />
                 <input
                   type="text"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search tool, pattern, or note"
-                  className="w-full text-[12px] pl-7 pr-7 py-1.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white border-none focus:outline-none focus:ring-1 focus:ring-ios-blue placeholder:text-[#8E8E93]"
+                  className="w-full text-[12px] pl-7 pr-7 py-1.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white border-none focus:outline-none focus:ring-1 focus:ring-ios-blue placeholder:text-muted"
                 />
                 {search && (
                   <button
                     onClick={() => setSearch('')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[#8E8E93] hover:text-black dark:hover:text-white"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-black dark:hover:text-white"
                     aria-label="Clear search"
                   >
                     <X size={11} strokeWidth={2.5} />
@@ -364,7 +364,7 @@ function PermissionRulesView(): React.ReactElement {
                 />
                 {anyImported && (
                   <>
-                    <span className="text-[#8E8E93] mx-1">·</span>
+                    <span className="text-muted mx-1">·</span>
                     <FilterChip
                       label="Local"
                       count={rules.filter((r) => r.source === 'local').length}
@@ -392,9 +392,7 @@ function PermissionRulesView(): React.ReactElement {
                 )}
               </div>
               {filtered.length === 0 && (
-                <p className="text-[11px] text-[#8E8E93] px-1">
-                  No rules match the current filter.
-                </p>
+                <p className="text-[11px] text-muted px-1">No rules match the current filter.</p>
               )}
             </div>
           )}
@@ -451,7 +449,7 @@ function PermissionRulesView(): React.ReactElement {
 
           {draft !== null && (
             <div className="glass-card px-3 py-3 space-y-3">
-              <div className="flex items-center gap-2 text-[11px] text-[#8E8E93]">
+              <div className="flex items-center gap-2 text-[11px] text-muted">
                 <span>Mode:</span>
                 <button
                   onClick={() => setDraft((d) => d && { ...d, mode: 'form' })}
@@ -485,7 +483,7 @@ function PermissionRulesView(): React.ReactElement {
                     onChange={(v) => setDraft((d) => d && { ...d, decision: v })}
                   />
                   <div>
-                    <p className="text-[11px] text-[#8E8E93] mb-1">Tool</p>
+                    <p className="text-[11px] text-muted mb-1">Tool</p>
                     <select
                       value={BUILTIN_TOOLS.includes(draft.tool) ? draft.tool : '__custom__'}
                       onChange={(e) => {
@@ -511,35 +509,35 @@ function PermissionRulesView(): React.ReactElement {
                     )}
                   </div>
                   <div>
-                    <p className="text-[11px] text-[#8E8E93] mb-1">Pattern (optional)</p>
+                    <p className="text-[11px] text-muted mb-1">Pattern (optional)</p>
                     <input
                       value={draft.pattern}
                       onChange={(e) => setDraft((d) => d && { ...d, pattern: e.target.value })}
                       placeholder="npm *, rm -rf *, domain:example.com, //etc/**"
                       className="w-full text-[12px] px-2 py-1.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white border-none focus:outline-none focus:ring-1 focus:ring-ios-blue font-mono"
                     />
-                    <p className="text-[10px] text-[#8E8E93] mt-1">
+                    <p className="text-[10px] text-muted mt-1">
                       Leave blank to match every call of <code>{draft.tool || '…'}</code>.
                     </p>
                   </div>
                 </>
               ) : (
                 <div>
-                  <p className="text-[11px] text-[#8E8E93] mb-1">Raw rule</p>
+                  <p className="text-[11px] text-muted mb-1">Raw rule</p>
                   <input
                     value={draft.raw}
                     onChange={(e) => setDraft((d) => d && { ...d, raw: e.target.value })}
                     placeholder="deny Bash(rm -rf *)"
                     className="w-full text-[12px] px-2 py-1.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white border-none focus:outline-none focus:ring-1 focus:ring-ios-blue font-mono"
                   />
-                  <p className="text-[10px] text-[#8E8E93] mt-1">
+                  <p className="text-[10px] text-muted mt-1">
                     Format: <code>allow &lt;rule&gt;</code> or <code>deny &lt;rule&gt;</code>.
                   </p>
                 </div>
               )}
 
               <div>
-                <p className="text-[11px] text-[#8E8E93] mb-1">Note (optional)</p>
+                <p className="text-[11px] text-muted mb-1">Note (optional)</p>
                 <input
                   value={draft.note}
                   onChange={(e) => setDraft((d) => d && { ...d, note: e.target.value })}
@@ -549,7 +547,7 @@ function PermissionRulesView(): React.ReactElement {
               </div>
 
               <div>
-                <p className="text-[11px] text-[#8E8E93] mb-1">Project scope (optional)</p>
+                <p className="text-[11px] text-muted mb-1">Project scope (optional)</p>
                 <input
                   value={draft.projectScope}
                   list="rule-scope-recent-cwds"
@@ -565,7 +563,7 @@ function PermissionRulesView(): React.ReactElement {
                     <option key={`${cwd}-glob`} value={`${cwd}/**`} />
                   ))}
                 </datalist>
-                <p className="text-[10px] text-[#8E8E93] mt-1">
+                <p className="text-[10px] text-muted mt-1">
                   Path glob the request's working directory must match. Leave blank for global.
                 </p>
               </div>
@@ -583,7 +581,7 @@ function PermissionRulesView(): React.ReactElement {
                 <button
                   onClick={cancel}
                   disabled={saving}
-                  className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
+                  className="text-[12px] text-muted hover:text-black dark:hover:text-white transition-colors px-2"
                 >
                   Cancel
                 </button>
@@ -724,7 +722,7 @@ function AllowlistView(): React.ReactElement {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-6 gap-2 text-[#8E8E93]">
+      <div className="flex items-center justify-center py-6 gap-2 text-muted">
         <Loader2 size={12} className="animate-spin" />
         <span className="text-[11px]">Loading allowlist…</span>
       </div>
@@ -734,7 +732,7 @@ function AllowlistView(): React.ReactElement {
 
   return (
     <>
-      <p className="text-[11px] text-[#8E8E93] leading-snug px-1">
+      <p className="text-[11px] text-muted leading-snug px-1">
         Matches you&apos;ve chosen to always allow. Entries here are silently suppressed across
         every future scan. Added by clicking <span className="font-semibold">Always allow</span> on
         a finding in the Security tab.
@@ -746,19 +744,19 @@ function AllowlistView(): React.ReactElement {
             <Search
               size={11}
               strokeWidth={2.5}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8E8E93] pointer-events-none"
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none"
             />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search title, detector, match, or note"
-              className="w-full text-[12px] pl-7 pr-7 py-1.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white border-none focus:outline-none focus:ring-1 focus:ring-ios-blue placeholder:text-[#8E8E93]"
+              className="w-full text-[12px] pl-7 pr-7 py-1.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white border-none focus:outline-none focus:ring-1 focus:ring-ios-blue placeholder:text-muted"
             />
             {search && (
               <button
                 onClick={() => setSearch('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-[#8E8E93] hover:text-black dark:hover:text-white"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-black dark:hover:text-white"
                 aria-label="Clear search"
               >
                 <X size={11} strokeWidth={2.5} />
@@ -808,7 +806,7 @@ function AllowlistView(): React.ReactElement {
 
       {entries.length === 0 && (
         <div className="glass-card px-4 py-6 text-center">
-          <p className="text-[12px] text-[#8E8E93]">
+          <p className="text-[12px] text-muted">
             No entries yet. Click <span className="font-semibold">Always allow</span> on a
             Security-tab event to add one.
           </p>
@@ -816,7 +814,7 @@ function AllowlistView(): React.ReactElement {
       )}
 
       {entries.length > 0 && filtered.length === 0 && (
-        <p className="text-[11px] text-[#8E8E93] px-1">No entries match the current filter.</p>
+        <p className="text-[11px] text-muted px-1">No entries match the current filter.</p>
       )}
 
       {filtered.length > 0 && (
@@ -861,13 +859,13 @@ function AllowlistRow({
         </p>
         <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
           {entry.matchMask && (
-            <code className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded truncate">
+            <code className="text-[10px] font-mono bg-muted/10 px-1 py-0.5 rounded truncate">
               {entry.matchMask}
             </code>
           )}
-          <span className="text-[10px] text-[#8E8E93]">added {when}</span>
+          <span className="text-[10px] text-muted">added {when}</span>
         </div>
-        {entry.note && <p className="text-[10px] text-[#8E8E93] mt-1 leading-snug">{entry.note}</p>}
+        {entry.note && <p className="text-[10px] text-muted mt-1 leading-snug">{entry.note}</p>}
       </div>
       <button
         onClick={trigger}
@@ -900,7 +898,7 @@ function OnboardingHero({
         <ShieldCheck size={16} strokeWidth={2.2} className="text-ios-green flex-shrink-0" />
         <p className="text-[13px] font-semibold text-black dark:text-white">Security is off</p>
       </div>
-      <p className="text-[11px] text-[#8E8E93] leading-snug">
+      <p className="text-[11px] text-muted leading-snug">
         Sentinel protects claude.ai traffic in two layers: content scanning and tool permissions.
         Pick one, both, or run the setup wizard to get a recommended preset.
       </p>
@@ -944,7 +942,7 @@ function LayerDisabledCard({
   return (
     <div className="glass-card px-4 py-5 text-center space-y-3">
       <p className="text-[13px] font-semibold text-black dark:text-white">{title}</p>
-      <p className="text-[11px] text-[#8E8E93] leading-snug">{description}</p>
+      <p className="text-[11px] text-muted leading-snug">{description}</p>
       <button
         onClick={onEnable}
         className="text-[11px] font-semibold text-white bg-ios-blue hover:opacity-90 active:scale-95 px-3 py-1.5 rounded-full transition-all"
@@ -1014,7 +1012,7 @@ function RuleList({
       <p className="section-label">{title}</p>
       {rules.length === 0 ? (
         <div className="glass-card px-4 py-6 text-center mt-2">
-          <p className="text-[12px] text-[#8E8E93]">{emptyCopy}</p>
+          <p className="text-[12px] text-muted">{emptyCopy}</p>
         </div>
       ) : (
         <div className="space-y-2 mt-2">
@@ -1054,10 +1052,10 @@ function RuleList({
                   )}
                 </div>
                 {rule.note && (
-                  <p className="text-[10px] text-[#8E8E93] truncate leading-snug">{rule.note}</p>
+                  <p className="text-[10px] text-muted truncate leading-snug">{rule.note}</p>
                 )}
               </div>
-              <label className="flex items-center gap-1.5 text-[11px] text-[#8E8E93] cursor-pointer">
+              <label className="flex items-center gap-1.5 text-[11px] text-muted cursor-pointer">
                 <input
                   type="checkbox"
                   checked={rule.enabled}
@@ -1067,7 +1065,7 @@ function RuleList({
               </label>
               <button
                 onClick={() => onEdit(rule)}
-                className="text-[#8E8E93] hover:text-ios-blue transition-colors active:scale-90"
+                className="text-muted hover:text-ios-blue transition-colors active:scale-90"
                 title="Edit rule"
                 aria-label="Edit rule"
               >
@@ -1075,7 +1073,7 @@ function RuleList({
               </button>
               <button
                 onClick={() => void onRemove(rule.id)}
-                className="text-[#8E8E93] hover:text-ios-red transition-colors active:scale-90"
+                className="text-muted hover:text-ios-red transition-colors active:scale-90"
                 title="Delete rule"
                 aria-label="Delete rule"
               >
@@ -1098,7 +1096,7 @@ function DecisionRadio({
 }): React.ReactElement {
   return (
     <div>
-      <p className="text-[11px] text-[#8E8E93] mb-1">Decision</p>
+      <p className="text-[11px] text-muted mb-1">Decision</p>
       <div className="flex gap-2">
         {(['deny', 'allow'] as PermissionDecision[]).map((d) => (
           <button

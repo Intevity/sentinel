@@ -139,11 +139,11 @@ export default function SecuritySetupWizard({
                 onClose();
               }
             }}
-            className="w-7 h-7 rounded-full hover:bg-[#8E8E93]/10 flex items-center justify-center"
+            className="w-7 h-7 rounded-full hover:bg-muted/10 flex items-center justify-center"
             title="Close"
             aria-label="Close"
           >
-            <X size={14} className="text-[#8E8E93]" />
+            <X size={14} className="text-muted" />
           </button>
         </div>
 
@@ -160,7 +160,7 @@ export default function SecuritySetupWizard({
 
         {step === 'select' && (
           <div className="px-4 py-3">
-            <p className="text-[11px] text-[#8E8E93] mb-3 leading-snug">
+            <p className="text-[11px] text-muted mb-3 leading-snug">
               Pick a risk profile. Sentinel will configure the scanner, notifications, and
               tool-permission rules for you. You can fine-tune everything later in Settings.
             </p>
@@ -179,7 +179,7 @@ export default function SecuritySetupWizard({
                     className={`w-full text-left rounded-xl p-3 flex items-start gap-3 transition-colors border ${
                       isSelected
                         ? 'border-ios-blue bg-ios-blue/5'
-                        : 'border-transparent bg-[#F2F2F7] dark:bg-[#2A2A2A] hover:border-[#8E8E93]/20'
+                        : 'border-transparent bg-[#F2F2F7] dark:bg-[#2A2A2A] hover:border-muted/20'
                     }`}
                   >
                     <div className="flex-shrink-0 w-8 h-8 rounded-full bg-white dark:bg-[#1E1E1E] flex items-center justify-center">
@@ -201,14 +201,14 @@ export default function SecuritySetupWizard({
                           </span>
                         )}
                       </div>
-                      <p className="text-[11px] text-[#8E8E93] mt-0.5 leading-snug">
+                      <p className="text-[11px] text-muted mt-0.5 leading-snug">
                         {preset.description}
                       </p>
                       <ul className="mt-1.5 space-y-0.5">
                         {preset.highlights.map((h) => (
                           <li
                             key={h}
-                            className="text-[10px] text-[#8E8E93] leading-snug flex items-start gap-1"
+                            className="text-[10px] text-muted leading-snug flex items-start gap-1"
                           >
                             <Check
                               size={10}
@@ -229,7 +229,7 @@ export default function SecuritySetupWizard({
               <button
                 onClick={() => void skip()}
                 disabled={applying}
-                className="text-[11px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors disabled:opacity-40"
+                className="text-[11px] text-muted hover:text-black dark:hover:text-white transition-colors disabled:opacity-40"
               >
                 Skip for now
               </button>
@@ -254,7 +254,7 @@ export default function SecuritySetupWizard({
                 <p className="text-[13px] font-semibold text-black dark:text-white">
                   Tune for this system
                 </p>
-                <p className="text-[11px] text-[#8E8E93] leading-snug">
+                <p className="text-[11px] text-muted leading-snug">
                   Scan cost depends on your hardware. A quick benchmark will measure it and
                   recommend a threshold — bodies under the threshold scan synchronously, larger ones
                   are deferred off the hot path.
@@ -264,7 +264,7 @@ export default function SecuritySetupWizard({
 
             {!benchResult && !scanBench.running && !scanBench.error && (
               <div className="rounded-xl bg-[#F2F2F7] dark:bg-[#2A2A2A] p-3 text-center">
-                <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
+                <p className="text-[11px] text-muted leading-snug mb-2">
                   Takes a few seconds. We'll measure scan cost at 1 / 2 / 4 / 8 / 16 MB and
                   recommend the largest size that stays under 50 ms p99.
                 </p>
@@ -284,7 +284,7 @@ export default function SecuritySetupWizard({
             {scanBench.running && (
               <div className="rounded-xl bg-[#F2F2F7] dark:bg-[#2A2A2A] p-4 flex items-center justify-center gap-2">
                 <Loader2 size={14} className="animate-spin text-ios-blue" strokeWidth={2.5} />
-                <span className="text-[11px] text-[#8E8E93]">Measuring scan cost…</span>
+                <span className="text-[11px] text-muted">Measuring scan cost…</span>
               </div>
             )}
 
@@ -296,7 +296,7 @@ export default function SecuritySetupWizard({
 
             {benchResult && !scanBench.running && (
               <div className="rounded-xl bg-[#F2F2F7] dark:bg-[#2A2A2A] p-3 space-y-2">
-                <p className="text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider">
+                <p className="text-[10px] font-semibold text-muted uppercase tracking-wider">
                   Scan cost on this system
                 </p>
                 <div className="grid grid-cols-5 gap-1 text-[11px]">
@@ -311,13 +311,13 @@ export default function SecuritySetupWizard({
                       >
                         {r.sizeMb} MB
                       </div>
-                      <div className="text-[10px] text-[#8E8E93] tabular-nums">
+                      <div className="text-[10px] text-muted tabular-nums">
                         {r.p99Ms.toFixed(1)}ms
                       </div>
                     </div>
                   ))}
                 </div>
-                <p className="text-[10px] text-[#8E8E93] leading-snug">
+                <p className="text-[10px] text-muted leading-snug">
                   p99 scan cost per body size.{' '}
                   <span className="font-semibold text-black dark:text-white">
                     Recommended: {benchResult.recommendedMb} MB
@@ -330,7 +330,7 @@ export default function SecuritySetupWizard({
                       if (r) setBenchResult(r);
                     });
                   }}
-                  className="text-[10px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white"
+                  className="text-[10px] font-medium text-muted hover:text-black dark:hover:text-white"
                 >
                   Re-run
                 </button>
@@ -341,7 +341,7 @@ export default function SecuritySetupWizard({
               <button
                 onClick={() => setStep('select')}
                 disabled={applying || scanBench.running}
-                className="text-[11px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors disabled:opacity-40 inline-flex items-center gap-1"
+                className="text-[11px] font-medium text-muted hover:text-black dark:hover:text-white transition-colors disabled:opacity-40 inline-flex items-center gap-1"
               >
                 <ArrowLeft size={11} strokeWidth={2.4} />
                 Back
@@ -350,7 +350,7 @@ export default function SecuritySetupWizard({
                 <button
                   onClick={() => setStep('review')}
                   disabled={applying || scanBench.running}
-                  className="text-[11px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors disabled:opacity-40"
+                  className="text-[11px] font-medium text-muted hover:text-black dark:hover:text-white transition-colors disabled:opacity-40"
                 >
                   Skip
                 </button>
@@ -378,12 +378,12 @@ export default function SecuritySetupWizard({
                 <p className="text-[13px] font-semibold text-black dark:text-white">
                   {selected.label} profile
                 </p>
-                <p className="text-[11px] text-[#8E8E93] leading-snug">{selected.description}</p>
+                <p className="text-[11px] text-muted leading-snug">{selected.description}</p>
               </div>
             </div>
 
             <div className="rounded-xl bg-[#F2F2F7] dark:bg-[#2A2A2A] p-3 space-y-2">
-              <p className="text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider">
+              <p className="text-[10px] font-semibold text-muted uppercase tracking-wider">
                 Will apply
               </p>
               <dl className="space-y-1 text-[11px]">
@@ -417,7 +417,7 @@ export default function SecuritySetupWizard({
               </dl>
             </div>
 
-            <p className="text-[10px] text-[#8E8E93] mt-2 leading-snug">
+            <p className="text-[10px] text-muted mt-2 leading-snug">
               Existing rules are preserved. Presets add their rules on top — you can delete any of
               them later from Settings → Security → Tool permissions.
             </p>
@@ -432,7 +432,7 @@ export default function SecuritySetupWizard({
               <button
                 onClick={() => setStep('benchmark')}
                 disabled={applying}
-                className="text-[11px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors disabled:opacity-40 inline-flex items-center gap-1"
+                className="text-[11px] font-medium text-muted hover:text-black dark:hover:text-white transition-colors disabled:opacity-40 inline-flex items-center gap-1"
               >
                 <ArrowLeft size={11} strokeWidth={2.4} />
                 Back
@@ -455,7 +455,7 @@ export default function SecuritySetupWizard({
 function Row({ label, value }: { label: string; value: string }): React.ReactElement {
   return (
     <div className="flex items-baseline justify-between gap-3">
-      <dt className="text-[#8E8E93] flex-shrink-0">{label}</dt>
+      <dt className="text-muted flex-shrink-0">{label}</dt>
       <dd className="text-black dark:text-white text-right font-medium">{value}</dd>
     </div>
   );
@@ -509,7 +509,7 @@ function SkipConfirm({ disabled, onKeep, onSkip }: SkipConfirmProps): React.Reac
             <h3 className="text-[13px] font-semibold text-black dark:text-white">
               Skip security setup?
             </h3>
-            <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+            <p className="text-[11px] text-muted leading-snug mt-0.5">
               Without a profile, Sentinel will still watch for obvious leaks — but the guardrails
               against risky tool calls and credential exfil stay off.
             </p>
@@ -517,13 +517,13 @@ function SkipConfirm({ disabled, onKeep, onSkip }: SkipConfirmProps): React.Reac
         </div>
 
         <ul className="space-y-1.5 mb-3 pl-1">
-          <li className="text-[11px] text-[#8E8E93] leading-snug flex items-start gap-2">
+          <li className="text-[11px] text-muted leading-snug flex items-start gap-2">
             <span className="text-ios-orange mt-[1px]">•</span>
             <span>
               No enforcement mode means secrets in outbound prompts are logged but never blocked.
             </span>
           </li>
-          <li className="text-[11px] text-[#8E8E93] leading-snug flex items-start gap-2">
+          <li className="text-[11px] text-muted leading-snug flex items-start gap-2">
             <span className="text-ios-orange mt-[1px]">•</span>
             <span>
               No tool-permission rules means <code className="font-mono text-[10px]">rm -rf</code>,{' '}
@@ -531,7 +531,7 @@ function SkipConfirm({ disabled, onKeep, onSkip }: SkipConfirmProps): React.Reac
               <code className="font-mono text-[10px]"> ~/.ssh</code> reads go through unchallenged.
             </span>
           </li>
-          <li className="text-[11px] text-[#8E8E93] leading-snug flex items-start gap-2">
+          <li className="text-[11px] text-muted leading-snug flex items-start gap-2">
             <span className="text-ios-orange mt-[1px]">•</span>
             <span>
               The <b>Medium</b> profile takes 10 seconds and catches the obvious foot-guns without
@@ -540,7 +540,7 @@ function SkipConfirm({ disabled, onKeep, onSkip }: SkipConfirmProps): React.Reac
           </li>
         </ul>
 
-        <p className="text-[10px] text-[#8E8E93] italic leading-snug mb-3">
+        <p className="text-[10px] text-muted italic leading-snug mb-3">
           You can always run the wizard later from Settings → Security → Run setup wizard.
         </p>
 
@@ -548,7 +548,7 @@ function SkipConfirm({ disabled, onKeep, onSkip }: SkipConfirmProps): React.Reac
           <button
             onClick={onSkip}
             disabled={disabled}
-            className="text-[11px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white px-3 py-1.5 rounded-lg hover:bg-[#8E8E93]/10 disabled:opacity-40"
+            className="text-[11px] font-medium text-muted hover:text-black dark:hover:text-white px-3 py-1.5 rounded-lg hover:bg-muted/10 disabled:opacity-40"
           >
             Skip anyway
           </button>

@@ -48,6 +48,7 @@ import { useAutoResizeWindow } from './hooks/useAutoResizeWindow.js';
 import { useDaemon } from './hooks/useDaemon.js';
 import { useDaemonErrors } from './hooks/useDaemonErrors.js';
 import { useSettings } from './hooks/useSettings.js';
+import { useThemeEffect } from './hooks/useThemeEffect.js';
 import { useNativeAlertNotifications } from './hooks/useNotifications.js';
 import { useSecurityBanner } from './hooks/useSecurityBanner.js';
 import SecurityAlertBanner from './components/SecurityAlertBanner.js';
@@ -107,6 +108,7 @@ export default function App(): React.ReactElement {
   } = useDaemon();
   const { recentErrors, hasUnseenErrors, markErrorsSeen } = useDaemonErrors();
   const { settings, update: updateSettings } = useSettings();
+  useThemeEffect(settings?.theme ?? null);
   // Which tab the SecurityRulesOverlay opens on. Header-shield click opens
   // 'rules' by default; Settings' "Manage allowlist…" button flips this to
   // 'allowlist' before opening the overlay.
@@ -316,7 +318,7 @@ export default function App(): React.ReactElement {
               )}
               <span
                 className={`relative inline-flex rounded-full h-2 w-2 ${
-                  connected ? 'bg-ios-green' : 'bg-[#8E8E93]/40'
+                  connected ? 'bg-ios-green' : 'bg-muted/40'
                 }`}
               />
             </span>
@@ -325,7 +327,7 @@ export default function App(): React.ReactElement {
             </span>
             <button
               onClick={() => setTourForceOpen(true)}
-              className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5 flex-shrink-0"
+              className="text-muted hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5 flex-shrink-0"
               title="Replay the tour"
               aria-label="Replay the tour"
               data-tour-id="tour-replay"
@@ -345,7 +347,7 @@ export default function App(): React.ReactElement {
               <>
                 {activeInfo && <AccountColorDot color={accountColor(activeInfo)} size="xs" />}
                 <span
-                  className="text-[11px] text-[#8E8E93] truncate min-w-0"
+                  className="text-[11px] text-muted truncate min-w-0"
                   title={activeAccount.emailAddress + (planBadge ? ` (${planBadge})` : '')}
                 >
                   {activeAccount.emailAddress}
@@ -389,7 +391,7 @@ export default function App(): React.ReactElement {
             </button>
             <button
               onClick={() => setSettingsOpen(true)}
-              className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5 flex-shrink-0"
+              className="text-muted hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5 flex-shrink-0"
               title="Settings"
               aria-label="Settings"
             >
@@ -470,7 +472,7 @@ export default function App(): React.ReactElement {
           <main className="flex-1 flex flex-col items-center justify-center gap-3 px-6">
             <Loader2 size={28} strokeWidth={2.2} className="animate-spin text-ios-blue" />
             <p className="text-[13px] font-medium text-black dark:text-white">Starting daemon…</p>
-            <p className="text-[11px] text-[#8E8E93] text-center leading-relaxed max-w-[260px]">
+            <p className="text-[11px] text-muted text-center leading-relaxed max-w-[260px]">
               Waiting for the Sentinel background service to come online. This usually takes a
               second.
             </p>
@@ -529,7 +531,7 @@ export default function App(): React.ReactElement {
                       className={`relative flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-[9px] text-[11px] font-medium transition-colors duration-150 ${
                         active
                           ? 'text-black dark:text-white'
-                          : 'text-[#8E8E93] hover:text-black dark:hover:text-white'
+                          : 'text-muted hover:text-black dark:hover:text-white'
                       }`}
                     >
                       {active && (
@@ -612,7 +614,7 @@ export default function App(): React.ReactElement {
                             <p className="text-[14px] font-medium text-black dark:text-white">
                               No accounts
                             </p>
-                            <p className="text-[12px] text-[#8E8E93] mt-1">
+                            <p className="text-[12px] text-muted mt-1">
                               Add an account in the Accounts tab to see data here.
                             </p>
                           </div>

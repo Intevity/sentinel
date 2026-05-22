@@ -97,7 +97,7 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
   const pctColor = blocked
     ? 'text-ios-red'
     : pct == null
-      ? 'text-[#8E8E93]'
+      ? 'text-muted'
       : pct >= 90
         ? 'text-ios-red'
         : pct >= 70
@@ -145,12 +145,12 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
 
       {/* Detail line: API-key plans show counts; subscription plans show utilization fraction */}
       {w.limit != null && w.remaining != null ? (
-        <p className="text-[10px] text-[#8E8E93] tabular-nums">
+        <p className="text-[10px] text-muted tabular-nums">
           {(w.limit - w.remaining).toLocaleString()} used · {w.remaining.toLocaleString()} remaining
           · {w.limit.toLocaleString()} limit
         </p>
       ) : w.utilization != null ? (
-        <p className="text-[10px] text-[#8E8E93]">
+        <p className="text-[10px] text-muted">
           {(w.utilization * 100).toFixed(1)}% of quota consumed
         </p>
       ) : null}
@@ -279,7 +279,7 @@ function OverageMeterRow({
           <p className="text-[12px] font-semibold text-black dark:text-white leading-tight">
             OAuth access disabled
           </p>
-          <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+          <p className="text-[11px] text-muted leading-snug mt-0.5">
             Your organization&apos;s admin has disabled OAuth API access for this account. Sentinel
             can&apos;t read usage until it&apos;s re-enabled; re-authenticating won&apos;t help.
           </p>
@@ -293,7 +293,7 @@ function OverageMeterRow({
             <p className="text-[12px] font-semibold text-black dark:text-white leading-tight">
               {usageError === 'auth_expired' ? 'Sign-in expired' : 'Sign-in required'}
             </p>
-            <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+            <p className="text-[11px] text-muted leading-snug mt-0.5">
               Reconnect to refresh your subscription usage and overage spend.
             </p>
           </div>
@@ -314,7 +314,7 @@ function OverageMeterRow({
             <p className="text-[12px] font-semibold text-black dark:text-white leading-tight">
               Team spend tracking unavailable
             </p>
-            <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+            <p className="text-[11px] text-muted leading-snug mt-0.5">
               claude.ai reports only a team-wide credit counter for this account and doesn't expose
               personal spend to non-admins. Ask your org admin to enable per-user budgets in
               claude.ai → Settings → Usage to unlock dollar tracking and Sentinel caps for your
@@ -332,7 +332,7 @@ function OverageMeterRow({
             <p className="text-[12px] font-semibold text-black dark:text-white leading-tight">
               Extra usage is disabled
             </p>
-            <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+            <p className="text-[11px] text-muted leading-snug mt-0.5">
               Requests will be blocked once you hit your subscription&apos;s rate limit. Enable on
               claude.ai &rarr; Settings &rarr; Usage to add a monthly overage budget.
             </p>
@@ -411,12 +411,12 @@ function OverageMeterRow({
       {showAnthropic && (
         <div className="space-y-1">
           <div className="flex items-baseline justify-between text-[11px]">
-            <span className="text-[#8E8E93]">
+            <span className="text-muted">
               {teamPerUserValid ? 'Your personal budget' : 'Anthropic grant'}
             </span>
             <span className="tabular-nums text-black dark:text-white font-medium">
               {fmtUsd(anthUsed)}{' '}
-              <span className="text-[#8E8E93] font-normal">/ {fmtUsd(anthTotal)}</span>
+              <span className="text-muted font-normal">/ {fmtUsd(anthTotal)}</span>
             </span>
           </div>
           <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
@@ -434,10 +434,10 @@ function OverageMeterRow({
       {showSentinel && (
         <div className="space-y-1">
           <div className="flex items-baseline justify-between text-[11px]">
-            <span className="text-[#8E8E93]">Sentinel cap</span>
+            <span className="text-muted">Sentinel cap</span>
             <span className="tabular-nums text-black dark:text-white font-medium">
               {fmtUsd(anthUsed)}{' '}
-              <span className="text-[#8E8E93] font-normal">/ {fmtUsd(sentinelCapUsd!)}</span>
+              <span className="text-muted font-normal">/ {fmtUsd(sentinelCapUsd!)}</span>
             </span>
           </div>
           <div className="h-[6px] rounded-full bg-black/[0.08] dark:bg-white/[0.10] overflow-hidden">
@@ -672,7 +672,7 @@ function SingleAccountUsageView({
           <button
             onClick={() => void handleRefreshClick()}
             disabled={busy}
-            className="text-[#8E8E93] hover:text-ios-blue disabled:opacity-40 transition-colors active:scale-90"
+            className="text-muted hover:text-ios-blue disabled:opacity-40 transition-colors active:scale-90"
             title="Refresh"
           >
             <RefreshCw size={13} strokeWidth={2.5} className={busy ? 'animate-spin' : ''} />
@@ -698,7 +698,7 @@ function SingleAccountUsageView({
             <p className="text-[13px] font-semibold text-black dark:text-white leading-tight">
               OAuth access disabled
             </p>
-            <p className="text-[11px] text-[#8E8E93] mt-1.5 leading-relaxed">
+            <p className="text-[11px] text-muted mt-1.5 leading-relaxed">
               Your organization&apos;s admin has disabled OAuth API access for this account.
               Sentinel can&apos;t read usage or rate limits until it&apos;s re-enabled.
               Re-authenticating won&apos;t help; ask your admin to enable OAuth API access for the
@@ -713,7 +713,7 @@ function SingleAccountUsageView({
         claudeAiUsageError !== 'oauth_forbidden' && (
           <div className="glass-card px-4 py-10 text-center">
             <p className="text-[13px] font-medium text-black dark:text-white">No data yet</p>
-            <p className="text-[11px] text-[#8E8E93] mt-1 leading-relaxed">
+            <p className="text-[11px] text-muted mt-1 leading-relaxed">
               Rate limit data appears after your first API call through Sentinel,
               <br />
               or tap Refresh to probe claude.ai now.
@@ -738,7 +738,7 @@ function SingleAccountUsageView({
             strokeWidth={2.5}
             className="animate-spin text-ios-blue mx-auto mb-2"
           />
-          <p className="text-[12px] text-[#8E8E93]">Fetching rate limits…</p>
+          <p className="text-[12px] text-muted">Fetching rate limits…</p>
         </div>
       )}
 
@@ -764,7 +764,7 @@ function SingleAccountUsageView({
       )}
 
       {lastUpdated != null && displayWindows.length > 0 && (
-        <p className="text-[10px] text-[#8E8E93] text-center">
+        <p className="text-[10px] text-muted text-center">
           Updated {new Date(lastUpdated).toLocaleTimeString()}
         </p>
       )}
@@ -796,7 +796,7 @@ function pauseReasonLabel(reason: PauseReason): string {
 
 // Threshold ladder shared by every round-robin meter (bar + pct text color).
 function meterColors(pct: number | null): { bar: string; text: string } {
-  if (pct == null) return { bar: 'bg-[#8E8E93]', text: 'text-[#8E8E93]' };
+  if (pct == null) return { bar: 'bg-[#8E8E93]', text: 'text-muted' };
   if (pct >= 90) return { bar: 'bg-ios-red', text: 'text-ios-red' };
   if (pct >= 70) return { bar: 'bg-ios-orange', text: 'text-ios-orange' };
   return { bar: 'bg-ios-blue', text: 'text-ios-blue' };
@@ -839,7 +839,7 @@ function PoolMeterBlock({
           {avg != null && (
             <span className={`text-[11px] font-bold tabular-nums ${colors.text}`}>{avg}% avg</span>
           )}
-          <span className="text-[10px] text-[#8E8E93]">
+          <span className="text-[10px] text-muted">
             {utils.length} of {totalAccounts}
           </span>
         </div>
@@ -886,12 +886,12 @@ function PoolAccountRow({
               {label}
             </p>
             {!inPool && (
-              <span className="text-[9px] font-semibold text-[#8E8E93] bg-[#8E8E93]/15 px-1.5 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0">
+              <span className="text-[9px] font-semibold text-muted bg-muted/15 px-1.5 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0">
                 Excluded
               </span>
             )}
           </div>
-          {sub && <p className="text-[10px] text-[#8E8E93] truncate leading-snug">{sub}</p>}
+          {sub && <p className="text-[10px] text-muted truncate leading-snug">{sub}</p>}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {hasReset && <ResetCountdown epochSec={resetAt} variant="pill" />}
@@ -1010,7 +1010,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
           )}
           <button
             onClick={() => void handlePoolRefreshClick()}
-            className="text-[#8E8E93] hover:text-ios-blue transition-colors active:scale-90"
+            className="text-muted hover:text-ios-blue transition-colors active:scale-90"
             title="Refresh"
           >
             <RefreshCw size={13} strokeWidth={2.5} />
@@ -1020,7 +1020,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
 
       {accounts.length === 0 ? (
         <div className="glass-card px-4 py-10 text-center">
-          <p className="text-[12px] text-[#8E8E93]">No accounts configured.</p>
+          <p className="text-[12px] text-muted">No accounts configured.</p>
         </div>
       ) : (
         <>
@@ -1042,13 +1042,13 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
               utils={sonnetUtils}
               totalAccounts={poolSize}
             />
-            <p className="text-[10px] text-[#8E8E93] leading-snug">
+            <p className="text-[10px] text-muted leading-snug">
               Averages across every account in the round-robin pool. Accounts with no data yet for a
               given window are excluded from that window&apos;s average.
             </p>
             {autoExcludedRows.length > 0 && (
               <div className="flex items-start gap-1.5">
-                <p className="text-[10px] text-[#8E8E93] leading-snug">
+                <p className="text-[10px] text-muted leading-snug">
                   {autoExcludedRows.length === 1
                     ? '1 account auto-excluded (paused).'
                     : `${autoExcludedRows.length} accounts auto-excluded (paused).`}

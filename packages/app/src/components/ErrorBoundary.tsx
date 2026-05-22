@@ -55,7 +55,7 @@ export default class ErrorBoundary extends React.Component<ErrorBoundaryProps, E
           <p className="text-[14px] font-semibold text-black dark:text-white mb-1">
             Something broke in the UI
           </p>
-          <p className="text-[11px] text-[#8E8E93] max-w-[320px] leading-snug">
+          <p className="text-[11px] text-muted max-w-[320px] leading-snug">
             {this.state.error.message || 'Unknown error'}
           </p>
           <div className="mt-4 flex items-center gap-2">
@@ -72,7 +72,7 @@ export default class ErrorBoundary extends React.Component<ErrorBoundaryProps, E
               Report this crash
             </button>
           </div>
-          <details className="mt-3 text-[10px] text-[#8E8E93] max-w-[360px] text-left">
+          <details className="mt-3 text-[10px] text-muted max-w-[360px] text-left">
             <summary className="cursor-pointer">Technical details</summary>
             <pre className="mt-2 whitespace-pre-wrap break-words font-mono">
               {this.state.error.stack ?? this.state.error.toString()}

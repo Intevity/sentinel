@@ -584,7 +584,17 @@ export interface Settings {
    *  tour. The tour can always be replayed via the help icon next to
    *  the Sentinel header. */
   tourCompleted: boolean;
+
+  // ─── Appearance ────────────────────────────────────────────────────
+  /** Color theme preference. `'system'` follows the OS via
+   *  `prefers-color-scheme`; `'light'` and `'dark'` pin the theme
+   *  regardless of OS setting. Default `'system'`. */
+  theme: ThemePreference;
 }
+
+/** User-selectable color theme. `'system'` defers to the OS via
+ *  `prefers-color-scheme`. */
+export type ThemePreference = 'light' | 'dark' | 'system';
 
 /** Runtime status for the external OTEL forwarder. Returned by the IPC
  *  `get_otel_exporter_status` request and broadcast on every secret

@@ -147,7 +147,7 @@ function TooltipShell({
       <Info
         size={size}
         strokeWidth={2.2}
-        className="text-[#8E8E93] hover:text-ios-blue transition-colors"
+        className="text-muted hover:text-ios-blue transition-colors"
       />
       {bubbleStyle && (
         <div role="tooltip" className="pointer-events-none fixed z-50" style={bubbleStyle}>

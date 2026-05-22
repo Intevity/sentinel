@@ -7,6 +7,7 @@ import type {
   SecurityEnforcementMode,
   SecurityOsNotifyThreshold,
   PermissionDecision,
+  ThemePreference,
 } from '@claude-sentinel/shared';
 import { ALERT_SOUNDS } from '@claude-sentinel/shared';
 import { invoke } from '@tauri-apps/api/core';
@@ -126,6 +127,10 @@ export default function SettingsPanel({
 
   const setLaunch = (enabled: boolean): void => {
     void update({ launchAtLogin: enabled }).catch(() => undefined);
+  };
+
+  const setTheme = (value: ThemePreference): void => {
+    void update({ theme: value }).catch(() => undefined);
   };
 
   const setMode = (mode: SwitchingMode): void => {
@@ -341,7 +346,7 @@ export default function SettingsPanel({
         </span>
         <button
           onClick={onClose}
-          className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5"
+          className="text-muted hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5"
           title="Close"
           aria-label="Close settings"
         >
@@ -362,7 +367,7 @@ export default function SettingsPanel({
               aria-selected={active}
               onClick={() => setActiveTab(tab.id)}
               className={`relative flex-1 text-[11px] font-semibold px-2 py-1 rounded-full transition-colors ${
-                active ? 'text-white' : 'text-[#8E8E93] hover:text-black dark:hover:text-white'
+                active ? 'text-white' : 'text-muted hover:text-black dark:hover:text-white'
               }`}
             >
               {active && (
@@ -384,7 +389,7 @@ export default function SettingsPanel({
     <OverlayPanel measureRef={measureRef} stickyChrome={chrome}>
       <div className="px-4 py-3">
         {loading && (
-          <div className="flex items-center justify-center py-10 gap-2 text-[#8E8E93]">
+          <div className="flex items-center justify-center py-10 gap-2 text-muted">
             <Loader2 size={14} className="animate-spin" />
             <span className="text-[12px]">Loading…</span>
           </div>
@@ -401,6 +406,29 @@ export default function SettingsPanel({
                   description="Start Sentinel automatically when you sign in. Recommended so Claude Code stays routed through the proxy."
                   checked={settings.launchAtLogin}
                   onChange={setLaunch}
+                />
+              </Section>
+            )}
+
+            {activeTab === 'general' && (
+              <Section title="Appearance">
+                <RadioRow
+                  label="System"
+                  description="Follow your operating system's light or dark setting and switch automatically when it changes."
+                  checked={settings.theme === 'system'}
+                  onChange={() => setTheme('system')}
+                />
+                <RadioRow
+                  label="Light"
+                  description="Always use the light theme regardless of OS preference."
+                  checked={settings.theme === 'light'}
+                  onChange={() => setTheme('light')}
+                />
+                <RadioRow
+                  label="Dark"
+                  description="Always use the dark theme regardless of OS preference."
+                  checked={settings.theme === 'dark'}
+                  onChange={() => setTheme('dark')}
                 />
               </Section>
             )}
@@ -452,7 +480,7 @@ export default function SettingsPanel({
                 )}
                 {settings.switchingMode === 'round-robin' && (
                   <div className="px-3 pb-3 pt-1">
-                    <p className="text-[11px] text-[#8E8E93] mb-1.5">Rotation strategy</p>
+                    <p className="text-[11px] text-muted mb-1.5">Rotation strategy</p>
                     <div className="rounded-xl bg-black/[0.02] dark:bg-white/[0.03] divide-y divide-black/5 dark:divide-white/5">
                       <RadioRow
                         label="Balance"
@@ -472,12 +500,12 @@ export default function SettingsPanel({
                 {settings.switchingMode === 'round-robin' && (
                   <div className="px-3 pb-3 pt-1">
                     <div className="flex items-center justify-between mb-1">
-                      <p className="text-[11px] text-[#8E8E93]">Overage safety buffer</p>
+                      <p className="text-[11px] text-muted">Overage safety buffer</p>
                       <span className="text-[11px] font-semibold text-black dark:text-white tabular-nums">
                         {settings.overageBufferPct}%
                       </span>
                     </div>
-                    <p className="text-[10px] text-[#8E8E93]/80 leading-snug mb-2">
+                    <p className="text-[10px] text-muted/80 leading-snug mb-2">
                       Round-robin stops picking an account once its 5-hour (or Sonnet 7-day)
                       utilization reaches {100 - settings.overageBufferPct}%. A larger buffer
                       protects against a single large request pushing you into overage; a smaller
@@ -496,7 +524,7 @@ export default function SettingsPanel({
                       }}
                       className="w-full accent-ios-blue"
                     />
-                    <div className="flex justify-between text-[10px] text-[#8E8E93] mt-0.5 tabular-nums">
+                    <div className="flex justify-between text-[10px] text-muted mt-0.5 tabular-nums">
                       <span>0%</span>
                       <span>50%</span>
                     </div>
@@ -508,7 +536,7 @@ export default function SettingsPanel({
             {activeTab === 'accounts' && accounts.length > 0 && (
               <Section title="Overage spend tracking">
                 <div className="px-3 pt-2.5 pb-1.5 space-y-1">
-                  <p className="text-[11px] text-[#8E8E93] leading-snug">
+                  <p className="text-[11px] text-muted leading-snug">
                     Per-account overage controls and weekly caps. Sentinel reads dollar spend from
                     Anthropic&apos;s OAuth usage endpoint using the sign-in you already completed on
                     Add Account.
@@ -547,7 +575,7 @@ export default function SettingsPanel({
                   <p className="text-[11px] font-semibold text-black dark:text-white mb-1">
                     Global budget cap
                   </p>
-                  <p className="text-[10px] text-[#8E8E93] leading-snug mb-1.5">
+                  <p className="text-[10px] text-muted leading-snug mb-1.5">
                     When summed spend across all connected accounts meets this cap, every connected
                     account is paused until Anthropic&apos;s period resets.
                   </p>
@@ -575,7 +603,7 @@ export default function SettingsPanel({
                         : `${Math.round(settings.backgroundProbeIntervalSec / 60)} min`}
                     </span>
                   </div>
-                  <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
+                  <p className="text-[11px] text-muted leading-snug mb-2">
                     Sentinel probes each non-active account on this interval so usage stays in sync
                     with claude.ai and other Anthropic tools. Each probe sends one minimal request
                     per account.
@@ -589,7 +617,7 @@ export default function SettingsPanel({
                     onChange={(e) => setBackgroundProbeIntervalSec(Number(e.target.value))}
                     className="w-full accent-ios-blue"
                   />
-                  <div className="flex justify-between text-[10px] text-[#8E8E93] mt-0.5 tabular-nums">
+                  <div className="flex justify-between text-[10px] text-muted mt-0.5 tabular-nums">
                     <span>1 min</span>
                     <span>60 min</span>
                   </div>
@@ -609,7 +637,7 @@ export default function SettingsPanel({
                       {settings.telemetryRetentionDays === 1 ? 'day' : 'days'}
                     </span>
                   </div>
-                  <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
+                  <p className="text-[11px] text-muted leading-snug mb-2">
                     Usage, tool, API-error, and activity rows older than this are purged at daemon
                     startup and once every 24 hours. The Metrics tab's largest window is 30 days.
                   </p>
@@ -622,7 +650,7 @@ export default function SettingsPanel({
                     onChange={(e) => setTelemetryRetentionDays(Number(e.target.value))}
                     className="w-full accent-ios-blue"
                   />
-                  <div className="flex justify-between text-[10px] text-[#8E8E93] mt-0.5 tabular-nums">
+                  <div className="flex justify-between text-[10px] text-muted mt-0.5 tabular-nums">
                     <span>1d</span>
                     <span>365d</span>
                   </div>
@@ -650,7 +678,7 @@ export default function SettingsPanel({
                       {settings.requestLogRetentionDays === 1 ? 'day' : 'days'}
                     </span>
                   </div>
-                  <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
+                  <p className="text-[11px] text-muted leading-snug mb-2">
                     Rows older than this are purged at daemon startup and once every 24 hours.
                     Bodies are large, so a shorter default than telemetry retention keeps disk usage
                     bounded.
@@ -664,7 +692,7 @@ export default function SettingsPanel({
                     onChange={(e) => setRequestLogRetentionDays(Number(e.target.value))}
                     className="w-full accent-ios-blue"
                   />
-                  <div className="flex justify-between text-[10px] text-[#8E8E93] mt-0.5 tabular-nums">
+                  <div className="flex justify-between text-[10px] text-muted mt-0.5 tabular-nums">
                     <span>1d</span>
                     <span>90d</span>
                   </div>
@@ -678,7 +706,7 @@ export default function SettingsPanel({
                       {settings.requestLogMaxBodyKb} KB
                     </span>
                   </div>
-                  <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
+                  <p className="text-[11px] text-muted leading-snug mb-2">
                     Applied independently to request and response bodies. Larger bodies are
                     truncated in storage; the proxy still forwards the full stream to Claude Code.
                   </p>
@@ -691,7 +719,7 @@ export default function SettingsPanel({
                     onChange={(e) => setRequestLogMaxBodyKb(Number(e.target.value))}
                     className="w-full accent-ios-blue"
                   />
-                  <div className="flex justify-between text-[10px] text-[#8E8E93] mt-0.5 tabular-nums">
+                  <div className="flex justify-between text-[10px] text-muted mt-0.5 tabular-nums">
                     <span>1 KB</span>
                     <span>5 MB</span>
                   </div>
@@ -717,7 +745,7 @@ export default function SettingsPanel({
                     <p className="text-[13px] font-medium text-black dark:text-white">
                       Clear all request logs
                     </p>
-                    <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+                    <p className="text-[11px] text-muted leading-snug mt-0.5">
                       Permanently deletes every captured request/response pair. Does not change the
                       toggle above.
                     </p>
@@ -743,7 +771,7 @@ export default function SettingsPanel({
             {activeTab === 'data' && (
               <Section title="Optimize">
                 <div className="px-3 py-2.5">
-                  <p className="text-[11px] text-[#8E8E93] leading-snug">
+                  <p className="text-[11px] text-muted leading-snug">
                     Optimize captures file paths and tool call sizes (not contents) so it can
                     suggest cheaper-model subagents for routine tasks. Routing happens through
                     Claude Code's own subagent system; Sentinel never reroutes traffic silently.
@@ -779,7 +807,7 @@ export default function SettingsPanel({
             {activeTab === 'data' && (
               <Section title="External OTEL forwarding">
                 <div className="px-3 py-2.5">
-                  <p className="text-[11px] text-[#8E8E93] leading-snug">
+                  <p className="text-[11px] text-muted leading-snug">
                     Relay Claude Code's OTEL metrics and logs to an external observability backend
                     like SigNoz Cloud. Sentinel keeps storing telemetry locally for the Metrics tab;
                     this adds an outbound copy and emits Sentinel-specific signals such as the Cache
@@ -810,7 +838,7 @@ export default function SettingsPanel({
                       onChange={(e) => setOtelExporterEndpoint(e.target.value)}
                       className="w-full px-2 py-1 text-[12px] border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-black dark:text-white"
                     />
-                    <p className="text-[11px] text-[#8E8E93] mt-1 leading-snug">
+                    <p className="text-[11px] text-muted mt-1 leading-snug">
                       Sentinel appends /v1/metrics and /v1/logs to this base. HTTPS required except
                       on localhost.
                     </p>
@@ -829,7 +857,7 @@ export default function SettingsPanel({
                       onChange={(e) => setOtelExporterHeaderName(e.target.value)}
                       className="w-full px-2 py-1 text-[12px] border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-black dark:text-white"
                     />
-                    <p className="text-[11px] text-[#8E8E93] mt-1 leading-snug">
+                    <p className="text-[11px] text-muted mt-1 leading-snug">
                       The HTTP header name used to carry your ingestion key. SigNoz uses
                       &quot;signoz-ingestion-key&quot;; other backends differ.
                     </p>
@@ -872,14 +900,14 @@ export default function SettingsPanel({
                       <p className="text-[13px] font-medium text-black dark:text-white">
                         Alert sound
                       </p>
-                      <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+                      <p className="text-[11px] text-muted leading-snug mt-0.5">
                         Played when a usage alert or exhaustion notification fires. Uses macOS
                         system sounds.
                       </p>
                     </div>
                     <button
                       onClick={() => void previewSound(settings.alertSoundName)}
-                      className="text-[#8E8E93] hover:text-ios-blue transition-colors active:scale-90 mt-1"
+                      className="text-muted hover:text-ios-blue transition-colors active:scale-90 mt-1"
                       title="Preview sound"
                       aria-label="Preview sound"
                     >
@@ -920,7 +948,7 @@ export default function SettingsPanel({
                     <p className="text-[12px] font-medium text-black dark:text-white">
                       Run setup wizard
                     </p>
-                    <p className="text-[11px] text-[#8E8E93] mt-0.5 leading-snug">
+                    <p className="text-[11px] text-muted mt-0.5 leading-snug">
                       Apply a risk profile (Low, Medium, High) that configures the scanner,
                       notifications, and tool-permission rules in one step.
                     </p>
@@ -948,7 +976,7 @@ export default function SettingsPanel({
                 {settings.securityScanEnabled && (
                   <>
                     <div id="security-enforcement-heading" className="px-3 pt-2.5 pb-1">
-                      <p className="text-[11px] text-[#8E8E93] mb-1">Enforcement mode</p>
+                      <p className="text-[11px] text-muted mb-1">Enforcement mode</p>
                     </div>
                     <RadioRow
                       label="Observe only"
@@ -975,10 +1003,10 @@ export default function SettingsPanel({
                       settings.securityEnforcementMode === 'block_medium_high') && (
                       <>
                         <div className="px-3 pt-2.5 pb-1">
-                          <p className="text-[11px] text-[#8E8E93] mb-1">Approve window</p>
+                          <p className="text-[11px] text-muted mb-1">Approve window</p>
                         </div>
                         <div className="px-3 py-2.5">
-                          <div className="flex items-center justify-between text-[11px] text-[#8E8E93] mb-1">
+                          <div className="flex items-center justify-between text-[11px] text-muted mb-1">
                             <span>Approve timeout</span>
                             <span className="font-semibold text-black dark:text-white tabular-nums">
                               {settings.securityApproveHoldSec}s
@@ -993,7 +1021,7 @@ export default function SettingsPanel({
                             onChange={(e) => setApproveHoldSec(Number(e.target.value))}
                             className="w-full accent-ios-blue"
                           />
-                          <p className="text-[10px] text-[#8E8E93] mt-1 leading-snug">
+                          <p className="text-[10px] text-muted mt-1 leading-snug">
                             Every block is held briefly so you can approve it. Claude Code's own
                             timeout is 10 minutes per request, so even a 5 minute hold leaves ample
                             headroom.
@@ -1002,7 +1030,7 @@ export default function SettingsPanel({
                       </>
                     )}
                     <div className="px-3 pt-2.5 pb-1">
-                      <p className="text-[11px] text-[#8E8E93] mb-1">Categories</p>
+                      <p className="text-[11px] text-muted mb-1">Categories</p>
                     </div>
                     <ToggleRow
                       label="Scan for secrets"
@@ -1023,7 +1051,7 @@ export default function SettingsPanel({
                       onChange={setScanToolUse}
                     />
                     <div className="px-3 pt-2.5 pb-1">
-                      <p className="text-[11px] text-[#8E8E93] mb-1">Notify me about</p>
+                      <p className="text-[11px] text-muted mb-1">Notify me about</p>
                     </div>
                     <RadioRow
                       label="HIGH severity only"
@@ -1050,7 +1078,7 @@ export default function SettingsPanel({
                       onChange={() => setOsNotifyThreshold('off')}
                     />
                     <div className="px-3 pt-2.5 pb-1">
-                      <p className="text-[11px] text-[#8E8E93] mb-1">Privacy &amp; retention</p>
+                      <p className="text-[11px] text-muted mb-1">Privacy &amp; retention</p>
                     </div>
                     <ToggleRow
                       label="Store redacted snippet"
@@ -1089,7 +1117,7 @@ export default function SettingsPanel({
                       onChange={setIncidentReplayEnabled}
                     />
                     <div className="px-3 py-2.5">
-                      <div className="flex items-center justify-between text-[11px] text-[#8E8E93] mb-1">
+                      <div className="flex items-center justify-between text-[11px] text-muted mb-1">
                         <span>Event retention</span>
                         <span className="font-semibold text-black dark:text-white tabular-nums">
                           {settings.securityEventRetentionDays} days
@@ -1114,7 +1142,7 @@ export default function SettingsPanel({
             {activeTab === 'security' && settings.securityScanEnabled && (
               <Section title="Allowlist">
                 <div className="px-3 pt-2.5 pb-1">
-                  <p className="text-[10px] text-[#8E8E93] leading-snug mb-2">
+                  <p className="text-[10px] text-muted leading-snug mb-2">
                     Matches you&apos;ve chosen to always allow. Added by clicking
                     <span className="font-semibold"> Always allow</span> on a finding in the
                     Security tab.
@@ -1151,11 +1179,11 @@ export default function SettingsPanel({
                     className="w-full accent-ios-blue"
                     aria-label="Deferred-scan threshold in megabytes"
                   />
-                  <p className="text-[10px] text-[#8E8E93] leading-snug mt-1.5">
+                  <p className="text-[10px] text-muted leading-snug mt-1.5">
                     Requests larger than this are scanned asynchronously off the proxy&apos;s hot
                     path; detection still runs, but block-on-match doesn&apos;t. Raise it if you get
                     noisy
-                    <code className="text-[9.5px] font-mono bg-[#8E8E93]/10 px-1 mx-0.5 rounded">
+                    <code className="text-[9.5px] font-mono bg-muted/10 px-1 mx-0.5 rounded">
                       Scan Deferred
                     </code>
                     alerts on normal-sized requests; lower it to push smaller payloads through the
@@ -1169,7 +1197,7 @@ export default function SettingsPanel({
                   onChange={setScanOversizedSync}
                 />
                 <div className="px-3 pt-2.5 pb-1">
-                  <p className="text-[11px] text-[#8E8E93] mb-1">Mute telemetry events</p>
+                  <p className="text-[11px] text-muted mb-1">Mute telemetry events</p>
                 </div>
                 <ToggleRow
                   label="Scan Deferred"
@@ -1205,7 +1233,7 @@ export default function SettingsPanel({
                 {settings.toolPermissionsEnabled && (
                   <>
                     <div className="px-3 pt-2.5 pb-1">
-                      <p className="text-[11px] text-[#8E8E93] mb-1">
+                      <p className="text-[11px] text-muted mb-1">
                         Default for unmatched tool calls
                       </p>
                     </div>
@@ -1228,7 +1256,7 @@ export default function SettingsPanel({
                       Manage rules…
                     </button>
                     <div className="px-3 pt-2.5 pb-1">
-                      <p className="text-[11px] text-[#8E8E93] mb-1">Auto mode bypass</p>
+                      <p className="text-[11px] text-muted mb-1">Auto mode bypass</p>
                     </div>
                     <ToggleRow
                       label="Skip enforcement in auto mode"
@@ -1249,7 +1277,7 @@ export default function SettingsPanel({
 
             {activeTab === 'security' && settings.toolPermissionsEnabled && (
               <Section title="Permission bypasses">
-                <div className="px-3 pt-2 pb-1.5 text-[11px] text-[#8E8E93] leading-snug">
+                <div className="px-3 pt-2 pb-1.5 text-[11px] text-muted leading-snug">
                   Per-rule allow-through, recorded when you tick{' '}
                   <span className="font-semibold">Always allow this exact input</span> on a tool-use
                   approval banner. Remove an entry to re-trigger the banner next time that exact
@@ -1385,9 +1413,7 @@ function OtelSecretRow(): React.ReactElement {
         </button>
       </div>
       <div className="flex items-center gap-2 mt-1.5">
-        <span
-          className={`text-[11px] font-medium ${configured ? 'text-ios-green' : 'text-[#8E8E93]'}`}
-        >
+        <span className={`text-[11px] font-medium ${configured ? 'text-ios-green' : 'text-muted'}`}>
           {configured ? 'Key: configured' : 'Key: not set'}
         </span>
         {testResult !== null && (
@@ -1407,14 +1433,14 @@ function OtelSecretRow(): React.ReactElement {
 function OtelStatusRow(): React.ReactElement {
   const { status } = useOtelExporter();
   if (!status) {
-    return <div className="px-3 py-2 text-[11px] text-[#8E8E93]">Loading status…</div>;
+    return <div className="px-3 py-2 text-[11px] text-muted">Loading status…</div>;
   }
   const lastOk =
     status.lastForwardOkAt !== null
       ? new Date(status.lastForwardOkAt).toLocaleTimeString()
       : 'never';
   return (
-    <div className="px-3 py-2 text-[11px] text-[#8E8E93] tabular-nums">
+    <div className="px-3 py-2 text-[11px] text-muted tabular-nums">
       <div>
         Sent {status.sent} · Failed {status.failed} · Dropped {status.dropped} · Last ok {lastOk}
       </div>
@@ -1505,7 +1531,7 @@ function ClaudeCodeSyncSubsection({
       />
       {enabled && (
         <>
-          <div className="px-3 pt-2 pb-1 text-[11px] text-[#8E8E93] leading-snug">
+          <div className="px-3 pt-2 pb-1 text-[11px] text-muted leading-snug">
             Last imported{' '}
             <span className="font-semibold text-black dark:text-white">
               {ago(status?.lastPulledAt ?? null)}
@@ -1571,7 +1597,7 @@ function FirstEnableSyncModal({
         <p className="text-[14px] font-semibold text-black dark:text-white mb-1">
           Initial sync direction
         </p>
-        <p className="text-[12px] text-[#8E8E93] leading-snug mb-4">
+        <p className="text-[12px] text-muted leading-snug mb-4">
           Sync will run in both directions continuously. For the first pass only, choose whose rules
           win when both sides have the same entry.
         </p>
@@ -1583,7 +1609,7 @@ function FirstEnableSyncModal({
             <div className="text-[12px] font-semibold text-black dark:text-white">
               Merge both (recommended)
             </div>
-            <div className="text-[11px] text-[#8E8E93] leading-snug">
+            <div className="text-[11px] text-muted leading-snug">
               Keep every rule from both sides. Identical duplicates stay owned by whichever side
               authored them.
             </div>
@@ -1595,7 +1621,7 @@ function FirstEnableSyncModal({
             <div className="text-[12px] font-semibold text-black dark:text-white">
               Import from Claude Code
             </div>
-            <div className="text-[11px] text-[#8E8E93] leading-snug">
+            <div className="text-[11px] text-muted leading-snug">
               Claude Code's file wins. Identical Sentinel rules get re-marked as "from Claude Code"
               and follow that file's lifecycle.
             </div>
@@ -1607,7 +1633,7 @@ function FirstEnableSyncModal({
             <div className="text-[12px] font-semibold text-black dark:text-white">
               Export from Sentinel
             </div>
-            <div className="text-[11px] text-[#8E8E93] leading-snug">
+            <div className="text-[11px] text-muted leading-snug">
               Sentinel's rules win. Rules only in Claude Code's file are dropped on this first pass
               (and the file is overwritten).
             </div>
@@ -1616,7 +1642,7 @@ function FirstEnableSyncModal({
         <div className="mt-4 flex justify-end">
           <button
             onClick={onClose}
-            className="text-[12px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white px-2 py-1 transition-colors"
+            className="text-[12px] font-medium text-muted hover:text-black dark:hover:text-white px-2 py-1 transition-colors"
           >
             Cancel
           </button>
@@ -1652,7 +1678,7 @@ function TuneForSystemSubsection({
       <div className="flex items-center justify-between gap-2 mb-2">
         <div className="flex-1 min-w-0">
           <p className="text-[12px] font-medium text-black dark:text-white">Tune for this system</p>
-          <p className="text-[10px] text-[#8E8E93] leading-snug mt-0.5">
+          <p className="text-[10px] text-muted leading-snug mt-0.5">
             {bench
               ? `Last tuned ${formatAgo(bench.ranAt)} on ${bench.platform}: recommended ${bench.recommendedMb} MB.`
               : 'Not tuned yet. Run a quick benchmark to pick a threshold that suits this machine.'}
@@ -1683,11 +1709,11 @@ function TuneForSystemSubsection({
                 >
                   {r.sizeMb} MB
                 </div>
-                <div className="text-[#8E8E93] tabular-nums">{r.p99Ms.toFixed(1)}ms</div>
+                <div className="text-muted tabular-nums">{r.p99Ms.toFixed(1)}ms</div>
               </div>
             ))}
           </div>
-          <p className="text-[10px] text-[#8E8E93] leading-snug">
+          <p className="text-[10px] text-muted leading-snug">
             p99 scan cost per body size. Recommendation picks the largest size under 50 ms.
           </p>
           {!applied && (
@@ -1722,14 +1748,14 @@ function formatAgo(ts: number): string {
 function BypassesManager(): React.ReactElement {
   const { entries, loading, error, remove } = usePermissionBypasses();
   if (loading) {
-    return <div className="px-3 py-3 text-[11px] text-[#8E8E93]">Loading…</div>;
+    return <div className="px-3 py-3 text-[11px] text-muted">Loading…</div>;
   }
   if (error) {
     return <div className="px-3 py-3 text-[11px] text-ios-red">{error}</div>;
   }
   if (entries.length === 0) {
     return (
-      <div className="px-3 py-3 text-[11px] text-[#8E8E93]">
+      <div className="px-3 py-3 text-[11px] text-muted">
         No bypasses yet. Pick <span className="font-semibold">Always</span> on a pending tool-use
         banner to add one: it silences every future tool call matching the same rule.
       </div>
@@ -1763,12 +1789,12 @@ function BypassesRow({
           {entry.toolName}
         </p>
         <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-          <code className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded truncate max-w-[260px]">
+          <code className="text-[10px] font-mono bg-muted/10 px-1 py-0.5 rounded truncate max-w-[260px]">
             {entry.mask}
           </code>
-          <span className="text-[10px] text-[#8E8E93]">added {when}</span>
+          <span className="text-[10px] text-muted">added {when}</span>
         </div>
-        {entry.note && <p className="text-[10px] text-[#8E8E93] mt-1 leading-snug">{entry.note}</p>}
+        {entry.note && <p className="text-[10px] text-muted mt-1 leading-snug">{entry.note}</p>}
       </div>
       <button
         onClick={trigger}
@@ -1847,7 +1873,7 @@ function ClaudeAiConnectionRow({
           <p className="text-[13px] font-medium text-black dark:text-white truncate">
             {account.displayName || account.email}
           </p>
-          <p className="text-[11px] text-[#8E8E93] truncate">
+          <p className="text-[11px] text-muted truncate">
             {account.email}
             {account.planType ? ` (${planLabel(account.planType)})` : ''}
           </p>
@@ -1864,7 +1890,7 @@ function ClaudeAiConnectionRow({
               }
             }}
             disabled={refreshing}
-            className="text-[#8E8E93] hover:text-ios-blue disabled:opacity-40 transition-colors active:scale-90 shrink-0"
+            className="text-muted hover:text-ios-blue disabled:opacity-40 transition-colors active:scale-90 shrink-0"
             title="Refresh token + usage"
           >
             <RefreshCw size={12} strokeWidth={2.5} className={refreshing ? 'animate-spin' : ''} />
@@ -1879,7 +1905,7 @@ function ClaudeAiConnectionRow({
             <p className="text-[12px] font-medium text-black dark:text-white">
               Allow spending overage
             </p>
-            <p className="text-[10px] text-[#8E8E93] leading-snug">
+            <p className="text-[10px] text-muted leading-snug">
               Round-robin picks this account for new requests after its 5-hour quota is exhausted,
               and lets Sonnet requests through once the Sonnet 7-day quota is spent. Off: Sentinel
               refuses either spillover with a 503.
@@ -1989,18 +2015,18 @@ function BudgetInputRow(props: {
       {props.leading && <div className="flex-shrink-0">{props.leading}</div>}
       <div className="flex-1 min-w-0">
         <p className="text-[13px] font-medium text-black dark:text-white truncate">{props.label}</p>
-        {props.sublabel && <p className="text-[11px] text-[#8E8E93] truncate">{props.sublabel}</p>}
-        {hint && <p className="text-[10px] text-[#8E8E93]/80 truncate">{hint}</p>}
+        {props.sublabel && <p className="text-[11px] text-muted truncate">{props.sublabel}</p>}
+        {hint && <p className="text-[10px] text-muted/80 truncate">{hint}</p>}
       </div>
       <div className="flex items-center gap-1">
-        <span className="text-[12px] text-[#8E8E93]">$</span>
+        <span className="text-[12px] text-muted">$</span>
         <input
           type="text"
           inputMode="decimal"
           value={text}
           onChange={(e) => onChangeDebounced(e.target.value)}
           placeholder="none"
-          className="w-20 px-2 py-1 rounded-md text-right text-[13px] tabular-nums bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white placeholder:text-[#8E8E93]/60 focus:outline-none focus:ring-2 focus:ring-ios-blue/40"
+          className="w-20 px-2 py-1 rounded-md text-right text-[13px] tabular-nums bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white placeholder:text-muted/60 focus:outline-none focus:ring-2 focus:ring-ios-blue/40"
         />
       </div>
     </div>
@@ -2057,7 +2083,7 @@ function AlternateApiUrlRow(props: {
   return (
     <div className="px-3 py-2.5">
       <p className="text-[13px] font-medium text-black dark:text-white">Alternate API URL</p>
-      <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">
+      <p className="text-[11px] text-muted leading-snug mt-0.5">
         Claude Code traffic will route through this URL. Account, usage, and OAuth queries continue
         to use api.anthropic.com.
       </p>
@@ -2069,7 +2095,7 @@ function AlternateApiUrlRow(props: {
         value={text}
         onChange={(e) => onChangeDebounced(e.target.value)}
         placeholder="https://router.example.com"
-        className="mt-2 w-full px-2 py-1.5 rounded-md text-[12px] bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white placeholder:text-[#8E8E93]/60 focus:outline-none focus:ring-2 focus:ring-ios-blue/40"
+        className="mt-2 w-full px-2 py-1.5 rounded-md text-[12px] bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white placeholder:text-muted/60 focus:outline-none focus:ring-2 focus:ring-ios-blue/40"
       />
       {error && <p className="text-[11px] text-red-500 mt-1">{error}</p>}
     </div>
@@ -2088,10 +2114,10 @@ function PoolMemberPreview({
   return (
     <div className="px-3 pb-2 pt-1">
       <div className="flex items-baseline justify-between mb-1.5">
-        <p className="text-[11px] text-[#8E8E93]">
+        <p className="text-[11px] text-muted">
           Pool <span className="tabular-nums">({rotating.length} rotating)</span>
         </p>
-        <span className="text-[10px] text-[#8E8E93]/70">Manage on Accounts tab</span>
+        <span className="text-[10px] text-muted/70">Manage on Accounts tab</span>
       </div>
       <div className="flex flex-wrap gap-1.5">
         {accounts.map((a) => {
@@ -2101,7 +2127,7 @@ function PoolMemberPreview({
               key={a.id}
               className={`inline-flex items-center gap-1.5 text-[10px] font-medium px-2 py-0.5 rounded-full transition-opacity ${
                 excluded
-                  ? 'bg-[#8E8E93]/10 text-[#8E8E93] line-through opacity-60'
+                  ? 'bg-muted/10 text-muted line-through opacity-60'
                   : 'bg-black/[0.04] dark:bg-white/[0.05] text-black dark:text-white'
               }`}
               title={excluded ? `${a.email}: excluded from pool` : a.email}

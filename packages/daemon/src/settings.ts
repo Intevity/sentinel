@@ -21,6 +21,7 @@ import type {
   DetectorTier,
   LogLevel,
   PermissionDecision,
+  ThemePreference,
 } from '@claude-sentinel/shared';
 import { SECURITY_CONTEXT_WINDOW_CHARS, VALID_DETECTOR_TIERS } from '@claude-sentinel/shared';
 import { signSettings, verifySettings } from './settings-integrity.js';
@@ -100,6 +101,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cacheTtlForceOneHour: false,
   securitySetupCompleted: false,
   tourCompleted: false,
+  theme: 'system',
   // Sprint 9: warn-and-forward by default; users opt into 'closed' once
   // they've decided they would rather see Claude Code fail than fall
   // through Sentinel's gates while degraded.
@@ -180,6 +182,7 @@ const VALID_WEBHOOK_FLOORS: readonly Settings['securityWebhookSeverityFloor'][] 
   'medium',
   'high',
 ];
+const VALID_THEMES: readonly ThemePreference[] = ['light', 'dark', 'system'];
 
 /**
  * Coerce an arbitrary value into a valid Settings object, falling back to
@@ -468,6 +471,9 @@ function coerce(raw: unknown): Settings {
   }
   if (typeof obj['tourCompleted'] === 'boolean') {
     next.tourCompleted = obj['tourCompleted'];
+  }
+  if (typeof obj['theme'] === 'string' && VALID_THEMES.includes(obj['theme'] as ThemePreference)) {
+    next.theme = obj['theme'] as ThemePreference;
   }
   if (
     typeof obj['daemonHealthFailMode'] === 'string' &&

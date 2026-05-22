@@ -22,7 +22,7 @@ const PLAN_META: Record<string, PlanMeta> = {
   enterprise: { label: 'Enterprise', color: 'bg-ios-orange/10 text-ios-orange' },
 };
 
-const UNKNOWN_COLOR = 'bg-[#8E8E93]/10 text-[#8E8E93]';
+const UNKNOWN_COLOR = 'bg-muted/10 text-muted';
 
 /** Human-readable plan label. Capitalizes the first letter when the tier
  *  isn't in our known list so new plans appear reasonably. */

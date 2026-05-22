@@ -86,15 +86,21 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 
     let menu = Menu::with_items(
         app,
-        &[&status, &separator, &open, &check_updates, &separator, &quit],
+        &[
+            &status,
+            &separator,
+            &open,
+            &check_updates,
+            &separator,
+            &quit,
+        ],
     )?;
 
     // Start with the gray-tinted variant so we never show the monochrome
     // template until real data arrives — a template icon would visually lie
     // about the color-coded contract.
     let initial = tinted(TintColor::Gray);
-    let initial_img =
-        tauri::image::Image::new(&initial.bytes, initial.width, initial.height);
+    let initial_img = tauri::image::Image::new(&initial.bytes, initial.width, initial.height);
 
     let icon = TrayIconBuilder::with_id("main-tray")
         .icon(initial_img)
@@ -110,10 +116,8 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 // leave the system in different states.
                 let handle = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let _ = ipc::send_internal(
-                        serde_json::json!({ "type": "shutdown_daemon" }),
-                    )
-                    .await;
+                    let _ =
+                        ipc::send_internal(serde_json::json!({ "type": "shutdown_daemon" })).await;
                     handle.exit(0);
                 });
             }
@@ -223,7 +227,9 @@ pub async fn handle_daemon_message(value: Value, app: AppHandle) {
                 .await
                 .ok()
                 .and_then(|r| r.data);
-                let Some(state) = app.try_state::<SharedTrayState>() else { return };
+                let Some(state) = app.try_state::<SharedTrayState>() else {
+                    return;
+                };
                 let mut guard = state.inner().clone().lock_owned().await;
                 if let Some(windows) = resp {
                     guard
@@ -238,14 +244,18 @@ pub async fn handle_daemon_message(value: Value, app: AppHandle) {
                 Some(v) => v,
                 None => return,
             };
-            let Some(state) = app.try_state::<SharedTrayState>() else { return };
+            let Some(state) = app.try_state::<SharedTrayState>() else {
+                return;
+            };
             let mut guard = state.inner().clone().lock_owned().await;
             guard.apply_active_from_oauth_account(to);
             guard.apply();
         }
         "settings_changed" => {
             if let Some(s) = value.get("settings") {
-                let Some(state) = app.try_state::<SharedTrayState>() else { return };
+                let Some(state) = app.try_state::<SharedTrayState>() else {
+                    return;
+                };
                 let mut guard = state.inner().clone().lock_owned().await;
                 guard.apply_settings(s);
                 guard.apply();
@@ -258,7 +268,9 @@ pub async fn handle_daemon_message(value: Value, app: AppHandle) {
         }
         "account_paused" => {
             if let Some(id) = value.get("accountId").and_then(Value::as_str) {
-                let Some(state) = app.try_state::<SharedTrayState>() else { return };
+                let Some(state) = app.try_state::<SharedTrayState>() else {
+                    return;
+                };
                 let mut guard = state.inner().clone().lock_owned().await;
                 guard.paused_ids.insert(id.to_string());
                 guard.apply();
@@ -266,7 +278,9 @@ pub async fn handle_daemon_message(value: Value, app: AppHandle) {
         }
         "account_unpaused" => {
             if let Some(id) = value.get("accountId").and_then(Value::as_str) {
-                let Some(state) = app.try_state::<SharedTrayState>() else { return };
+                let Some(state) = app.try_state::<SharedTrayState>() else {
+                    return;
+                };
                 let mut guard = state.inner().clone().lock_owned().await;
                 guard.paused_ids.remove(id);
                 guard.apply();
@@ -301,17 +315,16 @@ impl TrayState {
     }
 
     fn apply_accounts(&mut self, accounts_json: &Value) {
-        let Some(arr) = accounts_json.as_array() else { return };
+        let Some(arr) = accounts_json.as_array() else {
+            return;
+        };
         let mut live_ids = std::collections::HashSet::new();
         for a in arr {
             if let Some(id) = a.get("id").and_then(Value::as_str) {
                 live_ids.insert(id.to_string());
                 if a.get("isActive").and_then(Value::as_bool).unwrap_or(false) {
                     self.active_id = Some(id.to_string());
-                    self.active_email = a
-                        .get("email")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
+                    self.active_email = a.get("email").and_then(Value::as_str).map(str::to_string);
                 }
             }
         }
@@ -329,7 +342,9 @@ impl TrayState {
     }
 
     fn apply_all_rate_limits(&mut self, rl_json: &Value) {
-        let Some(obj) = rl_json.as_object() else { return };
+        let Some(obj) = rl_json.as_object() else {
+            return;
+        };
         for (account_id, windows) in obj {
             self.utilizations
                 .insert(account_id.clone(), extract_5h_util(windows));
@@ -341,16 +356,25 @@ impl TrayState {
         // { accountId, reason, resetsAt } — we only need the ids for the
         // round-robin filter. Replace (don't merge) so a freshly-cleared
         // pause set doesn't leave stale ids around.
-        let Some(arr) = paused_json.as_array() else { return };
+        let Some(arr) = paused_json.as_array() else {
+            return;
+        };
         self.paused_ids = arr
             .iter()
-            .filter_map(|v| v.get("accountId").and_then(Value::as_str).map(str::to_string))
+            .filter_map(|v| {
+                v.get("accountId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .collect();
     }
 
     fn apply_active_from_oauth_account(&mut self, to: &Value) {
         // sentinelKey = organizationUuid || accountUuid  (see daemon/index.ts)
-        let org = to.get("organizationUuid").and_then(Value::as_str).unwrap_or("");
+        let org = to
+            .get("organizationUuid")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let acct = to.get("accountUuid").and_then(Value::as_str).unwrap_or("");
         let key = if !org.is_empty() { org } else { acct };
         if key.is_empty() {
@@ -388,8 +412,7 @@ fn compute_display(state: &TrayState) -> Option<u8> {
                 .utilizations
                 .iter()
                 .filter(|(id, _)| {
-                    !state.pool_excluded_ids.contains(*id)
-                        && !state.paused_ids.contains(*id)
+                    !state.pool_excluded_ids.contains(*id) && !state.paused_ids.contains(*id)
                 })
                 .filter_map(|(_, v)| *v)
                 .collect();
@@ -435,10 +458,7 @@ fn format_status_text(state: &TrayState, pct: Option<u8>) -> String {
             let pool_size = state
                 .utilizations
                 .keys()
-                .filter(|k| {
-                    !state.pool_excluded_ids.contains(*k)
-                        && !state.paused_ids.contains(*k)
-                })
+                .filter(|k| !state.pool_excluded_ids.contains(*k) && !state.paused_ids.contains(*k))
                 .count();
             if pool_size == 0 {
                 "Claude Sentinel".to_string()
@@ -646,7 +666,10 @@ mod tests {
     #[test]
     fn switching_mode_from_str() {
         assert_eq!(SwitchingMode::from_str("off"), SwitchingMode::Off);
-        assert_eq!(SwitchingMode::from_str("round-robin"), SwitchingMode::RoundRobin);
+        assert_eq!(
+            SwitchingMode::from_str("round-robin"),
+            SwitchingMode::RoundRobin
+        );
         assert_eq!(SwitchingMode::from_str("garbage"), SwitchingMode::Off);
     }
 
@@ -705,7 +728,11 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|v| v.get("accountId").and_then(Value::as_str).map(str::to_string))
+            .filter_map(|v| {
+                v.get("accountId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .collect();
         assert!(!s.paused_ids.contains("stale"));
         assert!(s.paused_ids.contains("fresh-a"));

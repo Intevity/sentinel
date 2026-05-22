@@ -170,7 +170,7 @@ export default function AccountCard({
         ? 'bg-ios-red/10 text-ios-red'
         : fiveHourPct >= 70
           ? 'bg-ios-orange/10 text-ios-orange'
-          : 'bg-[#8E8E93]/10 text-[#8E8E93]';
+          : 'bg-muted/10 text-muted';
 
   // ── Status dot/label for the bottom-left of the action row ──
   // Three states driven by `getAccountStatus`: active (green), excluded
@@ -196,7 +196,7 @@ export default function AccountCard({
         <button
           onClick={() => onTogglePool?.(account.id, false)}
           disabled={disabled}
-          className="text-[11px] font-medium text-[#8E8E93] hover:text-ios-red disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="text-[11px] font-medium text-muted hover:text-ios-red disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           title={
             disabled
               ? 'At least one account must stay in the pool'
@@ -236,7 +236,7 @@ export default function AccountCard({
     <button
       onClick={() => onRefreshToken(account.id)}
       disabled={refreshing}
-      className="text-[11px] font-medium text-[#8E8E93] hover:text-ios-blue disabled:opacity-40 transition-colors"
+      className="text-[11px] font-medium text-muted hover:text-ios-blue disabled:opacity-40 transition-colors"
       title="Refresh this account's OAuth access token"
     >
       {refreshing ? 'Refreshing…' : 'Refresh'}
@@ -280,10 +280,10 @@ export default function AccountCard({
             {account.displayName || account.email}
           </p>
           {account.displayName && (
-            <p className="text-[11px] text-[#8E8E93] truncate leading-snug">{account.email}</p>
+            <p className="text-[11px] text-muted truncate leading-snug">{account.email}</p>
           )}
           {account.orgName && (
-            <p className="text-[11px] text-[#8E8E93] truncate leading-snug">{account.orgName}</p>
+            <p className="text-[11px] text-muted truncate leading-snug">{account.orgName}</p>
           )}
         </div>
 
@@ -396,7 +396,7 @@ export default function AccountCard({
             <SpendChip spend={extraUsage!.usedUsd} cap={extraUsage!.limitUsd} label="Overage" />
           ) : individualOverageDisabled ? (
             <div className="relative group">
-              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#8E8E93]/15 text-[#8E8E93]">
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-muted/15 text-muted">
                 Overage off
               </span>
               <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
@@ -480,7 +480,7 @@ function SpendChip({
       ? 'bg-ios-red/10 text-ios-red'
       : pct >= 70
         ? 'bg-ios-orange/10 text-ios-orange'
-        : 'bg-[#8E8E93]/10 text-[#8E8E93]';
+        : 'bg-muted/10 text-muted';
   return (
     <div className="relative group">
       <span className={`text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-full ${tone}`}>
@@ -496,8 +496,8 @@ function SpendChip({
 }
 
 function StatusDot({ label, tone }: { label: string; tone: 'green' | 'gray' }): React.ReactElement {
-  const dot = tone === 'green' ? 'bg-ios-green' : 'bg-[#8E8E93]/60';
-  const text = tone === 'green' ? 'text-ios-green' : 'text-[#8E8E93]';
+  const dot = tone === 'green' ? 'bg-ios-green' : 'bg-muted/60';
+  const text = tone === 'green' ? 'text-ios-green' : 'text-muted';
   return (
     <span className={`text-[11px] font-semibold flex items-center gap-1.5 ${text}`}>
       <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />

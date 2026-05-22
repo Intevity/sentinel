@@ -71,7 +71,11 @@ pub fn tinted(color: TintColor) -> Arc<RgbaBuffer> {
         }
     }
 
-    let buf = Arc::new(RgbaBuffer { bytes, width, height });
+    let buf = Arc::new(RgbaBuffer {
+        bytes,
+        width,
+        height,
+    });
     let mut map = cache().lock().expect("tinted-cache mutex poisoned");
     map.entry(color).or_insert_with(|| buf.clone()).clone()
 }
@@ -82,7 +86,12 @@ mod tests {
 
     #[test]
     fn each_tint_returns_buffer_with_expected_color() {
-        for color in [TintColor::Blue, TintColor::Orange, TintColor::Red, TintColor::Gray] {
+        for color in [
+            TintColor::Blue,
+            TintColor::Orange,
+            TintColor::Red,
+            TintColor::Gray,
+        ] {
             let buf = tinted(color);
             assert_eq!(buf.bytes.len(), (buf.width * buf.height * 4) as usize);
             let (r, g, b) = color.rgb();

@@ -32,9 +32,13 @@ struct UpdaterSettings {
 }
 
 fn read_auto_update_pref(app: &AppHandle) -> bool {
-    let Ok(home) = app.path().home_dir() else { return false };
+    let Ok(home) = app.path().home_dir() else {
+        return false;
+    };
     let path = home.join(".claude-sentinel").join("settings.json");
-    let Ok(contents) = std::fs::read_to_string(&path) else { return false };
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return false;
+    };
     serde_json::from_str::<UpdaterSettings>(&contents)
         .map(|s| s.auto_update)
         .unwrap_or(false)
@@ -58,7 +62,9 @@ pub fn maybe_check_on_startup(app: AppHandle) {
 /// user sees feedback for an explicit action.
 #[tauri::command]
 pub async fn check_for_updates(app: AppHandle) -> Result<(), String> {
-    run_update(&app, /*notify=*/ true).await.map_err(|e| e.to_string())
+    run_update(&app, /*notify=*/ true)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 async fn run_update(app: &AppHandle, notify: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -70,7 +76,10 @@ async fn run_update(app: &AppHandle, notify: bool) -> Result<(), Box<dyn std::er
                     .notification()
                     .builder()
                     .title("Claude Sentinel")
-                    .body(format!("Installing update to v{} — will restart when ready…", update.version))
+                    .body(format!(
+                        "Installing update to v{} — will restart when ready…",
+                        update.version
+                    ))
                     .show();
             }
             // download_and_install takes two callbacks (progress + done).

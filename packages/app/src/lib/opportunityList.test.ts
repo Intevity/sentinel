@@ -131,9 +131,9 @@ describe('savingsColorClass', () => {
   });
 
   it('stays neutral inside the noise floor (matches formatUsd)', () => {
-    expect(savingsColorClass(0)).toBe('text-white/70');
-    expect(savingsColorClass(-0.001)).toBe('text-white/70');
-    expect(savingsColorClass(0.004)).toBe('text-white/70');
+    expect(savingsColorClass(0)).toBe('text-foreground/70');
+    expect(savingsColorClass(-0.001)).toBe('text-foreground/70');
+    expect(savingsColorClass(0.004)).toBe('text-foreground/70');
   });
 });
 

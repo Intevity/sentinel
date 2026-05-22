@@ -98,14 +98,32 @@ pub fn activate_sentinel() -> Result<(), String> {
         .as_object_mut()
         .ok_or("settings.json `env` is not a JSON object")?;
 
-    env.insert("ANTHROPIC_BASE_URL".into(),         Value::String(SENTINEL_BASE_URL.into()));
-    env.insert("CLAUDE_CODE_ENABLE_TELEMETRY".into(), Value::String("1".into()));
-    env.insert("OTEL_METRICS_EXPORTER".into(),      Value::String("otlp".into()));
-    env.insert("OTEL_LOGS_EXPORTER".into(),         Value::String("otlp".into()));
-    env.insert("OTEL_EXPORTER_OTLP_PROTOCOL".into(), Value::String("http/json".into()));
-    env.insert("OTEL_EXPORTER_OTLP_ENDPOINT".into(), Value::String(SENTINEL_BASE_URL.into()));
-    env.insert("OTEL_METRIC_EXPORT_INTERVAL".into(), Value::String("5000".into()));
-    env.insert("OTEL_LOGS_EXPORT_INTERVAL".into(),  Value::String("2000".into()));
+    env.insert(
+        "ANTHROPIC_BASE_URL".into(),
+        Value::String(SENTINEL_BASE_URL.into()),
+    );
+    env.insert(
+        "CLAUDE_CODE_ENABLE_TELEMETRY".into(),
+        Value::String("1".into()),
+    );
+    env.insert("OTEL_METRICS_EXPORTER".into(), Value::String("otlp".into()));
+    env.insert("OTEL_LOGS_EXPORTER".into(), Value::String("otlp".into()));
+    env.insert(
+        "OTEL_EXPORTER_OTLP_PROTOCOL".into(),
+        Value::String("http/json".into()),
+    );
+    env.insert(
+        "OTEL_EXPORTER_OTLP_ENDPOINT".into(),
+        Value::String(SENTINEL_BASE_URL.into()),
+    );
+    env.insert(
+        "OTEL_METRIC_EXPORT_INTERVAL".into(),
+        Value::String("5000".into()),
+    );
+    env.insert(
+        "OTEL_LOGS_EXPORT_INTERVAL".into(),
+        Value::String("2000".into()),
+    );
 
     write_settings(&settings)
 }

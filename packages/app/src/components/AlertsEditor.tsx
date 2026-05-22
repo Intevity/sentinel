@@ -118,7 +118,7 @@ export default function AlertsEditor({
             }
             className={`flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-full transition-colors active:scale-95 ${
               overageOsNotify
-                ? 'text-[#8E8E93] hover:text-black dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+                ? 'text-muted hover:text-black dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
                 : 'text-ios-orange bg-ios-orange/10 hover:bg-ios-orange/15'
             }`}
           >
@@ -360,12 +360,12 @@ function AlertList({
 
       {!available && (
         <div className="glass-card px-4 py-8 text-center">
-          <p className="text-[12px] text-[#8E8E93]">{unavailableCopy ?? 'Not available.'}</p>
+          <p className="text-[12px] text-muted">{unavailableCopy ?? 'Not available.'}</p>
         </div>
       )}
 
       {available && loading && (
-        <div className="flex items-center justify-center py-6 gap-2 text-[#8E8E93]">
+        <div className="flex items-center justify-center py-6 gap-2 text-muted">
           <Loader2 size={12} className="animate-spin" />
           <span className="text-[11px]">Loading alerts…</span>
         </div>
@@ -377,14 +377,14 @@ function AlertList({
         <div className="space-y-2">
           {alerts.length === 0 && !adding && (
             <div className="glass-card px-4 py-6 text-center">
-              <p className="text-[12px] text-[#8E8E93]">{emptyCopy}</p>
+              <p className="text-[12px] text-muted">{emptyCopy}</p>
             </div>
           )}
 
           {alerts.map((alert) =>
             editingId === alert.id ? (
               <div key={alert.id} className="glass-card px-3 py-3">
-                <div className="flex items-center justify-between text-[11px] text-[#8E8E93] mb-1.5">
+                <div className="flex items-center justify-between text-[11px] text-muted mb-1.5">
                   <span>Edit threshold</span>
                   <span className="font-semibold text-black dark:text-white tabular-nums">
                     {editThreshold}%
@@ -410,7 +410,7 @@ function AlertList({
                   <button
                     onClick={() => setEditingId(null)}
                     disabled={saving}
-                    className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
+                    className="text-[12px] text-muted hover:text-black dark:hover:text-white transition-colors px-2"
                   >
                     Cancel
                   </button>
@@ -422,13 +422,13 @@ function AlertList({
                 <span className="text-[13px] font-semibold text-black dark:text-white tabular-nums w-12">
                   {alert.thresholdPct}%
                 </span>
-                <span className="text-[11px] text-[#8E8E93] flex-1">
+                <span className="text-[11px] text-muted flex-1">
                   {rowSuffix}
                   {alert.lastTriggeredResetTs && (
                     <span className="ml-1 text-ios-blue">· triggered this window</span>
                   )}
                 </span>
-                <label className="flex items-center gap-1.5 text-[11px] text-[#8E8E93] cursor-pointer">
+                <label className="flex items-center gap-1.5 text-[11px] text-muted cursor-pointer">
                   <input
                     type="checkbox"
                     checked={alert.enabled}
@@ -439,7 +439,7 @@ function AlertList({
                 </label>
                 <button
                   onClick={() => startEdit(alert)}
-                  className="text-[#8E8E93] hover:text-ios-blue transition-colors active:scale-90"
+                  className="text-muted hover:text-ios-blue transition-colors active:scale-90"
                   title="Edit threshold"
                   aria-label="Edit alert"
                 >
@@ -447,7 +447,7 @@ function AlertList({
                 </button>
                 <button
                   onClick={() => void remove(alert.id)}
-                  className="text-[#8E8E93] hover:text-ios-red transition-colors active:scale-90"
+                  className="text-muted hover:text-ios-red transition-colors active:scale-90"
                   title="Delete alert"
                   aria-label="Delete alert"
                 >
@@ -459,7 +459,7 @@ function AlertList({
 
           {adding && (
             <div className="glass-card px-3 py-3">
-              <div className="flex items-center justify-between text-[11px] text-[#8E8E93] mb-1.5">
+              <div className="flex items-center justify-between text-[11px] text-muted mb-1.5">
                 <span>New alert threshold</span>
                 <span className="font-semibold text-black dark:text-white tabular-nums">
                   {draftThreshold}%
@@ -488,7 +488,7 @@ function AlertList({
                     setDraftThreshold(90);
                   }}
                   disabled={saving}
-                  className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
+                  className="text-[12px] text-muted hover:text-black dark:hover:text-white transition-colors px-2"
                 >
                   Cancel
                 </button>

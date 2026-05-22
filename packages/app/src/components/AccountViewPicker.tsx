@@ -103,7 +103,7 @@ export default function AccountViewPicker({
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span className="text-[9px] text-[#8E8E93] uppercase tracking-wider font-semibold">
+        <span className="text-[9px] text-muted uppercase tracking-wider font-semibold">
           Showing
         </span>
         <span className="text-[11px] font-semibold text-black dark:text-white max-w-[180px] truncate">
@@ -111,13 +111,13 @@ export default function AccountViewPicker({
         </span>
         {currentLabel.secondary && (
           <>
-            <span className="text-[11px] text-[#8E8E93]">·</span>
-            <span className="text-[11px] text-[#8E8E93] max-w-[120px] truncate">
+            <span className="text-[11px] text-muted">·</span>
+            <span className="text-[11px] text-muted max-w-[120px] truncate">
               {currentLabel.secondary}
             </span>
           </>
         )}
-        <ChevronDown size={11} strokeWidth={2.2} className="text-[#8E8E93]" />
+        <ChevronDown size={11} strokeWidth={2.2} className="text-muted" />
       </button>
 
       {open && (
@@ -194,7 +194,7 @@ function PickerRow({
       {color && <AccountColorDot color={color} size="sm" />}
       <div className="flex-1 min-w-0">
         <p className="text-[12px] font-semibold text-black dark:text-white truncate">{primary}</p>
-        {secondary && <p className="text-[10px] text-[#8E8E93] truncate">{secondary}</p>}
+        {secondary && <p className="text-[10px] text-muted truncate">{secondary}</p>}
       </div>
       {status === 'active' && (
         <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-ios-green shrink-0">
@@ -203,8 +203,8 @@ function PickerRow({
         </span>
       )}
       {status === 'excluded' && (
-        <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-[#8E8E93] shrink-0">
-          <span className="w-1.5 h-1.5 rounded-full bg-[#8E8E93]/60" />
+        <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-muted shrink-0">
+          <span className="w-1.5 h-1.5 rounded-full bg-muted/60" />
           Excluded
         </span>
       )}

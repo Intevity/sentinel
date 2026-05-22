@@ -303,11 +303,11 @@ export default function Tour({
               <Illustration className="w-full h-full" />
               <button
                 onClick={skip}
-                className="absolute top-2 right-2 w-6 h-6 rounded-full bg-white/80 dark:bg-black/40 backdrop-blur-xs hover:bg-white dark:hover:bg-black/60 flex items-center justify-center"
+                className="absolute top-2 right-2 w-6 h-6 rounded-full bg-surface-overlay/80 dark:bg-black/40 backdrop-blur-xs hover:bg-white dark:hover:bg-black/60 flex items-center justify-center"
                 title="Skip tour"
                 aria-label="Skip tour"
               >
-                <X size={11} className="text-[#8E8E93]" strokeWidth={2.4} />
+                <X size={11} className="text-muted" strokeWidth={2.4} />
               </button>
               {/* Icon badge straddling the hero/body boundary */}
               <motion.div
@@ -330,7 +330,7 @@ export default function Tour({
               <h3 className="text-[14px] font-semibold text-black dark:text-white mb-1 leading-tight">
                 {step.title}
               </h3>
-              <p className="text-[11.5px] text-[#8E8E93] leading-snug">{step.body}</p>
+              <p className="text-[11.5px] text-muted leading-snug">{step.body}</p>
 
               {/* ── Footer: dots + nav buttons ─────────────────── */}
               <div className="flex items-center justify-between gap-2 mt-3">
@@ -344,7 +344,7 @@ export default function Tour({
                   <button
                     onClick={back}
                     disabled={index === 0}
-                    className="text-[11px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors disabled:opacity-30 inline-flex items-center gap-1 px-1.5 py-1"
+                    className="text-[11px] font-medium text-muted hover:text-black dark:hover:text-white transition-colors disabled:opacity-30 inline-flex items-center gap-1 px-1.5 py-1"
                   >
                     <ArrowLeft size={11} strokeWidth={2.4} />
                     Back
@@ -353,7 +353,7 @@ export default function Tour({
                     <>
                       <button
                         onClick={() => onFinish()}
-                        className="text-[11px] font-medium px-2.5 py-1.5 rounded-lg text-[#8E8E93] hover:text-black dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                        className="text-[11px] font-medium px-2.5 py-1.5 rounded-lg text-muted hover:text-black dark:hover:text-white hover:bg-black/5 dark:hover:bg-surface-overlay/5 transition-colors"
                       >
                         Done
                       </button>

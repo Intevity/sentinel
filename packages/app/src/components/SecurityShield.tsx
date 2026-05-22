@@ -37,7 +37,7 @@ export default function SecurityShield({
       strokeWidth={2.2}
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={`${anyOn ? 'text-ios-green' : 'text-[#8E8E93]'} flex-shrink-0 block`}
+      className={`${anyOn ? 'text-ios-green' : 'text-muted'} flex-shrink-0 block`}
       aria-label={title}
       role="img"
     >
@@ -52,7 +52,7 @@ export default function SecurityShield({
       </defs>
       {/* Grey outline underneath. Always drawn so the silhouette stays
           consistent with neighbouring header icons when a layer is off. */}
-      <g className="text-[#8E8E93]">
+      <g className="text-muted">
         <path d={SHIELD_PATH} stroke="currentColor" />
       </g>
       {/* Green layer. Pulses to show "actively protecting". When both

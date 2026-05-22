@@ -80,17 +80,23 @@ node -e "
 ## Full app build (Rust/frontend changes)
 
 ```sh
-pnpm --filter @claude-sentinel/app run tauri:build
+pnpm install:app
 ```
 
-Artifacts land in `packages/app/src-tauri/target/release/bundle/macos/`.
+This runs `scripts/install-app.sh`, which: builds the bundle, replaces
+`/Applications/Claude Sentinel.app` cleanly (`rm -rf` first to avoid the
+`cp -R` merge-not-replace footgun), re-signs ad-hoc, verifies, and
+launches. The user should quit Sentinel from the tray before running.
 
-To install (only when user has quit the app first):
+The re-sign step is mandatory: `cp -R` over an existing bundle leaves
+macOS's amfid/Gatekeeper cache stale, and the first child the app
+spawns (the daemon sidecar) gets SIGKILLed silently — looks identical
+to "the daemon didn't open". `codesign --force --deep --sign -` clears
+the cache. The script handles this for you; do not skip it by running
+the steps manually.
 
-```sh
-cp -R "packages/app/src-tauri/target/release/bundle/macos/Claude Sentinel.app" /Applications/
-open "/Applications/Claude Sentinel.app"
-```
+Artifacts also land in `packages/app/src-tauri/target/release/bundle/macos/`
+for direct inspection of the .app and `.dmg`.
 
 ## Tests
 

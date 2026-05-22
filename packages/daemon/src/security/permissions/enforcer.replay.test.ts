@@ -62,6 +62,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     cacheTtlForceOneHour: false,
     securitySetupCompleted: true,
     tourCompleted: true,
+    theme: 'system',
     denyPrivateNetworkByDefault: false,
     toolPermissionResolveSymlinks: false,
     daemonHealthFailMode: 'warn',

@@ -51,7 +51,7 @@ export default function ActivationBanner(): React.ReactElement | null {
             <p className="text-[13px] font-semibold text-black dark:text-white">
               Activate Sentinel
             </p>
-            <p className="text-[11px] text-[#8E8E93] mt-0.5">
+            <p className="text-[11px] text-muted mt-0.5">
               Routes Claude Code through the Sentinel proxy for multi-account switching, usage
               tracking, and overage alerts. Restart Claude Code after activating.
             </p>

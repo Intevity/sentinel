@@ -508,7 +508,7 @@ export default function AccountSwitcher({
           <button
             onClick={() => void handleRefreshClick()}
             disabled={loading || refreshInFlight}
-            className="text-[#8E8E93] hover:text-ios-blue disabled:opacity-40 transition-colors active:scale-90"
+            className="text-muted hover:text-ios-blue disabled:opacity-40 transition-colors active:scale-90"
             title="Refresh accounts and usage"
           >
             <RefreshCw
@@ -584,7 +584,7 @@ export default function AccountSwitcher({
           >
             <div className="px-4 py-3">
               <p className="text-[12px] font-semibold text-ios-blue mb-1">Try round-robin?</p>
-              <p className="text-[11px] text-[#8E8E93] leading-snug mb-2.5">
+              <p className="text-[11px] text-muted leading-snug mb-2.5">
                 With multiple accounts enrolled, Sentinel can rotate the OAuth token per request so
                 usage drains across all of them. You can tune the strategy (balance vs. earliest
                 reset) from Settings.
@@ -603,7 +603,7 @@ export default function AccountSwitcher({
                 </button>
                 <button
                   onClick={() => setRrSuggestionVisible(false)}
-                  className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
+                  className="text-[12px] text-muted hover:text-black dark:hover:text-white transition-colors px-2"
                 >
                   Not now
                 </button>
@@ -654,7 +654,7 @@ export default function AccountSwitcher({
               <p className="text-[13px] font-semibold text-black dark:text-white mb-1">
                 Add another account
               </p>
-              <p className="text-[11px] text-[#8E8E93] leading-snug mb-3">
+              <p className="text-[11px] text-muted leading-snug mb-3">
                 Re-authorizing the same email (to add another organization, for example) works in
                 your default browser. Switching to a different email signs you out of claude.ai and
                 drops the OAuth flow: the same limitation Claude Code has. For a different email,
@@ -683,7 +683,7 @@ export default function AccountSwitcher({
                 </button>
                 <button
                   onClick={() => setPendingAddAccountConfirm(false)}
-                  className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
+                  className="text-[12px] text-muted hover:text-black dark:hover:text-white transition-colors px-2"
                 >
                   Cancel
                 </button>
@@ -707,7 +707,7 @@ export default function AccountSwitcher({
                   <p className="text-[13px] font-semibold text-black dark:text-white mb-0.5">
                     Remove {target?.displayName || target?.email}?
                   </p>
-                  <p className="text-[11px] text-[#8E8E93] mb-3">
+                  <p className="text-[11px] text-muted mb-3">
                     Keep data to preserve usage history, or delete everything now.
                   </p>
                   <div className="flex items-center gap-2">
@@ -727,7 +727,7 @@ export default function AccountSwitcher({
                     </button>
                     <button
                       onClick={() => setPendingRemoveId(null)}
-                      className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
+                      className="text-[12px] text-muted hover:text-black dark:hover:text-white transition-colors px-2"
                     >
                       Cancel
                     </button>
@@ -791,7 +791,7 @@ export default function AccountSwitcher({
       {!loading && accounts.length === 0 && removedAccounts.length === 0 && (
         <div className="rounded-2xl bg-white dark:bg-[#1E1E1E] shadow-card px-4 py-10 text-center">
           <p className="text-[14px] font-medium text-black dark:text-white">No accounts yet</p>
-          <p className="text-[12px] text-[#8E8E93] mt-1">
+          <p className="text-[12px] text-muted mt-1">
             Click <strong>Add Account</strong> to sign in, or make sure Claude Code is running.
           </p>
         </div>
@@ -812,10 +812,10 @@ export default function AccountSwitcher({
                       {account.displayName || account.email}
                     </p>
                     {account.displayName && (
-                      <p className="text-[11px] text-[#8E8E93] truncate">{account.email}</p>
+                      <p className="text-[11px] text-muted truncate">{account.email}</p>
                     )}
                     {account.orgName && (
-                      <p className="text-[11px] text-[#8E8E93] truncate">{account.orgName}</p>
+                      <p className="text-[11px] text-muted truncate">{account.orgName}</p>
                     )}
                   </div>
                   <button

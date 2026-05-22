@@ -15,13 +15,27 @@
 /// up and uses it to gate every IPC connection. The same token is
 /// stashed in `IPC_HANDSHAKE_TOKEN` so the IPC client can present it on
 /// connect.
+///
+/// Stale-daemon eviction: the daemon is deliberately long-lived (it
+/// keeps proxying Claude Code traffic while the UI is closed), so a
+/// user who closes the app and reopens it — or who builds a fresh app
+/// bundle and launches it — typically finds a daemon already bound to
+/// port 47284. That daemon was spawned by a PRIOR app launch and is
+/// gated by THAT launch's handshake token; our freshly-generated token
+/// won't authenticate against it, leaving the UI permanently stuck on
+/// "waiting for daemon". Before spawning, we probe `/health` to detect
+/// such a stale daemon, pull its PID out of the response, SIGTERM it,
+/// and wait for the port to free. If the daemon doesn't exit within
+/// ~5 s we escalate to SIGKILL. The new daemon then binds cleanly and
+/// receives our fresh token via stdin.
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use rand::RngCore;
 use tauri::AppHandle;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// One-shot store for the IPC handshake token. Populated before the
 /// daemon is spawned (in `spawn`); read by `ipc::connect_daemon` when it
@@ -46,6 +60,135 @@ fn generate_handshake_token() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+/// Probe `127.0.0.1:47284/health` and return the daemon's PID if a
+/// daemon answers, or `None` if no daemon is listening (or the
+/// response shape was unexpected). Times out fast so we don't stall
+/// app launch when the port is free.
+///
+/// Uses raw TCP + a tiny HTTP/1.1 request rather than `reqwest` to
+/// avoid pulling in a full HTTP client just for one probe.
+async fn probe_daemon_pid() -> Option<u32> {
+    let stream_result = tokio::time::timeout(
+        Duration::from_millis(500),
+        tokio::net::TcpStream::connect("127.0.0.1:47284"),
+    )
+    .await;
+    let mut stream = match stream_result {
+        Ok(Ok(s)) => s,
+        _ => return None,
+    };
+
+    let req = b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    if stream.write_all(req).await.is_err() {
+        return None;
+    }
+
+    let mut buf = Vec::with_capacity(512);
+    let read_result = tokio::time::timeout(Duration::from_millis(500), async {
+        // Cap to a few KB — /health is tiny; if the listener replies
+        // with anything larger we don't care, the pid is at the top of
+        // the JSON body.
+        let mut tmp = [0u8; 2048];
+        loop {
+            match stream.read(&mut tmp).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    if buf.len() >= 4096 {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    })
+    .await;
+    if read_result.is_err() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&buf);
+    // The daemon's /health body is JSON like `{"status":"ok","pid":12345,...}`.
+    // A literal substring search is robust enough — `"pid":` only
+    // appears in the body field, never in headers.
+    let marker = "\"pid\":";
+    let i = text.find(marker)?;
+    let rest = &text[i + marker.len()..];
+    let pid_str: String = rest
+        .chars()
+        .skip_while(|c| c.is_whitespace())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    pid_str.parse::<u32>().ok()
+}
+
+/// Send a Unix signal (or Windows process-termination equivalent) to
+/// `pid` by shelling out. Returns true if the kill command succeeded.
+/// Failures are logged but never fatal — the caller's port-free poll
+/// is the real gate on "did the daemon actually exit?".
+async fn send_kill(pid: u32, force: bool) -> bool {
+    #[cfg(unix)]
+    {
+        let signal = if force { "KILL" } else { "TERM" };
+        match tokio::process::Command::new("kill")
+            .args([format!("-{signal}"), pid.to_string()])
+            .output()
+            .await
+        {
+            Ok(out) => out.status.success(),
+            Err(e) => {
+                eprintln!("[sentinel] kill -{signal} {pid} failed to launch: {e}");
+                false
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut cmd = tokio::process::Command::new("taskkill");
+        if force {
+            cmd.arg("/F");
+        }
+        cmd.args(["/PID", &pid.to_string()]);
+        match cmd.output().await {
+            Ok(out) => out.status.success(),
+            Err(e) => {
+                eprintln!("[sentinel] taskkill /PID {pid} failed to launch: {e}");
+                false
+            }
+        }
+    }
+}
+
+/// If a daemon is already listening on the IPC port, request a
+/// graceful shutdown and wait for it to release the port. Escalates
+/// to SIGKILL if the daemon hasn't exited within ~5 seconds. No-op
+/// when no daemon is running, which is the normal case for a clean
+/// launch.
+async fn evict_stale_daemon() {
+    let Some(pid) = probe_daemon_pid().await else {
+        return;
+    };
+
+    eprintln!(
+        "[sentinel] Found existing daemon (pid {pid}) — requesting graceful shutdown so a fresh handshake token can be installed"
+    );
+    send_kill(pid, false).await;
+
+    // Poll until the port is free, up to ~5 s.
+    for _ in 0..25 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        if probe_daemon_pid().await.is_none() {
+            eprintln!("[sentinel] Existing daemon exited cleanly");
+            return;
+        }
+    }
+
+    eprintln!("[sentinel] Existing daemon did not exit after SIGTERM; escalating to SIGKILL");
+    send_kill(pid, true).await;
+    // Give the OS a beat to reclaim the port after a forced kill.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 }
 
 /// Spawn the daemon sidecar in the background.
@@ -78,6 +221,13 @@ pub fn spawn(_app: &AppHandle) {
     }
 
     tauri::async_runtime::spawn(async move {
+        // Evict any stale daemon left over from a previous app launch
+        // before spawning ours. Without this, the new daemon binds-fail
+        // (port still owned by the old one) and our IPC handshake
+        // doesn't match the old daemon's token — UI sticks on
+        // "waiting for daemon" forever.
+        evict_stale_daemon().await;
+
         match tokio::process::Command::new(&path)
             .arg("start")
             .stdin(Stdio::piped())

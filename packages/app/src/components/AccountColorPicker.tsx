@@ -59,11 +59,11 @@ export default function AccountColorPicker({ account, onClose }: Props): React.R
           </h2>
           <button
             onClick={onClose}
-            className="w-7 h-7 rounded-full hover:bg-[#8E8E93]/10 flex items-center justify-center flex-shrink-0"
+            className="w-7 h-7 rounded-full hover:bg-muted/10 flex items-center justify-center flex-shrink-0"
             title="Close"
             aria-label="Close"
           >
-            <X size={14} className="text-[#8E8E93]" />
+            <X size={14} className="text-muted" />
           </button>
         </div>
 
@@ -81,7 +81,7 @@ export default function AccountColorPicker({ account, onClose }: Props): React.R
 
           <div className="grid grid-cols-4 gap-2">
             <div className="col-span-4">
-              <label className="block text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider mb-1">
+              <label className="block text-[10px] font-semibold text-muted uppercase tracking-wider mb-1">
                 Hex
               </label>
               <HexColorInput
@@ -97,7 +97,7 @@ export default function AccountColorPicker({ account, onClose }: Props): React.R
           </div>
 
           <div>
-            <p className="text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider mb-1.5">
+            <p className="text-[10px] font-semibold text-muted uppercase tracking-wider mb-1.5">
               Presets
             </p>
             <div className="flex items-center gap-2 flex-wrap">
@@ -123,7 +123,7 @@ export default function AccountColorPicker({ account, onClose }: Props): React.R
             <button
               onClick={() => void save(null)}
               disabled={saving}
-              className="inline-flex items-center gap-1 text-[11px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors disabled:opacity-40"
+              className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-black dark:hover:text-white transition-colors disabled:opacity-40"
               title="Clear the custom color and revert to the default gradient"
             >
               <RotateCcw size={11} />
@@ -133,7 +133,7 @@ export default function AccountColorPicker({ account, onClose }: Props): React.R
               <button
                 onClick={onClose}
                 disabled={saving}
-                className="text-[11px] font-medium px-3 py-1.5 rounded-lg text-[#8E8E93] hover:bg-[#8E8E93]/10 disabled:opacity-40"
+                className="text-[11px] font-medium px-3 py-1.5 rounded-lg text-muted hover:bg-muted/10 disabled:opacity-40"
               >
                 Cancel
               </button>
@@ -163,7 +163,7 @@ function RgbField({
 }): React.ReactElement {
   return (
     <label className="block">
-      <span className="block text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider mb-1">
+      <span className="block text-[10px] font-semibold text-muted uppercase tracking-wider mb-1">
         {label}
       </span>
       <input

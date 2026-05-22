@@ -106,7 +106,7 @@ export default function LiveSecurityRow({
       data-testid="live-security-row"
     >
       <div className="flex items-start gap-3">
-        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-white/60 dark:bg-black/30 flex items-center justify-center">
+        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-surface-overlay/60 dark:bg-black/30 flex items-center justify-center">
           <Icon size={15} className={SEVERITY_ICON_COLOR[entry.severity]} strokeWidth={2} />
         </div>
         <div className="flex-1 min-w-0">
@@ -121,13 +121,13 @@ export default function LiveSecurityRow({
               {entry.title}
             </p>
           </div>
-          <p className="text-[11px] text-[#8E8E93] mt-0.5 leading-snug">
+          <p className="text-[11px] text-muted mt-0.5 leading-snug">
             {canPickMode
               ? 'Approve to forward this call. Deny to refuse it. Approval expires automatically.'
               : 'Approve to forward this request and allow this match in the future. Deny to refuse it now. Approval expires automatically.'}
           </p>
           {entry.provenance && (
-            <p className="text-[10px] text-[#8E8E93]/80 mt-1 leading-snug italic">
+            <p className="text-[10px] text-muted/80 mt-1 leading-snug italic">
               {formatProvenance(entry.provenance.createdAt, entry.provenance.source)}
             </p>
           )}
@@ -146,12 +146,12 @@ export default function LiveSecurityRow({
           )}
           {entry.snippet && (
             <div className="mt-1.5 text-[10px] leading-snug">
-              <span className="text-[#8E8E93]">Context: </span>
+              <span className="text-muted">Context: </span>
               <HighlightedSnippet text={entry.snippet} />
             </div>
           )}
           {entry.sourceHint && (
-            <div className="mt-1 text-[10px] text-[#8E8E93] truncate" title={entry.sourceHint}>
+            <div className="mt-1 text-[10px] text-muted truncate" title={entry.sourceHint}>
               Source: <code className="font-mono">{entry.sourceHint}</code>
             </div>
           )}
@@ -175,7 +175,7 @@ export default function LiveSecurityRow({
         <button
           onClick={handleDeny}
           disabled={busy !== null}
-          className="flex-shrink-0 w-6 h-6 rounded-full text-[#8E8E93] hover:bg-black/10 dark:hover:bg-white/10 active:scale-90 transition-all disabled:opacity-40 flex items-center justify-center"
+          className="flex-shrink-0 w-6 h-6 rounded-full text-muted hover:bg-black/10 dark:hover:bg-surface-overlay/10 active:scale-90 transition-all disabled:opacity-40 flex items-center justify-center"
           title="Dismiss: same effect as letting the timer run out"
           aria-label="Dismiss"
         >
@@ -193,7 +193,7 @@ export default function LiveSecurityRow({
               className={`flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded-md cursor-pointer select-none border transition-colors ${
                 mode === m
                   ? 'bg-ios-blue/10 border-ios-blue text-ios-blue'
-                  : 'border-transparent bg-black/[0.03] dark:bg-white/[0.05] hover:border-black/10 dark:hover:border-white/15'
+                  : 'border-transparent bg-black/[0.03] dark:bg-white/[0.05] hover:border-black/10 dark:hover:border-border-subtle/15'
               }`}
               title={
                 m === 'once'

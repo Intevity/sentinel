@@ -19,10 +19,10 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{oneshot, Mutex};
 
-#[cfg(unix)]
-use tokio::net::UnixStream;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+#[cfg(unix)]
+use tokio::net::UnixStream;
 
 #[cfg(unix)]
 type DaemonStream = UnixStream;
@@ -248,11 +248,19 @@ pub async fn send_internal(message: serde_json::Value) -> Result<IpcResponse, St
         return Err(e);
     }
 
-    // Wait for the daemon's response (5 s timeout)
-    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
-        Ok(Ok(value)) => {
-            serde_json::from_value::<IpcResponse>(value).map_err(|e| e.to_string())
-        }
+    // Wait for the daemon's response. Default 5s is comfortable for every
+    // routine IPC; `run_scan_benchmark` runs a real CPU-bound benchmark
+    // (5 sizes × up to 2000ms cap apiece) that legitimately exceeds the
+    // 5s budget on M-series chips under thermal load or cold caches, so
+    // it gets a 30s window. New long-running handlers should be added
+    // here explicitly rather than raising the default for everyone.
+    let timeout_secs = if request_type == "run_scan_benchmark" {
+        30
+    } else {
+        5
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), rx).await {
+        Ok(Ok(value)) => serde_json::from_value::<IpcResponse>(value).map_err(|e| e.to_string()),
         Ok(Err(_)) => Err("Response channel dropped".to_string()),
         Err(_) => {
             // On timeout we DON'T try to remove our specific Sender from
@@ -264,7 +272,9 @@ pub async fn send_internal(message: serde_json::Value) -> Result<IpcResponse, St
             // calls `tx.send(..)`, and the value is dropped harmlessly
             // (Receiver is gone). Total overhead: one dead slot in the
             // queue, cleared on the next matching response.
-            Err(format!("Timeout waiting for daemon response to '{request_type}'"))
+            Err(format!(
+                "Timeout waiting for daemon response to '{request_type}'"
+            ))
         }
     }
 }

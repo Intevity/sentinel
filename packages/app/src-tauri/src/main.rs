@@ -97,7 +97,10 @@ fn toggle_devtools(app: AppHandle) -> Result<(), String> {
             .set_size(LogicalSize::new(DEVTOOLS_OPEN_WIDTH, DEVTOOLS_OPEN_HEIGHT))
             .map_err(|e| format!("set_size: {e}"))?;
         window.open_devtools();
-        let _ = app.emit("devtools_state_changed", serde_json::json!({ "open": true }));
+        let _ = app.emit(
+            "devtools_state_changed",
+            serde_json::json!({ "open": true }),
+        );
 
         // Watchdog: poll every 500ms for DevTools closing. Self-
         // terminating — the task ends as soon as the user closes the
@@ -131,10 +134,7 @@ fn toggle_devtools(app: AppHandle) -> Result<(), String> {
 /// the watchdog task for external DevTools closes (keyboard shortcut,
 /// inspector X button). Idempotent — repeating the sequence on an
 /// already-restored window is harmless.
-fn restore_tray_window_size(
-    window: &tauri::WebviewWindow,
-    app: &AppHandle,
-) -> Result<(), String> {
+fn restore_tray_window_size(window: &tauri::WebviewWindow, app: &AppHandle) -> Result<(), String> {
     // Order matters: set size first (while still resizable), then pin
     // max + disable resize. If we disabled resize first, set_size might
     // silently refuse to change.
@@ -147,7 +147,10 @@ fn restore_tray_window_size(
     window
         .set_resizable(false)
         .map_err(|e| format!("set_resizable: {e}"))?;
-    let _ = app.emit("devtools_state_changed", serde_json::json!({ "open": false }));
+    let _ = app.emit(
+        "devtools_state_changed",
+        serde_json::json!({ "open": false }),
+    );
     Ok(())
 }
 

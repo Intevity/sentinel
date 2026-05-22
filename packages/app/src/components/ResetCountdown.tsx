@@ -88,7 +88,7 @@ export default function ResetCountdown({
     return (
       <div className="relative group">
         <span
-          className={`text-[10px] font-medium tabular-nums px-2 py-0.5 rounded-full bg-[#8E8E93]/10 text-[#8E8E93] ${className}`}
+          className={`text-[10px] font-medium tabular-nums px-2 py-0.5 rounded-full bg-muted/10 text-muted ${className}`}
         >
           {display}
         </span>
@@ -103,7 +103,7 @@ export default function ResetCountdown({
 
   return (
     <span
-      className={`text-[10px] text-[#8E8E93] tabular-nums ${className}`}
+      className={`text-[10px] text-muted tabular-nums ${className}`}
       title={`Window resets at ${new Date(epochSec * 1000).toLocaleString()}`}
     >
       {display}

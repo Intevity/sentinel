@@ -1,7 +1,11 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
-  darkMode: 'media',
+  // 'class' so the theme effect can override the OS preference. The
+  // useThemeEffect hook adds/removes `.dark` on <html> based on
+  // settings.theme; the FOWT script in index.html pre-applies the
+  // class from localStorage to avoid a flash on launch.
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {
@@ -14,6 +18,15 @@ export default {
           indigo: '#5E5CE6',
           gray: '#8E8E93',
         },
+        // Semantic theme tokens backed by CSS vars in index.css. The
+        // `<alpha-value>` placeholder lets the `/N` opacity modifier
+        // keep working (e.g. `text-foreground/60`). RGB values must be
+        // space-separated triplets, not `rgb(...)` — required by
+        // Tailwind for the alpha-value substitution.
+        foreground: 'rgb(var(--foreground) / <alpha-value>)',
+        muted: 'rgb(var(--muted) / <alpha-value>)',
+        'border-subtle': 'rgb(var(--border-subtle) / <alpha-value>)',
+        'surface-overlay': 'rgb(var(--surface-overlay) / <alpha-value>)',
       },
       fontFamily: {
         sans: [

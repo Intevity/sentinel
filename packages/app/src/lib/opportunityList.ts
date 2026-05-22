@@ -105,7 +105,7 @@ export function formatUsd(n: number): string {
 export function savingsColorClass(n: number): string {
   if (n >= SAVINGS_NOISE_FLOOR) return 'text-emerald-300';
   if (n <= -SAVINGS_NOISE_FLOOR) return 'text-red-400';
-  return 'text-white/70';
+  return 'text-foreground/70';
 }
 
 export function formatBytes(n: number | null): string {

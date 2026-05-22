@@ -121,7 +121,7 @@ export default function SecurityAlertBanner({
               </span>
             )}
           </div>
-          <p className="text-[10.5px] text-[#8E8E93] mt-0.5 leading-snug">{subtitle}</p>
+          <p className="text-[10.5px] text-muted mt-0.5 leading-snug">{subtitle}</p>
         </div>
         <span
           onClick={handleDismiss}
@@ -134,7 +134,7 @@ export default function SecurityAlertBanner({
               onDismiss();
             }
           }}
-          className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 shrink-0 mt-0.5 cursor-pointer"
+          className="text-muted hover:text-black dark:hover:text-white transition-colors active:scale-90 shrink-0 mt-0.5 cursor-pointer"
           aria-label="Dismiss"
         >
           <X size={13} strokeWidth={2.5} />

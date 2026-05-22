@@ -20,7 +20,7 @@ const VISIBLE_CAP = 500;
 const LEVEL_ORDER: LogLevel[] = ['debug', 'info', 'warn', 'error'];
 
 const LEVEL_STYLE: Record<LogLevel, string> = {
-  debug: 'text-[#8E8E93]',
+  debug: 'text-muted',
   info: 'text-black dark:text-white',
   warn: 'text-ios-orange',
   error: 'text-ios-red',
@@ -314,7 +314,7 @@ export default function LogsViewer(): React.ReactElement {
       <div className="flex items-center justify-between flex-shrink-0 mb-2">
         <div className="flex items-center gap-2">
           <span className="section-label">Logs</span>
-          <span className="text-[10px] text-[#8E8E93]">
+          <span className="text-[10px] text-muted">
             {filtered.length}
             {filtered.length !== entries.length ? ` / ${entries.length}` : ''}
           </span>
@@ -361,7 +361,7 @@ export default function LogsViewer(): React.ReactElement {
       <div className="flex-shrink-0 mb-2">
         <button
           onClick={() => setFiltersOpen((v) => !v)}
-          className="flex items-center gap-1 text-[11px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-95"
+          className="flex items-center gap-1 text-[11px] font-medium text-muted hover:text-black dark:hover:text-white transition-colors active:scale-95"
           title={filtersOpen ? 'Hide filters' : 'Show filters'}
           aria-expanded={filtersOpen}
         >
@@ -380,14 +380,14 @@ export default function LogsViewer(): React.ReactElement {
             {/* Emit-level selector — flows into settings.logLevel. Changes take
                 effect live on the daemon without a restart. */}
             <div className="flex items-center gap-2">
-              <label className="text-[11px] text-[#8E8E93]">Daemon log level:</label>
+              <label className="text-[11px] text-muted">Daemon log level:</label>
               <select
                 value={settings?.logLevel ?? 'info'}
                 onChange={(e) => {
                   void handleLevelEmitChange(e.target.value as LogLevel);
                 }}
                 disabled={!settings}
-                className="text-[11px] font-medium bg-[#8E8E93]/10 text-black dark:text-white rounded-full px-2 py-0.5 disabled:opacity-40"
+                className="text-[11px] font-medium bg-muted/10 text-black dark:text-white rounded-full px-2 py-0.5 disabled:opacity-40"
                 title="Minimum severity the daemon emits. Lower to DEBUG only when troubleshooting."
               >
                 {LEVEL_ORDER.map((l) => (
@@ -407,7 +407,7 @@ export default function LogsViewer(): React.ReactElement {
                   className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
                     levelMask.has(level)
                       ? 'bg-ios-blue text-white'
-                      : 'bg-[#8E8E93]/10 text-[#8E8E93] hover:bg-[#8E8E93]/20'
+                      : 'bg-muted/10 text-muted hover:bg-muted/20'
                   }`}
                 >
                   {level.toUpperCase()}
@@ -424,7 +424,7 @@ export default function LogsViewer(): React.ReactElement {
                     className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
                       tagMask.has(tag)
                         ? 'bg-ios-blue text-white'
-                        : 'bg-[#8E8E93]/10 text-[#8E8E93] hover:bg-[#8E8E93]/20'
+                        : 'bg-muted/10 text-muted hover:bg-muted/20'
                     }`}
                     title={`Filter to ${tag} entries`}
                   >
@@ -439,7 +439,7 @@ export default function LogsViewer(): React.ReactElement {
               placeholder="Search messages…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full text-[11px] bg-[#8E8E93]/10 text-black dark:text-white rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ios-blue"
+              className="w-full text-[11px] bg-muted/10 text-black dark:text-white rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ios-blue"
             />
           </div>
         )}
@@ -458,7 +458,7 @@ export default function LogsViewer(): React.ReactElement {
         {showEmptyState && (
           <div className="glass-card px-4 py-10 text-center">
             <p className="text-[13px] font-medium text-black dark:text-white">No logs yet</p>
-            <p className="text-[11px] text-[#8E8E93] mt-1">
+            <p className="text-[11px] text-muted mt-1">
               Daemon activity will stream here in real time.
             </p>
           </div>
@@ -466,7 +466,7 @@ export default function LogsViewer(): React.ReactElement {
 
         {showNoMatchState && (
           <div className="glass-card px-4 py-6 text-center">
-            <p className="text-[12px] text-[#8E8E93]">No entries match your filters.</p>
+            <p className="text-[12px] text-muted">No entries match your filters.</p>
           </div>
         )}
 
@@ -478,7 +478,7 @@ export default function LogsViewer(): React.ReactElement {
               className="absolute inset-0 glass-card px-2 py-2 font-mono text-[10.5px] leading-[1.35] overflow-y-auto overflow-x-auto"
             >
               {truncated && (
-                <div className="flex items-center justify-between px-1 py-1 text-[10px] text-[#8E8E93]">
+                <div className="flex items-center justify-between px-1 py-1 text-[10px] text-muted">
                   <span>
                     Showing last {VISIBLE_CAP} of {filtered.length} filtered entries
                   </span>
@@ -503,7 +503,7 @@ export default function LogsViewer(): React.ReactElement {
                     <div
                       onClick={hasDetail ? () => toggleExpand(e.requestId!) : undefined}
                       className={`whitespace-pre-wrap break-words ${LEVEL_STYLE[e.level]} ${
-                        hasDetail ? 'cursor-pointer hover:bg-[#8E8E93]/10 rounded px-0.5' : ''
+                        hasDetail ? 'cursor-pointer hover:bg-muted/10 rounded px-0.5' : ''
                       }`}
                     >
                       {hasDetail ? (
@@ -523,7 +523,7 @@ export default function LogsViewer(): React.ReactElement {
                       ) : (
                         <span className="inline-block w-[10px]" />
                       )}{' '}
-                      <span className="text-[#8E8E93]">{formatTime(e.timestamp)}</span>{' '}
+                      <span className="text-muted">{formatTime(e.timestamp)}</span>{' '}
                       <span className="font-semibold">{e.level.toUpperCase().padEnd(5)}</span>{' '}
                       {e.tag && <span className="text-ios-blue">[{e.tag}]</span>} {displayMessage}
                     </div>
@@ -595,7 +595,7 @@ function RequestDetailPanel({
 }): React.ReactElement {
   if (state === 'loading' || state === undefined) {
     return (
-      <div className="mx-4 my-1 px-3 py-2 text-[10px] text-[#8E8E93]">Loading request detail…</div>
+      <div className="mx-4 my-1 px-3 py-2 text-[10px] text-muted">Loading request detail…</div>
     );
   }
   if (state === 'error') {
@@ -606,10 +606,10 @@ function RequestDetailPanel({
     );
   }
   return (
-    <div className="mx-4 my-1 border border-[#8E8E93]/20 rounded-lg bg-[#8E8E93]/5 overflow-hidden">
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#8E8E93]/20 text-[10px]">
+    <div className="mx-4 my-1 border border-muted/20 rounded-lg bg-muted/5 overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-muted/20 text-[10px]">
         <span className="font-semibold">{state.method}</span>
-        <span className="font-mono text-[#8E8E93]">{state.urlPath}</span>
+        <span className="font-mono text-muted">{state.urlPath}</span>
         {state.statusCode !== null && (
           <span
             className={`font-semibold ${
@@ -620,7 +620,7 @@ function RequestDetailPanel({
           </span>
         )}
         {state.durationMs !== null && (
-          <span className="text-[#8E8E93]">{(state.durationMs / 1000).toFixed(2)}s</span>
+          <span className="text-muted">{(state.durationMs / 1000).toFixed(2)}s</span>
         )}
         {state.isSse && (
           <span className="bg-ios-blue/15 text-ios-blue px-1.5 py-0.5 rounded-full text-[9px] font-semibold">
@@ -629,7 +629,7 @@ function RequestDetailPanel({
         )}
       </div>
       {state.errorMessage && (
-        <div className="px-3 py-1.5 text-[10px] text-ios-red border-b border-[#8E8E93]/20">
+        <div className="px-3 py-1.5 text-[10px] text-ios-red border-b border-muted/20">
           {state.errorMessage}
         </div>
       )}
@@ -651,7 +651,7 @@ function RequestDetailPanel({
           isSse={state.isSse}
         />
       ) : (
-        <div className="px-3 py-2 text-[10px] text-[#8E8E93] border-t border-[#8E8E93]/20">
+        <div className="px-3 py-2 text-[10px] text-muted border-t border-muted/20">
           No response captured.
         </div>
       )}
@@ -685,10 +685,10 @@ function RequestResponseCard({
     }
   };
   return (
-    <div className="border-t border-[#8E8E93]/20 first:border-t-0">
+    <div className="border-t border-muted/20 first:border-t-0">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] font-semibold hover:bg-[#8E8E93]/10"
+        className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] font-semibold hover:bg-muted/10"
       >
         <span className="flex items-center gap-1.5">
           {open ? (
@@ -698,7 +698,7 @@ function RequestResponseCard({
           )}
           {label}
         </span>
-        <span className="text-[#8E8E93] font-normal">
+        <span className="text-muted font-normal">
           {formatBytes(bodySize)}
           {bodyTruncated ? ' · truncated' : ''}
         </span>
@@ -709,7 +709,7 @@ function RequestResponseCard({
             <div className="text-[10px] font-mono">
               {Object.entries(headers).map(([k, v]) => (
                 <div key={k} className="flex gap-2">
-                  <span className="text-[#8E8E93] shrink-0">{k}:</span>
+                  <span className="text-muted shrink-0">{k}:</span>
                   <span className="truncate break-all" title={v}>
                     {v}
                   </span>
@@ -720,7 +720,7 @@ function RequestResponseCard({
           {body && (
             <div>
               <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] text-[#8E8E93]">Body</span>
+                <span className="text-[10px] text-muted">Body</span>
                 <div className="flex items-center gap-2">
                   {bodyTruncated && (
                     <button

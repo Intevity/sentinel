@@ -57,21 +57,21 @@ export default function ContextInventoryPanel(): React.ReactElement {
         aria-expanded={open}
       >
         {open ? (
-          <ChevronDown className="h-3 w-3 text-white/55" />
+          <ChevronDown className="h-3 w-3 text-foreground/55" />
         ) : (
-          <ChevronRight className="h-3 w-3 text-white/55" />
+          <ChevronRight className="h-3 w-3 text-foreground/55" />
         )}
-        <ServerCog className="h-3 w-3 text-white/65" />
+        <ServerCog className="h-3 w-3 text-foreground/65" />
         <h3 className="section-label">Context-bloat inventory</h3>
-        <span className="ml-auto text-[10px] text-white/55">{headerSummary}</span>
+        <span className="ml-auto text-[10px] text-foreground/55">{headerSummary}</span>
       </button>
 
       {open && (
         <div className="mt-3 space-y-3">
-          <p className="text-[11px] text-white/55">
+          <p className="text-[11px] text-foreground/55">
             Each item below contributes to every Claude Code request's context. Disable items you
             don't actively use to reduce token cost. To disable, edit{' '}
-            <code className="text-white/75">~/.claude.json</code> or use Claude Code's native
+            <code className="text-foreground/75">~/.claude.json</code> or use Claude Code's native
             config; Sentinel doesn't yet write to these files.
           </p>
 
@@ -89,11 +89,11 @@ export default function ContextInventoryPanel(): React.ReactElement {
                 {mcpServers.map((s) => (
                   <li
                     key={`${s.project}:${s.name}`}
-                    className="grid grid-cols-[1fr_auto_auto_auto] items-baseline gap-2 text-[11px] text-white/80"
+                    className="grid grid-cols-[1fr_auto_auto_auto] items-baseline gap-2 text-[11px] text-foreground/80"
                   >
                     <span className="truncate">
                       <span className="font-mono">{s.name}</span>
-                      <span className="ml-1 text-[10px] text-white/45">
+                      <span className="ml-1 text-[10px] text-foreground/45">
                         {truncatePath(s.project)}
                       </span>
                     </span>
@@ -102,14 +102,14 @@ export default function ContextInventoryPanel(): React.ReactElement {
                         enabled
                       </span>
                     ) : (
-                      <span className="rounded bg-white/10 px-1 py-px text-[9px] uppercase text-white/55">
+                      <span className="rounded bg-surface-overlay/10 px-1 py-px text-[9px] uppercase text-foreground/55">
                         disabled
                       </span>
                     )}
-                    <span className="tabular-nums text-white/55">
+                    <span className="tabular-nums text-foreground/55">
                       {s.recent7d.calls} call{s.recent7d.calls === 1 ? '' : 's'}
                     </span>
-                    <span className="tabular-nums text-white/65">
+                    <span className="tabular-nums text-foreground/65">
                       {formatTokens(s.recent7d.estimatedTokens)}
                     </span>
                   </li>
@@ -126,10 +126,12 @@ export default function ContextInventoryPanel(): React.ReactElement {
                 {inventory.claudeMdFiles.map((f) => (
                   <li
                     key={f.path}
-                    className="grid grid-cols-[1fr_auto_auto] items-baseline gap-2 text-[11px] text-white/80"
+                    className="grid grid-cols-[1fr_auto_auto] items-baseline gap-2 text-[11px] text-foreground/80"
                   >
-                    <span className="truncate font-mono text-white/75">{truncatePath(f.path)}</span>
-                    <span className="rounded bg-white/10 px-1 py-px text-[9px] uppercase text-white/55">
+                    <span className="truncate font-mono text-foreground/75">
+                      {truncatePath(f.path)}
+                    </span>
+                    <span className="rounded bg-surface-overlay/10 px-1 py-px text-[9px] uppercase text-foreground/55">
                       {f.scope}
                     </span>
                     <span className="tabular-nums">{formatBytes(f.sizeBytes)}</span>
@@ -147,10 +149,10 @@ export default function ContextInventoryPanel(): React.ReactElement {
                 {inventory.memoryDirs.map((m) => (
                   <li
                     key={m.projectId}
-                    className="grid grid-cols-[1fr_auto_auto] items-baseline gap-2 text-[11px] text-white/80"
+                    className="grid grid-cols-[1fr_auto_auto] items-baseline gap-2 text-[11px] text-foreground/80"
                   >
-                    <span className="truncate font-mono text-white/75">{m.projectId}</span>
-                    <span className="tabular-nums text-white/55">
+                    <span className="truncate font-mono text-foreground/75">{m.projectId}</span>
+                    <span className="tabular-nums text-foreground/55">
                       {m.fileCount} file{m.fileCount === 1 ? '' : 's'}
                     </span>
                     <span className="tabular-nums">{formatBytes(m.totalBytes)}</span>
@@ -168,7 +170,7 @@ export default function ContextInventoryPanel(): React.ReactElement {
                 {inventory.plugins.map((p) => (
                   <li
                     key={p.name}
-                    className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-white/80"
+                    className="rounded bg-surface-overlay/10 px-1.5 py-0.5 font-mono text-[10px] text-foreground/80"
                   >
                     {p.name}
                   </li>
@@ -188,7 +190,7 @@ export default function ContextInventoryPanel(): React.ReactElement {
                     className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
                       s.source === 'curated'
                         ? 'bg-sky-500/15 text-sky-200'
-                        : 'bg-white/10 text-white/80'
+                        : 'bg-surface-overlay/10 text-foreground/80'
                     }`}
                   >
                     {s.name}
@@ -212,14 +214,14 @@ function Section({
 }): React.ReactElement {
   return (
     <div>
-      <h4 className="mb-1 text-[10px] uppercase tracking-wide text-white/55">{title}</h4>
+      <h4 className="mb-1 text-[10px] uppercase tracking-wide text-foreground/55">{title}</h4>
       {children}
     </div>
   );
 }
 
 function Empty({ text }: { text: string }): React.ReactElement {
-  return <p className="text-[11px] text-white/45">{text}</p>;
+  return <p className="text-[11px] text-foreground/45">{text}</p>;
 }
 
 function useMemoTotal(inventory: ContextInventory): string {

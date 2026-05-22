@@ -84,8 +84,8 @@ use objc2::{msg_send, MainThreadMarker};
 use objc2_app_kit::NSApplicationDidBecomeActiveNotification;
 #[cfg(target_os = "macos")]
 use objc2_foundation::{
-    NSDictionary, NSNotification, NSNotificationCenter, NSNumber, NSString,
-    NSUserNotification, NSUserNotificationCenter,
+    NSDictionary, NSNotification, NSNotificationCenter, NSNumber, NSString, NSUserNotification,
+    NSUserNotificationCenter,
 };
 
 /// Right-hand action on every security banner. We still render it
@@ -300,8 +300,7 @@ fn deliver_notification(title: &str, body: &str, event_id: Option<i64>) {
         let value = NSString::from_str(&id.to_string());
         let keys: [&NSString; 1] = [&key];
         let values: [&NSString; 1] = [&value];
-        let user_info =
-            NSDictionary::<NSString, NSString>::from_slices(&keys, &values);
+        let user_info = NSDictionary::<NSString, NSString>::from_slices(&keys, &values);
         // SAFETY: phantom-generic cast; NSDictionary runtime layout
         // is independent of its type parameters.
         let user_info_any: Retained<NSDictionary<NSString, objc2::runtime::AnyObject>> =

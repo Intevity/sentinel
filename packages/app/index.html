@@ -7,6 +7,23 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Flash-of-wrong-theme prevention: apply the .dark class before
+         React mounts. Mirrors the localStorage key written by
+         useThemeEffect. Runs synchronously and never imports modules so
+         it executes before the first paint. -->
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem('sentinel.theme.v1') || 'system';
+          var dark =
+            pref === 'dark' ||
+            (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (dark) document.documentElement.classList.add('dark');
+        } catch (e) {
+          /* private mode / disabled storage: fall through to default light */
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

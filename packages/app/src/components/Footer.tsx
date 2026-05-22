@@ -65,7 +65,7 @@ export default function Footer({
   };
 
   return (
-    <footer className="flex-shrink-0 flex flex-col items-stretch border-t border-black/10 dark:border-white/10 text-[10px] text-[#8E8E93]">
+    <footer className="flex-shrink-0 flex flex-col items-stretch border-t border-black/10 dark:border-white/10 text-[10px] text-muted">
       {inspectorError && (
         <div className="px-4 py-1.5 bg-ios-orange/10 text-ios-orange text-[10px] flex items-start justify-between gap-2 border-b border-ios-orange/20">
           <span className="break-words">{inspectorError}</span>

@@ -66,7 +66,7 @@ function StackedTooltip({
       {payload.map((p) => (
         <div key={p.dataKey} className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full" style={{ background: p.fill }} />
-          <span className="text-[#8E8E93]">{p.name}</span>
+          <span className="text-muted">{p.name}</span>
           <span className="font-medium text-black dark:text-white ml-auto pl-4">
             {fmt(p.value)}
           </span>
@@ -74,7 +74,7 @@ function StackedTooltip({
       ))}
       {payload.length > 1 && (
         <div className="border-t border-black/5 dark:border-white/10 mt-1 pt-1 flex justify-between">
-          <span className="text-[#8E8E93]">Total</span>
+          <span className="text-muted">Total</span>
           <span className="font-semibold text-black dark:text-white">{fmt(total)}</span>
         </div>
       )}
@@ -112,7 +112,7 @@ export default function MetricsDashboard({
               className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all duration-150 ${
                 days === d
                   ? 'bg-white dark:bg-[#3A3A3C] text-black dark:text-white shadow-[0_1px_2px_rgba(0,0,0,0.12)]'
-                  : 'text-[#8E8E93]'
+                  : 'text-muted'
               }`}
             >
               {label}
@@ -129,7 +129,7 @@ export default function MetricsDashboard({
 
       {loading && !summary && (
         <div className="glass-card px-4 py-8 text-center">
-          <p className="text-[12px] text-[#8E8E93]">Loading…</p>
+          <p className="text-[12px] text-muted">Loading…</p>
         </div>
       )}
 
@@ -230,7 +230,7 @@ function MetricsContent({
       {/* ── Cache-hit rate per model ──────────────────────────────────── */}
       {Object.keys(summary.cacheHitRate).length > 0 && (
         <div className="glass-card px-4 py-3">
-          <p className="text-[11px] font-semibold text-[#8E8E93] mb-2">Cache hit rate by model</p>
+          <p className="text-[11px] font-semibold text-muted mb-2">Cache hit rate by model</p>
           <div className="space-y-2">
             {Object.entries(summary.cacheHitRate).map(([model, r]) => (
               <div key={model} className="flex items-center gap-2">
@@ -303,7 +303,7 @@ function MetricsContent({
       {totalTokens === 0 && totalCost === 0 && errorCount === 0 && summary.tools.length === 0 && (
         <div className="glass-card px-4 py-10 text-center">
           <p className="text-[13px] font-medium text-black dark:text-white">Awaiting telemetry</p>
-          <p className="text-[11px] text-[#8E8E93] mt-1 leading-relaxed">
+          <p className="text-[11px] text-muted mt-1 leading-relaxed">
             Run a Claude Code session — metrics appear here once OTEL events flush.
           </p>
         </div>
@@ -325,9 +325,9 @@ function Tile({
 }): React.ReactElement {
   return (
     <div className="glass-card px-4 py-3">
-      <p className="text-[11px] text-[#8E8E93] font-medium">{label}</p>
+      <p className="text-[11px] text-muted font-medium">{label}</p>
       <p className="mt-0.5">{children}</p>
-      {sub && <p className="text-[10px] text-[#8E8E93] mt-0.5 truncate">{sub}</p>}
+      {sub && <p className="text-[10px] text-muted mt-0.5 truncate">{sub}</p>}
     </div>
   );
 }
@@ -335,8 +335,8 @@ function Tile({
 function EmptyCard({ title, hint }: { title: string; hint: string }): React.ReactElement {
   return (
     <div className="glass-card px-4 py-5">
-      <p className="text-[11px] font-semibold text-[#8E8E93] mb-1">{title}</p>
-      <p className="text-[11px] text-[#8E8E93]">{hint}</p>
+      <p className="text-[11px] font-semibold text-muted mb-1">{title}</p>
+      <p className="text-[11px] text-muted">{hint}</p>
     </div>
   );
 }
@@ -372,17 +372,17 @@ function TokensChart({
 
   return (
     <div className="glass-card px-4 pt-4 pb-2">
-      <p className="text-[11px] font-semibold text-[#8E8E93] mb-3">Tokens by day</p>
+      <p className="text-[11px] font-semibold text-muted mb-3">Tokens by day</p>
       <ResponsiveContainer width="100%" height={160}>
         <BarChart data={data} barSize={18} margin={{ top: 0, right: 0, bottom: 0, left: -12 }}>
           <XAxis
             dataKey="date"
-            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
             axisLine={false}
             tickLine={false}
           />
           <YAxis
-            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
             axisLine={false}
             tickLine={false}
             tickFormatter={(v: number) => compact(v)}
@@ -404,7 +404,7 @@ function TokensChart({
         {keys.map((k) => (
           <div key={k} className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full" style={{ background: TOKEN_TYPE_COLORS[k] }} />
-            <span className="text-[10px] text-[#8E8E93]">{tokenLabel(k)}</span>
+            <span className="text-[10px] text-muted">{tokenLabel(k)}</span>
           </div>
         ))}
       </div>
@@ -432,17 +432,17 @@ function CostChart({
 
   return (
     <div className="glass-card px-4 pt-4 pb-2">
-      <p className="text-[11px] font-semibold text-[#8E8E93] mb-3">Cost by day (USD)</p>
+      <p className="text-[11px] font-semibold text-muted mb-3">Cost by day (USD)</p>
       <ResponsiveContainer width="100%" height={160}>
         <BarChart data={data} barSize={18} margin={{ top: 0, right: 0, bottom: 0, left: -12 }}>
           <XAxis
             dataKey="date"
-            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
             axisLine={false}
             tickLine={false}
           />
           <YAxis
-            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
             axisLine={false}
             tickLine={false}
             tickFormatter={(v: number) => `$${v.toFixed(2)}`}
@@ -469,7 +469,7 @@ function CostChart({
         {allModels.map((model) => (
           <div key={model} className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full" style={{ background: modelColor(model) }} />
-            <span className="text-[10px] text-[#8E8E93] truncate max-w-[140px]">{model}</span>
+            <span className="text-[10px] text-muted truncate max-w-[140px]">{model}</span>
           </div>
         ))}
       </div>
@@ -501,7 +501,7 @@ function ErrorsTimeline({
   return (
     <div className="glass-card px-4 pt-4 pb-2">
       <div className="flex items-center justify-between mb-3">
-        <p className="text-[11px] font-semibold text-[#8E8E93]">API errors</p>
+        <p className="text-[11px] font-semibold text-muted">API errors</p>
         {errors.retryExhaustedCount > 0 && (
           <span className="text-[10px] font-semibold text-ios-red bg-ios-red/10 px-2 py-0.5 rounded-full">
             {errors.retryExhaustedCount} retry-exhausted
@@ -512,12 +512,12 @@ function ErrorsTimeline({
         <BarChart data={data} barSize={14} margin={{ top: 0, right: 0, bottom: 0, left: -16 }}>
           <XAxis
             dataKey="date"
-            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
             axisLine={false}
             tickLine={false}
           />
           <YAxis
-            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
             axisLine={false}
             tickLine={false}
             allowDecimals={false}
@@ -540,9 +540,9 @@ function ErrorsTimeline({
 function TopTools({ tools }: { tools: MetricsSummary['tools'] }): React.ReactElement {
   return (
     <div className="glass-card px-4 py-3">
-      <p className="text-[11px] font-semibold text-[#8E8E93] mb-2">Top tools</p>
+      <p className="text-[11px] font-semibold text-muted mb-2">Top tools</p>
       <div className="space-y-1.5">
-        <div className="grid grid-cols-[1fr_auto_auto_auto] gap-3 text-[10px] text-[#8E8E93] uppercase tracking-wider pb-1 border-b border-black/5 dark:border-white/5">
+        <div className="grid grid-cols-[1fr_auto_auto_auto] gap-3 text-[10px] text-muted uppercase tracking-wider pb-1 border-b border-black/5 dark:border-white/5">
           <span>Tool</span>
           <span className="text-right">Calls</span>
           <span className="text-right">p50 / p95</span>
@@ -560,7 +560,7 @@ function TopTools({ tools }: { tools: MetricsSummary['tools'] }): React.ReactEle
               {t.toolName}
             </span>
             <span className="text-right tabular-nums text-black dark:text-white">{t.calls}</span>
-            <span className="text-right tabular-nums text-[#8E8E93]">
+            <span className="text-right tabular-nums text-muted">
               {Math.round(t.p50Ms)}/{Math.round(t.p95Ms)}ms
             </span>
             <span
@@ -624,16 +624,20 @@ function ActiveTimeChart({
   }));
   return (
     <div className="glass-card px-4 pt-4 pb-2">
-      <p className="text-[11px] font-semibold text-[#8E8E93] mb-3">Active time (minutes / day)</p>
+      <p className="text-[11px] font-semibold text-muted mb-3">Active time (minutes / day)</p>
       <ResponsiveContainer width="100%" height={120}>
         <BarChart data={data} barSize={16} margin={{ top: 0, right: 0, bottom: 0, left: -16 }}>
           <XAxis
             dataKey="date"
-            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
             axisLine={false}
             tickLine={false}
           />
-          <YAxis tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
+          <YAxis
+            tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
+            axisLine={false}
+            tickLine={false}
+          />
           <Tooltip
             content={<StackedTooltip valueFormatter={(v) => `${v}m`} />}
             cursor={{ fill: 'rgba(0,0,0,0.04)' }}
@@ -666,10 +670,10 @@ function EditAcceptRateCard({
   return (
     <div className="glass-card px-4 py-3">
       <div className="flex items-baseline justify-between mb-2">
-        <p className="text-[11px] font-semibold text-[#8E8E93]">Edit accept rate</p>
+        <p className="text-[11px] font-semibold text-muted">Edit accept rate</p>
         <p className={`text-[18px] font-bold tabular-nums ${overallColor}`}>{overallPct}%</p>
       </div>
-      <p className="text-[10px] text-[#8E8E93] mb-2">
+      <p className="text-[10px] text-muted mb-2">
         {overall.accepts} accepted · {overall.rejects} rejected
       </p>
       {Object.keys(byLanguage).length > 0 && (
@@ -677,7 +681,7 @@ function EditAcceptRateCard({
           {Object.entries(byLanguage).map(([lang, r]) => (
             <div key={lang} className="flex items-center justify-between text-[11px]">
               <span className="text-black dark:text-white truncate">{lang}</span>
-              <span className="text-[#8E8E93] tabular-nums">{(r.rate * 100).toFixed(0)}%</span>
+              <span className="text-muted tabular-nums">{(r.rate * 100).toFixed(0)}%</span>
             </div>
           ))}
         </div>
@@ -716,16 +720,16 @@ function ToolDecisionsCard({
   return (
     <div className="glass-card px-4 py-3">
       <div className="flex items-baseline justify-between mb-2">
-        <p className="text-[11px] font-semibold text-[#8E8E93]">Tool permission decisions</p>
+        <p className="text-[11px] font-semibold text-muted">Tool permission decisions</p>
         <p className={`text-[18px] font-bold tabular-nums ${overallColor}`}>{overallPct}%</p>
       </div>
-      <p className="text-[10px] text-[#8E8E93] mb-2">
+      <p className="text-[10px] text-muted mb-2">
         {overall.accepts} accepted · {overall.rejects} rejected · all tools (Bash, Read, Write, MCP,
         …)
       </p>
       {topTools.length > 0 && (
         <div className="mb-2">
-          <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-1">By tool</p>
+          <p className="text-[10px] text-muted uppercase tracking-wider mb-1">By tool</p>
           <div className="space-y-1">
             {topTools.map((t) => (
               <div
@@ -733,7 +737,7 @@ function ToolDecisionsCard({
                 className="grid grid-cols-[1fr_auto_auto] gap-3 text-[11px] items-center"
               >
                 <span className="font-medium text-black dark:text-white truncate">{t.tool}</span>
-                <span className="text-[10px] text-[#8E8E93] tabular-nums">
+                <span className="text-[10px] text-muted tabular-nums">
                   {t.accepts}✓ / {t.rejects}✗
                 </span>
                 <span className="text-[11px] font-semibold tabular-nums text-black dark:text-white w-10 text-right">
@@ -746,7 +750,7 @@ function ToolDecisionsCard({
       )}
       {sourceEntries.length > 0 && (
         <div>
-          <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-1">By source</p>
+          <p className="text-[10px] text-muted uppercase tracking-wider mb-1">By source</p>
           <div className="grid grid-cols-2 gap-x-3 gap-y-1">
             {sourceEntries.map((s) => (
               <div key={s.source} className="flex items-center justify-between text-[11px]">
@@ -756,7 +760,7 @@ function ToolDecisionsCard({
                 >
                   {s.source}
                 </span>
-                <span className="text-[#8E8E93] tabular-nums">
+                <span className="text-muted tabular-nums">
                   {s.total} · {(s.rate * 100).toFixed(0)}%
                 </span>
               </div>
@@ -779,12 +783,12 @@ function PromptsCard({ prompts }: { prompts: MetricsSummary['prompts'] }): React
   return (
     <div className="glass-card px-4 pt-4 pb-2">
       <div className="flex items-baseline justify-between mb-2">
-        <p className="text-[11px] font-semibold text-[#8E8E93]">Prompts per day</p>
+        <p className="text-[11px] font-semibold text-muted">Prompts per day</p>
         <p className="text-[18px] font-bold tabular-nums text-black dark:text-white">
           {prompts.total.toLocaleString()}
         </p>
       </div>
-      <p className="text-[10px] text-[#8E8E93] mb-2">
+      <p className="text-[10px] text-muted mb-2">
         avg {avgLen.toLocaleString()} chars · {prompts.total} total
       </p>
       {data.length > 0 && (
@@ -792,11 +796,15 @@ function PromptsCard({ prompts }: { prompts: MetricsSummary['prompts'] }): React
           <BarChart data={data} barSize={14} margin={{ top: 0, right: 0, bottom: 0, left: -20 }}>
             <XAxis
               dataKey="date"
-              tick={{ fontSize: 10, fill: '#8E8E93' }}
+              tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
               axisLine={false}
               tickLine={false}
             />
-            <YAxis tick={{ fontSize: 10, fill: '#8E8E93' }} axisLine={false} tickLine={false} />
+            <YAxis
+              tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
+              axisLine={false}
+              tickLine={false}
+            />
             <Tooltip content={<StackedTooltip />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
             <Bar dataKey="prompts" fill="#5E5CE6" radius={[4, 4, 0, 0]} name="prompts" />
           </BarChart>
@@ -834,10 +842,10 @@ function SkillsAndPlugins({
 }): React.ReactElement {
   return (
     <div className="glass-card px-4 py-3">
-      <p className="text-[11px] font-semibold text-[#8E8E93] mb-2">Skills &amp; plugins</p>
+      <p className="text-[11px] font-semibold text-muted mb-2">Skills &amp; plugins</p>
       {skills.length > 0 && (
         <div className="mb-2">
-          <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-1">Top skills</p>
+          <p className="text-[10px] text-muted uppercase tracking-wider mb-1">Top skills</p>
           <div className="flex flex-wrap gap-1.5">
             {skills.slice(0, 8).map((s) => (
               <span
@@ -845,7 +853,7 @@ function SkillsAndPlugins({
                 className="inline-flex items-center gap-1 text-[10px] font-medium bg-black/[0.04] dark:bg-white/[0.06] px-2 py-0.5 rounded-full"
               >
                 <span className="text-black dark:text-white">{s.name}</span>
-                <span className="text-[#8E8E93] tabular-nums">{s.count}</span>
+                <span className="text-muted tabular-nums">{s.count}</span>
               </span>
             ))}
           </div>
@@ -853,7 +861,7 @@ function SkillsAndPlugins({
       )}
       {plugins.length > 0 && (
         <div>
-          <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-1">Recent plugins</p>
+          <p className="text-[10px] text-muted uppercase tracking-wider mb-1">Recent plugins</p>
           <div className="space-y-0.5">
             {plugins.map((p) => (
               <div
@@ -862,9 +870,9 @@ function SkillsAndPlugins({
               >
                 <span className="text-black dark:text-white truncate">
                   {p.name}
-                  {p.version && <span className="text-[#8E8E93] ml-1">v{p.version}</span>}
+                  {p.version && <span className="text-muted ml-1">v{p.version}</span>}
                 </span>
-                <span className="text-[10px] text-[#8E8E93] tabular-nums">
+                <span className="text-[10px] text-muted tabular-nums">
                   {formatRelative(p.installedAt)}
                 </span>
               </div>
@@ -880,7 +888,7 @@ function LegendDot({ color, label }: { color: string; label: string }): React.Re
   return (
     <div className="flex items-center gap-1.5">
       <span className="w-2 h-2 rounded-full" style={{ background: color }} />
-      <span className="text-[10px] text-[#8E8E93]">{label}</span>
+      <span className="text-[10px] text-muted">{label}</span>
     </div>
   );
 }
@@ -963,7 +971,7 @@ export function CacheTtlSection({
   return (
     <div className="glass-card px-4 pt-4 pb-2">
       <div className="flex items-center justify-between mb-3">
-        <p className="text-[11px] font-semibold text-[#8E8E93]">Cache TTL breakdown</p>
+        <p className="text-[11px] font-semibold text-muted">Cache TTL breakdown</p>
         <div className="flex bg-black/[0.06] dark:bg-white/[0.08] rounded-lg p-[2px] gap-[2px]">
           {(['tokens', 'cost'] as const).map((mode) => (
             <button
@@ -972,7 +980,7 @@ export function CacheTtlSection({
               className={`px-2.5 py-0.5 rounded-md text-[10px] font-semibold transition-all duration-150 ${
                 view === mode
                   ? 'bg-white dark:bg-[#3A3A3C] text-black dark:text-white shadow-[0_1px_2px_rgba(0,0,0,0.12)]'
-                  : 'text-[#8E8E93]'
+                  : 'text-muted'
               }`}
             >
               {mode === 'tokens' ? 'Tokens' : 'Cost'}
@@ -982,9 +990,7 @@ export function CacheTtlSection({
       </div>
 
       {overrideForceOneHour && share1h !== null && (
-        <p
-          className={`text-[10px] mb-2 ${showDowngradeHint ? 'text-ios-orange' : 'text-[#8E8E93]'}`}
-        >
+        <p className={`text-[10px] mb-2 ${showDowngradeHint ? 'text-ios-orange' : 'text-muted'}`}>
           Override active: {(share1h * 100).toFixed(0)}% of cache writes landed at 1h
           {showDowngradeHint ? ' (server may be enforcing a downgrade on this account)' : ''}
         </p>
@@ -994,12 +1000,12 @@ export function CacheTtlSection({
         <BarChart data={dailyData} barSize={18} margin={{ top: 0, right: 0, bottom: 0, left: -12 }}>
           <XAxis
             dataKey="date"
-            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
             axisLine={false}
             tickLine={false}
           />
           <YAxis
-            tick={{ fontSize: 10, fill: '#8E8E93' }}
+            tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
             axisLine={false}
             tickLine={false}
             tickFormatter={(v: number) => fmt(v)}
@@ -1054,9 +1060,9 @@ function CacheTtlSessionTable({
 }): React.ReactElement {
   return (
     <div className="mt-3 pt-3 border-t border-black/5 dark:border-white/5">
-      <p className="text-[10px] text-[#8E8E93] uppercase tracking-wider mb-2">Recent sessions</p>
+      <p className="text-[10px] text-muted uppercase tracking-wider mb-2">Recent sessions</p>
       <div className="space-y-1.5">
-        <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-3 text-[10px] text-[#8E8E93] uppercase tracking-wider pb-1 border-b border-black/5 dark:border-white/5">
+        <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-3 text-[10px] text-muted uppercase tracking-wider pb-1 border-b border-black/5 dark:border-white/5">
           <span>Session</span>
           <span className="text-right">5m</span>
           <span className="text-right">1h</span>
@@ -1079,7 +1085,7 @@ function CacheTtlSessionTable({
             >
               <span className="font-medium text-black dark:text-white truncate">
                 {shortSessionId(s.sessionId)}
-                <span className="text-[#8E8E93] font-normal ml-2">{formatRelative(s.lastTs)}</span>
+                <span className="text-muted font-normal ml-2">{formatRelative(s.lastTs)}</span>
               </span>
               <span className="text-right tabular-nums text-black dark:text-white">
                 {fmt(write5m)}
@@ -1090,7 +1096,7 @@ function CacheTtlSessionTable({
               <span className="text-right tabular-nums text-black dark:text-white">
                 {fmt(reads)}
               </span>
-              <span className="text-right tabular-nums text-[#8E8E93]">{rightCol}</span>
+              <span className="text-right tabular-nums text-muted">{rightCol}</span>
             </div>
           );
         })}

@@ -112,7 +112,7 @@ export default function HeaderMenu({ measureRef }: HeaderMenuProps): React.React
     <div className="relative" ref={rootRef}>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5"
+        className="text-muted hover:text-black dark:hover:text-white transition-colors active:scale-90 p-0.5 -m-0.5"
         title="More"
         aria-label="Menu"
       >
@@ -131,18 +131,18 @@ export default function HeaderMenu({ measureRef }: HeaderMenuProps): React.React
             <div className="px-3 py-2 border-b border-black/5 dark:border-white/5">
               <div className="flex items-center gap-1.5 mb-0.5">
                 <Activity size={11} strokeWidth={2.5} className="text-ios-green" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-[#8E8E93]">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">
                   Daemon
                 </span>
               </div>
               {status ? (
                 <p className="text-[11px] text-black dark:text-white tabular-nums">
                   pid <span className="font-semibold">{status.pid}</span>
-                  <span className="text-[#8E8E93]"> · uptime </span>
+                  <span className="text-muted"> · uptime </span>
                   <span className="font-semibold">{formatUptime(status.uptimeMs)}</span>
                 </p>
               ) : (
-                <p className="text-[11px] text-[#8E8E93]">Not connected</p>
+                <p className="text-[11px] text-muted">Not connected</p>
               )}
             </div>
 
@@ -154,7 +154,7 @@ export default function HeaderMenu({ measureRef }: HeaderMenuProps): React.React
             >
               <Power size={12} strokeWidth={2.5} />
               <span>{quitting ? 'Quitting…' : 'Quit Sentinel'}</span>
-              <span className="ml-auto pl-3 text-[10px] text-[#8E8E93]">
+              <span className="ml-auto pl-3 text-[10px] text-muted">
                 Stops the background service
               </span>
             </button>
@@ -176,7 +176,7 @@ export default function HeaderMenu({ measureRef }: HeaderMenuProps): React.React
                 <p className="text-[12px] font-semibold text-black dark:text-white mb-1">
                   Uninstall Sentinel?
                 </p>
-                <p className="text-[11px] text-[#8E8E93] leading-snug mb-2">
+                <p className="text-[11px] text-muted leading-snug mb-2">
                   Removes the Sentinel env vars from{' '}
                   <code className="font-mono">~/.claude/settings.json</code> so Claude Code goes
                   back to calling Anthropic directly.
@@ -213,7 +213,7 @@ export default function HeaderMenu({ measureRef }: HeaderMenuProps): React.React
                       setUninstallError(null);
                     }}
                     disabled={uninstallStep === 'running'}
-                    className="text-[12px] text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors px-2"
+                    className="text-[12px] text-muted hover:text-black dark:hover:text-white transition-colors px-2"
                   >
                     Cancel
                   </button>

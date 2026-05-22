@@ -196,7 +196,7 @@ export default function NotificationHistory({
               className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
                 categoryFilter === cat
                   ? 'bg-ios-blue text-white'
-                  : 'bg-[#8E8E93]/10 text-[#8E8E93] hover:bg-[#8E8E93]/20'
+                  : 'bg-muted/10 text-muted hover:bg-muted/20'
               }`}
             >
               {cat === 'all' ? 'All' : cat === 'usage' ? 'Usage' : 'Security'}
@@ -208,14 +208,14 @@ export default function NotificationHistory({
       {filtered.length === 0 ? (
         <div className="glass-card px-4 py-10 text-center">
           <p className="text-[13px] font-medium text-black dark:text-white">No alerts yet</p>
-          <p className="text-[11px] text-[#8E8E93] mt-1">
+          <p className="text-[11px] text-muted mt-1">
             Overage and account switch events appear here.
           </p>
         </div>
       ) : (
         <div className="space-y-2">
           {sorted.map((notif) => {
-            const typeStyle = TYPE_COLORS[notif.type] ?? 'bg-[#8E8E93]/10 text-[#8E8E93]';
+            const typeStyle = TYPE_COLORS[notif.type] ?? 'bg-muted/10 text-muted';
             const security = isSecurityType(notif.type);
             const SeverityIcon = security ? SEVERITY_ICON[notif.type] : null;
             const severityColor = security ? SEVERITY_CLR[notif.type] : '';
@@ -242,7 +242,7 @@ export default function NotificationHistory({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 mb-1 flex-wrap">
                       {security && (
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-[#8E8E93]/10 text-[#8E8E93] tracking-wider">
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-muted/10 text-muted tracking-wider">
                           SECURITY
                         </span>
                       )}
@@ -257,8 +257,8 @@ export default function NotificationHistory({
                     <p className="text-[13px] font-semibold text-black dark:text-white leading-snug">
                       {notif.title.replace(/^(?:⚠️|🚫|✅)\s*/u, '')}
                     </p>
-                    <p className="text-[11px] text-[#8E8E93] mt-0.5 leading-snug">{notif.body}</p>
-                    <p className="text-[10px] text-[#8E8E93]/70 mt-1.5">{formatDate(notif.ts)}</p>
+                    <p className="text-[11px] text-muted mt-0.5 leading-snug">{notif.body}</p>
+                    <p className="text-[10px] text-muted/70 mt-1.5">{formatDate(notif.ts)}</p>
                   </div>
                   {!notif.acknowledged && (
                     <button
@@ -276,7 +276,7 @@ export default function NotificationHistory({
             );
           })}
           {loadMore && hasMore && (
-            <div ref={sentinelRef} className="py-3 text-center text-[10px] text-[#8E8E93]">
+            <div ref={sentinelRef} className="py-3 text-center text-[10px] text-muted">
               {loadingMore ? 'Loading more…' : ' '}
             </div>
           )}

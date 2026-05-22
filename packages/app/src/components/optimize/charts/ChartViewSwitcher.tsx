@@ -25,7 +25,7 @@ export default function ChartViewSwitcher({
 }): React.ReactElement {
   return (
     <div
-      className="flex flex-wrap rounded border border-white/10 p-0.5 text-[10px] uppercase tracking-wide"
+      className="flex flex-wrap rounded border border-border-subtle/10 p-0.5 text-[10px] uppercase tracking-wide"
       role="group"
       aria-label="Chart view"
     >
@@ -36,7 +36,9 @@ export default function ChartViewSwitcher({
           aria-pressed={value === opt.id}
           onClick={() => onChange(opt.id)}
           className={`rounded px-2 py-0.5 ${
-            value === opt.id ? 'bg-white/15 text-white' : 'text-white/55 hover:text-white/85'
+            value === opt.id
+              ? 'bg-surface-overlay/15 text-foreground'
+              : 'text-foreground/55 hover:text-foreground/85'
           }`}
         >
           {opt.label}

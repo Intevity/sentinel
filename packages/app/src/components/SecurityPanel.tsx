@@ -166,26 +166,26 @@ const PROVENANCE_META: Record<
   'mcp-description': {
     label: 'MCP tool description',
     Icon: Info,
-    color: 'text-[#8E8E93]',
-    bg: 'bg-[#8E8E93]/10',
+    color: 'text-muted',
+    bg: 'bg-muted/10',
   },
   conversation: {
     label: 'Conversation',
     Icon: MessageSquare,
-    color: 'text-[#8E8E93]',
-    bg: 'bg-[#8E8E93]/10',
+    color: 'text-muted',
+    bg: 'bg-muted/10',
   },
   'system-prompt': {
     label: 'System prompt',
     Icon: Settings2,
-    color: 'text-[#8E8E93]',
-    bg: 'bg-[#8E8E93]/10',
+    color: 'text-muted',
+    bg: 'bg-muted/10',
   },
   telemetry: {
     label: 'Scanner telemetry',
     Icon: Info,
-    color: 'text-[#8E8E93]',
-    bg: 'bg-[#8E8E93]/10',
+    color: 'text-muted',
+    bg: 'bg-muted/10',
   },
 };
 
@@ -485,9 +485,9 @@ export default function SecurityPanel({
     return (
       <div className="space-y-2 pt-1">
         <div className="glass-card px-4 py-8 text-center">
-          <ShieldOff size={28} className="mx-auto text-[#8E8E93] mb-2" strokeWidth={2} />
+          <ShieldOff size={28} className="mx-auto text-muted mb-2" strokeWidth={2} />
           <p className="text-[13px] font-semibold text-black dark:text-white">Security is off</p>
-          <p className="text-[11px] text-[#8E8E93] mt-1 leading-snug max-w-[340px] mx-auto">
+          <p className="text-[11px] text-muted mt-1 leading-snug max-w-[340px] mx-auto">
             Both security scanning and tool permissions are disabled. Enable one (or both) to start
             catching secrets, injection, risky tool calls, or blocking specific tools.
           </p>
@@ -664,7 +664,7 @@ export default function SecurityPanel({
       <div className="mb-2">
         <button
           onClick={() => setFiltersOpen((v) => !v)}
-          className="flex items-center gap-1 text-[11px] font-medium text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-95"
+          className="flex items-center gap-1 text-[11px] font-medium text-muted hover:text-black dark:hover:text-white transition-colors active:scale-95"
           title={filtersOpen ? 'Hide filters' : 'Show filters'}
           aria-expanded={filtersOpen}
         >
@@ -688,7 +688,7 @@ export default function SecurityPanel({
                   className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
                     severityFilter === s
                       ? 'bg-ios-blue text-white'
-                      : 'bg-[#8E8E93]/10 text-[#8E8E93] hover:bg-[#8E8E93]/20'
+                      : 'bg-muted/10 text-muted hover:bg-muted/20'
                   }`}
                 >
                   {s === 'all' ? 'All' : s.toUpperCase()}
@@ -703,7 +703,7 @@ export default function SecurityPanel({
                   className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
                     kindFilter === 'all'
                       ? 'bg-ios-blue text-white'
-                      : 'bg-[#8E8E93]/10 text-[#8E8E93] hover:bg-[#8E8E93]/20'
+                      : 'bg-muted/10 text-muted hover:bg-muted/20'
                   }`}
                 >
                   All Kinds
@@ -715,7 +715,7 @@ export default function SecurityPanel({
                     className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
                       kindFilter === k
                         ? 'bg-ios-blue text-white'
-                        : 'bg-[#8E8E93]/10 text-[#8E8E93] hover:bg-[#8E8E93]/20'
+                        : 'bg-muted/10 text-muted hover:bg-muted/20'
                     }`}
                   >
                     {KIND_LABEL[k]}
@@ -729,10 +729,10 @@ export default function SecurityPanel({
               placeholder="Search titles, reasons, sources…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full text-[11px] bg-[#8E8E93]/10 text-black dark:text-white rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ios-blue"
+              className="w-full text-[11px] bg-muted/10 text-black dark:text-white rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ios-blue"
             />
 
-            <label className="flex items-center gap-2 text-[11px] text-[#8E8E93]">
+            <label className="flex items-center gap-2 text-[11px] text-muted">
               <input
                 type="checkbox"
                 checked={includeWeakSignals}
@@ -748,7 +748,7 @@ export default function SecurityPanel({
       {error && <div className="glass-card px-3 py-2 text-[11px] text-ios-red">{error}</div>}
 
       {allowlistHintShown && (
-        <div className="glass-card px-3 py-2 text-[11px] text-[#8E8E93] flex items-start gap-2">
+        <div className="glass-card px-3 py-2 text-[11px] text-muted flex items-start gap-2">
           <Check size={12} className="text-ios-green flex-shrink-0 mt-0.5" strokeWidth={2.5} />
           <span className="flex-1 leading-snug">
             Added to allowlist. Manage entries in{' '}
@@ -759,7 +759,7 @@ export default function SecurityPanel({
           </span>
           <button
             onClick={() => setAllowlistHintShown(false)}
-            className="text-[#8E8E93] hover:text-black dark:hover:text-white p-0.5 -m-0.5 flex-shrink-0"
+            className="text-muted hover:text-black dark:hover:text-white p-0.5 -m-0.5 flex-shrink-0"
             aria-label="Dismiss"
           >
             <X size={10} strokeWidth={2.5} />
@@ -768,7 +768,7 @@ export default function SecurityPanel({
       )}
 
       {muteHintShown && (
-        <div className="glass-card px-3 py-2 text-[11px] text-[#8E8E93] flex items-start gap-2">
+        <div className="glass-card px-3 py-2 text-[11px] text-muted flex items-start gap-2">
           <Check size={12} className="text-ios-green flex-shrink-0 mt-0.5" strokeWidth={2.5} />
           <span className="flex-1 leading-snug">
             Muted. Un-mute from{' '}
@@ -783,7 +783,7 @@ export default function SecurityPanel({
           </span>
           <button
             onClick={() => setMuteHintShown(false)}
-            className="text-[#8E8E93] hover:text-black dark:hover:text-white p-0.5 -m-0.5 flex-shrink-0"
+            className="text-muted hover:text-black dark:hover:text-white p-0.5 -m-0.5 flex-shrink-0"
             aria-label="Dismiss"
           >
             <X size={10} strokeWidth={2.5} />
@@ -796,7 +796,7 @@ export default function SecurityPanel({
           OTHER system's toggle. Silent when both are on (the common
           case) or when neither is on (short-circuited above). */}
       {settings && (scannerOnly || permissionsOnly) && (
-        <div className="glass-card px-3 py-2 text-[11px] text-[#8E8E93] flex items-start gap-2">
+        <div className="glass-card px-3 py-2 text-[11px] text-muted flex items-start gap-2">
           <Info size={12} className="text-ios-blue flex-shrink-0 mt-0.5" strokeWidth={2.5} />
           <span className="flex-1 leading-snug">
             {scannerOnly ? (
@@ -843,7 +843,7 @@ export default function SecurityPanel({
       {!loading && events.length === 0 && pendingBlocks.length === 0 && !error ? (
         <div className="glass-card px-4 py-10 text-center">
           <p className="text-[13px] font-medium text-black dark:text-white">No security events</p>
-          <p className="text-[11px] text-[#8E8E93] mt-1">
+          <p className="text-[11px] text-muted mt-1">
             {scannerOnly
               ? 'Scanner findings will appear here when detected.'
               : permissionsOnly
@@ -866,7 +866,7 @@ export default function SecurityPanel({
             />
           ))}
           {hasMore && (
-            <div ref={sentinelRef} className="py-3 text-center text-[10px] text-[#8E8E93]">
+            <div ref={sentinelRef} className="py-3 text-center text-[10px] text-muted">
               {loadingMore ? 'Loading more…' : ' '}
             </div>
           )}
@@ -1007,7 +1007,7 @@ function AutoModeBanner({
                   </span>
                   <span className="whitespace-nowrap">{copy.headline}</span>
                 </p>
-                <p className="text-[10.5px] text-[#8E8E93] leading-snug mt-0.5">
+                <p className="text-[10.5px] text-muted leading-snug mt-0.5">
                   {skipInAutoMode
                     ? 'Sentinel is standing down on auto-mode sessions. Rule enforcement still applies to other sessions.'
                     : 'Sentinel is still enforcing rules on every session. Turn on "Skip enforcement in auto mode" in Settings if you want Sentinel to defer to Claude Code\u2019s classifier.'}
@@ -1015,9 +1015,9 @@ function AutoModeBanner({
               </div>
               {hasSessions &&
                 (expanded ? (
-                  <ChevronDown size={11} strokeWidth={2.5} className="text-[#8E8E93] mt-1" />
+                  <ChevronDown size={11} strokeWidth={2.5} className="text-muted mt-1" />
                 ) : (
-                  <ChevronRight size={11} strokeWidth={2.5} className="text-[#8E8E93] mt-1" />
+                  <ChevronRight size={11} strokeWidth={2.5} className="text-muted mt-1" />
                 ))}
             </button>
 
@@ -1039,27 +1039,25 @@ function AutoModeBanner({
                       <div key={s.sessionId} className="flex items-center gap-2 text-[10.5px]">
                         <span
                           className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                            s.autoMode ? accent.dot : 'bg-[#8E8E93]/60'
+                            s.autoMode ? accent.dot : 'bg-muted/60'
                           }`}
                         />
                         <span
-                          className={`font-semibold tabular-nums ${s.autoMode ? accent.icon : 'text-[#8E8E93]'}`}
+                          className={`font-semibold tabular-nums ${s.autoMode ? accent.icon : 'text-muted'}`}
                         >
                           {s.autoMode ? 'AUTO' : 'normal'}
                         </span>
                         <span
-                          className="text-[#8E8E93] font-mono truncate flex-1 min-w-0"
+                          className="text-muted font-mono truncate flex-1 min-w-0"
                           title={s.sessionId}
                         >
                           {s.sessionId.slice(0, 8)}…
                         </span>
-                        <span className="text-[#8E8E93] flex-shrink-0">
-                          {formatAgo(s.lastSeenAt)}
-                        </span>
+                        <span className="text-muted flex-shrink-0">{formatAgo(s.lastSeenAt)}</span>
                       </div>
                     ))}
                     {status.processCount !== null && (
-                      <p className="text-[10px] text-[#8E8E93] pt-1 italic">
+                      <p className="text-[10px] text-muted pt-1 italic">
                         {status.processCount} claude-code{' '}
                         {status.processCount === 1 ? 'process' : 'processes'} running
                       </p>
@@ -1152,12 +1150,12 @@ function SecurityRow({
             <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${bg} ${color}`}>
               {label}
             </span>
-            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#8E8E93]/10 text-[#8E8E93]">
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-muted/10 text-muted">
               {KIND_LABEL[event.kind]}
             </span>
             <SecurityStatusPill event={event} />
             {event.occurrences > 1 && (
-              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#8E8E93]/10 text-[#8E8E93]">
+              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-muted/10 text-muted">
                 ×{event.occurrences}
               </span>
             )}
@@ -1165,7 +1163,7 @@ function SecurityRow({
           <p className="text-[13px] font-semibold text-black dark:text-white leading-snug truncate">
             {event.title}
           </p>
-          <p className="text-[10px] text-[#8E8E93]/70 mt-0.5">{formatDate(event.ts)}</p>
+          <p className="text-[10px] text-muted/70 mt-0.5">{formatDate(event.ts)}</p>
         </div>
         {!event.acknowledged && (
           <button
@@ -1184,27 +1182,27 @@ function SecurityRow({
       {expanded && (
         <div className="border-t border-black/5 dark:border-white/5 px-3 py-2 space-y-1.5 text-[11px]">
           <div>
-            <span className="text-[#8E8E93]">Reason:</span>{' '}
+            <span className="text-muted">Reason:</span>{' '}
             <span className="text-black dark:text-white">{event.reason}</span>
           </div>
           {event.matchMask && (
             <div>
-              <span className="text-[#8E8E93]">Match:</span>{' '}
-              <code className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded">
+              <span className="text-muted">Match:</span>{' '}
+              <code className="text-[10px] font-mono bg-muted/10 px-1 py-0.5 rounded">
                 {event.matchMask}
               </code>
             </div>
           )}
           {event.snippet && (
             <div>
-              <span className="text-[#8E8E93]">Context:</span>{' '}
+              <span className="text-muted">Context:</span>{' '}
               <HighlightedSnippet text={event.snippet} />
             </div>
           )}
           <DetailsList details={event.details} />
 
           <div className="flex items-center gap-1.5 min-w-0">
-            <span className="text-[#8E8E93] flex-shrink-0">Origin:</span>
+            <span className="text-muted flex-shrink-0">Origin:</span>
             <ProvenanceBadge provenance={event.provenance} />
           </div>
           {!event.blocked &&
@@ -1212,35 +1210,35 @@ function SecurityRow({
             event.kind !== 'risky_bash' &&
             event.kind !== 'risky_write' &&
             event.kind !== 'risky_webfetch' && (
-              <p className="text-[10px] text-[#8E8E93] leading-snug -mt-0.5">
+              <p className="text-[10px] text-muted leading-snug -mt-0.5">
                 Not blocked — Sentinel only blocks secret matches that come from a file Claude Code
                 read or wrote. Matches in conversation text aren't treated as data exfiltration.
               </p>
             )}
           {event.sourceHint && (
             <div className="flex items-center gap-1.5 min-w-0">
-              <span className="text-[#8E8E93] flex-shrink-0">Source:</span>
+              <span className="text-muted flex-shrink-0">Source:</span>
               {isFilePath(event.sourceHint) ? (
                 <>
-                  <FolderOpen size={11} className="text-[#8E8E93] flex-shrink-0" strokeWidth={2} />
+                  <FolderOpen size={11} className="text-muted flex-shrink-0" strokeWidth={2} />
                   <code
-                    className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded truncate min-w-0"
+                    className="text-[10px] font-mono bg-muted/10 px-1 py-0.5 rounded truncate min-w-0"
                     title={event.sourceHint}
                   >
                     {event.sourceHint}
                   </code>
                 </>
               ) : (
-                <code className="text-[10px] font-mono text-[#8E8E93] truncate min-w-0">
+                <code className="text-[10px] font-mono text-muted truncate min-w-0">
                   {event.sourceHint}
                 </code>
               )}
             </div>
           )}
           <div>
-            <span className="text-[#8E8E93]">Detector:</span>{' '}
-            <code className="text-[10px] font-mono text-[#8E8E93]">{event.detectorId}</code>{' '}
-            <span className="text-[#8E8E93]">(conf {event.confidence.toFixed(2)})</span>
+            <span className="text-muted">Detector:</span>{' '}
+            <code className="text-[10px] font-mono text-muted">{event.detectorId}</code>{' '}
+            <span className="text-muted">(conf {event.confidence.toFixed(2)})</span>
           </div>
           <ReplayContextSection eventId={event.id} />
           <div className="pt-1.5 flex items-center justify-between gap-2">
@@ -1262,7 +1260,7 @@ function SecurityRow({
                   e.stopPropagation();
                   onMute();
                 }}
-                className="flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 bg-[#8E8E93]/15 text-[#8E8E93] hover:bg-[#8E8E93]/25"
+                className="flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full transition-all active:scale-95 bg-muted/15 text-muted hover:bg-muted/25"
                 title="Stop showing alerts of this kind. Reversible from Settings → Security."
               >
                 <ShieldOff size={10} strokeWidth={2.5} />
@@ -1281,7 +1279,7 @@ function SecurityRow({
                       : 'bg-[#8E8E93] text-white'
                     : event.blocked
                       ? 'bg-ios-orange/10 text-ios-orange hover:bg-ios-orange/20'
-                      : 'bg-[#8E8E93]/15 text-[#8E8E93] hover:bg-[#8E8E93]/25'
+                      : 'bg-muted/15 text-muted hover:bg-muted/25'
                 }`}
                 title={
                   allowConfirm.pending
@@ -1298,7 +1296,7 @@ function SecurityRow({
               </button>
             )}
           </div>
-          <p className="text-[10px] text-[#8E8E93] leading-snug">
+          <p className="text-[10px] text-muted leading-snug">
             {isSynthetic
               ? 'Informational telemetry, not a detection. "Mute these" hides future alerts of this kind until you re-enable them in Settings.'
               : event.resolution === 'user_approve'
@@ -1387,11 +1385,9 @@ function ReplayContextSection({ eventId }: { eventId: number }): React.ReactElem
         <div className="mt-1 space-y-1 border-l-2 border-ios-blue/30 pl-2">
           {data.messages.map((m, i) => (
             <div key={i} className="text-[10px] leading-snug">
-              <span className="text-[#8E8E93] font-mono">
-                {new Date(m.ts).toLocaleTimeString()}
-              </span>{' '}
+              <span className="text-muted font-mono">{new Date(m.ts).toLocaleTimeString()}</span>{' '}
               <span className="font-semibold text-black dark:text-white">{m.role}</span>
-              {m.tool ? <span className="text-[#8E8E93]"> [{m.tool}]</span> : null}
+              {m.tool ? <span className="text-muted"> [{m.tool}]</span> : null}
               <p className="text-black/80 dark:text-white/80 break-words font-mono">{m.text}</p>
             </div>
           ))}
@@ -1424,8 +1420,8 @@ function DetailsList({
     <div className="space-y-0.5">
       {entries.map(([k, v]) => (
         <div key={k} className="flex items-start gap-1.5 min-w-0">
-          <span className="text-[#8E8E93] flex-shrink-0">{DETAILS_LABEL[k] ?? k}:</span>
-          <code className="text-[10px] font-mono bg-[#8E8E93]/10 px-1 py-0.5 rounded break-all min-w-0">
+          <span className="text-muted flex-shrink-0">{DETAILS_LABEL[k] ?? k}:</span>
+          <code className="text-[10px] font-mono bg-muted/10 px-1 py-0.5 rounded break-all min-w-0">
             {String(v)}
           </code>
         </div>

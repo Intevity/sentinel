@@ -44,13 +44,13 @@ export default function PersistenceBanner(): React.ReactElement | null {
           The Sentinel background service keeps running when you close this window, so Claude Code
           continues to route through it.
         </p>
-        <p className="text-[10.5px] text-[#8E8E93] mt-0.5 leading-snug">
+        <p className="text-[10.5px] text-muted mt-0.5 leading-snug">
           Use the ⋯ menu → <span className="font-semibold">Quit Sentinel</span> to stop both.
         </p>
       </div>
       <button
         onClick={dismiss}
-        className="text-[#8E8E93] hover:text-black dark:hover:text-white transition-colors active:scale-90 shrink-0"
+        className="text-muted hover:text-black dark:hover:text-white transition-colors active:scale-90 shrink-0"
         aria-label="Dismiss"
       >
         <X size={13} strokeWidth={2.5} />

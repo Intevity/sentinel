@@ -23,9 +23,13 @@ struct FirstRunSettings {
 }
 
 pub fn is_first_run(app: &AppHandle) -> bool {
-    let Ok(home) = app.path().home_dir() else { return true };
+    let Ok(home) = app.path().home_dir() else {
+        return true;
+    };
     let path = home.join(".claude-sentinel").join("settings.json");
-    let Ok(contents) = std::fs::read_to_string(&path) else { return true };
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return true;
+    };
     match serde_json::from_str::<FirstRunSettings>(&contents) {
         Ok(s) => !s.tour_completed,
         Err(_) => true,

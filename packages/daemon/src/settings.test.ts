@@ -315,6 +315,28 @@ describe('settings', () => {
       );
     });
 
+    it('defaults theme to "system" and round-trips all three valid values', () => {
+      writeRawWithSig(path, JSON.stringify({}));
+      expect(loadSettings(path).theme).toBe('system');
+      expect(DEFAULT_SETTINGS.theme).toBe('system');
+
+      writeRawWithSig(path, JSON.stringify({ theme: 'light' }));
+      expect(loadSettings(path).theme).toBe('light');
+
+      writeRawWithSig(path, JSON.stringify({ theme: 'dark' }));
+      expect(loadSettings(path).theme).toBe('dark');
+
+      writeRawWithSig(path, JSON.stringify({ theme: 'system' }));
+      expect(loadSettings(path).theme).toBe('system');
+    });
+
+    it('falls back to default theme when the value is invalid', () => {
+      for (const bad of ['oops', '', 'LIGHT', 42, null, true, {}]) {
+        writeRawWithSig(path, JSON.stringify({ theme: bad }));
+        expect(loadSettings(path).theme).toBe('system');
+      }
+    });
+
     it('round-trips securitySetupCompleted/tourCompleted and rejects non-boolean input', () => {
       writeRawWithSig(path, JSON.stringify({ securitySetupCompleted: true, tourCompleted: true }));
       const loaded = loadSettings(path);

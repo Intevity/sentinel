@@ -34,5 +34,5 @@ export function formatTokens(n: number): string {
 export function tokensColorClass(n: number): string {
   if (n >= TOKEN_NOISE_FLOOR) return 'text-emerald-300';
   if (n <= -TOKEN_NOISE_FLOOR) return 'text-red-400';
-  return 'text-white/70';
+  return 'text-foreground/70';
 }

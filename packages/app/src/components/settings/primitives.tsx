@@ -25,7 +25,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 export function Section(props: { title: string; children: React.ReactNode }): React.ReactElement {
   return (
     <div className="mb-4">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-[#8E8E93] mb-1.5 px-1">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-1.5 px-1">
         {props.title}
       </p>
       <div className="rounded-2xl bg-white dark:bg-[#1E1E1E] shadow-card overflow-hidden divide-y divide-black/5 dark:divide-white/5">
@@ -46,7 +46,7 @@ export function ToggleRow(props: {
       <div className="flex-1 min-w-0">
         <p className="text-[13px] font-medium text-black dark:text-white">{props.label}</p>
         {props.description && (
-          <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">{props.description}</p>
+          <p className="text-[11px] text-muted leading-snug mt-0.5">{props.description}</p>
         )}
       </div>
       <input
@@ -76,7 +76,7 @@ export function RadioRow(props: {
       <div className="flex-1 min-w-0">
         <p className="text-[13px] font-medium text-black dark:text-white">{props.label}</p>
         {props.description && (
-          <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">{props.description}</p>
+          <p className="text-[11px] text-muted leading-snug mt-0.5">{props.description}</p>
         )}
       </div>
     </label>
@@ -105,9 +105,7 @@ export function QuickToggle(props: {
       aria-pressed={props.checked}
       title={props.title}
       className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors inline-flex items-center gap-1 disabled:opacity-40 ${
-        props.checked
-          ? 'bg-ios-blue text-white'
-          : 'bg-[#8E8E93]/10 text-[#8E8E93] hover:bg-[#8E8E93]/20'
+        props.checked ? 'bg-ios-blue text-white' : 'bg-muted/10 text-muted hover:bg-muted/20'
       }`}
     >
       <span>{props.label}</span>
@@ -147,7 +145,7 @@ export function QuickSegmented<T extends string>(props: {
             className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${
               active
                 ? 'bg-ios-blue text-white'
-                : 'text-[#8E8E93] hover:text-black dark:hover:text-white'
+                : 'text-muted hover:text-black dark:hover:text-white'
             }`}
           >
             {opt.label}
@@ -179,9 +177,7 @@ export function QuickChipToggle(props: {
       aria-pressed={props.active}
       title={props.title}
       className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors disabled:opacity-40 ${
-        props.active
-          ? 'bg-ios-blue text-white'
-          : 'bg-[#8E8E93]/10 text-[#8E8E93] hover:bg-[#8E8E93]/20'
+        props.active ? 'bg-ios-blue text-white' : 'bg-muted/10 text-muted hover:bg-muted/20'
       }`}
     >
       {props.label}
@@ -252,11 +248,11 @@ export function SettingsCard(props: {
         className="w-full flex items-center gap-1.5 px-3 py-2 text-left hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors"
       >
         {open ? (
-          <ChevronDown size={11} strokeWidth={2.5} className="text-[#8E8E93]" />
+          <ChevronDown size={11} strokeWidth={2.5} className="text-muted" />
         ) : (
-          <ChevronRight size={11} strokeWidth={2.5} className="text-[#8E8E93]" />
+          <ChevronRight size={11} strokeWidth={2.5} className="text-muted" />
         )}
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-[#8E8E93]">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">
           {props.title}
         </span>
         {!open && props.summary && (
@@ -293,7 +289,7 @@ export function SettingsRow(props: {
       <div className="flex-1 min-w-0">
         <p className="text-[12px] font-medium text-black dark:text-white">{props.label}</p>
         {props.description && (
-          <p className="text-[11px] text-[#8E8E93] leading-snug mt-0.5">{props.description}</p>
+          <p className="text-[11px] text-muted leading-snug mt-0.5">{props.description}</p>
         )}
       </div>
       <div className="flex-shrink-0 flex items-center justify-end mt-0.5">{props.children}</div>

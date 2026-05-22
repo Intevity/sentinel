@@ -190,10 +190,10 @@ export default function OptimizeDashboard(): React.ReactElement {
 
       <div className="glass-card px-4 py-3">
         <h3 className="section-label mb-2">Curated subagents</h3>
-        <p className="mb-3 text-xs text-white/60">
+        <p className="mb-3 text-xs text-foreground/60">
           Sentinel ships these. Installing one writes a file to{' '}
-          <code className="text-white/80">~/.claude/agents/</code> that Claude Code uses on its next
-          session. Routing happens through Claude Code's own subagent system; we never reroute
+          <code className="text-foreground/80">~/.claude/agents/</code> that Claude Code uses on its
+          next session. Routing happens through Claude Code's own subagent system; we never reroute
           traffic silently.
         </p>
         <ul className="space-y-2">
@@ -204,16 +204,16 @@ export default function OptimizeDashboard(): React.ReactElement {
             return (
               <li
                 key={entry.curatedId}
-                className="flex items-start justify-between rounded-md border border-white/10 px-3 py-2"
+                className="flex items-start justify-between rounded-md border border-border-subtle/10 px-3 py-2"
               >
                 <div className="min-w-0 flex-1 pr-3">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-white">{entry.name}</span>
-                    <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-white/70">
+                    <span className="rounded bg-surface-overlay/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-foreground/70">
                       {entry.model}
                     </span>
                   </div>
-                  <p className="mt-1 text-xs text-white/60">{entry.description}</p>
+                  <p className="mt-1 text-xs text-foreground/60">{entry.description}</p>
                   <SubagentSavingsBadge
                     installed={isInstalled}
                     subSavings={subSavings}
@@ -225,7 +225,7 @@ export default function OptimizeDashboard(): React.ReactElement {
                     type="button"
                     disabled={isBusy}
                     onClick={() => void onUninstall(entry.curatedId)}
-                    className="flex shrink-0 items-center gap-1 rounded border border-white/15 px-2 py-1 text-xs text-white/70 hover:bg-white/5"
+                    className="flex shrink-0 items-center gap-1 rounded border border-border-subtle/15 px-2 py-1 text-xs text-foreground/70 hover:bg-surface-overlay/5"
                   >
                     <Trash2 className="h-3 w-3" /> Remove
                   </button>
@@ -234,7 +234,7 @@ export default function OptimizeDashboard(): React.ReactElement {
                     type="button"
                     disabled={isBusy}
                     onClick={() => void onInstall(entry.curatedId)}
-                    className="flex shrink-0 items-center gap-1 rounded bg-white/15 px-2 py-1 text-xs text-white hover:bg-white/25"
+                    className="flex shrink-0 items-center gap-1 rounded bg-surface-overlay/15 px-2 py-1 text-xs text-foreground hover:bg-surface-overlay/25"
                   >
                     <Sparkles className="h-3 w-3" /> Install
                   </button>
@@ -248,8 +248,8 @@ export default function OptimizeDashboard(): React.ReactElement {
       {installed.filter((s) => s.source === 'local' && s.uninstalledAt === null).length > 0 && (
         <div className="glass-card px-4 py-3">
           <h3 className="section-label mb-2">Your local subagents</h3>
-          <p className="mb-2 text-xs text-white/60">
-            Subagents you authored in <code className="text-white/80">~/.claude/agents/</code>.
+          <p className="mb-2 text-xs text-foreground/60">
+            Subagents you authored in <code className="text-foreground/80">~/.claude/agents/</code>.
             Sentinel discovers these but does not modify them.
           </p>
           <ul className="space-y-1">
@@ -258,7 +258,7 @@ export default function OptimizeDashboard(): React.ReactElement {
               .map((s) => (
                 <li
                   key={s.id}
-                  className="flex items-center gap-2 rounded-md border border-white/10 px-3 py-1.5 text-sm text-white/80"
+                  className="flex items-center gap-2 rounded-md border border-border-subtle/10 px-3 py-1.5 text-sm text-foreground/80"
                 >
                   <CheckCircle2 className="h-3 w-3 text-emerald-400" />
                   {s.name}
@@ -285,7 +285,7 @@ function formatUsd(n: number): string {
 function colorClass(n: number): string {
   if (n > 0) return 'text-emerald-300';
   if (n < 0) return 'text-red-400';
-  return 'text-white/70';
+  return 'text-foreground/70';
 }
 
 function SavingsHeader({
@@ -308,12 +308,12 @@ function SavingsHeader({
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-white">Optimize</h2>
-          <p className="text-xs text-white/60">
+          <p className="text-xs text-foreground/60">
             Reduce token costs by routing routine tasks to cheaper-model subagents.
             {opportunities > 0 &&
               ' Each item below shows its share of potential savings; install to convert it into realized.'}
           </p>
-          <p className="mt-1 text-[11px] text-white/45">
+          <p className="mt-1 text-[11px] text-foreground/45">
             {installs} subagent{installs === 1 ? '' : 's'} installed
             {' · '}
             {opportunities} opportunit{opportunities === 1 ? 'y' : 'ies'} measured all-time
@@ -350,7 +350,7 @@ function UnitsToggle({
 }): React.ReactElement {
   return (
     <div
-      className="flex rounded border border-white/10 p-0.5 text-[10px] uppercase tracking-wide"
+      className="flex rounded border border-border-subtle/10 p-0.5 text-[10px] uppercase tracking-wide"
       role="group"
       aria-label="Display units"
     >
@@ -358,7 +358,7 @@ function UnitsToggle({
         type="button"
         aria-pressed={units === 'tokens'}
         onClick={() => onChange('tokens')}
-        className={`rounded px-2 py-0.5 ${units === 'tokens' ? 'bg-white/15 text-white' : 'text-white/55 hover:text-white/85'}`}
+        className={`rounded px-2 py-0.5 ${units === 'tokens' ? 'bg-surface-overlay/15 text-foreground' : 'text-foreground/55 hover:text-foreground/85'}`}
       >
         Tokens
       </button>
@@ -366,7 +366,7 @@ function UnitsToggle({
         type="button"
         aria-pressed={units === 'cost'}
         onClick={() => onChange('cost')}
-        className={`rounded px-2 py-0.5 ${units === 'cost' ? 'bg-white/15 text-white' : 'text-white/55 hover:text-white/85'}`}
+        className={`rounded px-2 py-0.5 ${units === 'cost' ? 'bg-surface-overlay/15 text-foreground' : 'text-foreground/55 hover:text-foreground/85'}`}
       >
         Cost
       </button>
@@ -389,7 +389,7 @@ function SavingsStat({
   const display = units === 'cost' ? formatUsd(cost) : formatTokens(tokens);
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wide text-white/55">{label}</div>
+      <div className="text-[10px] uppercase tracking-wide text-foreground/55">{label}</div>
       <div
         className={`text-lg font-semibold tabular-nums ${colorClass(value)}`}
         title={`Estimated. ${
@@ -453,7 +453,7 @@ function SubagentSavingsBadge({
       title="Estimated savings the analyzer detected for this subagent's pattern, while it was not installed. Install to start realizing them."
     >
       Could save {fmt(potential)}
-      <span className="ml-1 text-[10px] text-white/45">
+      <span className="ml-1 text-[10px] text-foreground/45">
         based on {subSavings.opportunities} opportunit
         {subSavings.opportunities === 1 ? 'y' : 'ies'}
       </span>

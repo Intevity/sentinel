@@ -8,7 +8,27 @@
     font-size: 14px;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    color-scheme: light dark;
+    color-scheme: light;
+
+    /* Semantic theme tokens — space-separated RGB triplets so
+       Tailwind's <alpha-value> substitution works on classes like
+       `text-foreground/60`. Light defaults; `:root.dark` overrides.
+       --foreground / --border-subtle / --surface-overlay are the
+       contrasting color to the surface (black on light, white on dark);
+       --muted is a fixed-tone secondary text that meets WCAG AA on
+       both backgrounds (Apple secondary-label palette). */
+    --foreground: 0 0 0;
+    --muted: 99 99 102;
+    --border-subtle: 0 0 0;
+    --surface-overlay: 0 0 0;
+  }
+
+  :root.dark {
+    color-scheme: dark;
+    --foreground: 255 255 255;
+    --muted: 142 142 147;
+    --border-subtle: 255 255 255;
+    --surface-overlay: 255 255 255;
   }
 
   * {
@@ -21,10 +41,8 @@
     background: #f2f2f7;
   }
 
-  @media (prefers-color-scheme: dark) {
-    body {
-      background: #111111;
-    }
+  :root.dark body {
+    background: #111111;
   }
 
   #root {
@@ -55,10 +73,8 @@
     background: rgba(0, 0, 0, 0.12);
     border-radius: 99px;
   }
-  @media (prefers-color-scheme: dark) {
-    ::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, 0.12);
-    }
+  :root.dark ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
   }
 }
 

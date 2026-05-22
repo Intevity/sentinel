@@ -47,14 +47,14 @@ export function DetectorTuning({ settings, onUpdate }: DetectorTuningProps): Rea
   };
 
   if (loading) {
-    return <div className="px-3 py-3 text-[11px] text-[#8E8E93]">Loading detector stats...</div>;
+    return <div className="px-3 py-3 text-[11px] text-muted">Loading detector stats...</div>;
   }
   if (error) {
     return <div className="px-3 py-3 text-[11px] text-ios-red">{error}</div>;
   }
   if (rows.length === 0) {
     return (
-      <div className="px-3 py-3 text-[11px] text-[#8E8E93]">
+      <div className="px-3 py-3 text-[11px] text-muted">
         No detector activity in the last 30 days. Tiers can still be set manually if you know a
         detector id, but the typical workflow is to let the auto-demote migration handle this.
       </div>
@@ -63,7 +63,7 @@ export function DetectorTuning({ settings, onUpdate }: DetectorTuningProps): Rea
 
   return (
     <div>
-      <div className="px-3 pt-2 pb-1.5 text-[11px] text-[#8E8E93] leading-snug">
+      <div className="px-3 pt-2 pb-1.5 text-[11px] text-muted leading-snug">
         Per-detector visibility over the last 30 days. <strong>Active</strong> is the default:
         events show in the banner and Alerts tab. <strong>Informational</strong> still records
         events for audit but hides them from the banner, useful for chronically noisy detectors that
@@ -77,7 +77,7 @@ export function DetectorTuning({ settings, onUpdate }: DetectorTuningProps): Rea
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search detector id"
-          className="w-full text-[12px] px-2 py-1 rounded bg-[#8E8E93]/10 placeholder-[#8E8E93] focus:outline-none focus:bg-[#8E8E93]/20"
+          className="w-full text-[12px] px-2 py-1 rounded bg-muted/10 placeholder-muted focus:outline-none focus:bg-muted/20"
         />
       </div>
       <div className="divide-y divide-black/5 dark:divide-white/5">
@@ -89,7 +89,7 @@ export function DetectorTuning({ settings, onUpdate }: DetectorTuningProps): Rea
           />
         ))}
         {filtered.length === 0 && (
-          <div className="px-3 py-3 text-[11px] text-[#8E8E93]">No detectors match.</div>
+          <div className="px-3 py-3 text-[11px] text-muted">No detectors match.</div>
         )}
       </div>
     </div>
@@ -155,7 +155,7 @@ function Badge({
       ? 'bg-ios-red/10 text-ios-red'
       : tone === 'green'
         ? 'bg-ios-green/10 text-ios-green'
-        : 'bg-[#8E8E93]/10 text-[#8E8E93]';
+        : 'bg-muted/10 text-muted';
   return (
     <span className={`px-1.5 py-0.5 rounded ${cls}`}>
       {label}: <span className="font-semibold">{value}</span>
@@ -183,7 +183,7 @@ function TierRadio({
         onChange={() => void onSelect()}
         className="accent-ios-blue w-3 h-3"
       />
-      <span className={checked ? 'font-semibold text-black dark:text-white' : 'text-[#8E8E93]'}>
+      <span className={checked ? 'font-semibold text-black dark:text-white' : 'text-muted'}>
         {label}
       </span>
     </label>
