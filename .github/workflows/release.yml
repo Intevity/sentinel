@@ -39,6 +39,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Stamp the tag's version into tauri.conf.json + Cargo.toml so the
+      # bundle's `productVersion` (and therefore the artifact filenames
+      # like `Claude.Sentinel_0.3.1_aarch64.dmg`) match the tag instead
+      # of whatever stale `0.1.0` the repo carries. Runs in every matrix
+      # leg so each platform builds against the same patched manifest.
+      # The workflow trigger filter already guarantees `GITHUB_REF_NAME`
+      # starts with `v`, so the prefix strip is safe; the `set -e` guard
+      # makes a malformed value fail the leg loudly rather than silently
+      # shipping a misnamed bundle.
+      - name: Sync version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ -z "$VERSION" || "$VERSION" == "$GITHUB_REF_NAME" ]]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' is not in the expected 'vX.Y.Z' form" >&2
+            exit 1
+          fi
+          echo "Stamping version=$VERSION into tauri.conf.json + Cargo.toml"
+
+          # tauri.conf.json — bundle metadata + artifact name source.
+          node -e "
+            const fs = require('fs');
+            const p = 'packages/app/src-tauri/tauri.conf.json';
+            const json = JSON.parse(fs.readFileSync(p, 'utf8'));
+            json.version = process.argv[1];
+            fs.writeFileSync(p, JSON.stringify(json, null, 2) + '\n');
+          " "$VERSION"
+
+          # Cargo.toml — only the [package] section's version, not any
+          # dependency that happens to have its own `version = "..."`.
+          # `sed -i.bak` is the portable form (both GNU and BSD sed).
+          sed -i.bak -E '/^\[package\]/,/^\[/ s/^version = ".*"/version = "'"$VERSION"'"/' \
+            packages/app/src-tauri/Cargo.toml
+          rm -f packages/app/src-tauri/Cargo.toml.bak
+
+          echo "--- tauri.conf.json ---"
+          grep '"version"' packages/app/src-tauri/tauri.conf.json | head -1
+          echo "--- Cargo.toml ---"
+          sed -n '/^\[package\]/,/^\[/ {/^version = /p}' packages/app/src-tauri/Cargo.toml | head -1
+
       # Must match the pnpm version that produced pnpm-lock.yaml (pnpm 10
       # writes `pnpmfileChecksum` into the lockfile, which pnpm 9 rejects).
       - uses: pnpm/action-setup@v4
