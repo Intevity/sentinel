@@ -502,6 +502,120 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     expect(rotator.pick()?.accountId).toBe('cold');
   });
 
+  it('stays on the same account when reset ties and utilization shifts mid-stream', () => {
+    // Regression: previously the per-pick sort fell through to a util
+    // tiebreaker on every request, so two accounts tied on reset would
+    // alternate request-by-request as their utilizations grew in
+    // lockstep. Sticky affinity is now the deciding factor.
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setResetAndUtil(store, 'a', 1_000, 0.1);
+    setResetAndUtil(store, 'b', 1_000, 0.11);
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'a' },
+      () => new Set(),
+      () => 'earliest-reset',
+    );
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    // `a` is now hotter than `b`. Old behavior would flip to `b`.
+    setResetAndUtil(store, 'a', 1_000, 0.55);
+    setResetAndUtil(store, 'b', 1_000, 0.12);
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    setResetAndUtil(store, 'a', 1_000, 0.8);
+    setResetAndUtil(store, 'b', 1_000, 0.13);
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+
+  it('releases the sticky when the chosen account becomes blocked', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setResetAndUtil(store, 'a', 1_000, 0.1);
+    setResetAndUtil(store, 'b', 1_000, 0.11);
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'a' },
+      () => new Set(),
+      () => 'earliest-reset',
+    );
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    store.update('a', {
+      'anthropic-ratelimit-unified-5h-status': 'blocked',
+      'anthropic-ratelimit-unified-5h-utilization': '1.0',
+      'anthropic-ratelimit-unified-5h-reset': '1000',
+    });
+    expect(rotator.pick()?.accountId).toBe('b');
+  });
+
+  it('releases the sticky when another account becomes strictly earlier-reset', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setResetAndUtil(store, 'a', 1_000, 0.1);
+    setResetAndUtil(store, 'b', 1_000, 0.11);
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'a' },
+      () => new Set(),
+      () => 'earliest-reset',
+    );
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    // `b` now resets earlier than `a` — no longer a tie. Sticky's
+    // reset !== minReset, so the sticky is released and `b` wins.
+    setResetAndUtil(store, 'b', 500, 0.11);
+    expect(rotator.pick()?.accountId).toBe('b');
+  });
+
+  it('preserves the sticky across a briefly-empty tier', () => {
+    // If every account blocks (pick returns null) and the user comes
+    // back later with the same tie, we should land back on the same
+    // sticky account rather than rerunning the initial-pick tiebreaker.
+    // Pins the lifecycle so a future refactor doesn't accidentally
+    // clear the sticky on a null pick.
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setResetAndUtil(store, 'a', 1_000, 0.1);
+    setResetAndUtil(store, 'b', 1_000, 0.11);
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'a' },
+      () => new Set(),
+      () => 'earliest-reset',
+    );
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    store.update('a', {
+      'anthropic-ratelimit-unified-5h-status': 'blocked',
+      'anthropic-ratelimit-unified-5h-reset': '1000',
+    });
+    store.update('b', {
+      'anthropic-ratelimit-unified-5h-status': 'blocked',
+      'anthropic-ratelimit-unified-5h-reset': '1000',
+    });
+    expect(rotator.pick()).toBeNull();
+
+    // Unblock both with util now favoring `b` for an initial pick.
+    // Sticky is `a`, so we return `a` despite `b`'s lower util.
+    setResetAndUtil(store, 'a', 1_000, 0.55);
+    setResetAndUtil(store, 'b', 1_000, 0.11);
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+
   it('honours live strategy changes between picks', () => {
     const db = getDb(dbPath);
     seed(db, 'fresh', 'f@x');

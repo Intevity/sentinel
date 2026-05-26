@@ -54,7 +54,12 @@ export interface RotatedCredential {
  *     `unified-5h` window resets soonest. Accounts without reset data are
  *     deprioritized. No tie band, no cursor advance: traffic sticks to one
  *     account until it blocks or its window rolls over, maximizing usage
- *     of headroom that's about to be reclaimed anyway.
+ *     of headroom that's about to be reclaimed anyway. When multiple
+ *     accounts share the minimum reset value (a true tie), the rotator
+ *     also sticks to the one it first picked — utilization is NOT a
+ *     tiebreaker on subsequent picks, since re-evaluating it per request
+ *     would alternate between the tied accounts as their utilizations
+ *     ticked up in lockstep, defeating the "drain one fully" intent.
  *
  * Accounts at or above the buffer threshold drop out of the fresh tier
  * regardless of whether overage is available on claude.ai. That's the
@@ -71,6 +76,12 @@ export interface RotatedCredential {
 export class TokenRotator {
   private pool: RotatedCredential[] = [];
   private cursor = 0;
+  /** Sticky account for the earliest-reset strategy. When two or more
+   *  accounts share the minimum reset value, the rotator picks one and
+   *  stays on it until it leaves the tier (blocked, paused, removed, or
+   *  its reset is no longer the minimum). Prevents per-request
+   *  alternation that would otherwise drain tied accounts in lockstep. */
+  private earliestResetStickyId: string | null = null;
 
   constructor(
     private readonly db: Database,
@@ -257,13 +268,30 @@ export class TokenRotator {
 
     const strategy = this.getStrategy();
     if (strategy === 'earliest-reset') {
-      // Hard-target the account whose window rolls over soonest. Tie-break
-      // by lower utilization (so we don't hammer a nearly-exhausted tie),
-      // then by pool index for determinism. Do NOT advance the cursor —
-      // traffic sticks to the chosen account until it blocks or resets.
+      // Hard-target the account whose window rolls over soonest. For the
+      // initial pick (no sticky), tie-break by lower utilization, then by
+      // pool index. Do NOT advance the cursor — traffic sticks to the
+      // chosen account until it blocks or resets.
       const ranked = [...tier].sort(
         (a, b) => a.reset - b.reset || a.util - b.util || a.idx - b.idx,
       );
+      const minReset = ranked[0]!.reset;
+
+      // If the previously picked account is still in the tier and still
+      // tied for the earliest reset, stay on it. Util is intentionally
+      // NOT consulted here: re-evaluating it on every pick is what caused
+      // tied accounts to alternate request-by-request as their
+      // utilizations ticked up in lockstep.
+      if (this.earliestResetStickyId !== null) {
+        const sticky = ranked.find(
+          (r) => this.pool[r.idx]!.accountId === this.earliestResetStickyId,
+        );
+        if (sticky && sticky.reset === minReset) {
+          return this.pool[sticky.idx]!;
+        }
+      }
+
+      this.earliestResetStickyId = this.pool[ranked[0]!.idx]!.accountId;
       return this.pool[ranked[0]!.idx]!;
     }
 
