@@ -20,9 +20,8 @@ describe('repatchClaudeOtelSettings', () => {
 
   const readBack = (): { env: Record<string, string>; other: Record<string, unknown> } => {
     const parsed = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
-    const env = parsed['env'] as Record<string, string>;
-    const { env: _, ...other } = parsed;
-    return { env, other };
+    const { env, ...other } = parsed;
+    return { env: env as Record<string, string>, other };
   };
 
   it('creates a file with the eight managed keys when none exists', async () => {
