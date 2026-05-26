@@ -78,7 +78,12 @@ jobs:
           echo "--- tauri.conf.json ---"
           grep '"version"' packages/app/src-tauri/tauri.conf.json | head -1
           echo "--- Cargo.toml ---"
-          sed -n '/^\[package\]/,/^\[/ {/^version = /p}' packages/app/src-tauri/Cargo.toml | head -1
+          # awk is portable across GNU + BSD runners; the previous
+          # `sed -n '/range/{/.../p}'` brace-form is GNU-only and BSD sed
+          # (macOS) fails with "extra characters at end of p command",
+          # which is what broke v0.3.2's release run.
+          awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version = /{print; exit}' \
+            packages/app/src-tauri/Cargo.toml
 
       # Must match the pnpm version that produced pnpm-lock.yaml (pnpm 10
       # writes `pnpmfileChecksum` into the lockfile, which pnpm 9 rejects).
