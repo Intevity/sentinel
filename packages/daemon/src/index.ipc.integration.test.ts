@@ -930,6 +930,157 @@ describe('IPC — OTEL exporter', () => {
   });
 });
 
+// ─── OTEL settings drift detection ──────────────────────────────────────────
+
+describe('IPC — OTEL drift detection', () => {
+  it('get_otel_drift_state reports ok when claude-settings is Sentinel-pointed', async () => {
+    ctx = await startTestDaemon({
+      claudeSettings: {
+        env: {
+          CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+          OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:47284',
+        },
+      },
+    });
+    const r = await ctx.request<{ state: string; canPromote: boolean }>({
+      type: 'get_otel_drift_state',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.state).toBe('ok');
+    expect(r.data?.canPromote).toBe(false);
+  });
+
+  it('get_otel_drift_state reports foreign-endpoint with a promote preview', async () => {
+    ctx = await startTestDaemon({
+      claudeSettings: {
+        env: {
+          CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+          OTEL_EXPORTER_OTLP_ENDPOINT: 'https://api.honeycomb.io',
+          OTEL_EXPORTER_OTLP_HEADERS: 'x-api-key=averylongsecretvalue',
+        },
+      },
+    });
+    const r = await ctx.request<{
+      state: string;
+      canPromote: boolean;
+      promotePreview: { endpoint: string; headerName: string | null };
+    }>({ type: 'get_otel_drift_state' });
+    expect(r.success).toBe(true);
+    expect(r.data?.state).toBe('foreign-endpoint');
+    expect(r.data?.canPromote).toBe(true);
+    expect(r.data?.promotePreview?.endpoint).toBe('https://api.honeycomb.io');
+    expect(r.data?.promotePreview?.headerName).toBe('x-api-key');
+  });
+
+  it('repatch_otel_settings restores Sentinel env vars + emits a fresh drift broadcast', async () => {
+    ctx = await startTestDaemon({
+      claudeSettings: {
+        env: {
+          OTEL_EXPORTER_OTLP_ENDPOINT: 'https://api.honeycomb.io',
+        },
+      },
+    });
+    const r = await ctx.request<{ state: string }>({ type: 'repatch_otel_settings' });
+    expect(r.success).toBe(true);
+    expect(r.data?.state).toBe('ok');
+
+    // The post-repatch broadcast lands so the UI can clear the banner.
+    const drift = await ctx.waitForBroadcast(
+      (m) => m.type === 'otel_drift_state' && m.details.state === 'ok',
+    );
+    if (drift.type === 'otel_drift_state') {
+      expect(drift.details.state).toBe('ok');
+    }
+  });
+
+  it('promote_foreign_otel_endpoint copies the endpoint + secret into Sentinel forwarding', async () => {
+    ctx = await startTestDaemon({
+      claudeSettings: {
+        env: {
+          CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+          OTEL_EXPORTER_OTLP_ENDPOINT: 'https://api.honeycomb.io',
+          OTEL_EXPORTER_OTLP_HEADERS: 'x-honeycomb-team=verylongsecretvalue',
+        },
+      },
+    });
+    const r = await ctx.request<{ state: string }>({
+      type: 'promote_foreign_otel_endpoint',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.state).toBe('ok');
+
+    // Sentinel settings now point at the foreign endpoint with forwarding on.
+    const settings = await ctx.request<{
+      otelForwardingEnabled: boolean;
+      otelExporterEndpoint: string | null;
+      otelExporterHeaderName: string;
+    }>({ type: 'get_settings' });
+    expect(settings.data?.otelForwardingEnabled).toBe(true);
+    expect(settings.data?.otelExporterEndpoint).toBe('https://api.honeycomb.io');
+    expect(settings.data?.otelExporterHeaderName).toBe('x-honeycomb-team');
+
+    // And the forwarder reports a configured secret.
+    const status = await ctx.request<{ secretConfigured: boolean }>({
+      type: 'get_otel_exporter_status',
+    });
+    expect(status.data?.secretConfigured).toBe(true);
+  });
+
+  it('promote refuses when drift state is not foreign-endpoint', async () => {
+    ctx = await startTestDaemon({
+      claudeSettings: {
+        env: {
+          CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+          OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:47284',
+        },
+      },
+    });
+    const r = await ctx.request({ type: 'promote_foreign_otel_endpoint' });
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/foreign-endpoint/);
+  });
+
+  it('promote refuses HTTP non-loopback endpoints', async () => {
+    ctx = await startTestDaemon({
+      claudeSettings: {
+        env: {
+          CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+          OTEL_EXPORTER_OTLP_ENDPOINT: 'http://insecure.example',
+        },
+      },
+    });
+    const r = await ctx.request({ type: 'promote_foreign_otel_endpoint' });
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/HTTP/);
+  });
+
+  it('promote honours an explicit chosenHeaderName', async () => {
+    ctx = await startTestDaemon({
+      claudeSettings: {
+        env: {
+          CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+          OTEL_EXPORTER_OTLP_ENDPOINT: 'https://api.honeycomb.io',
+          OTEL_EXPORTER_OTLP_HEADERS:
+            'authorization=Bearer abc,x-trace-id=xyz,x-honeycomb-team=verylongsecretvalue',
+        },
+      },
+    });
+    // Default heuristic would return null (multi-match); the UI passes
+    // the user's pick explicitly.
+    const r = await ctx.request<{ state: string }>({
+      type: 'promote_foreign_otel_endpoint',
+      chosenHeaderName: 'x-honeycomb-team',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.state).toBe('ok');
+
+    const settings = await ctx.request<{ otelExporterHeaderName: string }>({
+      type: 'get_settings',
+    });
+    expect(settings.data?.otelExporterHeaderName).toBe('x-honeycomb-team');
+  });
+});
+
 // ─── Scan benchmark ─────────────────────────────────────────────────────────
 
 describe('IPC — scan benchmark', () => {

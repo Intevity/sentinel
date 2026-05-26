@@ -8,6 +8,7 @@ import type {
 import { useMetricsSummary, type MetricsScope } from '../hooks/useMetricsSummary.js';
 import { useSettings } from '../hooks/useSettings.js';
 import InfoTooltip from './InfoTooltip.js';
+import OtelDriftBanner from './OtelDriftBanner.js';
 
 const MODEL_COLORS: Record<string, string> = {
   'claude-opus-4': '#BF5AF2',
@@ -98,6 +99,8 @@ export default function MetricsDashboard({
 
   return (
     <div className="space-y-3 pt-1">
+      <OtelDriftBanner />
+
       {/* ── Header + period selector ─────────────────────────────────── */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-1.5">

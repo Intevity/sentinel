@@ -97,6 +97,14 @@ import { attachWebhookToIpc } from './alerting/webhook.js';
 import { createIncidentReplayRecorder } from './security/incident-replay.js';
 import { redactSecretsInString } from './security/detectors.js';
 import { createClaudeSyncEngine } from './security/permissions/claude-sync.js';
+import { createOtelSettingsWatcher } from './otel-settings-watcher.js';
+import { repatchClaudeOtelSettings } from './otel-settings-patch.js';
+import {
+  inspectClaudeOtelConfig,
+  parseOtlpHeaders,
+  pickAuthHeader,
+} from './otel-settings-drift.js';
+import { isUrlSafeForForwarder } from './claude-otel-config.js';
 import { createAgentsSyncEngine } from './optimize/agents-sync.js';
 import { getCuratedLibrary, getCuratedSubagent } from './optimize/curated-library.js';
 import { createOptimizationAnalyzer } from './optimize/optimization-analyzer.js';
@@ -1075,6 +1083,109 @@ export async function startDaemon(): Promise<DaemonHandle> {
               error: message,
             });
           });
+        break;
+      }
+
+      case 'get_otel_drift_state': {
+        // Always re-inspect — cheap (single file read) and avoids stale
+        // results if the user just hand-edited settings.json a moment
+        // before opening the Metrics tab.
+        void inspectClaudeOtelConfig(claudeSettingsPath, currentSettings.otelExporterEndpoint)
+          .then((details) => {
+            respond({ requestType: 'get_otel_drift_state', success: true, data: details });
+          })
+          .catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            respond({ requestType: 'get_otel_drift_state', success: false, error: message });
+          });
+        break;
+      }
+
+      case 'repatch_otel_settings': {
+        void (async () => {
+          try {
+            const written = await repatchClaudeOtelSettings(claudeSettingsPath);
+            const envBlock = (written['env'] as Record<string, unknown> | undefined) ?? {};
+            otelSettingsWatcher.markWritten(envBlock);
+            const details = await otelSettingsWatcher.inspectAndBroadcast();
+            respond({ requestType: 'repatch_otel_settings', success: true, data: details });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            respond({ requestType: 'repatch_otel_settings', success: false, error: message });
+          }
+        })();
+        break;
+      }
+
+      case 'promote_foreign_otel_endpoint': {
+        void (async () => {
+          try {
+            // Re-inspect so promote operates on the file's current state
+            // rather than a stale broadcast cache. Cheap, removes a class
+            // of TOCTOU bugs around the user racing a foreign tool.
+            const before = await inspectClaudeOtelConfig(
+              claudeSettingsPath,
+              currentSettings.otelExporterEndpoint,
+            );
+            if (before.state !== 'foreign-endpoint') {
+              respond({
+                requestType: 'promote_foreign_otel_endpoint',
+                success: false,
+                error: `Cannot promote: drift state is "${before.state}", expected "foreign-endpoint"`,
+              });
+              return;
+            }
+            const candidateEndpoint =
+              before.actual.metricsEndpoint ?? before.actual.logsEndpoint ?? before.actual.endpoint;
+            if (!candidateEndpoint || !isUrlSafeForForwarder(candidateEndpoint)) {
+              respond({
+                requestType: 'promote_foreign_otel_endpoint',
+                success: false,
+                error:
+                  'Foreign endpoint is HTTP (and not loopback). Sentinel only forwards to HTTPS or loopback endpoints to keep ingestion keys off the wire in plaintext.',
+              });
+              return;
+            }
+            const headers = parseOtlpHeaders(before.actual.headers);
+            const chosenName = msg.chosenHeaderName;
+            const chosen = chosenName
+              ? (headers.find((h) => h.name === chosenName) ?? null)
+              : pickAuthHeader(headers);
+
+            // Sequence matters: secret → settings → re-patch. Reversing
+            // risks a window where Claude Code points at Sentinel but
+            // Sentinel has no downstream destination, so the user's
+            // foreign tool silently stops receiving data.
+            if (chosen) {
+              writeOtelExporterSecret(chosen.value);
+            }
+            const patch: Partial<Settings> = {
+              otelExporterEndpoint: candidateEndpoint,
+              otelForwardingEnabled: true,
+            };
+            if (chosen) patch.otelExporterHeaderName = chosen.name;
+            currentSettings = writeSettings(patch);
+            ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+            otelForwarder.onSecretChanged();
+
+            const written = await repatchClaudeOtelSettings(claudeSettingsPath);
+            const envBlock = (written['env'] as Record<string, unknown> | undefined) ?? {};
+            otelSettingsWatcher.markWritten(envBlock);
+            const details = await otelSettingsWatcher.inspectAndBroadcast();
+            respond({
+              requestType: 'promote_foreign_otel_endpoint',
+              success: true,
+              data: details,
+            });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            respond({
+              requestType: 'promote_foreign_otel_endpoint',
+              success: false,
+              error: message,
+            });
+          }
+        })();
         break;
       }
 
@@ -2738,16 +2849,32 @@ export async function startDaemon(): Promise<DaemonHandle> {
     });
   }
 
+  // OTEL settings drift watcher. Tracks the eight env vars Sentinel
+  // manages in ~/.claude/settings.json and surfaces the drift state
+  // through `otel_drift_state` broadcasts. Constructed here so the IPC
+  // handlers can capture it in their closure; started just before the
+  // IPC server accepts connections to keep daemon startup deterministic.
+  const claudeSettingsPath =
+    process.env.CLAUDE_SENTINEL_TEST_CLAUDE_SETTINGS_FILE ??
+    join(homedir(), '.claude', 'settings.json');
+  const otelSettingsWatcher = createOtelSettingsWatcher({
+    settingsPath: claudeSettingsPath,
+    ipcServer,
+    getSentinelExporterEndpoint: () => currentSettings.otelExporterEndpoint,
+  });
+
   // Optimize feature: agents-sync engine. Always started — capture
   // can be off (no new tool_calls accumulate), but if the user has
   // installed curated subagents in the past, we still want the sync
   // engine alive to detect orphans, hand-edits, and to support
   // uninstall. The engine is lightweight when AGENTS_DIR is empty.
   const agentsSyncEngine = createAgentsSyncEngine({ db, ipcServer });
-  void agentsSyncEngine.start().catch((err: unknown) => {
+  try {
+    await agentsSyncEngine.start();
+  } catch (err) {
     /* v8 ignore next 2 */
     console.error('[AgentsSync] initial start failed:', err);
-  });
+  }
 
   // Optimize feature: periodic analyzer. Runs every 5 minutes,
   // detecting opportunities in recent tool_calls and writing
@@ -2770,6 +2897,14 @@ export async function startDaemon(): Promise<DaemonHandle> {
   } else {
     console.log('[Sentinel] IPC server started (UNAUTHENTICATED — dev mode)');
   }
+
+  // Start the OTEL drift watcher after the IPC server is up. Placed
+  // here so it doesn't shift the event-loop scheduling between the
+  // earlier void agentsSyncEngine.start() and the IPC server's listen,
+  // which keeps the agents-sync `active=true` flip race-free.
+  void otelSettingsWatcher.start().catch((err: unknown) => {
+    console.error('[OtelDrift] initial start failed:', err);
+  });
 
   // Sprint 2: surface settings-file tamper to the UI as soon as a client
   // connects. Defer the broadcast to the next tick so the IPC `clients`
@@ -3044,6 +3179,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     permissionsEnforcer.shutdown();
     optimizationAnalyzer.stop();
     agentsSyncEngine.stop();
+    otelSettingsWatcher.stop();
     ipcServer.close();
     await new Promise<void>((resolve) => {
       httpServer.close(() => resolve());

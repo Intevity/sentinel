@@ -631,6 +631,60 @@ export interface OtelExporterTestResult {
   message: string;
 }
 
+/** Result of inspecting `~/.claude/settings.json` for Sentinel's OTEL
+ *  wiring. Drives the Metrics-tab banner that surfaces "metrics aren't
+ *  flowing" and offers Re-patch / Promote actions.
+ *
+ *  - `ok`               — endpoint points at Sentinel and telemetry is enabled.
+ *  - `foreign-endpoint` — another tool overwrote `OTEL_EXPORTER_OTLP_ENDPOINT`
+ *                          or its signal-specific siblings; metrics are flowing
+ *                          somewhere else.
+ *  - `telemetry-disabled` — `CLAUDE_CODE_ENABLE_TELEMETRY` missing or `"0"`.
+ *  - `no-settings-file` — `~/.claude/settings.json` is absent. */
+export type OtelDriftState = 'ok' | 'foreign-endpoint' | 'telemetry-disabled' | 'no-settings-file';
+
+/** Parsed-but-redacted preview of what a Promote action will move into
+ *  Sentinel's external OTEL forwarder. Surfaced in the confirmation modal
+ *  so the user can review before confirming. Secret values are NEVER sent
+ *  to the UI in full — only a `head…tail` mask for sanity-check. */
+export interface OtelDriftPromotePreview {
+  /** Foreign endpoint URL Sentinel will adopt as `otelExporterEndpoint`. */
+  endpoint: string;
+  /** Header name picked by the auth-heuristic. Null when the foreign
+   *  config carries no recognisable auth header — UI should warn that
+   *  the user may need to paste the secret manually. */
+  headerName: string | null;
+  /** Masked preview of the header value, e.g. `abcd…wxyz`. Null when
+   *  `headerName` is null. */
+  headerValueMasked: string | null;
+  /** Pre-existing `otelExporterEndpoint` value in Sentinel's settings
+   *  that Promote will overwrite, when non-null. UI surfaces this as a
+   *  "Replaces existing forwarding to: …" warning. */
+  replacesExisting: string | null;
+}
+
+/** Snapshot of Claude Code's current OTEL settings + Sentinel's
+ *  interpretation. Broadcast as `otel_drift_state` and returned from the
+ *  `get_otel_drift_state` IPC. */
+export interface OtelDriftDetails {
+  state: OtelDriftState;
+  /** Observed env-var values. Either string or null per key. */
+  actual: {
+    endpoint: string | null;
+    metricsEndpoint: string | null;
+    logsEndpoint: string | null;
+    telemetryEnabled: boolean;
+    protocol: string | null;
+    headers: string | null;
+  };
+  /** True when state === 'foreign-endpoint' and the endpoint URL passes
+   *  the same HTTPS-or-loopback check used by the forwarder's URL
+   *  coercion. Re-patch is always available; Promote requires this. */
+  canPromote: boolean;
+  /** Populated when canPromote is true. Drives the confirmation modal. */
+  promotePreview: OtelDriftPromotePreview | null;
+}
+
 /** Structured log entry emitted by the daemon logger and streamed to the
  *  in-app Logs tab. */
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';

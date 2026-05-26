@@ -40,6 +40,10 @@ export interface StartTestDaemonOptions {
   /** Pre-seeded ~/.claude-sentinel/settings.json (merged onto DEFAULT_SETTINGS
    *  by the loader). */
   settings?: Partial<Settings>;
+  /** Pre-seeded ~/.claude/settings.json (the file Claude Code itself reads).
+   *  Lets tests stage drift scenarios for the OTEL drift watcher / IPC
+   *  handlers. Default: an empty object. */
+  claudeSettings?: Record<string, unknown>;
   /** Pre-seeded Sentinel credentials, keyed by sentinel key (orgUuid || accountUuid).
    *  Written into the tmp keychain file under the 'Claude Sentinel-credentials'
    *  service so `readSentinelCredentials(key)` resolves. */
@@ -84,6 +88,10 @@ export interface TestDaemon {
   keychainPath: string;
   settingsPath: string;
   claudeJsonPath: string;
+  /** Path of the staged `~/.claude/settings.json` (Claude Code's own
+   *  settings file, not Sentinel's). Tests can hand-edit this file to
+   *  exercise drift detection. */
+  claudeSettingsPath: string;
   daemonPort: number;
   workdir: string;
   cleanup: () => Promise<void>;
@@ -116,6 +124,7 @@ const TEST_ENV_KEYS = [
   'CLAUDE_SENTINEL_TEST_IPC_SOCKET',
   'CLAUDE_SENTINEL_TEST_DAEMON_PORT',
   'CLAUDE_SENTINEL_TEST_AGENTS_DIR',
+  'CLAUDE_SENTINEL_TEST_CLAUDE_SETTINGS_FILE',
   'ANTHROPIC_UPSTREAM_URL',
   'OAUTH_TOKEN_URL',
   'OAUTH_AUTH_URL',
@@ -127,6 +136,7 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   const requestLogDbPath = join(workdir, 'request-logs.db');
   const claudeJsonPath = join(workdir, 'claude.json');
   const settingsPath = join(workdir, 'settings.json');
+  const claudeSettingsPath = join(workdir, 'claude-settings.json');
   const keychainPath = join(workdir, 'keychain.json');
   // Short socket name — macOS caps AF_UNIX paths at ~104 chars, and tmpdir()
   // plus a UUID prefix leave limited room.
@@ -138,6 +148,7 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   // env var has to be set BEFORE we sign so getOrCreateSettingsHmacKey
   // reads the test keychain instead of the real OS keychain.
   writeFileSync(claudeJsonPath, JSON.stringify(opts.claudeState ?? {}, null, 2));
+  writeFileSync(claudeSettingsPath, JSON.stringify(opts.claudeSettings ?? {}, null, 2));
   const keychain: TestKeychain = {};
   if (opts.sentinelCredentials) {
     keychain['Claude Sentinel-credentials'] = {};
@@ -186,6 +197,7 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   // production; redirect to tmp so we don't touch the dev's real
   // subagents directory.
   process.env.CLAUDE_SENTINEL_TEST_AGENTS_DIR = join(workdir, 'agents');
+  process.env.CLAUDE_SENTINEL_TEST_CLAUDE_SETTINGS_FILE = claudeSettingsPath;
   process.env.ANTHROPIC_UPSTREAM_URL = fake.origin;
   process.env.OAUTH_TOKEN_URL = fake.tokenUrl;
   process.env.OAUTH_AUTH_URL = fake.authUrl;
@@ -323,6 +335,7 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
     keychainPath,
     settingsPath,
     claudeJsonPath,
+    claudeSettingsPath,
     daemonPort,
     workdir,
     cleanup,

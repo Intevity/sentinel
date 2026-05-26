@@ -27,6 +27,7 @@ import type {
   SecurityBenchmarkResult,
   OtelForwarderStatus,
   OtelExporterTestResult,
+  OtelDriftDetails,
 } from './types.js';
 
 // ─── Daemon → App messages ────────────────────────────────────────────────────
@@ -157,6 +158,16 @@ export interface SettingsChangedMessage {
 export interface OtelForwarderStatusBroadcastMessage {
   type: 'otel_forwarder_status';
   status: OtelForwarderStatus;
+}
+
+/** Broadcast when the daemon's watcher on `~/.claude/settings.json`
+ *  detects a change in the env-key block Sentinel manages. Fires only
+ *  on real transitions (post-debounce, after echo suppression of our
+ *  own writes). UI replaces the cached `OtelDriftDetails` and
+ *  re-renders the Metrics-tab banner. */
+export interface OtelDriftStateMessage {
+  type: 'otel_drift_state';
+  details: OtelDriftDetails;
 }
 
 /** Broadcast when a user-configured usage alert crosses its threshold. The
@@ -524,7 +535,8 @@ export type DaemonToAppMessage =
   | SettingsTamperDetectedMessage
   | AuditLogTamperedMessage
   | TestOAuthUrlOpenedMessage
-  | OtelForwarderStatusBroadcastMessage;
+  | OtelForwarderStatusBroadcastMessage
+  | OtelDriftStateMessage;
 
 // ─── App → Daemon messages ────────────────────────────────────────────────────
 
@@ -1447,6 +1459,34 @@ export interface TestOtelExporterMessage {
   type: 'test_otel_exporter';
 }
 
+/** Inspect `~/.claude/settings.json` and report whether Sentinel's OTEL
+ *  wiring is still in place. Response payload is `OtelDriftDetails`. */
+export interface GetOtelDriftStateMessage {
+  type: 'get_otel_drift_state';
+}
+
+/** Re-patch `~/.claude/settings.json` so Sentinel's eight managed env
+ *  keys are restored to their default values. Used when a foreign tool
+ *  has overwritten the endpoint, or when telemetry was disabled. Strips
+ *  signal-specific overrides so the base endpoint actually wins. */
+export interface RepatchOtelSettingsMessage {
+  type: 'repatch_otel_settings';
+}
+
+/** Adopt the current foreign endpoint into Sentinel's external OTEL
+ *  forwarder so both Sentinel and the original downstream tool keep
+ *  receiving metrics, then re-patch Claude Code's settings.json. Refused
+ *  when the foreign endpoint is HTTP and not loopback (the forwarder
+ *  rejects those URLs to keep ingestion keys off the wire in plaintext).
+ *
+ *  `chosenHeaderName` lets the UI override the auth-header heuristic when
+ *  the foreign config has multiple plausible auth headers or none — the
+ *  user picks from a list rendered in the confirmation modal. */
+export interface PromoteForeignOtelEndpointMessage {
+  type: 'promote_foreign_otel_endpoint';
+  chosenHeaderName?: string;
+}
+
 export type AppToDaemonMessage =
   | GetAccountsMessage
   | GetCredentialsMessage
@@ -1526,7 +1566,10 @@ export type AppToDaemonMessage =
   | SetOtelExporterSecretMessage
   | ClearOtelExporterSecretMessage
   | GetOtelExporterStatusMessage
-  | TestOtelExporterMessage;
+  | TestOtelExporterMessage
+  | GetOtelDriftStateMessage
+  | RepatchOtelSettingsMessage
+  | PromoteForeignOtelEndpointMessage;
 
 /** Response payload alias re-exports for convenience in consumers. */
 export type {
@@ -1551,6 +1594,7 @@ export type {
   SecurityBenchmarkResult,
   OtelForwarderStatus,
   OtelExporterTestResult,
+  OtelDriftDetails,
 };
 
 // ─── All IPC messages ─────────────────────────────────────────────────────────
