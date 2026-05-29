@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Claude Sentinel — multi-account manager and overage alerts for Claude Code"
 authors = ["Jeff Wooden"]
 license = "MIT"
-repository = "https://github.com/jeffwooden/claude-sentinel"
+repository = "https://github.com/Intevity/claude-sentinel"
 edition = "2021"
 rust-version = "1.77"
 

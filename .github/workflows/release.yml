@@ -156,7 +156,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: Claude Sentinel ${{ github.ref_name }}
           releaseBody: |
-            See [CHANGELOG.md](https://github.com/jeffwooden/claude-sentinel/blob/main/CHANGELOG.md) for release notes.
+            See [CHANGELOG.md](https://github.com/Intevity/claude-sentinel/blob/main/CHANGELOG.md) for release notes.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

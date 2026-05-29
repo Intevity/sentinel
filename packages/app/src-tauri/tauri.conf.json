@@ -51,7 +51,7 @@
       "active": true,
       "pubkey": "REPLACE_WITH_TAURI_UPDATER_PUBLIC_KEY",
       "endpoints": [
-        "https://github.com/jeffwooden/claude-sentinel/releases/latest/download/latest.json"
+        "https://github.com/Intevity/claude-sentinel/releases/latest/download/latest.json"
       ]
     }
   }
