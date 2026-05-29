@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { LogEntry } from '@claude-sentinel/shared';
+import type { LogEntry, LogRequestSummary } from '@claude-sentinel/shared';
 
 vi.mock('@tauri-apps/plugin-opener', () => ({
   openUrl: vi.fn().mockResolvedValue(undefined),
@@ -90,12 +90,30 @@ describe('buildBody', () => {
   });
 
   it('includes daemon errors in a collapsible block when present', () => {
+    // Real LogEntry.message produced by the daemon always begins with the
+    // tag in brackets — `tag` is just a denormalized regex extraction.
     const body = buildBody({
       source: 'daemon-error',
-      daemonErrors: [makeLog(1, 'error', 'Token refresh failed', 'OAuth')],
+      daemonErrors: [makeLog(1, 'error', '[OAuth] Token refresh failed', 'OAuth')],
     });
     expect(body).toContain('Recent daemon errors');
     expect(body).toContain('ERROR [OAuth] Token refresh failed');
+  });
+
+  it('emits the tag exactly once even though LogEntry carries it twice (as `tag` and in `message`)', () => {
+    // Regression: prior implementation prepended `[${tag}]` even though
+    // the message already begins with `[tag]`, producing
+    // `[proxy] [proxy] POST /v1/messages …` in pasted bug reports.
+    const body = buildBody({
+      source: 'daemon-error',
+      daemonErrors: [
+        makeLog(1, 'error', '[proxy] POST /v1/messages?beta=true → ERROR (53.16s)', 'proxy'),
+      ],
+    });
+    // [proxy] should appear once on the formatted log line — never twice.
+    const logBlock = body.match(/```[\s\S]*?```/)?.[0] ?? '';
+    const occurrences = (logBlock.match(/\[proxy\]/g) ?? []).length;
+    expect(occurrences).toBe(1);
   });
 
   it('includes error + stack + component stack for error-boundary reports', () => {
@@ -155,6 +173,102 @@ describe('buildBody', () => {
       daemonErrors: [makeLog(1, 'error', 'oops')],
     });
     expect(body).toContain('Recent daemon errors were detected');
+  });
+
+  it('includes a separate "Recent daemon activity" section when recentEntries is provided', () => {
+    const body = buildBody({
+      source: 'daemon-error',
+      daemonErrors: [makeLog(10, 'error', '[proxy] POST /v1/messages → ERROR (53s)', 'proxy')],
+      recentEntries: [
+        makeLog(7, 'info', '[Proxy] POST /v1/messages → 200', 'Proxy'),
+        makeLog(8, 'info', '[Proxy] RL store now has 5 window(s) for acct-1', 'Proxy'),
+        makeLog(9, 'warn', '[RateLimit] Probe slow: 4.2s', 'RateLimit'),
+        makeLog(10, 'error', '[proxy] POST /v1/messages → ERROR (53s)', 'proxy'),
+      ],
+    });
+    expect(body).toContain('Recent daemon errors');
+    expect(body).toContain('Recent daemon activity (last 50 entries, all levels)');
+    expect(body).toContain('[Proxy] RL store now has 5 window(s)');
+    expect(body).toContain('[RateLimit] Probe slow');
+  });
+
+  it('includes a "Failed proxy requests" section when requestSummaries is provided', () => {
+    const summaries: LogRequestSummary[] = [
+      {
+        requestId: 'e88af2a6-089b-46b8-b336-5d608bdb59d2',
+        method: 'POST',
+        urlPath: '/v1/messages?beta=true',
+        statusCode: 200,
+        durationMs: 53156,
+        errorMessage: 'upstream idle timeout: no data for 60s',
+        isSse: true,
+      },
+      {
+        requestId: 'aaaa-pre-headers',
+        method: 'POST',
+        urlPath: '/v1/messages',
+        statusCode: null,
+        durationMs: null,
+        errorMessage: 'read ETIMEDOUT',
+        isSse: false,
+      },
+    ];
+    const body = buildBody({
+      source: 'daemon-error',
+      daemonErrors: [makeLog(1, 'error', '[proxy] POST /v1/messages → ERROR (53s)', 'proxy')],
+      requestSummaries: summaries,
+    });
+    expect(body).toContain('Failed proxy requests');
+    // Mid-stream shape (status=200, long duration, isSse).
+    expect(body).toContain('e88af2a6');
+    expect(body).toContain('status=200');
+    expect(body).toContain('duration=53.16s');
+    expect(body).toContain('isSse=true');
+    expect(body).toContain('upstream idle timeout');
+    // Pre-headers shape (no status, no duration, isSse false).
+    expect(body).toContain('aaaa-pre-headers');
+    expect(body).toContain('status=no-response');
+    expect(body).toContain('duration=no-duration');
+    expect(body).toContain('read ETIMEDOUT');
+  });
+
+  it('omits the "Failed proxy requests" section when no summaries are supplied', () => {
+    const body = buildBody({
+      source: 'daemon-error',
+      daemonErrors: [makeLog(1, 'error', 'oops')],
+    });
+    expect(body).not.toContain('Failed proxy requests');
+  });
+
+  it('omits the "Failed proxy requests" section when summaries array is empty', () => {
+    const body = buildBody({
+      source: 'daemon-error',
+      daemonErrors: [makeLog(1, 'error', 'oops')],
+      requestSummaries: [],
+    });
+    expect(body).not.toContain('Failed proxy requests');
+  });
+
+  it('drops the activity context first when over the 6000 char budget', () => {
+    // Massive context plus a small error list. truncateTail keeps the
+    // tail of each shrunk section, so the literal "Recent daemon
+    // activity" summary header is itself truncated away — but the
+    // truncation marker remains and the protected error line survives.
+    const recentEntries: LogEntry[] = Array.from({ length: 50 }, (_, i) =>
+      makeLog(i + 1, 'info', '[Probe] ' + 'Y'.repeat(400), 'Probe'),
+    );
+    const daemonErrors = [makeLog(99, 'error', '[proxy] short error msg', 'proxy')];
+    const body = buildBody({
+      source: 'daemon-error',
+      daemonErrors,
+      recentEntries,
+    });
+    expect(body.length).toBeLessThanOrEqual(6000);
+    // The error section is small and survives intact.
+    expect(body).toContain('Recent daemon errors');
+    expect(body).toContain('short error msg');
+    // Context section was shrunk — truncation marker remains.
+    expect(body).toContain('truncated');
   });
 });
 

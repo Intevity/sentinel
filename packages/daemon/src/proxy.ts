@@ -227,6 +227,13 @@ const RL_BROADCAST_DEBOUNCE_MS = 2_000;
 // cause the UI to re-fetch on every single one.
 const CACHE_TTL_BROADCAST_DEBOUNCE_MS = 1_000;
 
+// Upstream socket inactivity timeout. Auto-resets on each read/write, so
+// long-running SSE streams that keep producing chunks are never affected.
+// A hung socket (pre-headers or mid-stream) is aborted here instead of
+// waiting on the OS TCP retransmit budget (~50s on macOS surfacing as a
+// less-actionable `read ETIMEDOUT`).
+const UPSTREAM_IDLE_TIMEOUT_MS = 60_000;
+
 /** Compact one-line summary of the overage/5h headers worth logging per
  *  response. Returns null when there are no rate-limit headers to summarize.
  *  Intentionally selective — full header dumps flood the log.
@@ -1320,6 +1327,21 @@ async function proxyToAnthropic(
         if (capture) capture.errorMessage = err.message;
         finalizeCapture();
         reject(err);
+      });
+
+      // Bound a hung upstream socket. setTimeout(ms) installs a Node
+      // inactivity timer that auto-resets on every read/write — a healthy
+      // SSE stream that keeps emitting chunks is never affected, but a
+      // socket that has gone quiet (either pre-headers or mid-stream) fires
+      // here after `ms`. Destroying the request emits 'error' on
+      // proxyReq, which the handler above already captures + rejects. We
+      // prefer this to relying on the kernel's TCP retransmit timeout,
+      // which on macOS can take ~50s to surface as a `read ETIMEDOUT` and
+      // produces a less actionable error message.
+      proxyReq.setTimeout(UPSTREAM_IDLE_TIMEOUT_MS, () => {
+        proxyReq.destroy(
+          new Error(`upstream idle timeout: no data for ${UPSTREAM_IDLE_TIMEOUT_MS / 1000}s`),
+        );
       });
 
       if (body.length > 0) {

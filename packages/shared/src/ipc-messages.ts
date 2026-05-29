@@ -24,6 +24,7 @@ import type {
   PermissionRuleInput,
   AutoModeStatus,
   RequestDetail,
+  LogRequestSummary,
   SecurityBenchmarkResult,
   OtelForwarderStatus,
   OtelExporterTestResult,
@@ -1261,6 +1262,21 @@ export interface ClearRequestLogsMessage {
   type: 'clear_request_logs';
 }
 
+/** Batch-fetch metadata-only summaries for one or more captured proxy
+ *  requests. Used by the bug-report flow to attach lightweight context
+ *  (method, urlPath, statusCode, durationMs, errorMessage, isSse) for
+ *  each errored requestId surfaced in the daemon log without pulling
+ *  request/response bodies — those are stored separately and contain
+ *  user prompts that should never auto-attach to a public GitHub issue.
+ *
+ *  Response payload is `LogRequestSummary[]`. Missing rows (cleared or
+ *  retention-purged) are silently omitted; the response length may be
+ *  smaller than the input length. */
+export interface GetRequestSummariesMessage {
+  type: 'get_request_summaries';
+  requestIds: string[];
+}
+
 /** Synthesize a security finding through the normal persist + broadcast
  *  path. Used by `scripts/security-test.mjs` to exercise the UI without
  *  having to actually elicit a model response or leak a real secret.
@@ -1549,6 +1565,7 @@ export type AppToDaemonMessage =
   | ClearDaemonLogsMessage
   | GetRequestDetailMessage
   | ClearRequestLogsMessage
+  | GetRequestSummariesMessage
   | GetOverageGrantsMessage
   | RefreshOverageGrantsMessage
   | GetSpendSummaryMessage
@@ -1591,6 +1608,7 @@ export type {
   PermissionRuleInput,
   AutoModeStatus,
   RequestDetail,
+  LogRequestSummary,
   SecurityBenchmarkResult,
   OtelForwarderStatus,
   OtelExporterTestResult,

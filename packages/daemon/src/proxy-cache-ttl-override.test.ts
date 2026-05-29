@@ -124,6 +124,7 @@ function stubUpstream(): CapturedUpstream {
         if (chunk) captured.bodyChunks.push(chunk);
       }),
       destroy: vi.fn(),
+      setTimeout: vi.fn(),
     } as unknown as ClientRequest;
   });
   return captured;

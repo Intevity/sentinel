@@ -1677,6 +1677,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
         break;
       }
 
+      case 'get_request_summaries': {
+        const summaries = requestLogStore.getSummaries(msg.requestIds);
+        respond({ requestType: 'get_request_summaries', success: true, data: summaries });
+        break;
+      }
+
       case 'clear_request_logs': {
         const deleted = requestLogStore.clearAll();
         ipcServer.broadcast({ type: 'request_logs_cleared', deleted });

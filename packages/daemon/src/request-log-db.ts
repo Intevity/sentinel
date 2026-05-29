@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import type { RequestDetail } from '@claude-sentinel/shared';
+import type { LogRequestSummary, RequestDetail } from '@claude-sentinel/shared';
 import { SENTINEL_DIR } from './db.js';
 
 export const REQUEST_LOG_DB_PATH = join(SENTINEL_DIR, 'request-logs.db');
@@ -141,6 +141,43 @@ export class RequestLogStore {
       .prepare('SELECT * FROM request_logs WHERE request_id = ?')
       .get(requestId) as RequestLogRow | undefined;
     return row ? rowToDetail(row) : null;
+  }
+
+  /** Batch-fetch metadata-only summaries for `requestIds`. Bodies and
+   *  headers are NOT returned — this view is intended for places that
+   *  surface many ids at once (bug-report enrichment) without touching
+   *  any user-prompt content. Missing rows are silently omitted, so the
+   *  result length is `<= requestIds.length`. */
+  getSummaries(requestIds: string[]): LogRequestSummary[] {
+    if (requestIds.length === 0) return [];
+    this.flush();
+    const placeholders = requestIds.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(
+        `SELECT request_id, method, url_path, status_code, duration_ms,
+                error_message, is_sse
+         FROM request_logs
+         WHERE request_id IN (${placeholders})`,
+      )
+      .all(...requestIds) as Pick<
+      RequestLogRow,
+      | 'request_id'
+      | 'method'
+      | 'url_path'
+      | 'status_code'
+      | 'duration_ms'
+      | 'error_message'
+      | 'is_sse'
+    >[];
+    return rows.map((row) => ({
+      requestId: row.request_id,
+      method: row.method,
+      urlPath: row.url_path,
+      statusCode: row.status_code,
+      durationMs: row.duration_ms,
+      errorMessage: row.error_message,
+      isSse: row.is_sse === 1,
+    }));
   }
 
   /** Delete rows older than cutoff (Unix ms) and reclaim disk. Bodies are

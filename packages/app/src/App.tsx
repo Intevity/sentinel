@@ -106,7 +106,7 @@ export default function App(): React.ReactElement {
     initializing,
     refetch,
   } = useDaemon();
-  const { recentErrors, hasUnseenErrors, markErrorsSeen } = useDaemonErrors();
+  const { recentErrors, recentEntries, hasUnseenErrors, markErrorsSeen } = useDaemonErrors();
   const { settings, update: updateSettings } = useSettings();
   useThemeEffect(settings?.theme ?? null);
   // Which tab the SecurityRulesOverlay opens on. Header-shield click opens
@@ -774,6 +774,7 @@ export default function App(): React.ReactElement {
 
         <Footer
           daemonErrors={recentErrors}
+          recentEntries={recentEntries}
           hasUnseenErrors={hasUnseenErrors}
           markErrorsSeen={markErrorsSeen}
         />

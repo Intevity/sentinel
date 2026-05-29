@@ -300,6 +300,72 @@ describe('RequestLogStore', () => {
     expect(store.get('queued-but-dropped')).toBeNull();
   });
 
+  it('getSummaries returns metadata-only rows for the requested ids', () => {
+    store.enqueue(
+      makeRecord({
+        requestId: 'sum-ok',
+        statusCode: 200,
+        durationMs: 1234,
+        isSse: true,
+        errorMessage: null,
+      }),
+    );
+    store.enqueue(
+      makeRecord({
+        requestId: 'sum-err',
+        statusCode: null,
+        durationMs: null,
+        isSse: false,
+        errorMessage: 'upstream idle timeout: no data for 60s',
+      }),
+    );
+    store.flush();
+
+    const summaries = store.getSummaries(['sum-ok', 'sum-err', 'never-existed']);
+    // Missing ids are silently omitted — only the two real rows return.
+    expect(summaries).toHaveLength(2);
+    const byId = Object.fromEntries(summaries.map((s) => [s.requestId, s]));
+
+    expect(byId['sum-ok']!.method).toBe('POST');
+    expect(byId['sum-ok']!.urlPath).toBe('/v1/messages');
+    expect(byId['sum-ok']!.statusCode).toBe(200);
+    expect(byId['sum-ok']!.durationMs).toBe(1234);
+    expect(byId['sum-ok']!.isSse).toBe(true);
+    expect(byId['sum-ok']!.errorMessage).toBeNull();
+
+    expect(byId['sum-err']!.statusCode).toBeNull();
+    expect(byId['sum-err']!.durationMs).toBeNull();
+    expect(byId['sum-err']!.isSse).toBe(false);
+    expect(byId['sum-err']!.errorMessage).toBe('upstream idle timeout: no data for 60s');
+
+    // Crucial privacy property: summaries deliberately have no `request`,
+    // `response`, or any headers field — bodies + headers must NEVER
+    // auto-attach to a public GitHub issue URL.
+    expect(Object.keys(byId['sum-ok']!).sort()).toEqual(
+      [
+        'durationMs',
+        'errorMessage',
+        'isSse',
+        'method',
+        'requestId',
+        'statusCode',
+        'urlPath',
+      ].sort(),
+    );
+  });
+
+  it('getSummaries returns an empty array when called with no ids (avoids a useless DB query)', () => {
+    expect(store.getSummaries([])).toEqual([]);
+  });
+
+  it('getSummaries flushes pending queued rows so a same-tick call still sees them', () => {
+    store.enqueue(makeRecord({ requestId: 'sum-queued', statusCode: 500 }));
+    // No explicit flush — getSummaries must drain the queue itself.
+    const out = store.getSummaries(['sum-queued']);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.statusCode).toBe(500);
+  });
+
   it('clearAll clears the flush timer when one is pending', () => {
     vi.useFakeTimers();
     try {

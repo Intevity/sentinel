@@ -2,15 +2,17 @@ import React, { useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
 import { Bug } from 'lucide-react';
-import type { LogEntry } from '@claude-sentinel/shared';
+import type { LogEntry, LogRequestSummary } from '@claude-sentinel/shared';
 import intevityLogo from '../assets/intevityLogoIcon.png';
 import { openBugReport } from '../lib/bugReport.js';
+import { sendToSentinel } from '../lib/ipc.js';
 
 const INTEVITY_URL =
   'https://www.intevity.com/?utm_source=claude-sentinel&utm_medium=app&utm_campaign=built-by-footer';
 
 interface FooterProps {
   daemonErrors?: LogEntry[];
+  recentEntries?: LogEntry[];
   hasUnseenErrors?: boolean;
   markErrorsSeen?: () => void;
 }
@@ -31,6 +33,7 @@ const isDevBuild = displayVersion === 'dev';
 
 export default function Footer({
   daemonErrors,
+  recentEntries,
   hasUnseenErrors,
   markErrorsSeen,
 }: FooterProps = {}): React.ReactElement {
@@ -45,7 +48,38 @@ export default function Footer({
     // to stay red forever if the user abandons the report.
     const source =
       hasUnseenErrors && daemonErrors && daemonErrors.length > 0 ? 'daemon-error' : 'manual';
-    void openBugReport({ source, daemonErrors: daemonErrors ?? [] });
+
+    // Best-effort enrichment: each error that carries a requestId points
+    // to a captured row in the request-logs DB with status, duration,
+    // and isSse — exactly the metadata that distinguishes a pre-headers
+    // ETIMEDOUT (statusCode=null) from a mid-stream one (statusCode=200,
+    // long durationMs). If the IPC call fails (daemon down, bodies
+    // already purged), we still open the report with whatever we have.
+    const requestIds = Array.from(
+      new Set((daemonErrors ?? []).map((e) => e.requestId).filter((id): id is string => !!id)),
+    );
+
+    const fetchSummaries = async (): Promise<LogRequestSummary[]> => {
+      if (requestIds.length === 0) return [];
+      try {
+        const res = await sendToSentinel<LogRequestSummary[]>({
+          type: 'get_request_summaries',
+          requestIds,
+        });
+        return res.success && res.data ? res.data : [];
+      } catch {
+        return [];
+      }
+    };
+
+    void fetchSummaries().then((requestSummaries) => {
+      void openBugReport({
+        source,
+        daemonErrors: daemonErrors ?? [],
+        recentEntries: recentEntries ?? [],
+        requestSummaries,
+      });
+    });
     markErrorsSeen?.();
   };
 

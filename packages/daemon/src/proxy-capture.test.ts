@@ -166,6 +166,7 @@ describe('proxy request capture', () => {
         write: vi.fn(),
         end: vi.fn(),
         destroy: vi.fn(),
+        setTimeout: vi.fn(),
       } as unknown as ClientRequest;
     });
     return mockProxyRes;
@@ -313,6 +314,7 @@ describe('proxy request capture', () => {
         write: vi.fn(),
         end: vi.fn(),
         destroy: vi.fn(),
+        setTimeout: vi.fn(),
       } as unknown as ClientRequest;
       setTimeout(() => {
         reqListeners['error']?.forEach((fn) => fn(new Error('upstream went away')));
@@ -334,6 +336,62 @@ describe('proxy request capture', () => {
 
     expect(records).toHaveLength(1);
     expect(records[0]!.errorMessage).toContain('upstream went away');
+    expect(records[0]!.statusCode).toBeNull();
+    expect(records[0]!.durationMs).toBeNull();
+    server.close();
+  });
+
+  it('aborts the upstream request when no data flows within the idle timeout', async () => {
+    const { store, records } = makeFakeStore();
+
+    // Upstream accepts the connection but never replies. Capture the
+    // idle-timeout callback registered by the proxy so we can fire it
+    // deterministically instead of waiting 60s.
+    const reqListeners: Record<string, Array<(arg?: unknown) => void>> = {};
+    // Boxed so TS sees the assignment from inside the mock closure — a
+    // bare `let timeoutHandler = null` confuses control-flow analysis.
+    const handlerBox: { fn: (() => void) | null } = { fn: null };
+    httpsRequestMock.mockImplementation((_opts, _cb) => {
+      const clientReq = {
+        on: (event: string, cb: (arg?: unknown) => void) => {
+          reqListeners[event] = reqListeners[event] ?? [];
+          reqListeners[event]?.push(cb);
+          return clientReq;
+        },
+        write: vi.fn(),
+        end: vi.fn(),
+        destroy: (err?: Error) => {
+          if (err) reqListeners['error']?.forEach((fn) => fn(err));
+        },
+        setTimeout: (_ms: number, cb: () => void) => {
+          handlerBox.fn = cb;
+          return clientReq;
+        },
+      } as unknown as ClientRequest;
+      return clientReq;
+    });
+
+    const server = createProxyServer({ db, ipcServer, requestLogStore: store }, otelHandler);
+    const handler = (
+      server as unknown as {
+        listeners: (e: string) => Array<(r: IncomingMessage, s: ServerResponse) => void>;
+      }
+    ).listeners('request')[0];
+
+    const req = makeReq('/v1/messages');
+    const { res } = makeRes();
+    handler?.(req, res);
+    // Let the body-buffering + dispatch settle so setTimeout has been called.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(handlerBox.fn).not.toBeNull();
+    // Fire the idle-timeout callback — proxy.ts destroys proxyReq with a
+    // descriptive Error, which the error handler captures and rejects.
+    handlerBox.fn?.();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(records).toHaveLength(1);
+    expect(records[0]!.errorMessage).toContain('upstream idle timeout');
+    expect(records[0]!.errorMessage).toContain('60s');
     expect(records[0]!.statusCode).toBeNull();
     expect(records[0]!.durationMs).toBeNull();
     server.close();
@@ -536,6 +594,7 @@ describe('proxy request capture', () => {
         write: vi.fn(),
         end: vi.fn(),
         destroy: vi.fn(),
+        setTimeout: vi.fn(),
       } as unknown as ClientRequest;
     });
 

@@ -6,6 +6,11 @@ const STORAGE_KEY = 'sentinel.lastSeenErrorSeq';
 // Hold the 20 most recent error entries — matches the cap we include in
 // the pre-filled GitHub issue body.
 const KEEP = 20;
+// Separately retain the last 50 entries of any level so a bug report can
+// attach the surrounding INFO/WARN context that often makes an error
+// reproducible (which account was active, what the rate-limit state was,
+// what came right before).
+const KEEP_CONTEXT = 50;
 
 function readLastSeen(): number {
   try {
@@ -28,20 +33,46 @@ function writeLastSeen(seq: number): void {
 
 export interface UseDaemonErrorsResult {
   recentErrors: LogEntry[];
+  /** Last 50 log entries of any level — INFO/WARN context for bug reports.
+   *  Not used for the unseen-badge signal. */
+  recentEntries: LogEntry[];
   hasUnseenErrors: boolean;
   markErrorsSeen: () => void;
 }
 
 export function useDaemonErrors(): UseDaemonErrorsResult {
   const [recentErrors, setRecentErrors] = useState<LogEntry[]>([]);
+  const [recentEntries, setRecentEntries] = useState<LogEntry[]>([]);
   const [lastSeen, setLastSeen] = useState<number>(() => readLastSeen());
   // Deduplicate across history seed + broadcast batches. Daemon seq resets
   // to 0 on restart — we detect that and reset our merge state so we don't
   // orphan the entire list behind a stale high-water mark.
   const highestSeqRef = useRef<number>(0);
+  const highestAnySeqRef = useRef<number>(0);
 
   const ingest = useCallback((entries: LogEntry[]): void => {
     if (entries.length === 0) return;
+
+    // Always-on context ring: every level, capped at KEEP_CONTEXT, dedup +
+    // restart detection mirroring the error ring below.
+    setRecentEntries((prev) => {
+      const minIncoming = entries[0]!.seq;
+      const rolled = minIncoming < highestAnySeqRef.current;
+      const base = rolled ? [] : prev;
+      if (rolled) highestAnySeqRef.current = 0;
+      const seen = new Set(base.map((e) => e.seq));
+      const merged = [...base];
+      for (const e of entries) {
+        if (!seen.has(e.seq)) {
+          merged.push(e);
+          seen.add(e.seq);
+          if (e.seq > highestAnySeqRef.current) highestAnySeqRef.current = e.seq;
+        }
+      }
+      merged.sort((a, b) => a.seq - b.seq);
+      return merged.slice(-KEEP_CONTEXT);
+    });
+
     const errors = entries.filter((e) => e.level === 'error');
     if (errors.length === 0) return;
     setRecentErrors((prev) => {
@@ -88,7 +119,9 @@ export function useDaemonErrors(): UseDaemonErrorsResult {
         ingest(msg.entries);
       } else if (msg.type === 'daemon_logs_cleared') {
         setRecentErrors([]);
+        setRecentEntries([]);
         highestSeqRef.current = 0;
+        highestAnySeqRef.current = 0;
       }
     })
       .then((fn) => {
@@ -114,5 +147,5 @@ export function useDaemonErrors(): UseDaemonErrorsResult {
     });
   }, [latestSeq]);
 
-  return { recentErrors, hasUnseenErrors, markErrorsSeen };
+  return { recentErrors, recentEntries, hasUnseenErrors, markErrorsSeen };
 }

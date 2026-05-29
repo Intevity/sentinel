@@ -746,6 +746,20 @@ export interface RequestDetail {
   errorMessage: string | null;
 }
 
+/** Lightweight metadata-only view of a captured proxy request, intentionally
+ *  excluding `request_headers` / `response_headers` / bodies so consumers
+ *  that batch-fetch many rows (e.g. bug-report enrichment) never see
+ *  request payloads. Use {@link RequestDetail} when bodies are required. */
+export interface LogRequestSummary {
+  requestId: string;
+  method: string;
+  urlPath: string;
+  statusCode: number | null;
+  durationMs: number | null;
+  errorMessage: string | null;
+  isSse: boolean;
+}
+
 /** How the outbound scanner reacts to findings.
  *  Tool_use (inbound) is always observed only; we cannot block a response
  *  stream without corrupting the SSE protocol. */
