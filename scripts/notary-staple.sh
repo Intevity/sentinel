@@ -13,14 +13,19 @@
 #      and re-sign with the Tauri (minisign) updater key.
 #   3. Re-upload the stapled dmg + regenerated tarball + new .sig to the draft release.
 #
-# Usage: notary-staple.sh <dir-with-dmg-and-tarballs>
-# Requires env: GH_TOKEN, GITHUB_REF_NAME, GITHUB_REPOSITORY,
+# Usage: notary-staple.sh <dir-with-dmg-and-tarballs> <release-tag>
+# Requires env: GH_TOKEN, GITHUB_REPOSITORY,
 #               TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD.
 set -euo pipefail
 shopt -s nullglob
 
-DIR="${1:?usage: notary-staple.sh <dir-with-dmg-and-tarballs>}"
-TAG="${GITHUB_REF_NAME:?GITHUB_REF_NAME required}"
+DIR="${1:?usage: notary-staple.sh <dir-with-dmg-and-tarballs> <release-tag>}"
+# Tag is passed explicitly ($2). Do NOT rely on a GITHUB_REF_NAME env override: GitHub
+# ignores attempts to set GITHUB_* vars, so a reusable/workflow_dispatch caller cannot
+# alias it (it would stay as the branch, e.g. "main"). Fall back to GITHUB_REF_NAME only
+# for a direct tag-push context where it is naturally the tag.
+TAG="${2:-${GITHUB_REF_NAME:-}}"
+: "${TAG:?release tag required (pass as \$2, or set GITHUB_REF_NAME on a tag push)}"
 REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
 
 cd "$DIR"

@@ -37,7 +37,6 @@ jobs:
       # Stapling needs no Apple API key (xcrun stapler fetches the ticket anonymously by
       # cdhash); only the Tauri minisign key is needed, to re-sign the regenerated tarball.
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GITHUB_REF_NAME: ${{ inputs.tag }} # notary-staple.sh reads this for the release tag
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
@@ -65,7 +64,7 @@ jobs:
             --pattern '*.app.tar.gz.sig'
           echo "Downloaded:"; ls -1 dist-staple
       - name: Staple + re-sign updater artifacts
-        run: bash scripts/notary-staple.sh dist-staple
+        run: bash scripts/notary-staple.sh dist-staple "${{ inputs.tag }}"
 
   # Promote LAST — only after publish-updates has populated the S3 channel — so the release
   # never goes live with a missing update manifest, AND this job can't race publish-updates'
