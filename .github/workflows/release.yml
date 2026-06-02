@@ -50,6 +50,16 @@ jobs:
       # shipping a misnamed bundle.
       - name: Sync version from tag
         shell: bash
+        env:
+          # Public HTTPS base that maps to the S3 bucket root (or a CloudFront/custom
+          # domain in front of it), e.g. https://<bucket>.s3.<region>.amazonaws.com or
+          # https://dl.example.com. Set as a repo variable (Settings → Secrets and
+          # variables → Actions → Variables). The same base is used by the
+          # publish-updates job, so the endpoint baked into the binary and the location
+          # latest.json is uploaded to can never drift. When unset, the committed
+          # placeholder stays in place — the build still succeeds, but in-app updates
+          # won't resolve until the variable is set and a release is published.
+          UPDATER_PUBLIC_BASE: ${{ vars.UPDATER_PUBLIC_BASE }}
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
@@ -59,12 +69,18 @@ jobs:
           fi
           echo "Stamping version=$VERSION into tauri.conf.json + Cargo.toml"
 
-          # tauri.conf.json — bundle metadata + artifact name source.
+          # tauri.conf.json — bundle metadata + artifact name source. Also stamps the
+          # updater endpoint as <base>/stable/latest.json when UPDATER_PUBLIC_BASE is
+          # set (left as the committed placeholder otherwise).
           node -e "
             const fs = require('fs');
             const p = 'packages/app/src-tauri/tauri.conf.json';
             const json = JSON.parse(fs.readFileSync(p, 'utf8'));
             json.version = process.argv[1];
+            const base = (process.env.UPDATER_PUBLIC_BASE || '').replace(/\/+\$/, '');
+            if (base) {
+              json.plugins.updater.endpoints = [base + '/stable/latest.json'];
+            }
             fs.writeFileSync(p, JSON.stringify(json, null, 2) + '\n');
           " "$VERSION"
 
@@ -138,19 +154,63 @@ jobs:
       # then runs build:sidecar to produce the platform binary. That binary is
       # placed in packages/app/src-tauri/binaries/ and bundled into the app by
       # the Tauri build step below.
-      # macOS builds ship unsigned for v0.1.x — users right-click → Open once
-      # to bypass Gatekeeper. When we're ready for signed + notarized releases,
-      # add back: APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
-      # APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID (all populated with valid values —
-      # an empty APPLE_CERTIFICATE secret makes tauri-action fail at keychain import).
-      # TAURI_SIGNING_PRIVATE_KEY below is a different mechanism — it signs the
-      # auto-updater's latest.json manifest, not the .app bundle.
+
+      # Notarization uses an App Store Connect API key (.p8). The secret holds the
+      # base64-encoded .p8 body; notarytool (via tauri-action) needs it as a file on
+      # disk, so decode it here and expose the path. macOS-only — the other legs
+      # neither sign nor notarize.
+      - name: Prepare Apple signing + notarization
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          # Fail fast with one clear message if any required Apple secret is missing —
+          # signing is mandatory now (a macOS auto-update can only install a notarized
+          # bundle), so a half-configured or unsigned release should never ship.
+          missing=()
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_CONTENT; do
+            [[ -z "${!v:-}" ]] && missing+=("$v")
+          done
+          if (( ${#missing[@]} )); then
+            echo "::error::Missing Apple secret(s): ${missing[*]}. Set all six (see README → Required repository secrets) before tagging a macOS release." >&2
+            exit 1
+          fi
+          # notarytool needs the App Store Connect key as a file on disk; the secret
+          # holds its base64. Written under RUNNER_TEMP, never the workspace.
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          echo "$APPLE_API_KEY_CONTENT" | base64 --decode > "$RUNNER_TEMP/private_keys/AuthKey.p8"
+
+      # Two independent signing mechanisms run here:
+      #   1. APPLE_CERTIFICATE / _PASSWORD / _SIGNING_IDENTITY  → Developer ID signing
+      #      of the .app + nested sidecar (Gatekeeper). Hardened runtime + the
+      #      entitlements.plist (allow-jit / disable-library-validation) let the pkg'd
+      #      Node daemon survive the hardened runtime.
+      #   2. APPLE_API_* → App Store Connect API key used by notarytool to notarize +
+      #      staple the signed bundle.
+      #   3. TAURI_SIGNING_PRIVATE_KEY → unrelated: signs the auto-updater artifacts
+      #      (.app.tar.gz.sig / latest.json), NOT the .app bundle.
+      # The APPLE_* env is set on every leg but only consumed on macOS; an EMPTY
+      # APPLE_CERTIFICATE makes tauri-action fail at keychain import, so all six Apple
+      # secrets must be populated before tagging a release.
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/private_keys/AuthKey.p8
         with:
           projectPath: packages/app
           tagName: ${{ github.ref_name }}
@@ -175,3 +235,98 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release edit ${{ github.ref_name }} --draft=false
+
+  # Publishes the macOS auto-update channel: mirrors the signed updater bundles
+  # (.app.tar.gz + .sig) to a public-read S3 bucket and writes the merged
+  # latest.json the in-app updater polls. The source repo can stay private — only
+  # these built artifacts are exposed, anonymously, so no token is embedded in the
+  # app. (Linux/Windows auto-update can be added later by extending the glob +
+  # platform map below.)
+  #
+  # SKIPPED until S3 is provisioned: `terraform apply` the terraform/ dir, then set the
+  # repo variables it outputs (S3_BUCKET, AWS_REGION, UPDATER_PUBLIC_BASE, AWS_ROLE_ARN).
+  # Auth is GitHub OIDC — no AWS secrets are stored. Until S3_BUCKET is set, the GitHub
+  # release (publish-release) is the only channel and the binary keeps its placeholder
+  # endpoint, so the updater simply finds nothing.
+  publish-updates:
+    name: Publish auto-update artifacts to S3
+    needs: [build-tauri]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: vars.S3_BUCKET != ''
+    permissions:
+      contents: read
+      id-token: write # mint the OIDC token used to assume the AWS role (no stored keys)
+    env:
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      S3_PREFIX: stable
+      UPDATER_PUBLIC_BASE: ${{ vars.UPDATER_PUBLIC_BASE }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          # OIDC: assume the role provisioned in terraform/ (claude-sentinel-updates-publisher),
+          # scoped to this repo's tag pushes. No long-lived AWS keys are stored.
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
+      - name: Download macOS updater artifacts from the release
+        run: |
+          set -euo pipefail
+          mkdir -p dist-updater
+          # Drafts are downloadable with the workflow token. Grab only the macOS
+          # updater bundles + their detached minisign signatures (Linux .AppImage.tar.gz
+          # and Windows .zip artifacts do not match '*.app.tar.gz').
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir dist-updater \
+            --pattern '*.app.tar.gz' \
+            --pattern '*.app.tar.gz.sig'
+          echo "Downloaded:"; ls -1 dist-updater
+
+      - name: Assemble latest.json
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Build the v2 dynamic manifest. Arch is derived from the filename so we
+          # don't depend on Tauri's exact artifact-naming scheme; the signature field
+          # is the literal contents of the companion .sig file (a minisign string).
+          VERSION="$VERSION" node -e '
+            const fs = require("fs"), path = require("path");
+            const dir = "dist-updater", version = process.env.VERSION;
+            const base = (process.env.UPDATER_PUBLIC_BASE || "").replace(/\/+$/, "");
+            const prefix = process.env.S3_PREFIX;
+            const platforms = {};
+            for (const f of fs.readdirSync(dir)) {
+              if (!f.endsWith(".app.tar.gz")) continue;
+              const key = f.includes("aarch64") ? "darwin-aarch64"
+                        : f.includes("x86_64") ? "darwin-x86_64"
+                        : null;
+              if (!key) throw new Error("cannot determine arch from " + f);
+              const signature = fs.readFileSync(path.join(dir, f + ".sig"), "utf8").trim();
+              platforms[key] = { signature, url: `${base}/${prefix}/${version}/${encodeURIComponent(f)}` };
+            }
+            if (!Object.keys(platforms).length) throw new Error("no .app.tar.gz updater artifacts found");
+            const manifest = { version, notes: `Claude Sentinel ${version}`, pub_date: new Date().toISOString(), platforms };
+            fs.writeFileSync(path.join(dir, "latest.json"), JSON.stringify(manifest, null, 2));
+            console.log(JSON.stringify(manifest, null, 2));
+          '
+
+      - name: Upload to S3
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Versioned artifacts are immutable → cache forever. latest.json is the
+          # mutable pointer every installed binary polls → near-zero cache so a new
+          # release is picked up promptly. Bucket public-read is granted by bucket
+          # policy (Object Ownership = bucket-owner-enforced); add `--acl public-read`
+          # only if your bucket still uses ACLs.
+          aws s3 cp dist-updater/ "s3://$S3_BUCKET/$S3_PREFIX/$VERSION/" \
+            --recursive --exclude '*' --include '*.app.tar.gz' --include '*.app.tar.gz.sig' \
+            --cache-control 'public, max-age=31536000, immutable'
+          aws s3 cp dist-updater/latest.json "s3://$S3_BUCKET/$S3_PREFIX/latest.json" \
+            --content-type application/json \
+            --cache-control 'public, max-age=60, must-revalidate'
+          echo "Published: $UPDATER_PUBLIC_BASE/$S3_PREFIX/latest.json"

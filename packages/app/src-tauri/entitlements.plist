@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Hardened-runtime entitlements required for notarization.
+
+    The bundled daemon sidecar (packages/app/src-tauri/binaries/claude-sentinel-daemon)
+    is a @yao-pkg/pkg binary embedding a Node.js runtime. Under the hardened runtime
+    that notarization mandates, the daemon will be SIGKILL'd on launch without these:
+
+    - allow-jit + allow-unsigned-executable-memory: V8 JITs JavaScript; the hardened
+      runtime blocks writable+executable memory unless these are granted.
+    - disable-library-validation: better_sqlite3.node is embedded as a pkg asset,
+      extracted to a temp dir and dlopen'd at runtime. It is not signed by our Team ID,
+      so library validation would reject it without this.
+
+    See documentation and CLAUDE.md: a SIGKILL'd daemon looks identical to
+    "the daemon didn't open", so omitting these is a silent, hard-to-debug failure.
+  -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

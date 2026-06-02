@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and edit if the defaults don't suit you. All values have
+# defaults in variables.tf, so an empty/absent tfvars works out of the box.
+
+# aws_region  = "us-east-1"
+# bucket_name = "intevity-claude-sentinel-updates"   # must be globally unique, no dots
+# s3_prefix   = "stable"
+
+# github_owner = "Intevity"
+# github_repo  = "claude-sentinel"
+
+# Flip to true ONLY if `terraform plan` reports the GitHub OIDC provider is missing.
+# create_github_oidc_provider = false

@@ -183,17 +183,7 @@ Claude Code  ──→  localhost:47284  ──→  api.anthropic.com
 
 1. **Install** using the [Download](#download) table above. The daemon is bundled inside the app — there is nothing else to install.
 
-   > **macOS: first launch will show "unidentified developer"** — Claude Sentinel is not Apple-code-signed yet (v0.1.x ships unsigned while the project is in early access). To bypass Gatekeeper the first time:
-   >
-   > **Option A (one-click):** right-click `Claude Sentinel.app` in `/Applications` → **Open** → confirm **Open** in the dialog. macOS remembers the decision.
-   >
-   > **Option B (terminal):** clear the quarantine attribute before first launch:
-   >
-   > ```sh
-   > xattr -c "/Applications/Claude Sentinel.app"
-   > ```
-   >
-   > If macOS says the app is "damaged and can't be opened," that's also the quarantine flag — Option B fixes it. Signed + notarized builds will land in a future release.
+   > **macOS:** release builds are signed with a Developer ID certificate and notarized by Apple, so they open with a normal double-click — no "unidentified developer" prompt and no `xattr` workaround needed. (If you build locally from source, your build is only ad-hoc signed; right-click → **Open** once to launch it.)
 
 2. **Launch Claude Sentinel** from your Applications folder. The tray icon appears in the menu bar / system tray, and the daemon starts automatically.
 
@@ -309,25 +299,52 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow builds the Tauri app (with daemon sidecar embedded) for all four platforms in parallel. When all builds pass, the draft release is automatically published.
+The workflow builds the Tauri app (with daemon sidecar embedded) for all four platforms in parallel, **signs and notarizes the macOS bundle**, and — when the auto-update channel is configured — mirrors the signed updater artifacts to S3. When all builds pass, the draft release is automatically published.
 
-Required repository secrets:
+The macOS legs **fail fast** if any Apple secret is missing, so a release can never ship unsigned (an unsigned macOS bundle can't be auto-updated). Set all of these before tagging:
 
-| Secret                               | Purpose                                      |
-| ------------------------------------ | -------------------------------------------- |
-| `TAURI_SIGNING_PRIVATE_KEY`          | Tauri updater signing key                    |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for the above                       |
-| `APPLE_CERTIFICATE`                  | Base64-encoded `.p12` for macOS code signing |
-| `APPLE_CERTIFICATE_PASSWORD`         | Password for the `.p12`                      |
-| `APPLE_SIGNING_IDENTITY`             | Developer ID Application identity string     |
-| `APPLE_ID`                           | Apple ID for notarization                    |
-| `APPLE_PASSWORD`                     | App-specific password for notarization       |
-| `APPLE_TEAM_ID`                      | Apple Developer Team ID                      |
+**Required repository secrets** (Settings → Secrets and variables → Actions → Secrets):
 
-To generate a Tauri signing key pair:
+| Secret                               | Purpose                                                   |
+| ------------------------------------ | --------------------------------------------------------- |
+| `TAURI_SIGNING_PRIVATE_KEY`          | Updater signing key (minisign). **Back this up offline.** |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for the updater key                              |
+| `APPLE_CERTIFICATE`                  | Base64 of the Developer ID Application `.p12`             |
+| `APPLE_CERTIFICATE_PASSWORD`         | Password for the `.p12`                                   |
+| `APPLE_SIGNING_IDENTITY`             | `Developer ID Application: <Name> (<TEAMID>)`             |
+| `APPLE_API_ISSUER`                   | App Store Connect API **Issuer ID** (notarization)        |
+| `APPLE_API_KEY`                      | App Store Connect API **Key ID** (notarization)           |
+| `APPLE_API_KEY_CONTENT`              | Base64 of the `AuthKey_<KeyID>.p8` (notarization)         |
+
+The S3 auto-update channel uses **GitHub OIDC**, so there are **no AWS secrets** — CI assumes an IAM role instead. Provision the bucket + role with the [`terraform/`](./terraform) module, then set the repo **variables** it outputs:
+
+**Required repository variables** (Settings → Secrets and variables → Actions → Variables) — auto-update channel; leave unset to skip S3 publishing entirely (the GitHub release is then the only channel):
+
+| Variable              | Purpose                                                                                                                                                                                                        |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `S3_BUCKET`           | Bucket that hosts the public update channel                                                                                                                                                                    |
+| `AWS_REGION`          | Bucket region                                                                                                                                                                                                  |
+| `AWS_ROLE_ARN`        | IAM role CI assumes via OIDC to publish (output by the Terraform module)                                                                                                                                       |
+| `UPDATER_PUBLIC_BASE` | Public HTTPS base mapping to the bucket root, e.g. `https://<bucket>.s3.<region>.amazonaws.com` or a CloudFront/custom domain. The updater endpoint baked into the binary becomes `<base>/stable/latest.json`. |
+
+#### How auto-update works (private source, public binaries)
+
+The source repo can stay private. CI assumes a least-privilege IAM role via GitHub OIDC (no stored AWS
+keys) and uploads only the **signed, notarized** macOS updater bundles (`*.app.tar.gz` + `.sig`) and a
+`latest.json` manifest to a **public-read** S3 prefix (`<bucket>/stable/`). The in-app updater fetches
+`latest.json` anonymously and verifies each download's minisign signature against the public key in
+`tauri.conf.json` — so no GitHub token is embedded in the app, and a tampered artifact is rejected. Only
+the compiled binaries are exposed, never the source. See [`terraform/`](./terraform) to provision the
+bucket and role.
+
+To generate the updater key pair (do this once; **store the private key and its password in a password
+manager — losing them means existing installs can no longer accept updates**):
 
 ```sh
-pnpm tauri signer generate -w ~/.tauri/claude-sentinel.key
+pnpm --filter @claude-sentinel/app exec tauri signer generate -w ~/.tauri/claude-sentinel.key
+# → public key goes in tauri.conf.json (plugins.updater.pubkey)
+# → private key file contents → TAURI_SIGNING_PRIVATE_KEY secret
+# → chosen password           → TAURI_SIGNING_PRIVATE_KEY_PASSWORD secret
 ```
 
 ## Development

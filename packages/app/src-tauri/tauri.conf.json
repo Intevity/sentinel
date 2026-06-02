@@ -32,6 +32,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "externalBin": ["binaries/claude-sentinel-daemon"],
     "icon": [
       "icons/32x32.png",
@@ -41,7 +42,8 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "entitlements": "entitlements.plist"
     }
   },
   "plugins": {
@@ -49,9 +51,9 @@
     "store": null,
     "updater": {
       "active": true,
-      "pubkey": "REPLACE_WITH_TAURI_UPDATER_PUBLIC_KEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENGRTlGOEQ5QTQzQTczMDQKUldRRWN6cWsyZmpweitHcTVPeHlQVlVwTE5hd3pXcGdCK3k5NTBSQUR1Tlp4Qmh3VHd6TVE2dnIK",
       "endpoints": [
-        "https://github.com/Intevity/claude-sentinel/releases/latest/download/latest.json"
+        "https://REPLACE_WITH_S3_OR_CDN_HOST/stable/latest.json"
       ]
     }
   }

@@ -133,4 +133,48 @@ execSync(`pkg "${BUNDLE_PATH}" --target ${pkgTarget} --output "${output}" --comp
   stdio: 'inherit',
 });
 
+// ── Step 3 (macOS release only): sign the sidecar with the hardened runtime +
+// JIT entitlements BEFORE `tauri build` seals it into the .app.
+//
+// Tauri's bundler does NOT sign externalBin sidecars (tauri-apps/tauri#11992), so
+// the app-level bundle.macOS.entitlements never reach this binary. Without these
+// entitlements the notarized app's daemon is SIGKILL'd the instant it launches
+// (V8 can't allocate executable memory under the hardened runtime; the embedded
+// better_sqlite3.node fails library validation) — which looks identical to "the
+// daemon didn't open". We must sign bottom-up: sign the sidecar here, then let
+// `tauri build` sign the enclosing .app, sealing this signature into CodeResources.
+//
+// Skipped for local/ad-hoc dev builds (no APPLE_SIGNING_IDENTITY) and non-macOS
+// targets; those keep the existing unsigned/ad-hoc behavior.
+const signingIdentity = process.env.APPLE_SIGNING_IDENTITY;
+if (process.platform === 'darwin' && triple.includes('apple-darwin') && signingIdentity) {
+  const entitlements = join(BINARIES_DIR, '..', 'entitlements.plist');
+  console.log('[build-sidecar] Codesigning sidecar (hardened runtime + entitlements)…');
+  execSync(
+    'codesign --force --options runtime --timestamp ' +
+      `--entitlements "${entitlements}" --sign "${signingIdentity}" "${output}"`,
+    { stdio: 'inherit' },
+  );
+  // Fail loudly if the signature or the JIT/library-validation entitlements did
+  // not actually attach — a silent miss here only surfaces as a runtime SIGKILL
+  // after a full (expensive) notarized release.
+  execSync(`codesign --verify --strict --verbose=2 "${output}"`, { stdio: 'inherit' });
+  const ents = execSync(`codesign -d --entitlements - "${output}" 2>&1`, { encoding: 'utf8' });
+  for (const key of [
+    'com.apple.security.cs.allow-jit',
+    'com.apple.security.cs.disable-library-validation',
+  ]) {
+    if (!ents.includes(key)) {
+      console.error(`[build-sidecar] Expected entitlement missing after signing: ${key}`);
+      console.error(ents);
+      process.exit(1);
+    }
+  }
+  console.log('[build-sidecar] Sidecar signed; JIT + library-validation entitlements verified.');
+} else if (triple.includes('apple-darwin')) {
+  console.log(
+    '[build-sidecar] APPLE_SIGNING_IDENTITY unset — sidecar left unsigned (local/ad-hoc dev build).',
+  );
+}
+
 console.log('[build-sidecar] Done.');
