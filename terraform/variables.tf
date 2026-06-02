@@ -37,6 +37,12 @@ variable "github_repo" {
   default     = "claude-sentinel"
 }
 
+variable "github_default_branch" {
+  description = "Default branch the scheduled notarize-poll + manual finalize dispatch run on (their OIDC sub is a heads/ ref, not a tags/ ref)."
+  type        = string
+  default     = "main"
+}
+
 variable "create_github_oidc_provider" {
   description = <<-EOT
     Whether to create the GitHub Actions OIDC provider in this account. In a shared

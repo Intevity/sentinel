@@ -21,10 +21,19 @@ locals {
     : data.aws_iam_openid_connect_provider.github[0].arn
   )
 
-  # The publish-updates job only runs on tag pushes (release.yml triggers on v* tags),
-  # so the role is assumable solely from this repo's tag refs. Broaden to
-  # "repo:owner/repo:*" if you ever publish from a branch or manual dispatch.
-  github_oidc_subject = "repo:${var.github_owner}/${var.github_repo}:ref:refs/tags/*"
+  # The publish-updates job assumes this role from three trigger contexts, so the trust
+  # policy must allow all of them:
+  #   - tag pushes (release.yml on v* tags)                  -> ref:refs/tags/*
+  #   - the scheduled notarize-poll workflow (long-tail S3)  -> ref:refs/heads/<default>
+  #   - manual notarize-finalize dispatch (S3 republish)     -> ref:refs/heads/<default>
+  # The latter two run on the default branch, so their OIDC sub is a heads/ ref, not a
+  # tags/ ref. Allowing the default branch is the same trust class (only repo maintainers
+  # can push tags or run workflows on the default branch), and the role grants nothing
+  # beyond s3:PutObject on the update prefix.
+  github_oidc_subjects = [
+    "repo:${var.github_owner}/${var.github_repo}:ref:refs/tags/*",
+    "repo:${var.github_owner}/${var.github_repo}:ref:refs/heads/${var.github_default_branch}",
+  ]
 }
 
 data "aws_iam_policy_document" "ci_assume" {
@@ -43,7 +52,7 @@ data "aws_iam_policy_document" "ci_assume" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [local.github_oidc_subject]
+      values   = local.github_oidc_subjects
     }
   }
 }
