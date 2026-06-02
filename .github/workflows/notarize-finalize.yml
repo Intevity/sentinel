@@ -14,6 +14,15 @@ on:
         description: Release tag to finalize (e.g. v0.3.6)
         required: true
         type: string
+  # Manual (re)finalize / recovery for a single tag: staple + publish + S3. Idempotent —
+  # re-stapling and re-promoting an already-finalized release is a no-op. Use this to
+  # republish a release whose S3 step failed, once the cause is fixed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to (re)finalize — staple + publish + S3 (e.g. v0.3.6)
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -58,9 +67,15 @@ jobs:
       - name: Staple + re-sign updater artifacts
         run: bash scripts/notary-staple.sh dist-staple
 
+  # Promote LAST — only after publish-updates has populated the S3 channel — so the release
+  # never goes live with a missing update manifest, AND this job can't race publish-updates'
+  # download of the (still-draft) release by tag (that race 404'd "release not found" when
+  # the two ran in parallel). Runs when staple succeeded and publish-updates either succeeded
+  # or was skipped (S3 not configured); stays a draft if publish-updates failed.
   publish-release:
     name: Publish GitHub Release
-    needs: [staple]
+    needs: [staple, publish-updates]
+    if: ${{ always() && needs.staple.result == 'success' && needs.publish-updates.result != 'failure' && needs.publish-updates.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -131,8 +146,10 @@ jobs:
             const platforms = {};
             for (const f of fs.readdirSync(dir)) {
               if (!f.endsWith(".app.tar.gz")) continue;
+              // Tauri names the macOS updater tarballs <product>_aarch64.app.tar.gz and
+              // <product>_x64.app.tar.gz (x64, NOT x86_64), so match both x64 and x86_64.
               const key = f.includes("aarch64") ? "darwin-aarch64"
-                        : f.includes("x86_64") ? "darwin-x86_64"
+                        : (f.includes("x64") || f.includes("x86_64")) ? "darwin-x86_64"
                         : null;
               if (!key) throw new Error("cannot determine arch from " + f);
               const signature = fs.readFileSync(path.join(dir, f + ".sig"), "utf8").trim();
