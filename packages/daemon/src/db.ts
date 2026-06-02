@@ -31,6 +31,8 @@ import type {
   PermissionRuleInput,
   OptimizationMetrics,
   OptimizationMetricsBySubagent,
+  MetricsWindow,
+  ProcessedTokens,
 } from '@claude-sentinel/shared';
 
 export const SENTINEL_DIR = join(homedir(), '.claude-sentinel');
@@ -1917,6 +1919,17 @@ export function purgeTelemetryOlderThan(db: Database.Database, cutoffMs: number)
   return total;
 }
 
+/** Delete optimization analyzer rows older than the retention window. Plain
+ *  DELETE — `optimization_events` is not part of the security audit chain, so
+ *  no chain bridge is needed (unlike `purgeSecurityEventsOlderThan`).
+ *  `subagent_installs` is install bookkeeping, NOT telemetry, and is left
+ *  untouched — purging it would corrupt the realized/potential LEFT JOIN in
+ *  `getOptimizationMetrics`. Returns the number of rows removed. */
+export function purgeOptimizationOlderThan(db: Database.Database, cutoffMs: number): number {
+  const result = db.prepare('DELETE FROM optimization_events WHERE ts < ?').run(cutoffMs);
+  return Number(result.changes);
+}
+
 /** Sprint 8 — wrap a destructive operation against `security_events` so
  *  the trigger lets it through and the chain stays internally consistent.
  *
@@ -3279,6 +3292,49 @@ export function getTokensByDayModel(
 }
 
 /**
+ * Total input tokens Sentinel has processed (forwarded to Anthropic) over the
+ * window, summed across ALL accounts — the "total Sentinel processed"
+ * denominator for the Optimize header's savings percentage, so it is
+ * deliberately not account-scoped.
+ *
+ * Sourced from `cache_ttl_events`, which the PROXY writes live from every
+ * response's `usage` object — the same request stream that records compression
+ * savings. We deliberately do NOT use `usage_events`: that table is populated
+ * from Claude Code's OTEL export, which can lag or stall independently of proxy
+ * traffic. Using it as the denominator while savings come from the live proxy
+ * produced a degenerate "100% saved" whenever OTEL was behind for the window.
+ *
+ * `inputSideTokens` = `input_tokens + cache_read + cache_create` (the full
+ * input side; output is not counted). `win = {}` is all-time.
+ */
+export function getProcessedTokenTotals(
+  db: Database.Database,
+  win: MetricsWindow = {},
+): ProcessedTokens {
+  const row = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(input_tokens), 0)                       AS input_tokens,
+         COALESCE(SUM(cache_read), 0)                         AS cache_read,
+         COALESCE(SUM(cache_create_5m + cache_create_1h), 0)  AS cache_create
+       FROM cache_ttl_events
+       WHERE (@sinceMs IS NULL OR ts >= @sinceMs)
+         AND (@untilMs IS NULL OR ts <  @untilMs)`,
+    )
+    .get({ sinceMs: win.sinceMs ?? null, untilMs: win.untilMs ?? null }) as {
+    input_tokens: number;
+    cache_read: number;
+    cache_create: number;
+  };
+  return {
+    inputTokens: row.input_tokens,
+    cacheReadTokens: row.cache_read,
+    cacheCreateTokens: row.cache_create,
+    inputSideTokens: row.input_tokens + row.cache_read + row.cache_create,
+  };
+}
+
+/**
  * Cache-hit rate per model over the period. Rate = cacheRead / (input + cacheRead);
  * cache creation tokens are excluded from the denominator since they represent
  * the "first write" of cacheable content rather than a read.
@@ -3438,6 +3494,66 @@ export function getCacheTtlByDayModel(
     };
   }
   return result;
+}
+
+/**
+ * Prompt-cache health over a window, summed from `cache_ttl_events`. Used by
+ * the compression analytics to cross-check that byte savings aren't being
+ * erased by cache busting: a hit ratio that drops after enabling compression
+ * is the warning sign. `days <= 0` means all-time. Returns a hit ratio of 1
+ * when nothing was created (no cache writes = no busting to report).
+ */
+export function getCacheHealthWindow(
+  db: Database.Database,
+  accountIds: string[],
+  days: number,
+): { cacheReadTokens: number; cacheCreateTokens: number; hitRatio: number } {
+  return getCacheHealthWindowRange(
+    db,
+    accountIds,
+    days > 0 ? { sinceMs: Date.now() - days * 24 * 60 * 60 * 1000 } : {},
+  );
+}
+
+/**
+ * Window-range variant of {@link getCacheHealthWindow}, taking an explicit
+ * `MetricsWindow` (so custom date ranges work). `getCacheHealthWindow(days)`
+ * delegates here; `win = {}` is all-time.
+ */
+export function getCacheHealthWindowRange(
+  db: Database.Database,
+  accountIds: string[],
+  win: MetricsWindow = {},
+): { cacheReadTokens: number; cacheCreateTokens: number; hitRatio: number } {
+  if (accountIds.length === 0) {
+    return { cacheReadTokens: 0, cacheCreateTokens: 0, hitRatio: 1 };
+  }
+  const placeholders = accountIds.map(() => '?').join(',');
+  const row = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(cache_read), 0)                          AS read,
+         COALESCE(SUM(cache_create_5m + cache_create_1h), 0)   AS created
+       FROM cache_ttl_events
+       WHERE account_id IN (${placeholders})
+         AND (? IS NULL OR ts >= ?)
+         AND (? IS NULL OR ts <  ?)`,
+    )
+    .get(
+      ...accountIds,
+      win.sinceMs ?? null,
+      win.sinceMs ?? null,
+      win.untilMs ?? null,
+      win.untilMs ?? null,
+    ) as { read: number; created: number };
+  const read = row.read;
+  const created = row.created;
+  const total = read + created;
+  return {
+    cacheReadTokens: read,
+    cacheCreateTokens: created,
+    hitRatio: total > 0 ? read / total : 1,
+  };
 }
 
 /**
@@ -4469,9 +4585,17 @@ function rowToOptimizationEvent(row: DbOptimizationEventRow): OptimizationEventR
  *
  * `installs` returns the count of currently-active subagent_installs
  * rows (uninstalled_at IS NULL) — drives the "N subagents installed"
- * label in the dashboard header.
+ * label in the dashboard header. It is a point-in-time count and is
+ * intentionally NOT filtered by `win` (the active-subagent count isn't a
+ * windowed quantity).
+ *
+ * `win` narrows the measured rows to a time range (by `oe.ts`); default `{}`
+ * is all-time. Only the row set narrows — every returned shape is identical.
  */
-export function getOptimizationMetrics(db: Database.Database): OptimizationMetrics {
+export function getOptimizationMetrics(
+  db: Database.Database,
+  win: MetricsWindow = {},
+): OptimizationMetrics {
   // Bucket each measured row by realized/potential via a LEFT JOIN.
   // SQLite's COALESCE handles the no-matching-install case. `curated_id`
   // is included so the same loop can build a per-subagent breakdown
@@ -4500,9 +4624,11 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
       FROM optimization_events oe
       LEFT JOIN subagent_installs si ON si.curated_id = oe.curated_id
       WHERE oe.kind = 'measured' AND oe.savings_usd IS NOT NULL
+        AND (@sinceMs IS NULL OR oe.ts >= @sinceMs)
+        AND (@untilMs IS NULL OR oe.ts <  @untilMs)
     `,
     )
-    .all() as Array<{
+    .all({ sinceMs: win.sinceMs ?? null, untilMs: win.untilMs ?? null }) as Array<{
     day: string;
     curated_id: string;
     pattern: string | null;
@@ -4555,6 +4681,11 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
   let totalPotential = 0;
   let totalTokensRealized = 0;
   let totalTokensPotential = 0;
+  // Gross subagent read tokens (hypoInputTokens) for REALIZED rows only — the
+  // subagent half of the denominator for the "% of optimized content" ratio.
+  // Realized-only so it pairs with `tokensRealized` (the realized savings the
+  // header's percentage divides). Distinct from the net savings totals above.
+  let totalHypoInput = 0;
   for (const r of rows) {
     const dailySlot = daily.get(r.day) ?? emptyBucket();
     const subSlot = bySubagent.get(r.curated_id) ?? { ...emptyBucket(), opportunities: 0 };
@@ -4570,6 +4701,10 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
     const patternKey = r.pattern ?? '__none__';
     const patSlot = byPattern.get(patternKey) ?? { ...emptyBucket(), opportunities: 0 };
     const tokens = tokenSavings(r);
+    // Gross hypothetical input = net savings + the digest re-injected into the
+    // parent (tokens = hypoInput − digest). NULL rows contribute 0.
+    const grossHypoInput =
+      r.hypothetical_total_tokens === null ? 0 : tokens + getDigestTokens(r.curated_id);
     if (r.is_realized === 1) {
       dailySlot.realized += r.savings_usd;
       dailySlot.tokensRealized += tokens;
@@ -4581,6 +4716,7 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
       patSlot.tokensRealized += tokens;
       totalRealized += r.savings_usd;
       totalTokensRealized += tokens;
+      totalHypoInput += grossHypoInput;
     } else {
       dailySlot.potential += r.savings_usd;
       dailySlot.tokensPotential += tokens;
@@ -4657,6 +4793,7 @@ export function getOptimizationMetrics(db: Database.Database): OptimizationMetri
       savingsUsdPotential: totalPotential,
       tokensRealized: totalTokensRealized,
       tokensPotential: totalTokensPotential,
+      hypotheticalInputTokens: totalHypoInput,
       opportunities: rows.length,
       installs: installsRow.n,
     },

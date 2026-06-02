@@ -28,6 +28,13 @@ import {
 } from './cache-ttl/parser.js';
 import { computeCacheCosts } from './cache-ttl/pricing.js';
 import { rewriteCacheControlTtl } from './cache-ttl/rewriter.js';
+import { compressMessagesBody } from './optimize/compress/index.js';
+import type { CompressionStats, CaptureRecord } from './optimize/compress/index.js';
+import type {
+  CompressionStatsStore,
+  CompressionRetrievalRecord,
+} from './optimize/compress/compression-stats-db.js';
+import type { McpHttpHandler } from './optimize/compress/mcp-retrieve-server.js';
 import type { PauseReason } from '@claude-sentinel/shared';
 
 export const DAEMON_PORT = 47284;
@@ -138,6 +145,15 @@ interface ProxyOptions {
    *  records each proxied call here. Gated per-request so the toggle takes
    *  effect without a daemon restart. */
   requestLogStore?: RequestLogStore;
+  /** Dedicated store for per-request tool_result compression stats. When set
+   *  AND `settings.compressionEnabled` is true at request time, the proxy
+   *  compresses the outbound /v1/messages body and records the savings here.
+   *  Gated per-request so the toggle takes effect without a daemon restart. */
+  compressionStore?: CompressionStatsStore;
+  /** Handler for the local `/mcp` retrieval endpoint (reversible compression).
+   *  When set, GET/POST/DELETE to `/mcp` are served by Sentinel's MCP server.
+   *  Built in index.ts from the compression store + bearer token. */
+  mcpHandler?: McpHttpHandler;
   /** Short-lived table mapping Anthropic `request-id` → per-request Sentinel
    *  key. Populated here on every upstream response that carries the header,
    *  consumed by OtelReceiver so round-robin-routed OTEL events land on the
@@ -348,6 +364,8 @@ export function createProxyServer(
     securityScanner,
     permissionsEnforcer,
     requestLogStore,
+    compressionStore,
+    mcpHandler,
     requestAccountMap,
     onUpstreamAuthFailure,
     onToolCallsFlushed,
@@ -543,6 +561,7 @@ export function createProxyServer(
       onUpstreamAuthFailure,
       retryProvider,
       onToolCallsFlushed,
+      compressionStore,
     );
   };
 
@@ -622,6 +641,23 @@ export function createProxyServer(
         console.error('[Proxy] OTEL handler error:', err);
         res.writeHead(500);
         res.end();
+      });
+      return;
+    }
+
+    // Reversible-compression retrieval MCP endpoint. Served by Sentinel's own
+    // MCP server, not proxied upstream. The handler validates the bearer token
+    // and speaks the MCP streamable-HTTP protocol.
+    if (mcpHandler && url.split('?')[0] === '/mcp') {
+      void (async () => {
+        const body = req.method === 'POST' ? await readBody(req) : null;
+        await mcpHandler(req, res, body);
+      })().catch((err) => {
+        console.error('[Proxy] MCP handler error:', err);
+        if (!res.headersSent) {
+          res.writeHead(500);
+          res.end();
+        }
       });
       return;
     }
@@ -753,6 +789,9 @@ async function proxyToAnthropic(
   /** Optimize feature: invoked when the per-request tool-call extractor
    *  flushes a non-empty batch. See ProxyOptions.onToolCallsFlushed. */
   onToolCallsFlushed?: () => void,
+  /** Compression feature: dedicated store for per-request compression stats.
+   *  See ProxyOptions.compressionStore. */
+  compressionStore?: CompressionStatsStore,
 ): Promise<void> {
   let body = preReadBody ?? (await readBody(req));
 
@@ -1015,6 +1054,110 @@ async function proxyToAnthropic(
       );
       // Fall through to normal upstream forwarding using the already-
       // buffered body.
+    }
+  }
+
+  // Tool-result compression — opt-in, deterministic. Runs AFTER permissions
+  // strip and the cache-TTL rewrite so the compressed body is the final
+  // outbound body, and BEFORE the capture snapshot below so the logged
+  // request reflects exactly what went upstream. The compressor never touches
+  // cache_control, so the marker parse further down sees identical counts.
+  // `isMessagesPost` already excludes count_tokens and probes; the size cap
+  // and all skip reasons are handled inside compressMessagesBody.
+  if (
+    compressionStore &&
+    isMessagesPost &&
+    (settings.compressionEnabled || settings.optimizeCaptureEnabled)
+  ) {
+    const maxBodyBytes = settings.compressionMaxBodyKb * 1024;
+    const originalBody = body; // pre-compression; the dry-run measures on this
+    const requestId = cacheTtlCtx?.requestId ?? capture?.requestId ?? null;
+
+    let realizedStats: CompressionStats | null = null;
+    let captures: CaptureRecord[] = [];
+    let realizedTokensSaved = 0;
+    if (settings.compressionEnabled) {
+      const r = compressMessagesBody(body, {
+        level: settings.compressionLevel,
+        maxBodyBytes,
+        reversible: settings.compressionRetrievalEnabled,
+      });
+      if (r.body !== body) {
+        body = r.body;
+        // Keep Content-Length honest so Node doesn't truncate or stall.
+        req.headers['content-length'] = String(body.length);
+      }
+      realizedStats = r.stats;
+      captures = r.captures;
+      realizedTokensSaved = r.stats.changed ? r.stats.estTokensIn - r.stats.estTokensOut : 0;
+    }
+
+    // Potential: a dry-run at the aggressive tier on the ORIGINAL body. It
+    // never mutates what we forward — it only measures what enabling (or
+    // raising) compression would save. Gated on the capture toggle; skipped
+    // when compression is already on at aggressive (no headroom).
+    let potentialTokens = 0;
+    if (
+      settings.optimizeCaptureEnabled &&
+      !(settings.compressionEnabled && settings.compressionLevel === 'aggressive')
+    ) {
+      const dry = compressMessagesBody(originalBody, { level: 'aggressive', maxBodyBytes });
+      const aggTokens = dry.stats.changed ? dry.stats.estTokensIn - dry.stats.estTokensOut : 0;
+      potentialTokens = Math.max(0, aggTokens - realizedTokensSaved);
+    }
+
+    if (realizedStats) {
+      compressionStore.enqueue({
+        ts: Date.now(),
+        accountId: rlKey,
+        sessionId: extractSessionInfo(body)?.sessionId ?? null,
+        requestId,
+        model: extractRequestModel(body),
+        level: settings.compressionLevel,
+        bytesIn: realizedStats.bytesIn,
+        bytesOut: realizedStats.bytesOut,
+        estTokensIn: realizedStats.estTokensIn,
+        estTokensOut: realizedStats.estTokensOut,
+        changed: realizedStats.changed,
+        skipReason: realizedStats.skipReason,
+        perTool: realizedStats.perTool,
+        perRule: realizedStats.perRule,
+        estTokensPotential: potentialTokens,
+      });
+      // Persist elided originals so the retrieve tool can return them. Only
+      // present when reversible mode is on and the compressed body shipped.
+      if (captures.length > 0) {
+        const ts = Date.now();
+        const retrievals: CompressionRetrievalRecord[] = captures.map((c) => ({
+          id: c.id,
+          ts,
+          accountId: rlKey,
+          requestId,
+          ruleId: c.ruleId,
+          original: c.original,
+        }));
+        compressionStore.enqueueRetrievals(retrievals);
+      }
+    } else if (potentialTokens > 0) {
+      // Compression is off but capture is on: record a measurement-only row
+      // (no realized action) so the header can surface what enabling it saves.
+      compressionStore.enqueue({
+        ts: Date.now(),
+        accountId: rlKey,
+        sessionId: extractSessionInfo(originalBody)?.sessionId ?? null,
+        requestId,
+        model: extractRequestModel(originalBody),
+        level: settings.compressionLevel,
+        bytesIn: 0,
+        bytesOut: 0,
+        estTokensIn: 0,
+        estTokensOut: 0,
+        changed: false,
+        skipReason: null,
+        perTool: {},
+        perRule: {},
+        estTokensPotential: potentialTokens,
+      });
     }
   }
 

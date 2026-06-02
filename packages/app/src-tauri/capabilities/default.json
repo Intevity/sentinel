@@ -15,6 +15,7 @@
     "updater:default",
     "opener:default",
     "dialog:allow-save",
+    "dialog:allow-open",
     "fs:allow-write-text-file",
     "fs:scope-download-recursive",
     "fs:scope-desktop-recursive",

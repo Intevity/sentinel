@@ -22,6 +22,9 @@ import type {
   LogLevel,
   PermissionDecision,
   ThemePreference,
+  CompressionLevel,
+  McpInstallScope,
+  McpInstallRecord,
 } from '@claude-sentinel/shared';
 import { SECURITY_CONTEXT_WINDOW_CHARS, VALID_DETECTOR_TIERS } from '@claude-sentinel/shared';
 import { signSettings, verifySettings } from './settings-integrity.js';
@@ -54,6 +57,7 @@ export const DEFAULT_SETTINGS: Settings = {
   roundRobinStrategy: 'balance',
   backgroundProbeIntervalSec: 300,
   telemetryRetentionDays: 30,
+  dataRetentionDays: 365,
   securityScanEnabled: true,
   securityEnforcementMode: null,
   securityScanSecrets: true,
@@ -114,6 +118,12 @@ export const DEFAULT_SETTINGS: Settings = {
   optimizeShowMicroOpportunities: false,
   optimizeUnits: 'tokens',
   optimizeChartView: 'realized',
+  optimizeRange: 'all',
+  compressionEnabled: false,
+  compressionLevel: 'conservative',
+  compressionMaxBodyKb: 4096,
+  compressionRetrievalEnabled: false,
+  compressionRetrievalInstalls: [],
   otelForwardingEnabled: false,
   otelForwardMetrics: true,
   otelForwardLogs: true,
@@ -183,6 +193,35 @@ const VALID_WEBHOOK_FLOORS: readonly Settings['securityWebhookSeverityFloor'][] 
   'high',
 ];
 const VALID_THEMES: readonly ThemePreference[] = ['light', 'dark', 'system'];
+const VALID_COMPRESSION_LEVELS: readonly CompressionLevel[] = [
+  'conservative',
+  'moderate',
+  'aggressive',
+];
+const VALID_MCP_SCOPES: readonly McpInstallScope[] = ['user', 'local', 'project'];
+
+/** Coerce an arbitrary value into a clean McpInstallRecord[], dropping any
+ *  malformed entries. `user`-scope records carry a null directory; `local`
+ *  and `project` require a non-empty directory string. */
+function coerceMcpInstalls(raw: unknown): McpInstallRecord[] {
+  if (!Array.isArray(raw)) return [];
+  const out: McpInstallRecord[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    const scope = e['scope'];
+    if (typeof scope !== 'string' || !VALID_MCP_SCOPES.includes(scope as McpInstallScope)) continue;
+    const directory = e['directory'];
+    const installedAt = e['installedAt'];
+    if (typeof installedAt !== 'number' || !Number.isFinite(installedAt)) continue;
+    if (scope === 'user') {
+      out.push({ scope: 'user', directory: null, installedAt });
+    } else if (typeof directory === 'string' && directory.length > 0) {
+      out.push({ scope: scope as McpInstallScope, directory, installedAt });
+    }
+  }
+  return out;
+}
 
 /**
  * Coerce an arbitrary value into a valid Settings object, falling back to
@@ -285,6 +324,15 @@ function coerce(raw: unknown): Settings {
   if (typeof obj['telemetryRetentionDays'] === 'number') {
     const n = Math.floor(obj['telemetryRetentionDays']);
     if (n >= 1 && n <= 365) next.telemetryRetentionDays = n;
+  }
+  if (typeof obj['dataRetentionDays'] === 'number') {
+    const n = Math.floor(obj['dataRetentionDays']);
+    if (n >= 1 && n <= 3650) next.dataRetentionDays = n;
+  } else if (typeof obj['telemetryRetentionDays'] === 'number') {
+    // Back-compat seed: upgrading users whose file predates the unified
+    // analytics-retention knob inherit their old telemetry value once. After
+    // the next save the file carries `dataRetentionDays` and this never fires.
+    next.dataRetentionDays = next.telemetryRetentionDays;
   }
   if (typeof obj['securityScanEnabled'] === 'boolean') {
     next.securityScanEnabled = obj['securityScanEnabled'];
@@ -537,6 +585,31 @@ function coerce(raw: unknown): Settings {
   ) {
     next.optimizeChartView = obj['optimizeChartView'];
   }
+  if (typeof obj['optimizeRange'] === 'string' && isOptimizeRange(obj['optimizeRange'])) {
+    next.optimizeRange = obj['optimizeRange'];
+  }
+  if (typeof obj['compressionEnabled'] === 'boolean') {
+    next.compressionEnabled = obj['compressionEnabled'];
+  }
+  if (
+    typeof obj['compressionLevel'] === 'string' &&
+    VALID_COMPRESSION_LEVELS.includes(obj['compressionLevel'] as CompressionLevel)
+  ) {
+    next.compressionLevel = obj['compressionLevel'] as CompressionLevel;
+  }
+  if (
+    typeof obj['compressionMaxBodyKb'] === 'number' &&
+    Number.isFinite(obj['compressionMaxBodyKb'])
+  ) {
+    const n = Math.floor(obj['compressionMaxBodyKb'] as number);
+    if (n >= 16 && n <= 16384) next.compressionMaxBodyKb = n;
+  }
+  if (typeof obj['compressionRetrievalEnabled'] === 'boolean') {
+    next.compressionRetrievalEnabled = obj['compressionRetrievalEnabled'];
+  }
+  if (obj['compressionRetrievalInstalls'] !== undefined) {
+    next.compressionRetrievalInstalls = coerceMcpInstalls(obj['compressionRetrievalInstalls']);
+  }
   if (typeof obj['otelForwardingEnabled'] === 'boolean') {
     next.otelForwardingEnabled = obj['otelForwardingEnabled'];
   }
@@ -608,6 +681,20 @@ const VALID_CHART_VIEWS: readonly Settings['optimizeChartView'][] = [
 
 function isOptimizeChartView(v: string): v is Settings['optimizeChartView'] {
   return (VALID_CHART_VIEWS as readonly string[]).includes(v);
+}
+
+const VALID_OPTIMIZE_RANGES: readonly Settings['optimizeRange'][] = [
+  '1d',
+  '1w',
+  '1m',
+  '3m',
+  '1y',
+  'all',
+  'custom',
+];
+
+function isOptimizeRange(v: string): v is Settings['optimizeRange'] {
+  return (VALID_OPTIMIZE_RANGES as readonly string[]).includes(v);
 }
 
 /** Resolved snippet-window size (chars per side) for the current

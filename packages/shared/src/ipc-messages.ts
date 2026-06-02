@@ -29,6 +29,8 @@ import type {
   OtelForwarderStatus,
   OtelExporterTestResult,
   OtelDriftDetails,
+  McpInstallScope,
+  McpInstallRecord,
 } from './types.js';
 
 // ─── Daemon → App messages ────────────────────────────────────────────────────
@@ -310,6 +312,14 @@ export interface OptimizationMetricsUpdatedMessage {
   type: 'optimization_metrics_updated';
 }
 
+/** Broadcast when the compression stats store flushes a batch containing at
+ *  least one request whose body actually changed. The Optimize page's
+ *  Compression panel refetches `get_compression_metrics`. Debounced inside
+ *  the store (~1.5s) so a burst of requests yields one broadcast. */
+export interface CompressionMetricsUpdatedMessage {
+  type: 'compression_metrics_updated';
+}
+
 /** Broadcast once per OTEL HTTP batch (metrics or logs) after any events
  *  were written to the telemetry tables. The Metrics tab listens for this
  *  and refetches its rollup so dashboards update live as Claude Code emits. */
@@ -522,6 +532,7 @@ export type DaemonToAppMessage =
   | SubagentInstalledMessage
   | SubagentUninstalledMessage
   | OptimizationMetricsUpdatedMessage
+  | CompressionMetricsUpdatedMessage
   | MetricsUpdatedMessage
   | OverageGrantsUpdatedMessage
   | SpendUpdateMessage
@@ -683,11 +694,25 @@ export interface GetOptimizationOpportunitiesMessage {
   type: 'get_optimization_opportunities';
 }
 
+/** A time window for metric queries, expressed as absolute Unix ms bounds.
+ *  Both sides optional: omitted `sinceMs` = no lower bound, omitted `untilMs`
+ *  = open-ended (up to now). `{}` therefore means all-time. Preferred over the
+ *  legacy `days` field because custom date ranges need explicit timestamps;
+ *  presets reduce to this trivially on the client. */
+export interface MetricsWindow {
+  /** Inclusive lower bound (Unix ms). Omit for no lower bound. */
+  sinceMs?: number;
+  /** Exclusive upper bound (Unix ms). Omit for open-ended. */
+  untilMs?: number;
+}
+
 /** Optimize feature: aggregate savings metrics for the dashboard chart.
- *  `days` selects the lookback window; UI defaults to 7. */
+ *  `window` selects the range (preferred). `days` is the legacy lookback and
+ *  is honored only when `window` is absent (0 = all-time). */
 export interface GetOptimizationMetricsMessage {
   type: 'get_optimization_metrics';
   days: number;
+  window?: MetricsWindow;
 }
 
 /** Per-subagent attribution row for {@link OptimizationMetrics.bySubagent}.
@@ -722,6 +747,12 @@ export interface OptimizationMetrics {
      *  "how much context did the subagent save me?" */
     tokensRealized: number;
     tokensPotential: number;
+    /** Gross subagent read tokens across REALIZED rows only: sums
+     *  `hypoInputTokens` (= `tokensRealized` per row plus its digest).
+     *  Realized-only so it pairs with `tokensRealized` as the subagent half of
+     *  the denominator for the "% of optimized content" ratio on the Optimize
+     *  header — distinct from the net savings above. */
+    hypotheticalInputTokens: number;
     opportunities: number;
     installs: number;
   };
@@ -766,6 +797,155 @@ export interface OptimizationMetrics {
  *  "Refresh recommendations" button in the dashboard. */
 export interface RunOptimizationAnalysisMessage {
   type: 'run_optimization_analysis';
+}
+
+/** Compression feature: aggregate savings + health metrics for the Optimize
+ *  page's Compression panel. `window` selects the range (preferred); `days`
+ *  is the legacy lookback honored only when `window` is absent (0 = all). */
+export interface GetCompressionMetricsMessage {
+  type: 'get_compression_metrics';
+  days: number;
+  window?: MetricsWindow;
+}
+
+/** Optimize feature: total input tokens Sentinel has processed (forwarded to
+ *  Anthropic) over the window, from the live proxy-written `cache_ttl_events`.
+ *  Used as the denominator for the "saved X of Y input tokens" headline. Sums
+ *  across all accounts. */
+export interface GetProcessedTokensMessage {
+  type: 'get_processed_tokens';
+  window?: MetricsWindow;
+}
+
+/** Response shape for {@link GetProcessedTokensMessage}. Exact token counts as
+ *  reported by the Anthropic `usage` object (not byte estimates). Output tokens
+ *  are intentionally absent: savings are input-side, so the denominator is too. */
+export interface ProcessedTokens {
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  /** input + cache_read + cache_create — the full input-side total used as
+   *  the broad denominator for the savings percentage. */
+  inputSideTokens: number;
+}
+
+/** Response shape for {@link GetCompressionMetricsMessage}.
+ *
+ *  Token and cost figures are ESTIMATES. The Anthropic API never reports the
+ *  counterfactual uncompressed token count, so savings are derived from the
+ *  bytes removed (estimated at ~3.5 bytes/token, the shared ruler). Bytes are
+ *  exact. The UI must
+ *  label every token/cost number as estimated. `cacheHealth` is the honest
+ *  cross-check that the byte savings aren't being erased by prompt-cache
+ *  busting; it is sourced from `cache_ttl_events` over the same window. */
+export interface CompressionMetrics {
+  totals: {
+    /** Total tool_result bytes seen before compression (changed rows). */
+    bytesIn: number;
+    /** Total bytes after compression (changed rows). */
+    bytesOut: number;
+    /** Estimated input tokens of the tool output BEFORE compression (changed
+     *  rows) — the gross "original size" of the content compression acted on.
+     *  Denominator for the content-reduction ratio; pairs with `estTokensSaved`
+     *  (both from the same per-row ruler, so the ratio is self-consistent). */
+    estTokensIn: number;
+    /** Estimated input tokens saved across all changed requests. */
+    estTokensSaved: number;
+    /** Estimated USD saved, computed at write time from per-model input
+     *  pricing so historical rows survive pricing changes. */
+    estCostSavedUsd: number;
+    /** Requests where the body actually changed. */
+    requestsCompressed: number;
+    /** Requests where compression ran but did not change the body (oversized,
+     *  no-gain, already-compressed, etc.). Excludes measure-only rows recorded
+     *  while compression was off. */
+    requestsSkipped: number;
+    /** `bytesOut / bytesIn` over changed rows, in `[0, 1]`. Lower is more
+     *  compression. 0 when no changed rows. */
+    ratio: number;
+    /** Estimated ADDITIONAL input tokens that aggressive compression would
+     *  save beyond what was realized: measured by a dry-run on observed
+     *  tool_results (when compression is off, or on at a lower tier). The
+     *  "turn it on / turn it up to save this much" figure. */
+    estTokensPotential: number;
+    /** Estimated additional USD from `estTokensPotential`. */
+    estCostPotential: number;
+  };
+  daily: Array<{
+    day: string;
+    bytesIn: number;
+    bytesOut: number;
+    estTokensSaved: number;
+    estCostSavedUsd: number;
+    ratio: number;
+  }>;
+  /** Per-tool breakdown (Read, Bash, Grep, …; `'unknown'` when the tool name
+   *  can't be resolved). Sorted by `estTokensSaved` desc. */
+  byTool: Array<{
+    tool: string;
+    bytesIn: number;
+    bytesOut: number;
+    blocks: number;
+    estTokensSaved: number;
+  }>;
+  /** Per-rule breakdown (which compression rule removed the most bytes).
+   *  Sorted by `bytesSaved` desc. */
+  byRule: Array<{
+    rule: string;
+    bytesSaved: number;
+    hits: number;
+  }>;
+  /** Count of requests by skip reason (parse_error, oversized,
+   *  no_tool_results, already_compressed, no_gain). Only non-zero reasons
+   *  appear. */
+  errors: Array<{
+    skipReason: string;
+    count: number;
+  }>;
+  /** Prompt-cache health over the same window, from `cache_ttl_events`. A
+   *  hit ratio that drops after enabling compression signals cache busting. */
+  cacheHealth: {
+    cacheReadTokens: number;
+    cacheCreateTokens: number;
+    /** `read / (read + create)`, in `[0, 1]`. 1 when nothing was created. */
+    hitRatio: number;
+  };
+}
+
+/** Reversible compression (CCR): install Sentinel's retrieval MCP server into
+ *  Claude Code's config at the given scope. `directory` is required for
+ *  `local`/`project` scopes and ignored for `user`. */
+export interface InstallRetrievalMcpMessage {
+  type: 'install_retrieval_mcp';
+  scope: McpInstallScope;
+  directory?: string;
+}
+
+/** Remove a previously-installed retrieval MCP server entry at the given
+ *  scope/directory. */
+export interface UninstallRetrievalMcpMessage {
+  type: 'uninstall_retrieval_mcp';
+  scope: McpInstallScope;
+  directory?: string;
+}
+
+/** Query where the retrieval MCP server is installed and whether reversible
+ *  compression is enabled. */
+export interface GetRetrievalMcpStatusMessage {
+  type: 'get_retrieval_mcp_status';
+}
+
+/** Response shape for {@link GetRetrievalMcpStatusMessage}. */
+export interface RetrievalMcpStatus {
+  /** Mirror of `Settings.compressionRetrievalEnabled`. */
+  enabled: boolean;
+  /** The tool name Claude Code exposes once installed. */
+  toolName: string;
+  /** The local MCP endpoint URL written into the config. */
+  url: string;
+  /** Verified install records (each confirmed still present in its config
+   *  file). */
+  installs: McpInstallRecord[];
 }
 
 /** Optimize feature: dismiss an opportunity so the analyzer suppresses
@@ -1524,6 +1704,11 @@ export type AppToDaemonMessage =
   | GetCuratedLibraryMessage
   | GetOptimizationOpportunitiesMessage
   | GetOptimizationMetricsMessage
+  | GetCompressionMetricsMessage
+  | GetProcessedTokensMessage
+  | InstallRetrievalMcpMessage
+  | UninstallRetrievalMcpMessage
+  | GetRetrievalMcpStatusMessage
   | RunOptimizationAnalysisMessage
   | DismissOptimizationMessage
   | ListOptimizationEventsMessage

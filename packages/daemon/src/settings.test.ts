@@ -761,5 +761,188 @@ describe('settings', () => {
       // Loading the file back proves it was persisted, not just returned.
       expect(loadSettings(path).optimizeChartView).toBe('cumulative');
     });
+
+    it('defaults compression to off, conservative, 4096 KB cap', () => {
+      expect(DEFAULT_SETTINGS.compressionEnabled).toBe(false);
+      expect(DEFAULT_SETTINGS.compressionLevel).toBe('conservative');
+      expect(DEFAULT_SETTINGS.compressionMaxBodyKb).toBe(4096);
+      const loaded = loadSettings(path);
+      expect(loaded.compressionEnabled).toBe(false);
+      expect(loaded.compressionLevel).toBe('conservative');
+      expect(loaded.compressionMaxBodyKb).toBe(4096);
+    });
+
+    it('round-trips every valid compressionLevel value', () => {
+      for (const level of ['conservative', 'moderate', 'aggressive'] as const) {
+        writeRawWithSig(path, JSON.stringify({ ...DEFAULT_SETTINGS, compressionLevel: level }));
+        expect(loadSettings(path).compressionLevel).toBe(level);
+      }
+    });
+
+    it('falls back to default compressionLevel for unknown or non-string values', () => {
+      writeRawWithSig(path, JSON.stringify({ compressionLevel: 'extreme' }));
+      expect(loadSettings(path).compressionLevel).toBe('conservative');
+      writeRawWithSig(path, JSON.stringify({ compressionLevel: 3 }));
+      expect(loadSettings(path).compressionLevel).toBe('conservative');
+    });
+
+    it('drops a non-boolean compressionEnabled', () => {
+      writeRawWithSig(path, JSON.stringify({ compressionEnabled: 'yes' }));
+      expect(loadSettings(path).compressionEnabled).toBe(false);
+    });
+
+    it('accepts an in-range compressionMaxBodyKb and floors fractional values', () => {
+      writeRawWithSig(path, JSON.stringify({ ...DEFAULT_SETTINGS, compressionMaxBodyKb: 512.9 }));
+      expect(loadSettings(path).compressionMaxBodyKb).toBe(512);
+    });
+
+    it('rejects out-of-range or non-finite compressionMaxBodyKb (reverts to default)', () => {
+      for (const bad of [15, 16385, Number.NaN, Number.POSITIVE_INFINITY, '1024']) {
+        writeRawWithSig(path, JSON.stringify({ compressionMaxBodyKb: bad }));
+        expect(loadSettings(path).compressionMaxBodyKb).toBe(4096);
+      }
+      // Boundary values are accepted.
+      writeRawWithSig(path, JSON.stringify({ ...DEFAULT_SETTINGS, compressionMaxBodyKb: 16 }));
+      expect(loadSettings(path).compressionMaxBodyKb).toBe(16);
+      writeRawWithSig(path, JSON.stringify({ ...DEFAULT_SETTINGS, compressionMaxBodyKb: 16384 }));
+      expect(loadSettings(path).compressionMaxBodyKb).toBe(16384);
+    });
+
+    it('updateSettings persists compression fields', () => {
+      const next = updateSettings(
+        { compressionEnabled: true, compressionLevel: 'aggressive', compressionMaxBodyKb: 2048 },
+        path,
+      );
+      expect(next.compressionEnabled).toBe(true);
+      expect(next.compressionLevel).toBe('aggressive');
+      expect(next.compressionMaxBodyKb).toBe(2048);
+      const reloaded = loadSettings(path);
+      expect(reloaded.compressionEnabled).toBe(true);
+      expect(reloaded.compressionLevel).toBe('aggressive');
+      expect(reloaded.compressionMaxBodyKb).toBe(2048);
+    });
+
+    it('defaults reversible retrieval off with no installs', () => {
+      expect(DEFAULT_SETTINGS.compressionRetrievalEnabled).toBe(false);
+      expect(DEFAULT_SETTINGS.compressionRetrievalInstalls).toEqual([]);
+      const loaded = loadSettings(path);
+      expect(loaded.compressionRetrievalEnabled).toBe(false);
+      expect(loaded.compressionRetrievalInstalls).toEqual([]);
+    });
+
+    it('round-trips compressionRetrievalEnabled', () => {
+      const next = updateSettings({ compressionRetrievalEnabled: true }, path);
+      expect(next.compressionRetrievalEnabled).toBe(true);
+      expect(loadSettings(path).compressionRetrievalEnabled).toBe(true);
+    });
+
+    it('coerces compressionRetrievalInstalls, keeping valid entries and dropping malformed ones', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          compressionRetrievalInstalls: [
+            { scope: 'user', directory: null, installedAt: 100 },
+            { scope: 'local', directory: '/home/me/proj', installedAt: 200 },
+            { scope: 'project', directory: '/repo', installedAt: 300 },
+            // dropped: non-user scope without a directory
+            { scope: 'local', directory: '', installedAt: 400 },
+            // dropped: unknown scope
+            { scope: 'global', directory: '/x', installedAt: 500 },
+            // dropped: non-finite installedAt
+            { scope: 'user', directory: null, installedAt: 'soon' },
+            // dropped: not an object
+            'nope',
+          ],
+        }),
+      );
+      const installs = loadSettings(path).compressionRetrievalInstalls;
+      expect(installs).toEqual([
+        { scope: 'user', directory: null, installedAt: 100 },
+        { scope: 'local', directory: '/home/me/proj', installedAt: 200 },
+        { scope: 'project', directory: '/repo', installedAt: 300 },
+      ]);
+    });
+
+    it('normalizes a user-scope record to a null directory even if one is provided', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          compressionRetrievalInstalls: [{ scope: 'user', directory: '/ignored', installedAt: 1 }],
+        }),
+      );
+      expect(loadSettings(path).compressionRetrievalInstalls).toEqual([
+        { scope: 'user', directory: null, installedAt: 1 },
+      ]);
+    });
+
+    it('falls back to [] when compressionRetrievalInstalls is not an array', () => {
+      writeRawWithSig(path, JSON.stringify({ compressionRetrievalInstalls: { nope: true } }));
+      expect(loadSettings(path).compressionRetrievalInstalls).toEqual([]);
+    });
+
+    it('updateSettings persists compressionRetrievalInstalls', () => {
+      const next = updateSettings(
+        {
+          compressionRetrievalInstalls: [{ scope: 'user', directory: null, installedAt: 42 }],
+        },
+        path,
+      );
+      expect(next.compressionRetrievalInstalls).toEqual([
+        { scope: 'user', directory: null, installedAt: 42 },
+      ]);
+      expect(loadSettings(path).compressionRetrievalInstalls).toEqual([
+        { scope: 'user', directory: null, installedAt: 42 },
+      ]);
+    });
+  });
+
+  describe('dataRetentionDays', () => {
+    it('defaults to 365 (1 year) when the file is missing', () => {
+      expect(loadSettings(path).dataRetentionDays).toBe(365);
+    });
+
+    it('round-trips valid values within [1, 3650]', () => {
+      for (const days of [1, 365, 730, 3650]) {
+        writeRawWithSig(path, JSON.stringify({ dataRetentionDays: days }));
+        expect(loadSettings(path).dataRetentionDays).toBe(days);
+      }
+    });
+
+    it('clamps out-of-range and non-numeric values back to the default', () => {
+      for (const bad of [0, -5, 3651, 'x', null]) {
+        writeRawWithSig(path, JSON.stringify({ dataRetentionDays: bad }));
+        expect(loadSettings(path).dataRetentionDays).toBe(365);
+      }
+    });
+
+    it('seeds from telemetryRetentionDays when dataRetentionDays is absent (upgrade path)', () => {
+      writeRawWithSig(path, JSON.stringify({ telemetryRetentionDays: 60 }));
+      expect(loadSettings(path).dataRetentionDays).toBe(60);
+    });
+
+    it('lets dataRetentionDays win when both keys are present', () => {
+      writeRawWithSig(path, JSON.stringify({ telemetryRetentionDays: 60, dataRetentionDays: 200 }));
+      expect(loadSettings(path).dataRetentionDays).toBe(200);
+    });
+  });
+
+  describe('optimizeRange', () => {
+    it('defaults to all when the file is missing', () => {
+      expect(loadSettings(path).optimizeRange).toBe('all');
+    });
+
+    it('round-trips every valid preset', () => {
+      for (const r of ['1d', '1w', '1m', '3m', '1y', 'all', 'custom'] as const) {
+        writeRawWithSig(path, JSON.stringify({ optimizeRange: r }));
+        expect(loadSettings(path).optimizeRange).toBe(r);
+      }
+    });
+
+    it('falls back to the default when the value is invalid', () => {
+      writeRawWithSig(path, JSON.stringify({ optimizeRange: 'bogus' }));
+      expect(loadSettings(path).optimizeRange).toBe('all');
+      writeRawWithSig(path, JSON.stringify({ optimizeRange: 42 }));
+      expect(loadSettings(path).optimizeRange).toBe('all');
+    });
   });
 });

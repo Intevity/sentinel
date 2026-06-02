@@ -23,7 +23,7 @@
  * page so users know to expect approximation, not actuals.
  */
 
-import { getDigestTokens } from '@claude-sentinel/shared';
+import { getDigestTokens, BYTES_PER_TOKEN } from '@claude-sentinel/shared';
 import {
   getBaseInputPricePerMillion,
   CACHE_READ_MULTIPLIER,
@@ -31,11 +31,9 @@ import {
   CACHE_WRITE_1H_MULTIPLIER,
 } from '../cache-ttl/pricing.js';
 
-/** Tokens-per-byte rough conversion. Anthropic's tokenizer averages
- *  ~3.6 bytes per input token on English text and ~3 bytes on code.
- *  Splitting the difference keeps the estimate honest without per-
- *  payload tokenization cost. */
-const BYTES_PER_TOKEN = 3.5;
+// Byte<->token conversion comes from the shared ruler (BYTES_PER_TOKEN = 3.5),
+// the single source of truth shared with the compression path and the
+// context-bloat estimators.
 
 // Digest sizes are owned by `@claude-sentinel/shared/optimize-digests`
 // so the analyzer, the back-fill migration, and the dashboard all

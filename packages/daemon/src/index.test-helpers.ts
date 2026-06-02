@@ -118,6 +118,7 @@ async function pickFreePort(): Promise<number> {
 const TEST_ENV_KEYS = [
   'CLAUDE_SENTINEL_TEST_DB_FILE',
   'CLAUDE_SENTINEL_TEST_REQUEST_LOG_DB_FILE',
+  'CLAUDE_SENTINEL_TEST_COMPRESSION_DB_FILE',
   'CLAUDE_SENTINEL_TEST_CLAUDE_JSON',
   'CLAUDE_SENTINEL_TEST_SETTINGS_FILE',
   'CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE',
@@ -134,6 +135,7 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   const workdir = mkdtempSync(join(tmpdir(), `sentinel-it-${randomUUID().slice(0, 8)}-`));
   const dbPath = join(workdir, 'sentinel.db');
   const requestLogDbPath = join(workdir, 'request-logs.db');
+  const compressionDbPath = join(workdir, 'compression-stats.db');
   const claudeJsonPath = join(workdir, 'claude.json');
   const settingsPath = join(workdir, 'settings.json');
   const claudeSettingsPath = join(workdir, 'claude-settings.json');
@@ -188,6 +190,7 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   // ipc.ts / proxy.ts.
   process.env.CLAUDE_SENTINEL_TEST_DB_FILE = dbPath;
   process.env.CLAUDE_SENTINEL_TEST_REQUEST_LOG_DB_FILE = requestLogDbPath;
+  process.env.CLAUDE_SENTINEL_TEST_COMPRESSION_DB_FILE = compressionDbPath;
   process.env.CLAUDE_SENTINEL_TEST_CLAUDE_JSON = claudeJsonPath;
   process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE = settingsPath;
   process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;

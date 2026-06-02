@@ -207,6 +207,46 @@ export type OptimizeChartView =
   | 'cumulative'
   | 'byPattern';
 
+/** The Optimize tab's time-range presets. `custom` means "use the explicit
+ *  start/end the user picked"; `all` means all-time. Persisted in
+ *  {@link Settings.optimizeRange}. */
+export type OptimizeRangePreset = '1d' | '1w' | '1m' | '3m' | '1y' | 'all' | 'custom';
+
+/**
+ * Aggressiveness tier for in-flight tool_result compression.
+ *
+ *   conservative — lossless-ish cleanup: strip ANSI escapes, collapse blank-
+ *                  line runs and repeated adjacent lines, minify insignificant
+ *                  JSON whitespace, dedup repeated lines. No information loss.
+ *   moderate     — conservative rules plus safe lossy transforms: head/tail
+ *                  truncation of very long logs, tabular dedup of large
+ *                  arrays-of-objects, collapse of repetitive stack frames.
+ *   aggressive   — moderate rules with lower thresholds and heavier trimming.
+ *
+ * Every rule is deterministic and idempotent so replayed conversation history
+ * compresses to identical bytes turn-over-turn, keeping prompt-cache prefixes
+ * stable.
+ */
+export type CompressionLevel = 'conservative' | 'moderate' | 'aggressive';
+
+/**
+ * Scope at which Sentinel installs its retrieval MCP server into Claude Code's
+ * config. Mirrors Claude Code's own scopes:
+ *   user    — all of the user's projects (`~/.claude.json` top-level mcpServers).
+ *   local   — one directory, private to the user (`~/.claude.json`
+ *             projects[dir].mcpServers).
+ *   project — one directory, shared via a `.mcp.json` checked into the repo.
+ */
+export type McpInstallScope = 'user' | 'local' | 'project';
+
+/** A record of where the retrieval MCP server has been installed, so the UI
+ *  can list and uninstall each one. `directory` is null only for `user` scope. */
+export interface McpInstallRecord {
+  scope: McpInstallScope;
+  directory: string | null;
+  installedAt: number;
+}
+
 /**
  * Persistent user preferences stored at ~/.claude-sentinel/settings.json.
  */
@@ -287,11 +327,19 @@ export interface Settings {
    *  Anthropic surfaces when Claude Code isn't actively driving the
    *  account. Clamped to [60, 3600]. Default 300 (5 min). */
   backgroundProbeIntervalSec: number;
-  /** Days to retain telemetry rows (usage_events, tool_events, api_errors,
-   *  activity_events). The Metrics tab's largest window is 30d; going longer
-   *  preserves history for manual SQL queries. Clamped to [1, 365].
-   *  Default 30. Runs at startup and once/day thereafter. */
+  /** @deprecated Superseded by {@link Settings.dataRetentionDays}, which now
+   *  governs telemetry, optimize, and compression retention from a single
+   *  control. Kept for settings round-trip + one-time migration: on first load
+   *  after upgrade, `dataRetentionDays` is seeded from this value when the
+   *  newer key is absent. No purge reads this field anymore. */
   telemetryRetentionDays: number;
+  /** Master retention for ANALYTICS data: telemetry (usage_events, tool_events,
+   *  api_errors, activity_events), optimize (optimization_events), and
+   *  compression (events + retrievals). Rows older than this are purged at
+   *  daemon startup and once/day thereafter. Clamped to [1, 3650]. Default 365
+   *  (1 year). The security audit chain and request log keep their own
+   *  independent retention so integrity isn't weakened by this general knob. */
+  dataRetentionDays: number;
 
   // ─── Security scanning ─────────────────────────────────────────────
   /** Master on/off for the security scanning subsystem. */
@@ -525,6 +573,38 @@ export interface Settings {
    *  `packages/app/src/components/optimize/charts/` for what each id
    *  renders. */
   optimizeChartView: OptimizeChartView;
+  /** Selected time range for the Optimize tab's metrics. `custom` defers to
+   *  client-held start/end dates (not persisted). Defaults to 'all'. Persisted
+   *  so the user's last range survives daemon restarts. */
+  optimizeRange: OptimizeRangePreset;
+
+  // ─── tool_result compression ───────────────────────────────────────
+  /** Master switch for in-flight tool_result compression. Opt-in; default
+   *  false. When on, the proxy deterministically compresses tool_result
+   *  text before forwarding `/v1/messages` upstream, reducing input tokens.
+   *  Read fresh per-request, so toggling takes effect with no daemon
+   *  restart. */
+  compressionEnabled: boolean;
+  /** Aggressiveness tier. `'conservative'` is lossless-ish and the default;
+   *  `'moderate'` and `'aggressive'` add progressively heavier lossy
+   *  transforms. See `CompressionLevel`. */
+  compressionLevel: CompressionLevel;
+  /** Request bodies larger than this (in KB) are forwarded uncompressed —
+   *  a safety cap bounding the parse + re-stringify cost. Clamped to
+   *  [16, 16384]. Default 4096 (4 MB), matching the request-size telemetry
+   *  that informed `securityOversizedThresholdMb`. */
+  compressionMaxBodyKb: number;
+  /** Reversible compression (CCR). When true, the lossy tiers keep the elided
+   *  original keyed by a content hash and emit a marker pointing at the
+   *  `mcp__sentinel__retrieve` tool, so the model can fetch the full text on
+   *  demand. Default false. Only meaningful once the retrieval MCP server is
+   *  installed (see `compressionRetrievalInstalls`); markers degrade
+   *  gracefully (head/tail content remains) where the tool is absent. */
+  compressionRetrievalEnabled: boolean;
+  /** Where the retrieval MCP server has been installed into Claude Code's
+   *  config. Used by the Optimize page to show status and offer uninstall.
+   *  Empty by default. */
+  compressionRetrievalInstalls: McpInstallRecord[];
 
   // ─── External OTEL forwarding ──────────────────────────────────────
   /** Master switch for forwarding the OTLP/HTTP request bodies that

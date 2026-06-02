@@ -40,6 +40,7 @@ import {
   clearSecurityEvents,
   purgeSecurityEventsOlderThan,
   purgeTelemetryOlderThan,
+  purgeOptimizationOlderThan,
   walkChain,
   listIncidentReplay,
   listAuditExport,
@@ -58,6 +59,8 @@ import {
   listSubagentInstalls,
   insertOptimizationEvent,
   getOptimizationMetrics,
+  getCacheHealthWindowRange,
+  getProcessedTokenTotals,
   listOptimizationEventsWithSources,
 } from './db.js';
 import { buildContextInventory } from './context-bloat/inventory.js';
@@ -112,7 +115,7 @@ import { homedir, hostname } from 'os';
 import { join } from 'path';
 import { runScanBenchmark } from './security/scanner-benchmark.js';
 import { parseRule as parsePermissionRule } from './security/permissions/parser.js';
-import type { Settings } from '@claude-sentinel/shared';
+import type { Settings, MetricsWindow } from '@claude-sentinel/shared';
 import { getActiveAccount, setActiveAccount } from './claude-state.js';
 import {
   readActiveCredentials,
@@ -142,6 +145,21 @@ import type {
 import { request as httpRequest, type Server } from 'http';
 import { log } from './logger.js';
 import { getRequestLogStore, closeRequestLogStore } from './request-log-db.js';
+import {
+  getCompressionStatsStore,
+  closeCompressionStatsStore,
+} from './optimize/compress/compression-stats-db.js';
+import {
+  createRetrieveMcpHandler,
+  RETRIEVE_QUALIFIED_NAME,
+} from './optimize/compress/mcp-retrieve-server.js';
+import { getOrCreateMcpToken } from './optimize/compress/mcp-token.js';
+import {
+  installMcpServer,
+  uninstallMcpServer,
+  isMcpInstalled,
+  buildMcpServerEntry,
+} from './optimize/compress/mcp-install.js';
 
 /**
  * Probe 127.0.0.1:getDaemonPort()/health to see whether another daemon is
@@ -195,6 +213,18 @@ function isDaemonAlreadyRunning(): Promise<boolean> {
  */
 function sentinelKey(orgUuid: string, accountUuid: string): string {
   return orgUuid || accountUuid;
+}
+
+/** Resolve the effective metrics window for a metrics IPC message. The
+ *  `window` field is preferred (and supports custom date ranges); the legacy
+ *  `days` lookback is honored only when `window` is absent (`days <= 0` or
+ *  omitted means all-time). */
+function windowFromMessage(window?: MetricsWindow, days?: number): MetricsWindow {
+  if (window) return window;
+  if (typeof days === 'number' && days > 0) {
+    return { sinceMs: Date.now() - days * 24 * 60 * 60 * 1000 };
+  }
+  return {};
 }
 
 /** Stable host identifier emitted as a resource attribute on every
@@ -2544,14 +2574,122 @@ export async function startDaemon(): Promise<DaemonHandle> {
         break;
       }
       case 'get_optimization_metrics': {
-        // `days` is accepted for forward compatibility but the v1
-        // dashboard wants the all-time series. The header summary uses
-        // running totals; the chart trims to the user-selected window
-        // client-side.
+        // `window` (preferred) selects the range; `days` is the legacy
+        // lookback honored only when `window` is absent (0 = all-time).
         respond({
           requestType: 'get_optimization_metrics',
           success: true,
-          data: getOptimizationMetrics(db),
+          data: getOptimizationMetrics(db, windowFromMessage(msg.window, msg.days)),
+        });
+        break;
+      }
+      case 'get_compression_metrics': {
+        // Compression stats live in their own store; cache health is a
+        // cross-check from the main telemetry DB (cache_ttl_events) over the
+        // same window and the full known-account set.
+        const win = windowFromMessage(msg.window, msg.days);
+        const metrics = compressionStore.getCompressionMetricsWindow(win);
+        const accountIds = listAccounts(db).map((a) => a.id);
+        metrics.cacheHealth = getCacheHealthWindowRange(db, accountIds, win);
+        respond({
+          requestType: 'get_compression_metrics',
+          success: true,
+          data: metrics,
+        });
+        break;
+      }
+      case 'get_processed_tokens': {
+        // Total tokens Sentinel forwarded over the window, across all accounts
+        // — the denominator for the Optimize header's savings percentage.
+        respond({
+          requestType: 'get_processed_tokens',
+          success: true,
+          data: getProcessedTokenTotals(db, windowFromMessage(msg.window)),
+        });
+        break;
+      }
+      case 'install_retrieval_mcp': {
+        const directory = msg.directory ?? null;
+        if (msg.scope !== 'user' && (directory === null || directory.length === 0)) {
+          respond({
+            requestType: 'install_retrieval_mcp',
+            success: false,
+            error: 'A directory is required for local/project scope.',
+          });
+          break;
+        }
+        try {
+          const { configPath } = installMcpServer({
+            scope: msg.scope,
+            directory,
+            port: getDaemonPort(),
+            token: getOrCreateMcpToken(),
+          });
+          // Record the install (dedup by scope+directory) and enable reversible
+          // compression so the compressor starts emitting retrieval markers.
+          const recordDir = msg.scope === 'user' ? null : directory;
+          const installs = currentSettings.compressionRetrievalInstalls.filter(
+            (i) => !(i.scope === msg.scope && i.directory === recordDir),
+          );
+          installs.push({ scope: msg.scope, directory: recordDir, installedAt: Date.now() });
+          currentSettings = writeSettings({
+            compressionRetrievalEnabled: true,
+            compressionRetrievalInstalls: installs,
+          });
+          ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+          respond({
+            requestType: 'install_retrieval_mcp',
+            success: true,
+            data: {
+              configPath,
+              toolName: RETRIEVE_QUALIFIED_NAME,
+              restartRequired: true,
+            },
+          });
+        } catch (err) {
+          respond({
+            requestType: 'install_retrieval_mcp',
+            success: false,
+            error: err instanceof Error ? err.message : 'install failed',
+          });
+        }
+        break;
+      }
+      case 'uninstall_retrieval_mcp': {
+        const directory = msg.directory ?? null;
+        try {
+          uninstallMcpServer({ scope: msg.scope, directory });
+          const recordDir = msg.scope === 'user' ? null : directory;
+          const installs = currentSettings.compressionRetrievalInstalls.filter(
+            (i) => !(i.scope === msg.scope && i.directory === recordDir),
+          );
+          currentSettings = writeSettings({ compressionRetrievalInstalls: installs });
+          ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+          respond({ requestType: 'uninstall_retrieval_mcp', success: true });
+        } catch (err) {
+          respond({
+            requestType: 'uninstall_retrieval_mcp',
+            success: false,
+            error: err instanceof Error ? err.message : 'uninstall failed',
+          });
+        }
+        break;
+      }
+      case 'get_retrieval_mcp_status': {
+        // Verify each recorded install is still present in its config file, so
+        // the UI reflects reality after external edits.
+        const installs = currentSettings.compressionRetrievalInstalls.filter((i) =>
+          isMcpInstalled({ scope: i.scope, directory: i.directory }),
+        );
+        respond({
+          requestType: 'get_retrieval_mcp_status',
+          success: true,
+          data: {
+            enabled: currentSettings.compressionRetrievalEnabled,
+            toolName: RETRIEVE_QUALIFIED_NAME,
+            url: buildMcpServerEntry(getDaemonPort(), '').url,
+            installs,
+          },
         });
         break;
       }
@@ -2767,11 +2905,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // indefinitely.
   const runTelemetryPurge = (): void => {
     try {
-      const cutoff = Date.now() - currentSettings.telemetryRetentionDays * 24 * 60 * 60 * 1000;
+      const cutoff = Date.now() - currentSettings.dataRetentionDays * 24 * 60 * 60 * 1000;
       const purged = purgeTelemetryOlderThan(db, cutoff);
       if (purged > 0) {
         console.log(
-          `[Telemetry] Purged ${purged} row(s) older than ${currentSettings.telemetryRetentionDays} days`,
+          `[Telemetry] Purged ${purged} row(s) older than ${currentSettings.dataRetentionDays} days`,
         );
       }
       /* v8 ignore next 3 */
@@ -2781,6 +2919,25 @@ export async function startDaemon(): Promise<DaemonHandle> {
   };
   runTelemetryPurge();
   const telemetryPurgeTimer = setInterval(runTelemetryPurge, 24 * 60 * 60 * 1000);
+
+  // Optimize analyzer rows (optimization_events) follow the same unified
+  // analytics retention; runs at startup + every 24h like telemetry.
+  const runOptimizationPurge = (): void => {
+    try {
+      const cutoff = Date.now() - currentSettings.dataRetentionDays * 24 * 60 * 60 * 1000;
+      const purged = purgeOptimizationOlderThan(db, cutoff);
+      if (purged > 0) {
+        console.log(
+          `[Optimize] Purged ${purged} optimization row(s) older than ${currentSettings.dataRetentionDays} days`,
+        );
+      }
+      /* v8 ignore next 3 */
+    } catch (err) {
+      console.error('[Optimize] retention purge failed:', err);
+    }
+  };
+  runOptimizationPurge();
+  const optimizationPurgeTimer = setInterval(runOptimizationPurge, 24 * 60 * 60 * 1000);
 
   // Request/response capture store — opened up-front so the Logs UI can
   // always call get_request_detail / clear_request_logs even when capture
@@ -2803,6 +2960,35 @@ export async function startDaemon(): Promise<DaemonHandle> {
   };
   runRequestLogPurge();
   const requestLogPurgeTimer = setInterval(runRequestLogPurge, 24 * 60 * 60 * 1000);
+
+  // Compression stats store — opened up-front so the Optimize page can always
+  // fetch get_compression_metrics even when compression is disabled (table
+  // just stays empty). Per-request rows reuse the telemetry retention window;
+  // purge runs at startup + every 24h like telemetry/request-logs.
+  const compressionStore = getCompressionStatsStore({ ipcServer });
+  // Reversible-compression retrieval MCP endpoint, served on the daemon's
+  // HTTP server at `/mcp`. Reads originals from the compression store; gated
+  // by a per-installation bearer token written into the MCP config.
+  const mcpHandler = createRetrieveMcpHandler({
+    getRetrieval: (id) => compressionStore.getRetrieval(id),
+    getToken: () => getOrCreateMcpToken(),
+  });
+  const runCompressionPurge = (): void => {
+    try {
+      const cutoff = Date.now() - currentSettings.dataRetentionDays * 24 * 60 * 60 * 1000;
+      const purged = compressionStore.purgeOlderThan(cutoff);
+      if (purged > 0) {
+        console.log(
+          `[Compression] Purged ${purged} row(s) older than ${currentSettings.dataRetentionDays} days`,
+        );
+      }
+      /* v8 ignore next 3 */
+    } catch (err) {
+      console.error('[Compression] retention purge failed:', err);
+    }
+  };
+  runCompressionPurge();
+  const compressionPurgeTimer = setInterval(runCompressionPurge, 24 * 60 * 60 * 1000);
 
   // Sprint 8 forensic incident replay recorder. Built once and shared
   // with both scanner + enforcer so the same in-memory ring buffer is
@@ -2973,6 +3159,8 @@ export async function startDaemon(): Promise<DaemonHandle> {
       securityScanner,
       permissionsEnforcer,
       requestLogStore,
+      compressionStore,
+      mcpHandler,
       requestAccountMap,
       // A 401 on a real Claude Code request means the token was revoked
       // server-side while the local `expiresAt` still claims it's valid —
@@ -3178,7 +3366,9 @@ export async function startDaemon(): Promise<DaemonHandle> {
     // from the shared DB handle and subscribers call into SpendTracker.
     claudeAiUsageStore.stop();
     clearInterval(telemetryPurgeTimer);
+    clearInterval(optimizationPurgeTimer);
     clearInterval(requestLogPurgeTimer);
+    clearInterval(compressionPurgeTimer);
     clearInterval(securityEventPurgeTimer);
     clearInterval(chainIntegrityTimer);
     spendTracker.stop();
@@ -3192,6 +3382,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     });
     closeDb();
     closeRequestLogStore();
+    closeCompressionStatsStore();
   };
 
   return { httpServer, ipcServer, shutdown };

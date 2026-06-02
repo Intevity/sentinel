@@ -630,6 +630,49 @@ describe('getOptimizationMetrics — realized vs potential split', () => {
     expect(fe?.tokensPotential).toBe(0);
     expect(la?.tokensRealized).toBe(0);
     expect(la?.tokensPotential).toBe(6400);
+    // Gross subagent read tokens count REALIZED rows only: file-explorer's
+    // hypoInput = 8000 − digest(500) = 7500; log-analyzer (potential) excluded.
+    expect(m.totals.hypotheticalInputTokens).toBe(7500);
+  });
+
+  it('windows measured rows by ts (only in-window rows contribute)', async () => {
+    const { upsertSubagentInstall, insertOptimizationEvent } = await import('../db.js');
+    const t = Date.now();
+    const DAY = 24 * 60 * 60 * 1000;
+    // Install covers both rows so both are "realized".
+    upsertSubagentInstall(db, {
+      name: 'file-explorer',
+      source: 'curated',
+      curatedId: 'file-explorer',
+      gapFingerprint: null,
+      mdPath: '/tmp/fe.md',
+      mdHash: 'h',
+      installedAt: t - 100 * DAY,
+    });
+    const row = (ts: number): void =>
+      insertOptimizationEvent(db, {
+        ts,
+        accountId: 'a1',
+        sessionId: 's',
+        curatedId: 'file-explorer',
+        kind: 'measured',
+        pattern: 'short_turn_after_large_read',
+        savingsUsd: 0.5,
+        actualInputTokens: 10_000,
+        actualCachedTokens: 0,
+        actualCostUsd: 1.0,
+        hypotheticalCostUsd: 0.5,
+        hypotheticalTotalTokens: 8000,
+        sourceToolCallIds: [],
+      }) as unknown as void;
+    row(t - 10 * DAY); // out of window
+    row(t - 1 * DAY); // in window
+    // All-time sees both; the window sees only the recent one.
+    expect(getOptimizationMetrics(db).totals.opportunities).toBe(2);
+    const windowed = getOptimizationMetrics(db, { sinceMs: t - 7 * DAY });
+    expect(windowed.totals.opportunities).toBe(1);
+    expect(windowed.totals.tokensRealized).toBe(7000); // 8000 − 2×digest(500)
+    expect(windowed.totals.hypotheticalInputTokens).toBe(7500);
   });
 
   it('returns empty dailyBySubagent and byPattern arrays on a fresh database', () => {

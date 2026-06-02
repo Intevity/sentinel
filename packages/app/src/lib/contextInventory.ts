@@ -3,7 +3,11 @@
  * sibling .ts so they're testable without a React renderer.
  */
 
-import type { ContextInventory, ContextInventoryMcpServer } from '@claude-sentinel/shared';
+import {
+  estimateTokensFromBytes,
+  type ContextInventory,
+  type ContextInventoryMcpServer,
+} from '@claude-sentinel/shared';
 
 /** Human-readable byte formatting. Same algorithm as
  *  `opportunityList.formatBytes` but kept separate for the inventory
@@ -15,8 +19,8 @@ export function formatBytes(n: number): string {
 }
 
 /** Approximate token count rendered with a leading "~" so users don't
- *  read it as exact (the estimator uses 4 bytes / token, which over-
- *  counts pure-text and under-counts JSON). */
+ *  read it as exact (the estimator uses the shared 3.5 bytes / token
+ *  ruler, blended across prose and code). */
 export function formatTokens(n: number): string {
   if (n < 1000) return `~${n}`;
   if (n < 1_000_000) return `~${(n / 1000).toFixed(1)}K`;
@@ -33,10 +37,10 @@ export function truncatePath(path: string): string {
 }
 
 /** Sum the inventory's tracked context contributors into a single
- *  number for the panel header. CLAUDE.md and memory bytes are treated
- *  as 4 bytes / token to match the MCP estimator. Plugins / subagents
- *  contribute zero here because we don't have a static cost model for
- *  them yet. */
+ *  number for the panel header. CLAUDE.md and memory bytes use the
+ *  shared byte->token ruler to match the MCP estimator. Plugins /
+ *  subagents contribute zero here because we don't have a static cost
+ *  model for them yet. */
 export function totalEstimatedTokens(inv: ContextInventory): number {
   let mcp = 0;
   for (const s of inv.mcpServers) mcp += s.recent7d.estimatedTokens;
@@ -44,7 +48,7 @@ export function totalEstimatedTokens(inv: ContextInventory): number {
   for (const f of inv.claudeMdFiles) mdBytes += f.sizeBytes;
   let memBytes = 0;
   for (const m of inv.memoryDirs) memBytes += m.totalBytes;
-  return mcp + Math.floor((mdBytes + memBytes) / 4);
+  return mcp + estimateTokensFromBytes(mdBytes + memBytes);
 }
 
 /** Filter out MCP servers that are disabled AND have zero recent

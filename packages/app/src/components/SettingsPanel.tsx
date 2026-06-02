@@ -8,6 +8,7 @@ import type {
   SecurityOsNotifyThreshold,
   PermissionDecision,
   ThemePreference,
+  CompressionLevel,
 } from '@claude-sentinel/shared';
 import { ALERT_SOUNDS } from '@claude-sentinel/shared';
 import { invoke } from '@tauri-apps/api/core';
@@ -48,6 +49,18 @@ const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string }> = [
   { id: 'accounts', label: 'Accounts' },
   { id: 'security', label: 'Security' },
   { id: 'data', label: 'Data' },
+];
+
+/** Retention presets for the analytics data-retention control. Values are in
+ *  days and stay within the daemon's [1, 3650] clamp. */
+const RETENTION_OPTIONS: Array<{ days: number; label: string }> = [
+  { days: 30, label: '30 days' },
+  { days: 90, label: '90 days' },
+  { days: 180, label: '6 months' },
+  { days: 365, label: '1 year' },
+  { days: 730, label: '2 years' },
+  { days: 1825, label: '5 years' },
+  { days: 3650, label: '10 years' },
 ];
 
 interface SettingsPanelProps {
@@ -165,8 +178,8 @@ export default function SettingsPanel({
     void update({ backgroundProbeIntervalSec: secs }).catch(() => undefined);
   };
 
-  const setTelemetryRetentionDays = (days: number): void => {
-    void update({ telemetryRetentionDays: days }).catch(() => undefined);
+  const setDataRetentionDays = (days: number): void => {
+    void update({ dataRetentionDays: days }).catch(() => undefined);
   };
 
   const setSecurityContextVerbosity = (v: 'compact' | 'standard' | 'verbose'): void => {
@@ -196,6 +209,16 @@ export default function SettingsPanel({
   };
   const setOptimizeShowMicroOpportunities = (v: boolean): void => {
     void update({ optimizeShowMicroOpportunities: v }).catch(() => undefined);
+  };
+  const setCompressionEnabled = (v: boolean): void => {
+    void update({ compressionEnabled: v }).catch(() => undefined);
+  };
+  const setCompressionLevel = (v: CompressionLevel): void => {
+    void update({ compressionLevel: v }).catch(() => undefined);
+  };
+  const setCompressionMaxBodyKb = (v: number): void => {
+    if (!Number.isFinite(v)) return;
+    void update({ compressionMaxBodyKb: v }).catch(() => undefined);
   };
   const setOtelForwardingEnabled = (v: boolean): void => {
     void update({ otelForwardingEnabled: v }).catch(() => undefined);
@@ -630,30 +653,31 @@ export default function SettingsPanel({
                 <div className="px-3 py-2.5">
                   <div className="flex items-center justify-between text-[13px] mb-0.5">
                     <span className="font-medium text-black dark:text-white">
-                      Keep telemetry for
+                      Keep analytics for
                     </span>
-                    <span className="font-semibold text-black dark:text-white tabular-nums">
-                      {settings.telemetryRetentionDays}{' '}
-                      {settings.telemetryRetentionDays === 1 ? 'day' : 'days'}
-                    </span>
+                    <select
+                      value={settings.dataRetentionDays}
+                      onChange={(e) => setDataRetentionDays(Number(e.target.value))}
+                      className="rounded border border-border-subtle/20 bg-transparent px-2 py-1 text-[13px] font-semibold text-black dark:text-white"
+                    >
+                      {!RETENTION_OPTIONS.some((o) => o.days === settings.dataRetentionDays) && (
+                        <option value={settings.dataRetentionDays}>
+                          {settings.dataRetentionDays}{' '}
+                          {settings.dataRetentionDays === 1 ? 'day' : 'days'}
+                        </option>
+                      )}
+                      {RETENTION_OPTIONS.map((o) => (
+                        <option key={o.days} value={o.days}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                  <p className="text-[11px] text-muted leading-snug mb-2">
-                    Usage, tool, API-error, and activity rows older than this are purged at daemon
-                    startup and once every 24 hours. The Metrics tab's largest window is 30 days.
+                  <p className="text-[11px] text-muted leading-snug">
+                    Usage and telemetry, Optimize savings history, and compression stats older than
+                    this are purged at daemon startup and once every 24 hours. Default is 1 year.
+                    The security audit log and request logs keep their own separate retention below.
                   </p>
-                  <input
-                    type="range"
-                    min={1}
-                    max={365}
-                    step={1}
-                    value={settings.telemetryRetentionDays}
-                    onChange={(e) => setTelemetryRetentionDays(Number(e.target.value))}
-                    className="w-full accent-ios-blue"
-                  />
-                  <div className="flex justify-between text-[10px] text-muted mt-0.5 tabular-nums">
-                    <span>1d</span>
-                    <span>365d</span>
-                  </div>
                 </div>
               </Section>
             )}
@@ -800,6 +824,74 @@ export default function SettingsPanel({
                     checked={settings.optimizeShowMicroOpportunities}
                     onChange={setOptimizeShowMicroOpportunities}
                   />
+                </div>
+              </Section>
+            )}
+
+            {activeTab === 'data' && (
+              <Section title="Compression">
+                <div className="px-3 py-2.5">
+                  <p className="text-[11px] text-muted leading-snug">
+                    Compression rewrites tool result text in flight before it reaches Anthropic,
+                    reducing the input tokens you send. It is deterministic so prompt caching stays
+                    stable; conservative mode is lossless. Token and cost savings shown on the
+                    Optimize tab are estimates.
+                  </p>
+                </div>
+                <ToggleRow
+                  label="Enable compression"
+                  description="When off, request bodies are forwarded untouched. Opt-in; default off."
+                  checked={settings.compressionEnabled}
+                  onChange={setCompressionEnabled}
+                />
+                <div
+                  className={settings.compressionEnabled ? '' : 'opacity-50 pointer-events-none'}
+                >
+                  <div className="px-3 py-2.5">
+                    <label
+                      htmlFor="compression-level"
+                      className="block text-[13px] font-medium text-black dark:text-white mb-1"
+                    >
+                      Aggressiveness
+                    </label>
+                    <select
+                      id="compression-level"
+                      value={settings.compressionLevel}
+                      onChange={(e) => setCompressionLevel(e.target.value as CompressionLevel)}
+                      className="w-full text-[12px] px-2 py-1.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white border-none focus:outline-none focus:ring-1 focus:ring-ios-blue"
+                    >
+                      <option value="conservative">Conservative: lossless</option>
+                      <option value="moderate">Moderate: lossy</option>
+                      <option value="aggressive">Aggressive: most lossy</option>
+                    </select>
+                    <p className="text-[11px] text-muted mt-1 leading-snug">
+                      Conservative strips ANSI codes, collapses blank lines, and minifies JSON, with
+                      no impact on accuracy. Moderate and Aggressive also truncate long output and
+                      collapse stack traces, so they can omit detail Claude needs; enable Reversible
+                      retrieval on the Optimize tab to make that recoverable.
+                    </p>
+                  </div>
+                  <div className="px-3 py-2.5">
+                    <label
+                      htmlFor="compression-max-kb"
+                      className="block text-[13px] font-medium text-black dark:text-white mb-1"
+                    >
+                      Skip bodies larger than (KB)
+                    </label>
+                    <input
+                      id="compression-max-kb"
+                      type="number"
+                      min={16}
+                      max={16384}
+                      value={settings.compressionMaxBodyKb}
+                      onChange={(e) => setCompressionMaxBodyKb(Number.parseInt(e.target.value, 10))}
+                      className="w-full px-2 py-1 text-[12px] border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-black dark:text-white"
+                    />
+                    <p className="text-[11px] text-muted mt-1 leading-snug">
+                      A safety cap on the parse and rewrite cost. Requests over this size are
+                      forwarded uncompressed. Range: 16 to 16384.
+                    </p>
+                  </div>
                 </div>
               </Section>
             )}

@@ -149,12 +149,12 @@ export default function OpportunityList({ units }: { units: SavingsUnits }): Rea
         aria-expanded={open}
       >
         {open ? (
-          <ChevronDown className="h-3 w-3 text-foreground/55" />
+          <ChevronDown className="h-3.5 w-3.5 text-foreground/55" />
         ) : (
-          <ChevronRight className="h-3 w-3 text-foreground/55" />
+          <ChevronRight className="h-3.5 w-3.5 text-foreground/55" />
         )}
-        <ListTree className="h-3 w-3 text-foreground/65" />
-        <h3 className="section-label">Opportunities analyzed</h3>
+        <ListTree className="h-3.5 w-3.5 text-foreground" />
+        <h3 className="text-sm font-semibold text-foreground">Opportunities analyzed</h3>
         <span className="ml-auto text-[10px] text-foreground/55">{summary}</span>
       </button>
 

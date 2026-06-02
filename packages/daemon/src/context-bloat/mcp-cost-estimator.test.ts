@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { unlinkSync } from 'fs';
 import Database from 'better-sqlite3';
+import { estimateTokensFromBytes } from '@claude-sentinel/shared';
 import { getDb, closeDb, insertToolCall } from '../db.js';
 import { estimateMcpCosts } from './mcp-cost-estimator.js';
 
@@ -58,7 +59,7 @@ describe('estimateMcpCosts', () => {
     expect(gh?.callCount).toBe(2);
     expect(gh?.bytesIn).toBe(300);
     expect(gh?.bytesOut).toBe(12_000);
-    expect(gh?.estimatedTokens).toBe(Math.floor(12_300 / 4));
+    expect(gh?.estimatedTokens).toBe(estimateTokensFromBytes(12_300));
     expect(atl?.callCount).toBe(1);
   });
 

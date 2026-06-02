@@ -1,15 +1,20 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Sparkles, CheckCircle2, Trash2 } from 'lucide-react';
+import { Sparkles, CheckCircle2, Trash2, Bot } from 'lucide-react';
 import type {
   OptimizationMetrics,
   OptimizationMetricsBySubagent,
   OptimizeChartView,
+  OptimizeRangePreset,
+  CompressionMetrics,
+  ProcessedTokens,
+  MetricsWindow,
   Settings,
 } from '@claude-sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import { formatTokens, type SavingsUnits } from '../lib/optimizeUnits.js';
 import OpportunityList from './optimize/OpportunityList.js';
 import ContextInventoryPanel from './optimize/ContextInventoryPanel.js';
+import CompressionPanel from './optimize/CompressionPanel.js';
 import {
   RealizedChart,
   BySubagentChart,
@@ -20,21 +25,19 @@ import {
 } from './optimize/charts/index.js';
 
 /**
- * Optimize tab — recommends curated subagents based on observed
- * Claude Code session traffic and lets the user install them into
- * `~/.claude/agents/` with one click. The header surfaces two running
- * estimates:
+ * Optimize tab — recommends curated subagents based on observed Claude Code
+ * session traffic and surfaces in-flight tool_result compression. The header
+ * shows two running estimates, each combining both savings sources:
  *
- *   - **Realized**: cumulative counterfactual savings from opportunities
- *     detected in sessions where the recommended curated subagent was
- *     installed at detection time.
- *   - **Potential**: cumulative counterfactual savings from opportunities
- *     in sessions where it was NOT installed.
+ *   - **Saved**: realized savings = subagent opportunities detected while the
+ *     recommended subagent was installed, PLUS tokens removed by compression.
+ *   - **Potential**: additional savings = subagent opportunities where it was
+ *     NOT installed, PLUS what enabling (or raising) compression would save
+ *     (from a dry-run measured on observed tool_results).
  *
- * Both are derived from `kind='measured'` rows the analyzer writes every
- * 5 minutes regardless of install state, so the user can watch the value
- * accumulate (or go negative when a curated subagent isn't a good fit
- * for their workload).
+ * A per-source breakdown under the totals splits each into subagents vs
+ * compression. Subagent figures come from `kind='measured'` analyzer rows;
+ * compression figures from the compression stats store. All are estimates.
  *
  * Settings → Optimize houses the kill switch (`optimizeCaptureEnabled`)
  * and the disclosure copy: "Optimize captures file paths and tool call
@@ -66,6 +69,7 @@ const EMPTY_METRICS: OptimizationMetrics = {
     savingsUsdPotential: 0,
     tokensRealized: 0,
     tokensPotential: 0,
+    hypotheticalInputTokens: 0,
     opportunities: 0,
     installs: 0,
   },
@@ -79,6 +83,25 @@ export default function OptimizeDashboard(): React.ReactElement {
   const [library, setLibrary] = useState<CuratedEntry[]>([]);
   const [installed, setInstalled] = useState<InstalledRow[]>([]);
   const [metrics, setMetrics] = useState<OptimizationMetrics>(EMPTY_METRICS);
+  // Compression's realized + potential savings, folded into the header totals.
+  // The CompressionPanel below still owns the full per-rule/per-tool breakdown.
+  const [comp, setComp] = useState<{
+    tokens: number;
+    cost: number;
+    potTokens: number;
+    potCost: number;
+    /** Gross input tokens of the tool output compression acted on (est. from
+     *  bytesIn) — the compression half of the "% of optimized content" ratio. */
+    grossTokens: number;
+  }>({ tokens: 0, cost: 0, potTokens: 0, potCost: 0, grossTokens: 0 });
+  // Total input tokens Sentinel forwarded over the window — denominator for
+  // the "saved X of Y input tokens" headline.
+  const [processed, setProcessed] = useState<ProcessedTokens>({
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreateTokens: 0,
+    inputSideTokens: 0,
+  });
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The units toggle is server-persisted via Settings.optimizeUnits.
@@ -92,22 +115,64 @@ export default function OptimizeDashboard(): React.ReactElement {
   // Default 'realized' matches the daemon default and preserves the
   // pre-existing chart for users who don't touch the new switcher.
   const [chartView, setChartView] = useState<OptimizeChartView>('realized');
+  // Time-range selection. The preset is server-persisted via
+  // Settings.optimizeRange; the custom start/end dates (YYYY-MM-DD) live only
+  // in component state since they're meaningful only while 'custom' is active.
+  const [range, setRange] = useState<OptimizeRangePreset>('all');
+  const [customStart, setCustomStart] = useState<string>('');
+  const [customEnd, setCustomEnd] = useState<string>('');
+
+  // One window drives all three metric fetches so the header, charts, and
+  // percentage all describe the same span. Local-midnight boundaries align
+  // with the daemon's local-time day buckets.
+  const metricsWindow = useMemo(
+    () => windowForRange(range, customStart, customEnd),
+    [range, customStart, customEnd],
+  );
 
   const refresh = useCallback(async () => {
-    const [lib, inst, met, settings] = await Promise.all([
+    const [lib, inst, met, compm, proc, settings] = await Promise.all([
       sendToSentinel<CuratedEntry[]>({ type: 'get_curated_library' }),
       sendToSentinel<InstalledRow[]>({ type: 'list_installed_subagents' }),
-      sendToSentinel<OptimizationMetrics>({ type: 'get_optimization_metrics', days: 0 }),
+      sendToSentinel<OptimizationMetrics>({
+        type: 'get_optimization_metrics',
+        days: 0,
+        window: metricsWindow,
+      }),
+      sendToSentinel<CompressionMetrics>({
+        type: 'get_compression_metrics',
+        days: 0,
+        window: metricsWindow,
+      }),
+      sendToSentinel<ProcessedTokens>({ type: 'get_processed_tokens', window: metricsWindow }),
       sendToSentinel<Settings>({ type: 'get_settings' }),
     ]);
     if (lib.success) setLibrary(lib.data ?? []);
     if (inst.success) setInstalled(inst.data ?? []);
     if (met.success && met.data) setMetrics(met.data);
+    if (compm.success && compm.data) {
+      // `estTokensPotential` is a historical sum of what raising compression
+      // would have saved on past traffic, measured at lower tiers. Aggressive
+      // is the top tier: there's no further config change to advertise, so we
+      // drop the compression-potential component (the CompressionPanel hint
+      // hides on the same condition). New traffic at aggressive already
+      // contributes 0 potential; the stale historical rows age out.
+      const atMaxTier = settings.success && settings.data?.compressionLevel === 'aggressive';
+      setComp({
+        tokens: compm.data.totals.estTokensSaved,
+        cost: compm.data.totals.estCostSavedUsd,
+        potTokens: atMaxTier ? 0 : compm.data.totals.estTokensPotential,
+        potCost: atMaxTier ? 0 : compm.data.totals.estCostPotential,
+        grossTokens: compm.data.totals.estTokensIn,
+      });
+    }
+    if (proc.success && proc.data) setProcessed(proc.data);
     if (settings.success && settings.data) {
       setUnits(settings.data.optimizeUnits);
       setChartView(settings.data.optimizeChartView);
+      setRange(settings.data.optimizeRange);
     }
-  }, []);
+  }, [metricsWindow]);
 
   useEffect(() => {
     void refresh();
@@ -117,6 +182,7 @@ export default function OptimizeDashboard(): React.ReactElement {
         msg.type === 'subagent_uninstalled' ||
         msg.type === 'agents_sync_status' ||
         msg.type === 'optimization_metrics_updated' ||
+        msg.type === 'compression_metrics_updated' ||
         msg.type === 'settings_changed'
       ) {
         void refresh();
@@ -143,6 +209,16 @@ export default function OptimizeDashboard(): React.ReactElement {
     await sendToSentinel({
       type: 'update_settings',
       settings: { optimizeChartView: next },
+    });
+  }, []);
+
+  const onChangeRange = useCallback(async (next: OptimizeRangePreset) => {
+    // Optimistic: flip locally (recomputes the window and re-fetches), then
+    // persist so the choice survives restarts.
+    setRange(next);
+    await sendToSentinel({
+      type: 'update_settings',
+      settings: { optimizeRange: next },
     });
   }, []);
 
@@ -180,18 +256,41 @@ export default function OptimizeDashboard(): React.ReactElement {
 
   return (
     <div className="space-y-3">
-      <SavingsHeader metrics={metrics} units={units} onToggleUnits={onToggleUnits} />
-      <div className="flex justify-end">
+      <RangeSelector
+        range={range}
+        customStart={customStart}
+        customEnd={customEnd}
+        onChangeRange={(r) => void onChangeRange(r)}
+        onChangeCustomStart={setCustomStart}
+        onChangeCustomEnd={setCustomEnd}
+      />
+      <SavingsHeader
+        metrics={metrics}
+        compTokens={comp.tokens}
+        compCost={comp.cost}
+        compPotTokens={comp.potTokens}
+        compPotCost={comp.potCost}
+        compGrossTokens={comp.grossTokens}
+        processedInputTokens={processed.inputSideTokens}
+        rangeLabel={RANGE_LABELS[range]}
+        units={units}
+        onToggleUnits={onToggleUnits}
+      />
+      <div className="flex justify-start">
         <ChartViewSwitcher value={chartView} onChange={onChangeChartView} />
       </div>
       {renderChart(chartView, metrics, units)}
+
+      <CompressionPanel />
 
       {error !== null && (
         <div className="glass-card px-4 py-3 text-sm text-red-700 dark:text-red-300">{error}</div>
       )}
 
       <div className="glass-card px-4 py-3">
-        <h3 className="section-label mb-2">Curated subagents</h3>
+        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-foreground">
+          <Sparkles className="h-3.5 w-3.5" /> Curated subagents
+        </h3>
         <p className="mb-3 text-xs text-foreground/60">
           Sentinel ships these. Installing one writes a file to{' '}
           <code className="text-foreground/80">~/.claude/agents/</code> that Claude Code uses on its
@@ -249,7 +348,9 @@ export default function OptimizeDashboard(): React.ReactElement {
 
       {installed.filter((s) => s.source === 'local' && s.uninstalledAt === null).length > 0 && (
         <div className="glass-card px-4 py-3">
-          <h3 className="section-label mb-2">Your local subagents</h3>
+          <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-foreground">
+            <Bot className="h-3.5 w-3.5" /> Your local subagents
+          </h3>
           <p className="mb-2 text-xs text-foreground/60">
             Subagents you authored in <code className="text-foreground/80">~/.claude/agents/</code>.
             Sentinel discovers these but does not modify them.
@@ -290,55 +391,262 @@ function colorClass(n: number): string {
   return 'text-foreground/70';
 }
 
+/** Human phrase for each range preset, used in header subtext after verbs like
+ *  "processed" / "measured". */
+const RANGE_LABELS: Record<OptimizeRangePreset, string> = {
+  '1d': 'today',
+  '1w': 'in the last 7 days',
+  '1m': 'in the last month',
+  '3m': 'in the last 3 months',
+  '1y': 'in the last year',
+  all: 'all-time',
+  custom: 'in the selected range',
+};
+
+const RANGE_OPTIONS: Array<{ value: OptimizeRangePreset; label: string }> = [
+  { value: '1d', label: '1D' },
+  { value: '1w', label: '1W' },
+  { value: '1m', label: '1M' },
+  { value: '3m', label: '3M' },
+  { value: '1y', label: '1Y' },
+  { value: 'all', label: 'All' },
+  { value: 'custom', label: 'Custom' },
+];
+
+/** Local midnight (ms) for the day containing `d`. Aligns client-computed
+ *  window bounds with the daemon's local-time day buckets. */
+function startOfLocalDay(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+/** Map a range preset (+ optional custom dates) to an absolute window. Presets
+ *  are anchored on local-midnight boundaries; `custom` uses the picked dates
+ *  with an end-inclusive upper bound (start of the day after `customEnd`). */
+function windowForRange(
+  range: OptimizeRangePreset,
+  customStart: string,
+  customEnd: string,
+): MetricsWindow {
+  const now = new Date();
+  const today0 = startOfLocalDay(now);
+  const DAY = 86_400_000;
+  switch (range) {
+    case '1d':
+      return { sinceMs: today0 };
+    case '1w':
+      return { sinceMs: today0 - 6 * DAY };
+    case '1m':
+      return {
+        sinceMs: startOfLocalDay(new Date(now.getFullYear(), now.getMonth() - 1, now.getDate())),
+      };
+    case '3m':
+      return {
+        sinceMs: startOfLocalDay(new Date(now.getFullYear(), now.getMonth() - 3, now.getDate())),
+      };
+    case '1y':
+      return {
+        sinceMs: startOfLocalDay(new Date(now.getFullYear() - 1, now.getMonth(), now.getDate())),
+      };
+    case 'custom': {
+      const win: MetricsWindow = {};
+      if (customStart) win.sinceMs = startOfLocalDay(new Date(`${customStart}T00:00:00`));
+      if (customEnd) win.untilMs = startOfLocalDay(new Date(`${customEnd}T00:00:00`)) + DAY;
+      return win;
+    }
+    case 'all':
+    default:
+      return {};
+  }
+}
+
+function RangeSelector({
+  range,
+  customStart,
+  customEnd,
+  onChangeRange,
+  onChangeCustomStart,
+  onChangeCustomEnd,
+}: {
+  range: OptimizeRangePreset;
+  customStart: string;
+  customEnd: string;
+  onChangeRange: (next: OptimizeRangePreset) => void;
+  onChangeCustomStart: (next: string) => void;
+  onChangeCustomEnd: (next: string) => void;
+}): React.ReactElement {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div
+        className="flex rounded border border-border-subtle/10 p-0.5 text-[10px] uppercase tracking-wide"
+        role="group"
+        aria-label="Time range"
+      >
+        {RANGE_OPTIONS.map((o) => (
+          <button
+            key={o.value}
+            type="button"
+            aria-pressed={range === o.value}
+            onClick={() => onChangeRange(o.value)}
+            className={`rounded px-2 py-0.5 ${range === o.value ? 'bg-surface-overlay/15 text-foreground' : 'text-foreground/55 hover:text-foreground/85'}`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      {range === 'custom' && (
+        <div className="flex items-center gap-1 text-[11px] text-foreground/60">
+          <input
+            type="date"
+            value={customStart}
+            max={customEnd || undefined}
+            onChange={(e) => onChangeCustomStart(e.target.value)}
+            aria-label="Start date"
+            className="rounded border border-border-subtle/15 bg-transparent px-1.5 py-0.5 text-foreground"
+          />
+          <span>to</span>
+          <input
+            type="date"
+            value={customEnd}
+            min={customStart || undefined}
+            onChange={(e) => onChangeCustomEnd(e.target.value)}
+            aria-label="End date"
+            className="rounded border border-border-subtle/15 bg-transparent px-1.5 py-0.5 text-foreground"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SavingsHeader({
   metrics,
+  compTokens,
+  compCost,
+  compPotTokens,
+  compPotCost,
+  compGrossTokens,
+  processedInputTokens,
+  rangeLabel,
   units,
   onToggleUnits,
 }: {
   metrics: OptimizationMetrics;
+  /** Compression's realized estimated tokens saved (folded into the total). */
+  compTokens: number;
+  /** Compression's realized estimated USD saved. */
+  compCost: number;
+  /** Compression's potential tokens (what enabling/raising it would save). */
+  compPotTokens: number;
+  /** Compression's potential USD. */
+  compPotCost: number;
+  /** Gross input tokens of the tool output compression acted on (est. from
+   *  bytesIn) — compression half of the "% of optimized content" denominator. */
+  compGrossTokens: number;
+  /** Total input-side tokens Sentinel forwarded over the window — the broad
+   *  denominator for the savings percentage. */
+  processedInputTokens: number;
+  /** Human label for the selected range (e.g. "last 7 days"), used in subtext. */
+  rangeLabel: string;
   units: SavingsUnits;
   onToggleUnits: (next: SavingsUnits) => void;
 }): React.ReactElement {
-  const realizedCost = metrics.totals.savingsUsdRealized;
-  const potentialCost = metrics.totals.savingsUsdPotential;
-  const realizedTokens = metrics.totals.tokensRealized;
-  const potentialTokens = metrics.totals.tokensPotential;
+  const subTokens = metrics.totals.tokensRealized;
+  const subCost = metrics.totals.savingsUsdRealized;
+  const subPotTokens = metrics.totals.tokensPotential;
+  const subPotCost = metrics.totals.savingsUsdPotential;
+  // Both totals combine the two sources. Subagent and compression savings are
+  // both input-token savings (and both estimates), so summing is meaningful.
+  const savedTokens = subTokens + compTokens;
+  const savedCost = subCost + compCost;
+  const potentialTokens = subPotTokens + compPotTokens;
+  const potentialCost = subPotCost + compPotCost;
   const installs = metrics.totals.installs;
   const opportunities = metrics.totals.opportunities;
+  const disp = (cost: number, tokens: number): string =>
+    units === 'cost' ? formatUsd(cost) : formatTokens(tokens);
+
+  // HEADLINE (compression-ratio, comparable to tool-compression benchmarks):
+  // how much smaller Sentinel makes the content it actually optimizes — tokens
+  // removed over that content's ORIGINAL size (compressed tool output +
+  // subagent-absorbed reads). Independent of prompt caching: it measures the
+  // optimized content itself, not its share of the request.
+  const optimizedDenom = compGrossTokens + metrics.totals.hypotheticalInputTokens;
+  const optimizedPct = optimizedDenom > 0 ? (savedTokens / optimizedDenom) * 100 : 0;
+  // SECONDARY (total-bill): saved as a share of ALL input tokens forwarded over
+  // the window (input + cache reads + cache writes). Honest but small and
+  // cache-dominated — most input is cached context Sentinel doesn't compress —
+  // so it lives in the footnote, not the headline.
+  const totalInput = savedTokens + processedInputTokens;
+  const totalInputPct = totalInput > 0 ? (savedTokens / totalInput) * 100 : 0;
+  const pctStr = (n: number): string => `${n.toFixed(n >= 10 || n === 0 ? 0 : 1)}%`;
+  const heroPct = optimizedDenom > 0 ? pctStr(optimizedPct) : '—';
+  const srcSaved = `subagents ${disp(subCost, subTokens)} · compression ${disp(compCost, compTokens)}`;
+  const srcPotential = `subagents ${disp(subPotCost, subPotTokens)} · compression ${disp(compPotCost, compPotTokens)}`;
   return (
     <div className="glass-card px-4 py-3">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-foreground">Optimize</h2>
-          <p className="text-xs text-foreground/60">
-            Reduce token costs by routing routine tasks to cheaper-model subagents.
-            {opportunities > 0 &&
-              ' Each item below shows its share of potential savings; install to convert it into realized.'}
-          </p>
-          <p className="mt-1 text-[11px] text-foreground/45">
-            {installs} subagent{installs === 1 ? '' : 's'} installed
-            {' · '}
-            {opportunities} opportunit{opportunities === 1 ? 'y' : 'ies'} measured all-time
+          <p className="mt-0.5 text-xs text-foreground/60">
+            Cut token costs by routing routine work to cheaper-model subagents and compressing tool
+            output in flight.
           </p>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-2">
-          <UnitsToggle units={units} onChange={onToggleUnits} />
-          <div className="flex gap-4 text-right">
-            <SavingsStat
-              label="Realized"
-              cost={realizedCost}
-              tokens={realizedTokens}
-              units={units}
-            />
-            <SavingsStat
-              label="Potential"
-              cost={potentialCost}
-              tokens={potentialTokens}
-              units={units}
-            />
+        <UnitsToggle units={units} onChange={onToggleUnits} />
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        {/* Hero: how much smaller Sentinel made the content it optimized (a
+            compression ratio; cache-independent). */}
+        <div
+          className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2.5"
+          title="How much smaller Sentinel makes the content it optimizes: tokens removed from compressed tool output plus subagent-absorbed reads, over that content's original size. This is a compression ratio (comparable to tool-compression benchmarks) and is independent of prompt caching."
+        >
+          <div className="text-[10px] uppercase tracking-wide text-foreground/55">
+            Content reduced
+          </div>
+          <div className={`mt-0.5 text-3xl font-semibold tabular-nums ${colorClass(savedTokens)}`}>
+            {heroPct}
+          </div>
+          <div className="mt-0.5 text-[11px] text-foreground/55">
+            {optimizedDenom > 0
+              ? `${formatTokens(savedTokens)} of ${formatTokens(optimizedDenom)} optimized tokens ${rangeLabel}`
+              : `no compressible content ${rangeLabel}`}
           </div>
         </div>
+
+        {/* Saved (absolute). Per-source split lives in the tooltip. */}
+        <div className="rounded-lg border border-border-subtle/10 px-3 py-2.5" title={srcSaved}>
+          <div className="text-[10px] uppercase tracking-wide text-foreground/55">Saved</div>
+          <div className={`mt-0.5 text-2xl font-semibold tabular-nums ${colorClass(savedTokens)}`}>
+            {disp(savedCost, savedTokens)}
+          </div>
+          <div className="mt-0.5 text-[11px] text-foreground/45">realized {rangeLabel}</div>
+        </div>
+
+        {/* Potential (absolute). Per-source split lives in the tooltip. */}
+        <div className="rounded-lg border border-border-subtle/10 px-3 py-2.5" title={srcPotential}>
+          <div className="text-[10px] uppercase tracking-wide text-foreground/55">Potential</div>
+          <div className="mt-0.5 text-2xl font-semibold tabular-nums text-sky-700 dark:text-sky-300">
+            {disp(potentialCost, potentialTokens)}
+          </div>
+          <div className="mt-0.5 text-[11px] text-foreground/45">additional, available</div>
+        </div>
       </div>
+
+      <p className="mt-2 text-[11px] text-foreground/45">
+        {totalInput > 0 && (
+          <>
+            <span title="Saved as a share of ALL input tokens forwarded over the window, including cached context (cache reads) that Sentinel does not compress. Much smaller than the compression ratio because compressible tool output is only a slice of total input.">
+              ≈{pctStr(totalInputPct)} of total input incl. cached context
+            </span>
+            {' · '}
+          </>
+        )}
+        {installs} subagent{installs === 1 ? '' : 's'} installed
+        {' · '}
+        {opportunities} opportunit{opportunities === 1 ? 'y' : 'ies'} {rangeLabel}
+      </p>
     </div>
   );
 }
@@ -372,36 +680,6 @@ function UnitsToggle({
       >
         Cost
       </button>
-    </div>
-  );
-}
-
-function SavingsStat({
-  label,
-  cost,
-  tokens,
-  units,
-}: {
-  label: string;
-  cost: number;
-  tokens: number;
-  units: SavingsUnits;
-}): React.ReactElement {
-  const value = units === 'cost' ? cost : tokens;
-  const display = units === 'cost' ? formatUsd(cost) : formatTokens(tokens);
-  return (
-    <div>
-      <div className="text-[10px] uppercase tracking-wide text-foreground/55">{label}</div>
-      <div
-        className={`text-lg font-semibold tabular-nums ${colorClass(value)}`}
-        title={`Estimated. ${
-          label === 'Realized'
-            ? 'From sessions where the recommended subagent was installed at detection time.'
-            : 'From sessions where the recommended subagent was NOT installed.'
-        }`}
-      >
-        {display}
-      </div>
     </div>
   );
 }

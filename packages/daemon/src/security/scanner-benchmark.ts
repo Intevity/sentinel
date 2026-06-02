@@ -90,6 +90,8 @@ function benchSettings(): Settings {
     roundRobinStrategy: 'balance',
     backgroundProbeIntervalSec: 300,
     telemetryRetentionDays: 30,
+    dataRetentionDays: 365,
+    optimizeRange: 'all',
     securityScanEnabled: true,
     securityEnforcementMode: 'observe',
     securityScanSecrets: true,
@@ -141,6 +143,11 @@ function benchSettings(): Settings {
     otelExporterHeaderName: 'signoz-ingestion-key',
     otelServiceInstanceId: '00000000-0000-4000-8000-000000000000',
     optimizeChartView: 'realized',
+    compressionEnabled: false,
+    compressionLevel: 'conservative',
+    compressionMaxBodyKb: 4096,
+    compressionRetrievalEnabled: false,
+    compressionRetrievalInstalls: [],
   };
 }
 

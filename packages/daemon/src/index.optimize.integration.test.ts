@@ -202,6 +202,116 @@ describe('Optimize IPC end-to-end', () => {
     expect(r.success).toBe(true);
   });
 
+  it('get_compression_metrics returns a well-formed empty/healthy shape on a fresh daemon', async () => {
+    ctx = await startTestDaemon();
+    const r = await ctx.request<{
+      totals: {
+        bytesIn: number;
+        estTokensSaved: number;
+        requestsCompressed: number;
+        requestsSkipped: number;
+        ratio: number;
+      };
+      daily: unknown[];
+      byTool: unknown[];
+      byRule: unknown[];
+      errors: unknown[];
+      cacheHealth: { cacheReadTokens: number; cacheCreateTokens: number; hitRatio: number };
+    }>({ type: 'get_compression_metrics', days: 0 });
+    expect(r.success).toBe(true);
+    expect(r.data?.totals.requestsCompressed).toBe(0);
+    expect(r.data?.totals.requestsSkipped).toBe(0);
+    expect(r.data?.totals.estTokensSaved).toBe(0);
+    expect(r.data?.totals.ratio).toBe(0);
+    expect(r.data?.daily).toEqual([]);
+    expect(r.data?.byTool).toEqual([]);
+    expect(r.data?.byRule).toEqual([]);
+    expect(r.data?.errors).toEqual([]);
+    // cacheHealth is merged in by the handler from the main telemetry DB.
+    expect(r.data?.cacheHealth).toEqual({ cacheReadTokens: 0, cacheCreateTokens: 0, hitRatio: 1 });
+  });
+
+  it('get_processed_tokens returns zeros on a fresh daemon', async () => {
+    ctx = await startTestDaemon();
+    const r = await ctx.request<{
+      inputTokens: number;
+      inputSideTokens: number;
+    }>({ type: 'get_processed_tokens' });
+    expect(r.success).toBe(true);
+    expect(r.data?.inputTokens).toBe(0);
+    expect(r.data?.inputSideTokens).toBe(0);
+  });
+
+  it('get_processed_tokens sums cache_ttl_events across accounts and honors the window', async () => {
+    ctx = await startTestDaemon();
+    const now = Date.now();
+    const DAY = 24 * 60 * 60 * 1000;
+    const seed = new Database(ctx.dbPath);
+    try {
+      // The denominator reads the proxy-written cache_ttl_events (live), not
+      // the OTEL-fed usage_events (which can stall).
+      const ins = seed.prepare(
+        `INSERT INTO cache_ttl_events
+           (ts, account_id, session_id, model, request_id, req_markers_5m,
+            req_markers_1h, cache_create_5m, cache_create_1h, cache_read,
+            input_tokens, cost_5m_write, cost_1h_write, cost_read)
+         VALUES (?, ?, 's', 'm', ?, 0, 0, ?, 0, ?, ?, 0, 0, 0)`,
+      );
+      // recent rows, two accounts: (reqId, cacheCreate5m, cacheRead, input)
+      ins.run(now - 1 * DAY, 'a', 'r1', 5, 20, 100);
+      ins.run(now - 1 * DAY, 'b', 'r2', 10, 40, 200);
+      // old row, excluded by a 7-day window
+      ins.run(now - 100 * DAY, 'a', 'r3', 0, 0, 9999);
+    } finally {
+      seed.close();
+    }
+    const all = await ctx.request<{ inputTokens: number; inputSideTokens: number }>({
+      type: 'get_processed_tokens',
+    });
+    expect(all.data?.inputTokens).toBe(100 + 200 + 9999);
+
+    const windowed = await ctx.request<{ inputTokens: number; inputSideTokens: number }>({
+      type: 'get_processed_tokens',
+      window: { sinceMs: now - 7 * DAY },
+    });
+    expect(windowed.data?.inputTokens).toBe(300);
+    // input-side = input + cache_read + cache_create
+    expect(windowed.data?.inputSideTokens).toBe(300 + 60 + 15);
+  });
+
+  it('get_optimization_metrics honors the window param', async () => {
+    ctx = await startTestDaemon();
+    const now = Date.now();
+    const DAY = 24 * 60 * 60 * 1000;
+    const seed = new Database(ctx.dbPath);
+    try {
+      const ins = seed.prepare(
+        `INSERT INTO optimization_events
+           (ts, account_id, session_id, curated_id, kind, pattern,
+            savings_usd, actual_input_tokens, actual_cached_tokens,
+            actual_cost_usd, hypothetical_cost_usd, hypothetical_total_tokens,
+            source_tool_call_ids)
+         VALUES (?, 'a', NULL, 'file-explorer', 'measured', 'p',
+            0.5, 1000, 0, 1.0, 0.5, 8000, '[]')`,
+      );
+      ins.run(now - 1 * DAY); // in window
+      ins.run(now - 100 * DAY); // out of window
+    } finally {
+      seed.close();
+    }
+    const all = await ctx.request<{ totals: { opportunities: number } }>({
+      type: 'get_optimization_metrics',
+      days: 0,
+    });
+    expect(all.data?.totals.opportunities).toBe(2);
+    const windowed = await ctx.request<{ totals: { opportunities: number } }>({
+      type: 'get_optimization_metrics',
+      days: 0,
+      window: { sinceMs: now - 7 * DAY },
+    });
+    expect(windowed.data?.totals.opportunities).toBe(1);
+  });
+
   it('dismiss_optimization records an optimization_events row with kind=dismissed', async () => {
     ctx = await startTestDaemon();
     const r = await ctx.request({

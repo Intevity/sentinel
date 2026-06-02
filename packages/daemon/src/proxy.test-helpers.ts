@@ -56,6 +56,8 @@ import {
   type PermissionsEnforcer,
 } from './security/permissions/enforcer.js';
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from './settings.js';
+import type { CompressionStatsStore } from './optimize/compress/compression-stats-db.js';
+import type { McpHttpHandler } from './optimize/compress/mcp-retrieve-server.js';
 import type { IpcServer } from './ipc.js';
 import { OverageStateMachine } from './overage.js';
 import type { PauseReason } from '@claude-sentinel/shared';
@@ -236,6 +238,12 @@ export interface StartProxyOpts {
   /** Callback fired when the per-request tool-call extractor flushes a
    *  non-empty batch. Wired into ProxyOptions.onToolCallsFlushed. */
   onToolCallsFlushed?: () => void;
+  /** Dedicated compression stats store. Wired into ProxyOptions.compressionStore
+   *  so tests can assert on the compressed upstream body and recorded stats. */
+  compressionStore?: CompressionStatsStore;
+  /** Retrieval MCP handler. Wired into ProxyOptions.mcpHandler so tests can
+   *  drive the `/mcp` endpoint with a real MCP client. */
+  mcpHandler?: McpHttpHandler;
 }
 
 export interface StartedProxy {
@@ -350,6 +358,8 @@ export async function startProxyWithFake(opts: StartProxyOpts = {}): Promise<Sta
   if (opts.overageMachine) proxyOpts.overageMachine = opts.overageMachine;
   if (opts.onUpstreamAuthFailure) proxyOpts.onUpstreamAuthFailure = opts.onUpstreamAuthFailure;
   if (opts.onToolCallsFlushed) proxyOpts.onToolCallsFlushed = opts.onToolCallsFlushed;
+  if (opts.compressionStore) proxyOpts.compressionStore = opts.compressionStore;
+  if (opts.mcpHandler) proxyOpts.mcpHandler = opts.mcpHandler;
   if (securityScanner) proxyOpts.securityScanner = securityScanner;
   if (permissionsEnforcer) proxyOpts.permissionsEnforcer = permissionsEnforcer;
 

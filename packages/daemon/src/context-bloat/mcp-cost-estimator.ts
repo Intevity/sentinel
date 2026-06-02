@@ -11,6 +11,7 @@
  */
 
 import type Database from 'better-sqlite3';
+import { estimateTokensFromBytes } from '@claude-sentinel/shared';
 
 export interface McpServerCost {
   /** Server name (the `<server>` chunk from `mcp__<server>__<tool>`). */
@@ -18,13 +19,12 @@ export interface McpServerCost {
   callCount: number;
   bytesIn: number;
   bytesOut: number;
-  /** Rough token estimate using the standard 4-bytes-per-token heuristic.
+  /** Rough token estimate using the shared byte->token ruler (3.5 bytes/token).
    *  Good enough to rank MCP servers by cost; the dashboard shows this
    *  with a "~" prefix so users don't read it as exact. */
   estimatedTokens: number;
 }
 
-const TOKEN_BYTES = 4;
 const LOOKBACK_DAYS = 7;
 
 interface McpToolRow {
@@ -70,7 +70,7 @@ export function estimateMcpCosts(
     callCount: v.calls,
     bytesIn: v.bytesIn,
     bytesOut: v.bytesOut,
-    estimatedTokens: Math.floor((v.bytesIn + v.bytesOut) / TOKEN_BYTES),
+    estimatedTokens: estimateTokensFromBytes(v.bytesIn + v.bytesOut),
   }));
   out.sort((a, b) => b.estimatedTokens - a.estimatedTokens);
   return out;

@@ -1696,6 +1696,187 @@ describe('Metrics tab DB helpers', () => {
   });
 });
 
+describe('Optimize window + retention DB helpers', () => {
+  let db: Database.Database;
+  const DAY = 24 * 60 * 60 * 1000;
+
+  beforeEach(() => {
+    db = makeTestDb();
+  });
+  afterEach(() => {
+    closeDb();
+    if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
+  });
+
+  // Seed cache_ttl_events — the proxy-written, live source the denominator
+  // reads from (NOT usage_events, which is OTEL-fed and can stall).
+  const seedProcessed = async (
+    accountId: string,
+    ts: number,
+    tokens: { input: number; cacheRead: number; cacheCreate: number },
+  ): Promise<void> => {
+    const { insertCacheTtlEvent } = await import('./db.js');
+    insertCacheTtlEvent(db, {
+      ts,
+      accountId,
+      sessionId: 's',
+      model: 'm',
+      requestId: `r-${accountId}-${ts}-${tokens.input}`,
+      reqMarkers5m: 0,
+      reqMarkers1h: 0,
+      cacheCreate5m: tokens.cacheCreate,
+      cacheCreate1h: 0,
+      cacheRead: tokens.cacheRead,
+      inputTokens: tokens.input,
+      cost5mWrite: 0,
+      cost1hWrite: 0,
+      costRead: 0,
+    });
+  };
+
+  describe('getProcessedTokenTotals', () => {
+    it('sums input-side tokens across all accounts and exposes the breakdown', async () => {
+      const { getProcessedTokenTotals } = await import('./db.js');
+      const now = Date.now();
+      await seedProcessed('a', now, { input: 100, cacheRead: 20, cacheCreate: 5 });
+      await seedProcessed('b', now, { input: 200, cacheRead: 40, cacheCreate: 10 });
+      const t = getProcessedTokenTotals(db, {});
+      expect(t.inputTokens).toBe(300);
+      expect(t.cacheReadTokens).toBe(60);
+      expect(t.cacheCreateTokens).toBe(15);
+      // input-side = input + cache_read + cache_create (output excluded)
+      expect(t.inputSideTokens).toBe(300 + 60 + 15);
+    });
+
+    it('returns zeros on an empty table', async () => {
+      const { getProcessedTokenTotals } = await import('./db.js');
+      expect(getProcessedTokenTotals(db, {})).toEqual({
+        inputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreateTokens: 0,
+        inputSideTokens: 0,
+      });
+    });
+
+    it('honors sinceMs, untilMs, and both together', async () => {
+      const { getProcessedTokenTotals } = await import('./db.js');
+      const now = Date.now();
+      await seedProcessed('a', now - 10 * DAY, { input: 10, cacheRead: 0, cacheCreate: 0 });
+      await seedProcessed('a', now - 5 * DAY, { input: 100, cacheRead: 0, cacheCreate: 0 });
+      await seedProcessed('a', now - 1 * DAY, { input: 1000, cacheRead: 0, cacheCreate: 0 });
+      // sinceMs only: excludes the 10-day-old row.
+      expect(getProcessedTokenTotals(db, { sinceMs: now - 7 * DAY }).inputTokens).toBe(1100);
+      // untilMs only: excludes the 1-day-old row.
+      expect(getProcessedTokenTotals(db, { untilMs: now - 3 * DAY }).inputTokens).toBe(110);
+      // both: only the middle row.
+      expect(
+        getProcessedTokenTotals(db, { sinceMs: now - 7 * DAY, untilMs: now - 3 * DAY }).inputTokens,
+      ).toBe(100);
+    });
+  });
+
+  describe('purgeOptimizationOlderThan', () => {
+    const seedOpt = async (ts: number): Promise<void> => {
+      const { insertOptimizationEvent } = await import('./db.js');
+      insertOptimizationEvent(db, {
+        ts,
+        accountId: 'a',
+        sessionId: null,
+        curatedId: 'file-reader',
+        kind: 'measured',
+        pattern: 'p',
+        savingsUsd: 0.01,
+        actualInputTokens: 100,
+        actualCachedTokens: 0,
+        actualCostUsd: 0.02,
+        hypotheticalCostUsd: 0.01,
+        hypotheticalTotalTokens: 100,
+        sourceToolCallIds: [],
+      });
+    };
+
+    it('deletes only rows older than the cutoff and leaves usage_events untouched', async () => {
+      const { purgeOptimizationOlderThan } = await import('./db.js');
+      const now = Date.now();
+      await seedOpt(now - 400 * DAY); // ancient
+      await seedOpt(now - 1 * DAY); // fresh
+      insertUsageEvent(db, {
+        ts: now - 400 * DAY,
+        accountId: 'a',
+        sessionId: null,
+        model: 'm',
+        costUsd: 0,
+        inputTokens: 5,
+        outputTokens: 0,
+        cacheRead: 0,
+        cacheCreate: 0,
+        durationMs: 0,
+      });
+
+      const cutoff = now - 365 * DAY;
+      expect(purgeOptimizationOlderThan(db, cutoff)).toBe(1);
+
+      const optRows = db.prepare('SELECT ts FROM optimization_events').all() as Array<{
+        ts: number;
+      }>;
+      expect(optRows).toHaveLength(1);
+      expect(optRows[0]!.ts).toBe(now - 1 * DAY);
+      // usage_events (telemetry) is a different retention concern — untouched.
+      expect((db.prepare('SELECT COUNT(*) AS n FROM usage_events').get() as { n: number }).n).toBe(
+        1,
+      );
+    });
+
+    it('returns 0 when nothing is past the cutoff', async () => {
+      const { purgeOptimizationOlderThan } = await import('./db.js');
+      await seedOpt(Date.now());
+      expect(purgeOptimizationOlderThan(db, Date.now() - 365 * DAY)).toBe(0);
+    });
+  });
+
+  describe('getCacheHealthWindowRange', () => {
+    const seedTtl = async (ts: number, cacheRead: number, create5m: number): Promise<void> => {
+      const { insertCacheTtlEvent } = await import('./db.js');
+      insertCacheTtlEvent(db, {
+        ts,
+        accountId: 'a',
+        sessionId: 's',
+        model: 'm',
+        requestId: `r-${ts}-${create5m}`,
+        reqMarkers5m: 1,
+        reqMarkers1h: 0,
+        cacheCreate5m: create5m,
+        cacheCreate1h: 0,
+        cacheRead,
+        inputTokens: 0,
+        cost5mWrite: 0,
+        cost1hWrite: 0,
+        costRead: 0,
+      });
+    };
+
+    it('filters by an explicit window and computes the hit ratio', async () => {
+      const { getCacheHealthWindowRange } = await import('./db.js');
+      const now = Date.now();
+      await seedTtl(now - 10 * DAY, 1000, 0); // out of window
+      await seedTtl(now - 1 * DAY, 300, 100); // in window
+      const h = getCacheHealthWindowRange(db, ['a'], { sinceMs: now - 7 * DAY });
+      expect(h.cacheReadTokens).toBe(300);
+      expect(h.cacheCreateTokens).toBe(100);
+      expect(h.hitRatio).toBeCloseTo(300 / 400);
+    });
+
+    it('returns a healthy placeholder when no accounts are given', async () => {
+      const { getCacheHealthWindowRange } = await import('./db.js');
+      expect(getCacheHealthWindowRange(db, [], {})).toEqual({
+        cacheReadTokens: 0,
+        cacheCreateTokens: 0,
+        hitRatio: 1,
+      });
+    });
+  });
+});
+
 describe('alerts schema migration', () => {
   const LEGACY_DB = join(tmpdir(), `sentinel-alerts-legacy-${Date.now()}.db`);
 

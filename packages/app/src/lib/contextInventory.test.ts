@@ -6,7 +6,11 @@ import {
   truncatePath,
   visibleMcpServers,
 } from './contextInventory.js';
-import type { ContextInventory, ContextInventoryMcpServer } from '@claude-sentinel/shared';
+import {
+  estimateTokensFromBytes,
+  type ContextInventory,
+  type ContextInventoryMcpServer,
+} from '@claude-sentinel/shared';
 
 const EMPTY_INV: ContextInventory = {
   mcpServers: [],
@@ -78,13 +82,13 @@ describe('totalEstimatedTokens', () => {
     expect(totalEstimatedTokens(inv)).toBe(1500);
   });
 
-  it('converts CLAUDE.md and memory bytes at 4 bytes/token', () => {
+  it('converts CLAUDE.md and memory bytes via the shared ruler', () => {
     const inv: ContextInventory = {
       ...EMPTY_INV,
       claudeMdFiles: [{ path: '/a', sizeBytes: 4000, scope: 'global' }],
       memoryDirs: [{ projectId: 'p', fileCount: 1, totalBytes: 8000 }],
     };
-    expect(totalEstimatedTokens(inv)).toBe(3000); // (4000 + 8000) / 4
+    expect(totalEstimatedTokens(inv)).toBe(estimateTokensFromBytes(12_000));
   });
 });
 
