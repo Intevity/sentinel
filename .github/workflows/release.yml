@@ -19,11 +19,12 @@ jobs:
   build-tauri:
     name: Build Tauri app (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
-    # macOS notarization waits on Apple's notary service, which can queue for 30–60 min
-    # during busy periods (v0.3.5's first run spent >39 min in notarize alone, then hit
-    # the old 45-min ceiling). Everything else on the macOS leg is ~6 min, so the extra
-    # ceiling only ever burns minutes when Apple is genuinely slow.
-    timeout-minutes: 90
+    # macOS notarization is NO LONGER awaited here: this leg signs the bundle and submits
+    # to Apple's notary WITHOUT waiting (see the "Submit to notary" step), then exits. The
+    # queue wait is paid on the 1x ubuntu `notarize-wait` job and stapling happens on the
+    # short `notarize-finalize` macOS job, so the 10x build leg never blocks on Apple. 30
+    # min comfortably covers build + submit on every platform.
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
@@ -219,9 +220,11 @@ jobs:
       #   1. The Developer ID identity imported above signs the .app and the
       #      already-signed sidecar (Gatekeeper). Tauri signs via APPLE_SIGNING_IDENTITY
       #      against that keychain; APPLE_CERTIFICATE is intentionally NOT passed.
-      #   2. APPLE_API_* → App Store Connect API key used by notarytool to notarize +
-      #      staple the signed bundle.
-      #   3. TAURI_SIGNING_PRIVATE_KEY → unrelated: signs the auto-updater artifacts
+      #   2. APPLE_API_* are intentionally WITHHELD from this step so tauri-action signs
+      #      but does NOT notarize/staple — its notarize is a blocking `notarytool --wait`
+      #      on this 10x runner. We submit no-wait in the next step and finalize on cheaper
+      #      jobs (see notarize-wait / notarize-finalize below).
+      #   3. TAURI_SIGNING_PRIVATE_KEY → signs the auto-updater artifacts
       #      (.app.tar.gz.sig / latest.json), NOT the .app bundle.
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -230,9 +233,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_PATH: ${{ runner.temp }}/private_keys/AuthKey.p8
         with:
           projectPath: packages/app
           tagName: ${{ github.ref_name }}
@@ -243,9 +243,121 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
+      # Submit the signed .dmg to Apple's notary service WITHOUT waiting, then hand the
+      # submission id to the notarize-wait job. tauri-action above signed the bundle but
+      # (with APPLE_API_* withheld) did not notarize, so this 10x runner never blocks on
+      # Apple's queue. Submitting the .dmg also notarizes the nested app's code identity,
+      # which is what lets notarize-finalize staple both the dmg and the updater app.
+      - name: Submit to notary (no wait)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/private_keys/AuthKey.p8
+          ARCH: ${{ matrix.platform == 'macos-arm64' && 'aarch64' || 'x86_64' }}
+        run: |
+          set -euo pipefail
+          dmg="$(find packages/app/src-tauri/target -path '*/release/bundle/dmg/*.dmg' -print -quit)"
+          if [[ -z "$dmg" ]]; then
+            echo "::error::No .dmg found to notarize under target/.../release/bundle/dmg/" >&2
+            exit 1
+          fi
+          echo "Submitting $dmg to notary (no wait)…"
+          id="$(xcrun notarytool submit "$dmg" \
+            --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" \
+            --no-wait --output-format json \
+            | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).id || ""')"
+          if [[ -z "$id" ]]; then
+            echo "::error::notarytool submit did not return a submission id" >&2
+            exit 1
+          fi
+          echo "Notary submission id ($ARCH): $id"
+          mkdir -p notary-out
+          printf '{"arch":"%s","submissionId":"%s","dmg":"%s"}\n' \
+            "$ARCH" "$id" "$(basename "$dmg")" > "notary-out/notary-$ARCH.json"
+
+      - name: Upload notary submission id
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: notary-${{ matrix.platform }}
+          path: notary-out/notary-*.json
+          if-no-files-found: error
+
+  # The "wait" for Apple's notary queue, moved off the 10x macOS build leg onto a 1x
+  # ubuntu runner. Polls the Notary REST API (no xcrun needed) until every submission is
+  # Accepted. A slow Apple queue now costs cheap ubuntu minutes, never blocks the build,
+  # and can't fail the release on the build leg's timeout. On Invalid it prints Apple's
+  # log and fails; on its own timeout it fails cheaply and notarize-finalize can be re-run
+  # later once Apple finishes (no rebuild).
+  notarize-wait:
+    name: Wait for Apple notarization
+    needs: [build-tauri]
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Download notary submission ids
+        uses: actions/download-artifact@v4
+        with:
+          pattern: notary-*
+          path: notary-ids
+          merge-multiple: true
+      - name: Poll notary until accepted
+        run: node scripts/notary-poll.mjs notary-ids
+
+  # Stapling is macOS-only (xcrun stapler), so the one unavoidable bit of macOS in the
+  # tail runs here — but only AFTER notarize-wait confirms Apple accepted, so it's short
+  # (~3-5 min). Staples the dmg, re-staples + re-signs the updater tarball, and re-uploads
+  # the stapled artifacts to the draft release.
+  notarize-finalize:
+    name: Staple notarized macOS artifacts
+    needs: [notarize-wait]
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      # Stapling needs no Apple API key (xcrun stapler fetches the ticket anonymously by
+      # cdhash); only the Tauri minisign key is needed, to re-sign the regenerated tarball.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Download draft release macOS artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist-staple
+          # Drafts are downloadable with the workflow token. macOS-only globs: Linux
+          # (.AppImage.tar.gz) and Windows (.zip) updater artifacts do not match these.
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir dist-staple \
+            --pattern '*.dmg' \
+            --pattern '*.app.tar.gz' \
+            --pattern '*.app.tar.gz.sig'
+          echo "Downloaded:"; ls -1 dist-staple
+      - name: Staple + re-sign updater artifacts
+        run: bash scripts/notary-staple.sh dist-staple
+
   publish-release:
     name: Publish GitHub Release
-    needs: [build-tauri]
+    needs: [notarize-finalize]
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -272,7 +384,7 @@ jobs:
   # endpoint, so the updater simply finds nothing.
   publish-updates:
     name: Publish auto-update artifacts to S3
-    needs: [build-tauri]
+    needs: [notarize-finalize]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: vars.S3_BUCKET != ''

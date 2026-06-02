@@ -299,7 +299,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow builds the Tauri app (with daemon sidecar embedded) for all four platforms in parallel, **signs and notarizes the macOS bundle**, and — when the auto-update channel is configured — mirrors the signed updater artifacts to S3. When all builds pass, the draft release is automatically published.
+The workflow builds the Tauri app (with daemon sidecar embedded) for all four platforms in parallel and **signs + notarizes the macOS bundle**. Notarization is **decoupled** from the expensive macOS runner so Apple's notary queue can't burn 10x CI minutes: the macOS build leg signs and submits to Apple _without waiting_, then exits; a cheap `notarize-wait` job (ubuntu, 1x) polls Apple's Notary REST API until the submission is Accepted; and a short `notarize-finalize` macOS job staples the ticket into the `.dmg` + updater tarball (re-signing the tarball). Only then does the release publish — and, when the auto-update channel is configured, mirror the stapled updater artifacts to S3.
 
 The macOS legs **fail fast** if any Apple secret is missing, so a release can never ship unsigned (an unsigned macOS bundle can't be auto-updated). Set all of these before tagging:
 
