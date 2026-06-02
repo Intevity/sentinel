@@ -1,0 +1,90 @@
+name: Notarize poll (scheduled finalize)
+
+# The long-tail companion to release.yml's short inline notarize-wait. When Apple's notary
+# queue is slow (this team's submissions sometimes sit "In Progress" for hours), the release
+# run defers instead of holding a runner — it leaves the draft release tagged with
+# notary-*.json marker assets. This workflow wakes on a cron, finds such a draft, checks the
+# submissions with a single REST pass (no held runner), and finalizes (staple + publish) the
+# moment Apple has Accepted them. Cost scales with the number of ~15s checks, not the wait
+# duration, so a 4-hour Apple delay costs a few minutes of 1x ubuntu total.
+on:
+  schedule:
+    # Every ~30 min, off the :00/:30 marks. Idle ticks (nothing pending) exit in seconds.
+    - cron: '13,43 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  id-token: write # the reusable finalize workflow's S3 publish assumes the AWS role via OIDC
+
+jobs:
+  discover:
+    name: Find a draft release awaiting notarization
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.scan.outputs.tag }}
+      ready: ${{ steps.scan.outputs.ready }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Scan for a pending release and poll it once
+        id: scan
+        run: |
+          set -euo pipefail
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+
+          # A release "awaiting notarization" is a DRAFT carrying notary-*.json marker
+          # assets (written by the build leg). Find the first such draft.
+          tag=""
+          while read -r t; do
+            [ -z "$t" ] && continue
+            has=$(gh release view "$t" --repo "$GITHUB_REPOSITORY" --json assets \
+                    --jq '[.assets[].name | select(startswith("notary-") and endswith(".json"))] | length' 2>/dev/null || echo 0)
+            if [ "${has:-0}" -gt 0 ]; then tag="$t"; break; fi
+          done < <(gh release list --repo "$GITHUB_REPOSITORY" --limit 30 --json tagName,isDraft \
+                     --jq '.[] | select(.isDraft) | .tagName')
+
+          if [ -z "$tag" ]; then
+            echo "No draft releases awaiting notarization."
+            exit 0
+          fi
+          echo "Pending release: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          mkdir -p notary-ids
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --dir notary-ids --pattern 'notary-*.json'
+
+          set +e
+          node scripts/notary-poll.mjs --once notary-ids
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "ready=true" >> "$GITHUB_OUTPUT"
+               echo "All submissions Accepted -> finalizing $tag." ;;
+            2) echo "Still pending -> will recheck on the next scheduled tick." ;;
+            *) # Invalid/Rejected: remove the markers so we stop looping, and fail loudly once.
+               echo "::error::Notarization Invalid for $tag. Removing pending markers (the draft remains for inspection); investigate and re-release."
+               for a in $(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+                           --jq '.assets[].name | select(startswith("notary-") and endswith(".json"))'); do
+                 gh release delete-asset "$tag" "$a" --yes --repo "$GITHUB_REPOSITORY" || true
+               done
+               exit 1 ;;
+          esac
+
+  finalize:
+    name: Finalize accepted release
+    needs: [discover]
+    if: needs.discover.outputs.ready == 'true'
+    uses: ./.github/workflows/notarize-finalize.yml
+    with:
+      tag: ${{ needs.discover.outputs.tag }}
+    secrets: inherit

@@ -1,0 +1,177 @@
+name: Notarize finalize (reusable)
+
+# Staple the (already Accepted) notarized macOS artifacts, then promote the release and
+# publish the S3 auto-update channel. Shared by two callers so the logic lives in one place:
+#   - release.yml      — fast path, right after a short inline notarize-wait, when Apple
+#                        finished quickly.
+#   - notarize-poll.yml — scheduled path, when Apple finished a slow submission later.
+# The CALLER must confirm notarization is Accepted before invoking this (this workflow only
+# staples + publishes; it does not poll).
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to finalize (e.g. v0.3.6)
+        required: true
+        type: string
+  # Manual (re)finalize / recovery for a single tag: staple + publish + S3. Idempotent —
+  # re-stapling and re-promoting an already-finalized release is a no-op. Use this to
+  # republish a release whose S3 step failed, once the cause is fixed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to (re)finalize — staple + publish + S3 (e.g. v0.3.6)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write # publish-updates assumes the AWS role via OIDC
+
+jobs:
+  staple:
+    name: Staple notarized macOS artifacts
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      # Stapling needs no Apple API key (xcrun stapler fetches the ticket anonymously by
+      # cdhash); only the Tauri minisign key is needed, to re-sign the regenerated tarball.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REF_NAME: ${{ inputs.tag }} # notary-staple.sh reads this for the release tag
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Download draft release macOS artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist-staple
+          # Drafts are downloadable with the workflow token. macOS-only globs: Linux
+          # (.AppImage.tar.gz) and Windows (.zip) updater artifacts do not match these.
+          gh release download "${{ inputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir dist-staple \
+            --pattern '*.dmg' \
+            --pattern '*.app.tar.gz' \
+            --pattern '*.app.tar.gz.sig'
+          echo "Downloaded:"; ls -1 dist-staple
+      - name: Staple + re-sign updater artifacts
+        run: bash scripts/notary-staple.sh dist-staple
+
+  # Promote LAST — only after publish-updates has populated the S3 channel — so the release
+  # never goes live with a missing update manifest, AND this job can't race publish-updates'
+  # download of the (still-draft) release by tag (that race 404'd "release not found" when
+  # the two ran in parallel). Runs when staple succeeded and publish-updates either succeeded
+  # or was skipped (S3 not configured); stays a draft if publish-updates failed.
+  publish-release:
+    name: Publish GitHub Release
+    needs: [staple, publish-updates]
+    if: ${{ always() && needs.staple.result == 'success' && needs.publish-updates.result != 'failure' && needs.publish-updates.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Clear notary markers + promote draft to published
+        run: |
+          set -euo pipefail
+          # Remove the pending-notarization marker assets so the scheduled notarize-poll
+          # workflow stops treating this release as pending, then publish it.
+          for a in $(gh release view "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" --json assets \
+                      --jq '.assets[].name | select(startswith("notary-") and endswith(".json"))'); do
+            gh release delete-asset "${{ inputs.tag }}" "$a" --yes --repo "$GITHUB_REPOSITORY" || true
+          done
+          gh release edit "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" --draft=false
+
+  # Publishes the macOS auto-update channel: mirrors the signed + stapled updater bundles
+  # (.app.tar.gz + .sig) to a public-read S3 bucket and writes the merged latest.json the
+  # in-app updater polls. SKIPPED until S3 is provisioned (vars.S3_BUCKET unset); the GitHub
+  # release is then the only channel. Auth is GitHub OIDC — no AWS secrets stored.
+  publish-updates:
+    name: Publish auto-update artifacts to S3
+    needs: [staple]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: vars.S3_BUCKET != ''
+    permissions:
+      contents: read
+      id-token: write # mint the OIDC token used to assume the AWS role (no stored keys)
+    env:
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      S3_PREFIX: stable
+      UPDATER_PUBLIC_BASE: ${{ vars.UPDATER_PUBLIC_BASE }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          # OIDC: assume the role provisioned in terraform/ (claude-sentinel-updates-publisher),
+          # scoped to this repo. No long-lived AWS keys are stored.
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
+      - name: Download macOS updater artifacts from the release
+        run: |
+          set -euo pipefail
+          mkdir -p dist-updater
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir dist-updater \
+            --pattern '*.app.tar.gz' \
+            --pattern '*.app.tar.gz.sig'
+          echo "Downloaded:"; ls -1 dist-updater
+
+      - name: Assemble latest.json
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          # Build the v2 dynamic manifest. Arch is derived from the filename so we
+          # don't depend on Tauri's exact artifact-naming scheme; the signature field
+          # is the literal contents of the companion .sig file (a minisign string).
+          VERSION="$VERSION" node -e '
+            const fs = require("fs"), path = require("path");
+            const dir = "dist-updater", version = process.env.VERSION;
+            const base = (process.env.UPDATER_PUBLIC_BASE || "").replace(/\/+$/, "");
+            const prefix = process.env.S3_PREFIX;
+            const platforms = {};
+            for (const f of fs.readdirSync(dir)) {
+              if (!f.endsWith(".app.tar.gz")) continue;
+              // Tauri names the macOS updater tarballs <product>_aarch64.app.tar.gz and
+              // <product>_x64.app.tar.gz (x64, NOT x86_64), so match both x64 and x86_64.
+              const key = f.includes("aarch64") ? "darwin-aarch64"
+                        : (f.includes("x64") || f.includes("x86_64")) ? "darwin-x86_64"
+                        : null;
+              if (!key) throw new Error("cannot determine arch from " + f);
+              const signature = fs.readFileSync(path.join(dir, f + ".sig"), "utf8").trim();
+              platforms[key] = { signature, url: `${base}/${prefix}/${version}/${encodeURIComponent(f)}` };
+            }
+            if (!Object.keys(platforms).length) throw new Error("no .app.tar.gz updater artifacts found");
+            const manifest = { version, notes: `Claude Sentinel ${version}`, pub_date: new Date().toISOString(), platforms };
+            fs.writeFileSync(path.join(dir, "latest.json"), JSON.stringify(manifest, null, 2));
+            console.log(JSON.stringify(manifest, null, 2));
+          '
+
+      - name: Upload to S3
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          # Versioned artifacts are immutable → cache forever. latest.json is the
+          # mutable pointer every installed binary polls → near-zero cache so a new
+          # release is picked up promptly.
+          aws s3 cp dist-updater/ "s3://$S3_BUCKET/$S3_PREFIX/$VERSION/" \
+            --recursive --exclude '*' --include '*.app.tar.gz' --include '*.app.tar.gz.sig' \
+            --cache-control 'public, max-age=31536000, immutable'
+          aws s3 cp dist-updater/latest.json "s3://$S3_BUCKET/$S3_PREFIX/latest.json" \
+            --content-type application/json \
+            --cache-control 'public, max-age=60, must-revalidate'
+          echo "Published: $UPDATER_PUBLIC_BASE/$S3_PREFIX/latest.json"

@@ -14,6 +14,7 @@ concurrency:
 
 permissions:
   contents: write
+  id-token: write # the reusable finalize workflow's S3 publish assumes the AWS role via OIDC
 
 jobs:
   build-tauri:
@@ -276,191 +277,75 @@ jobs:
           printf '{"arch":"%s","submissionId":"%s","dmg":"%s"}\n' \
             "$ARCH" "$id" "$(basename "$dmg")" > "notary-out/notary-$ARCH.json"
 
-      - name: Upload notary submission id
+      - name: Attach notary submission id to the draft release
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: notary-${{ matrix.platform }}
-          path: notary-out/notary-*.json
-          if-no-files-found: error
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Durable pending-notarization marker. Read by notarize-wait (this run) and, if
+          # Apple is slow, by the scheduled notarize-poll workflow (a later run) — hence a
+          # release asset, not a run-scoped workflow artifact. The per-arch filename keeps
+          # the two macOS legs from clobbering each other.
+          gh release upload "$GITHUB_REF_NAME" notary-out/notary-*.json --clobber --repo "$GITHUB_REPOSITORY"
 
-  # The "wait" for Apple's notary queue, moved off the 10x macOS build leg onto a 1x
-  # ubuntu runner. Polls the Notary REST API (no xcrun needed) until every submission is
-  # Accepted. A slow Apple queue now costs cheap ubuntu minutes, never blocks the build,
-  # and can't fail the release on the build leg's timeout. On Invalid it prints Apple's
-  # log and fails; on its own timeout it fails cheaply and notarize-finalize can be re-run
-  # later once Apple finishes (no rebuild).
+  # Short inline wait on Apple's notary queue (1x ubuntu) to catch the common
+  # fast-notarization case so a typical release finalizes within its own run. If Apple is
+  # slow this DEFERS (the poller exits 2, not a failure): the draft release keeps its
+  # notary-*.json markers and the scheduled notarize-poll workflow finalizes it whenever
+  # Apple completes — no held runner, no rebuild. A hard notarization failure (Invalid)
+  # still fails loudly here.
   notarize-wait:
-    name: Wait for Apple notarization
+    name: Wait for Apple notarization (short)
     needs: [build-tauri]
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 25
+    outputs:
+      state: ${{ steps.poll.outputs.state }}
     env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
       APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
       APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+      # ~20 min inline; longer waits hand off to notarize-poll.yml rather than hold a runner.
+      NOTARY_POLL_TIMEOUT_MS: '1200000'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Download notary submission ids
-        uses: actions/download-artifact@v4
-        with:
-          pattern: notary-*
-          path: notary-ids
-          merge-multiple: true
-      - name: Poll notary until accepted
-        run: node scripts/notary-poll.mjs notary-ids
+      - name: Download notary submission ids from the draft release
+        run: |
+          set -euo pipefail
+          mkdir -p notary-ids
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --dir notary-ids --pattern 'notary-*.json'
+          ls -1 notary-ids
+      - name: Poll notary (short), else defer to the scheduled poller
+        id: poll
+        run: |
+          set +e
+          node scripts/notary-poll.mjs notary-ids
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "state=accepted" >> "$GITHUB_OUTPUT"
+               echo "Accepted within the inline window." ;;
+            2) echo "state=deferred" >> "$GITHUB_OUTPUT"
+               echo "::notice::Notarization still pending; the scheduled notarize-poll workflow will finalize this release when Apple completes." ;;
+            *) echo "state=failed" >> "$GITHUB_OUTPUT"
+               echo "::error::Notarization failed (Invalid/Rejected or fatal error)."
+               exit 1 ;;
+          esac
 
-  # Stapling is macOS-only (xcrun stapler), so the one unavoidable bit of macOS in the
-  # tail runs here — but only AFTER notarize-wait confirms Apple accepted, so it's short
-  # (~3-5 min). Staples the dmg, re-staples + re-signs the updater tarball, and re-uploads
-  # the stapled artifacts to the draft release.
-  notarize-finalize:
-    name: Staple notarized macOS artifacts
+  # Fast path: Apple accepted within the inline window, so staple + publish now. The same
+  # reusable workflow is invoked by notarize-poll.yml for the slow path. Skipped when
+  # notarize-wait deferred (the scheduled poller takes over) or failed.
+  finalize:
+    name: Finalize (staple + publish)
     needs: [notarize-wait]
-    runs-on: macos-latest
-    timeout-minutes: 15
-    env:
-      # Stapling needs no Apple API key (xcrun stapler fetches the ticket anonymously by
-      # cdhash); only the Tauri minisign key is needed, to re-sign the regenerated tarball.
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: pnpm
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Download draft release macOS artifacts
-        run: |
-          set -euo pipefail
-          mkdir -p dist-staple
-          # Drafts are downloadable with the workflow token. macOS-only globs: Linux
-          # (.AppImage.tar.gz) and Windows (.zip) updater artifacts do not match these.
-          gh release download "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --dir dist-staple \
-            --pattern '*.dmg' \
-            --pattern '*.app.tar.gz' \
-            --pattern '*.app.tar.gz.sig'
-          echo "Downloaded:"; ls -1 dist-staple
-      - name: Staple + re-sign updater artifacts
-        run: bash scripts/notary-staple.sh dist-staple
-
-  publish-release:
-    name: Publish GitHub Release
-    needs: [notarize-finalize]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Promote draft release to published
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release edit ${{ github.ref_name }} --draft=false
-
-  # Publishes the macOS auto-update channel: mirrors the signed updater bundles
-  # (.app.tar.gz + .sig) to a public-read S3 bucket and writes the merged
-  # latest.json the in-app updater polls. The source repo can stay private — only
-  # these built artifacts are exposed, anonymously, so no token is embedded in the
-  # app. (Linux/Windows auto-update can be added later by extending the glob +
-  # platform map below.)
-  #
-  # SKIPPED until S3 is provisioned: `terraform apply` the terraform/ dir, then set the
-  # repo variables it outputs (S3_BUCKET, AWS_REGION, UPDATER_PUBLIC_BASE, AWS_ROLE_ARN).
-  # Auth is GitHub OIDC — no AWS secrets are stored. Until S3_BUCKET is set, the GitHub
-  # release (publish-release) is the only channel and the binary keeps its placeholder
-  # endpoint, so the updater simply finds nothing.
-  publish-updates:
-    name: Publish auto-update artifacts to S3
-    needs: [notarize-finalize]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    if: vars.S3_BUCKET != ''
-    permissions:
-      contents: read
-      id-token: write # mint the OIDC token used to assume the AWS role (no stored keys)
-    env:
-      S3_BUCKET: ${{ vars.S3_BUCKET }}
-      S3_PREFIX: stable
-      UPDATER_PUBLIC_BASE: ${{ vars.UPDATER_PUBLIC_BASE }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: ${{ vars.AWS_REGION }}
-          # OIDC: assume the role provisioned in terraform/ (claude-sentinel-updates-publisher),
-          # scoped to this repo's tag pushes. No long-lived AWS keys are stored.
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-
-      - name: Download macOS updater artifacts from the release
-        run: |
-          set -euo pipefail
-          mkdir -p dist-updater
-          # Drafts are downloadable with the workflow token. Grab only the macOS
-          # updater bundles + their detached minisign signatures (Linux .AppImage.tar.gz
-          # and Windows .zip artifacts do not match '*.app.tar.gz').
-          gh release download "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --dir dist-updater \
-            --pattern '*.app.tar.gz' \
-            --pattern '*.app.tar.gz.sig'
-          echo "Downloaded:"; ls -1 dist-updater
-
-      - name: Assemble latest.json
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          # Build the v2 dynamic manifest. Arch is derived from the filename so we
-          # don't depend on Tauri's exact artifact-naming scheme; the signature field
-          # is the literal contents of the companion .sig file (a minisign string).
-          VERSION="$VERSION" node -e '
-            const fs = require("fs"), path = require("path");
-            const dir = "dist-updater", version = process.env.VERSION;
-            const base = (process.env.UPDATER_PUBLIC_BASE || "").replace(/\/+$/, "");
-            const prefix = process.env.S3_PREFIX;
-            const platforms = {};
-            for (const f of fs.readdirSync(dir)) {
-              if (!f.endsWith(".app.tar.gz")) continue;
-              const key = f.includes("aarch64") ? "darwin-aarch64"
-                        : f.includes("x86_64") ? "darwin-x86_64"
-                        : null;
-              if (!key) throw new Error("cannot determine arch from " + f);
-              const signature = fs.readFileSync(path.join(dir, f + ".sig"), "utf8").trim();
-              platforms[key] = { signature, url: `${base}/${prefix}/${version}/${encodeURIComponent(f)}` };
-            }
-            if (!Object.keys(platforms).length) throw new Error("no .app.tar.gz updater artifacts found");
-            const manifest = { version, notes: `Claude Sentinel ${version}`, pub_date: new Date().toISOString(), platforms };
-            fs.writeFileSync(path.join(dir, "latest.json"), JSON.stringify(manifest, null, 2));
-            console.log(JSON.stringify(manifest, null, 2));
-          '
-
-      - name: Upload to S3
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          # Versioned artifacts are immutable → cache forever. latest.json is the
-          # mutable pointer every installed binary polls → near-zero cache so a new
-          # release is picked up promptly. Bucket public-read is granted by bucket
-          # policy (Object Ownership = bucket-owner-enforced); add `--acl public-read`
-          # only if your bucket still uses ACLs.
-          aws s3 cp dist-updater/ "s3://$S3_BUCKET/$S3_PREFIX/$VERSION/" \
-            --recursive --exclude '*' --include '*.app.tar.gz' --include '*.app.tar.gz.sig' \
-            --cache-control 'public, max-age=31536000, immutable'
-          aws s3 cp dist-updater/latest.json "s3://$S3_BUCKET/$S3_PREFIX/latest.json" \
-            --content-type application/json \
-            --cache-control 'public, max-age=60, must-revalidate'
-          echo "Published: $UPDATER_PUBLIC_BASE/$S3_PREFIX/latest.json"
+    if: needs.notarize-wait.outputs.state == 'accepted'
+    uses: ./.github/workflows/notarize-finalize.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit
