@@ -10,7 +10,7 @@
  * proxy) and connects a real IPC client instead of stubbing it.
  */
 import { chmodSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
-import { createServer } from 'net';
+import { createServer, type AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -206,6 +206,10 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   process.env.OAUTH_AUTH_URL = fake.authUrl;
 
   const handle = await startDaemon();
+  // In test mode startDaemon binds an OS-assigned port (listen(0)); use the
+  // actually-bound port, not the pre-picked one above, for the proxy URL callers
+  // build from ctx.daemonPort.
+  const boundDaemonPort = (handle.httpServer.address() as AddressInfo).port;
 
   // Connect an IPC client over the real Unix socket. Response correlation:
   // each handler in index.ts emits `{ requestType: <same as message type> }`
@@ -339,7 +343,7 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
     settingsPath,
     claudeJsonPath,
     claudeSettingsPath,
-    daemonPort,
+    daemonPort: boundDaemonPort,
     workdir,
     cleanup,
   };

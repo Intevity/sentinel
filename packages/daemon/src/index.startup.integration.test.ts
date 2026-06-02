@@ -233,10 +233,10 @@ describe('startDaemon — logger initialization', () => {
 
 describe('startDaemon — startup collision probe (test-daemon is alone)', () => {
   it('does not exit when no other daemon is listening on the test port', async () => {
-    // Uses a fresh random port per harness, so isDaemonAlreadyRunning() always
-    // returns false. This assertion is the implicit inverse — if the probe
-    // returned true, startTestDaemon would never resolve (process.exit would
-    // fire). Reaching this line means the probe correctly saw an open port.
+    // In test mode the daemon skips the production double-launch /health probe and
+    // binds an OS-assigned port (listen(0)), so a port collision between parallel
+    // workers can no longer fire process.exit and kill the worker. Reaching this
+    // assertion with a listening server confirms the daemon bound cleanly.
     ctx = await startTestDaemon();
     expect(ctx.handle.httpServer.listening).toBe(true);
   });

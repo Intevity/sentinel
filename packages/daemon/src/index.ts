@@ -79,6 +79,7 @@ import { OverageStateMachine } from './overage.js';
 import { SonnetSaturationMachine, buildSonnetSaturationBody } from './sonnet-saturation.js';
 import { createProxyServer, getDaemonPort } from './proxy.js';
 import type { ActiveToken, ActiveAccountId } from './proxy.js';
+import type { AddressInfo } from 'node:net';
 import { RateLimitStore } from './rate-limit-store.js';
 import { TokenRotator } from './token-rotator.js';
 import { OverageGrantStore } from './overage-grant-store.js';
@@ -372,8 +373,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // close. Declared here so every subsystem wired below can observe it.
   let shuttingDown = false;
 
+  // Tests run many daemons concurrently on ephemeral ports. The production
+  // double-launch guards (this /health probe and the EADDRINUSE handler at the
+  // HTTP listen below) call process.exit, which Vitest turns into a worker-killing
+  // failure if two parallel tests' pick-then-close ports ever collide. Detect test
+  // mode via the port override the harness always sets, skip the probe, and below
+  // bind an OS-assigned port (listen(0)) so a collision is impossible.
+  const inTestMode = process.env.CLAUDE_SENTINEL_TEST_DAEMON_PORT !== undefined;
+
   /* v8 ignore next 6 */
-  if (await isDaemonAlreadyRunning()) {
+  if (!inTestMode && (await isDaemonAlreadyRunning())) {
     console.log(
       `[Sentinel] Another daemon is already listening on 127.0.0.1:${getDaemonPort()} — exiting cleanly.`,
     );
@@ -3238,15 +3247,28 @@ export async function startDaemon(): Promise<DaemonHandle> {
   });
   /* v8 ignore stop */
 
-  const daemonPort = getDaemonPort();
-  httpServer.listen(daemonPort, '127.0.0.1', () => {
-    console.log(`[Sentinel] HTTP proxy listening on http://127.0.0.1:${daemonPort}`);
-    // Probe for fresh rate-limit headers through the proxy now that it is ready.
-    // The proxy injects the active OAuth token, so this works even for accounts
-    // whose tokens cannot be used to call api.anthropic.com directly.
-    if (startupKey) {
-      probeRateLimits(startupKey, ipcServer);
-    }
+  // In test mode bind an OS-assigned ephemeral port (listen(0)) so parallel
+  // workers can't collide on a pre-picked port — listen(0) binds atomically with
+  // no pick-then-close reuse window. Production binds the fixed daemon port. Await
+  // the bind so the handle is only returned once the server is actually listening.
+  /* v8 ignore next -- prod binds the fixed port; the in-process suite always runs in test mode */
+  const listenPort = inTestMode ? 0 : getDaemonPort();
+  await new Promise<void>((resolve) => {
+    httpServer.listen(listenPort, '127.0.0.1', () => {
+      const boundPort = (httpServer.address() as AddressInfo).port;
+      // Reflect the actually-bound port so getDaemonPort() (which reads this env
+      // var) stays consistent in tests; in production the var is unset (no-op).
+      /* v8 ignore next -- prod leaves the env var unset, making this a no-op */
+      if (inTestMode) process.env.CLAUDE_SENTINEL_TEST_DAEMON_PORT = String(boundPort);
+      console.log(`[Sentinel] HTTP proxy listening on http://127.0.0.1:${boundPort}`);
+      // Probe for fresh rate-limit headers through the proxy now that it is ready.
+      // The proxy injects the active OAuth token, so this works even for accounts
+      // whose tokens cannot be used to call api.anthropic.com directly.
+      if (startupKey) {
+        probeRateLimits(startupKey, ipcServer);
+      }
+      resolve();
+    });
   });
 
   // Keep OAuth tokens fresh in the background. Runs once immediately (catching
