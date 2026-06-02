@@ -19,7 +19,11 @@ jobs:
   build-tauri:
     name: Build Tauri app (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # macOS notarization waits on Apple's notary service, which can queue for 30–60 min
+    # during busy periods (v0.3.5's first run spent >39 min in notarize alone, then hit
+    # the old 45-min ceiling). Everything else on the macOS leg is ~6 min, so the extra
+    # ceiling only ever burns minutes when Apple is genuinely slow.
+    timeout-minutes: 90
     strategy:
       matrix:
         include:
