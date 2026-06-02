@@ -177,8 +177,33 @@ jobs:
         if: steps.build-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @claude-sentinel/test-harness run build
 
+      # Cache the downloaded browsers so a cdn.playwright.dev stall can't block CI on a hit
+      # (a stalled download with no timeout previously hung this step the full 30 min).
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
       - name: Install Playwright browsers
-        run: pnpm --filter @claude-sentinel/app exec playwright install --with-deps chromium
+        # Per-attempt timeout + retry so a CDN stall fails fast and self-recovers instead of
+        # hanging until the job timeout. On a cache hit the browser download is skipped.
+        timeout-minutes: 12
+        run: |
+          # System deps (apt) — fast, no retry needed.
+          pnpm --filter @claude-sentinel/app exec playwright install-deps chromium
+          # Browser binaries (cdn.playwright.dev) — bounded retries instead of an open-ended hang.
+          for i in 1 2 3; do
+            if timeout 240 pnpm --filter @claude-sentinel/app exec playwright install chromium; then
+              exit 0
+            fi
+            echo "::warning::playwright browser download attempt $i stalled or failed; retrying…"
+            sleep 5
+          done
+          echo "::error::playwright browser download failed after 3 attempts (cdn.playwright.dev)"
+          exit 1
 
       - name: Run Playwright
         run: pnpm --filter @claude-sentinel/app run e2e
