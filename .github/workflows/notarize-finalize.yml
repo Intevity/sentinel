@@ -102,7 +102,12 @@ jobs:
     timeout-minutes: 10
     if: vars.S3_BUCKET != ''
     permissions:
-      contents: read
+      # contents must be WRITE even though this job only reads: draft releases are
+      # invisible to a contents:read token (drafts require push-level access), and this
+      # job always downloads from a still-draft release because publish-release promotes
+      # LAST. With read, `gh release download` fails with "release not found" (bit the
+      # first scheduled-poller finalize of v0.4.0).
+      contents: write
       id-token: write # mint the OIDC token used to assume the AWS role (no stored keys)
     env:
       S3_BUCKET: ${{ vars.S3_BUCKET }}
