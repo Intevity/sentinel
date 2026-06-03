@@ -54,8 +54,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist-staple
-          # Drafts are downloadable with the workflow token. macOS-only globs: Linux
-          # (.AppImage.tar.gz) and Windows (.zip) updater artifacts do not match these.
+          # Drafts are downloadable with the workflow token. macOS-only globs on
+          # purpose: stapling is a macOS-only concept (xcrun stapler). The Linux and
+          # Windows bundles need no staple and are mirrored straight from the release
+          # by publish-updates.
           gh release download "${{ inputs.tag }}" \
             --repo "$GITHUB_REPOSITORY" \
             --dir dist-staple \
@@ -89,12 +91,19 @@ jobs:
                       --jq '.assets[].name | select(startswith("notary-") and endswith(".json"))'); do
             gh release delete-asset "${{ inputs.tag }}" "$a" --yes --repo "$GITHUB_REPOSITORY" || true
           done
+          # Drop tauri-action's release-attached latest.json: its darwin signatures are
+          # stale (staple re-signed the tarballs after it was generated) and its URLs
+          # point at github.com instead of the S3 channel. The authoritative manifest
+          # is the one publish-updates just wrote to S3.
+          gh release delete-asset "${{ inputs.tag }}" latest.json --yes --repo "$GITHUB_REPOSITORY" || true
           gh release edit "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" --draft=false
 
-  # Publishes the macOS auto-update channel: mirrors the signed + stapled updater bundles
-  # (.app.tar.gz + .sig) to a public-read S3 bucket and writes the merged latest.json the
-  # in-app updater polls. SKIPPED until S3 is provisioned (vars.S3_BUCKET unset); the GitHub
-  # release is then the only channel. Auth is GitHub OIDC — no AWS secrets stored.
+  # Publishes the auto-update channel for every platform: mirrors the minisign-signed
+  # updater bundles (macOS .app.tar.gz after staple + re-sign; Linux .AppImage/.deb/.rpm
+  # and Windows -setup.exe/.msi exactly as built) to a public-read S3 bucket and writes
+  # the merged latest.json the in-app updater polls. SKIPPED until S3 is provisioned
+  # (vars.S3_BUCKET unset); the GitHub release is then the only channel. Auth is GitHub
+  # OIDC — no AWS secrets stored.
   publish-updates:
     name: Publish auto-update artifacts to S3
     needs: [staple]
@@ -116,6 +125,10 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ inputs.tag }}
     steps:
+      # Needed for scripts/assemble-latest-json.mjs below (the job used to inline the
+      # manifest assembly and ran checkout-free).
+      - uses: actions/checkout@v4
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -124,46 +137,37 @@ jobs:
           # scoped to this repo. No long-lived AWS keys are stored.
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 
-      - name: Download macOS updater artifacts from the release
+      - name: Download updater artifacts from the release
         run: |
           set -euo pipefail
           mkdir -p dist-updater
+          # Explicit per-bundle globs: .dmg, notary-*.json, and tauri-action's
+          # release-attached latest.json must never land in dist-updater (everything
+          # here is mirrored to S3 verbatim).
           gh release download "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --dir dist-updater \
             --pattern '*.app.tar.gz' \
-            --pattern '*.app.tar.gz.sig'
+            --pattern '*.app.tar.gz.sig' \
+            --pattern '*.AppImage' \
+            --pattern '*.AppImage.sig' \
+            --pattern '*.deb' \
+            --pattern '*.deb.sig' \
+            --pattern '*.rpm' \
+            --pattern '*.rpm.sig' \
+            --pattern '*-setup.exe' \
+            --pattern '*-setup.exe.sig' \
+            --pattern '*.msi' \
+            --pattern '*.msi.sig'
           echo "Downloaded:"; ls -1 dist-updater
 
       - name: Assemble latest.json
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
-          # Build the v2 dynamic manifest. Arch is derived from the filename so we
-          # don't depend on Tauri's exact artifact-naming scheme; the signature field
-          # is the literal contents of the companion .sig file (a minisign string).
-          VERSION="$VERSION" node -e '
-            const fs = require("fs"), path = require("path");
-            const dir = "dist-updater", version = process.env.VERSION;
-            const base = (process.env.UPDATER_PUBLIC_BASE || "").replace(/\/+$/, "");
-            const prefix = process.env.S3_PREFIX;
-            const platforms = {};
-            for (const f of fs.readdirSync(dir)) {
-              if (!f.endsWith(".app.tar.gz")) continue;
-              // Tauri names the macOS updater tarballs <product>_aarch64.app.tar.gz and
-              // <product>_x64.app.tar.gz (x64, NOT x86_64), so match both x64 and x86_64.
-              const key = f.includes("aarch64") ? "darwin-aarch64"
-                        : (f.includes("x64") || f.includes("x86_64")) ? "darwin-x86_64"
-                        : null;
-              if (!key) throw new Error("cannot determine arch from " + f);
-              const signature = fs.readFileSync(path.join(dir, f + ".sig"), "utf8").trim();
-              platforms[key] = { signature, url: `${base}/${prefix}/${version}/${encodeURIComponent(f)}` };
-            }
-            if (!Object.keys(platforms).length) throw new Error("no .app.tar.gz updater artifacts found");
-            const manifest = { version, notes: `Claude Sentinel ${version}`, pub_date: new Date().toISOString(), platforms };
-            fs.writeFileSync(path.join(dir, "latest.json"), JSON.stringify(manifest, null, 2));
-            console.log(JSON.stringify(manifest, null, 2));
-          '
+          # Builds the v2 dynamic manifest covering every platform (bundle-suffixed
+          # keys + bare fallbacks) and fails loudly if any expected artifact or .sig
+          # is missing — see the script's doc comment for the key scheme.
+          node scripts/assemble-latest-json.mjs dist-updater "${TAG#v}"
 
       - name: Upload to S3
         run: |
@@ -173,7 +177,13 @@ jobs:
           # mutable pointer every installed binary polls → near-zero cache so a new
           # release is picked up promptly.
           aws s3 cp dist-updater/ "s3://$S3_BUCKET/$S3_PREFIX/$VERSION/" \
-            --recursive --exclude '*' --include '*.app.tar.gz' --include '*.app.tar.gz.sig' \
+            --recursive --exclude '*' \
+            --include '*.app.tar.gz' --include '*.app.tar.gz.sig' \
+            --include '*.AppImage' --include '*.AppImage.sig' \
+            --include '*.deb' --include '*.deb.sig' \
+            --include '*.rpm' --include '*.rpm.sig' \
+            --include '*-setup.exe' --include '*-setup.exe.sig' \
+            --include '*.msi' --include '*.msi.sig' \
             --cache-control 'public, max-age=31536000, immutable'
           aws s3 cp dist-updater/latest.json "s3://$S3_BUCKET/$S3_PREFIX/latest.json" \
             --content-type application/json \

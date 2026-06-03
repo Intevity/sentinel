@@ -299,7 +299,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow builds the Tauri app (with daemon sidecar embedded) for all four platforms in parallel and **signs + notarizes the macOS bundle**. Notarization is **decoupled** from the expensive macOS runner so Apple's notary queue can't burn 10x CI minutes: the macOS build legs sign and submit to Apple _without waiting_, then exit. A short `notarize-wait` job (ubuntu, 1x) catches the common fast case; if Apple's queue is slow, the release **defers without holding a runner** and the scheduled `notarize-poll` workflow finalizes it whenever Apple completes (even hours later, at the cost of a few seconds of polling per check — not a held runner). Finalizing staples the ticket into the `.dmg` + updater tarball (re-signing the tarball), promotes the GitHub release, and — when the auto-update channel is configured — mirrors the stapled updater artifacts to S3.
+The workflow builds the Tauri app (with daemon sidecar embedded) for all four platforms in parallel and **signs + notarizes the macOS bundle**. Notarization is **decoupled** from the expensive macOS runner so Apple's notary queue can't burn 10x CI minutes: the macOS build legs sign and submit to Apple _without waiting_, then exit. A short `notarize-wait` job (ubuntu, 1x) catches the common fast case; if Apple's queue is slow, the release **defers without holding a runner** and the scheduled `notarize-poll` workflow finalizes it whenever Apple completes (even hours later, at the cost of a few seconds of polling per check — not a held runner). Finalizing staples the ticket into the `.dmg` + updater tarball (re-signing the tarball), promotes the GitHub release, and — when the auto-update channel is configured — mirrors the updater artifacts for **every platform** to S3: the stapled macOS tarballs, plus the Linux (`.AppImage`/`.deb`/`.rpm`) and Windows (`-setup.exe`/`.msi`) bundles exactly as built. Windows/Linux publication is deliberately gated on the macOS staple so one `latest.json` goes live atomically with the same version everywhere. The Windows bundles carry no Authenticode signature yet (Azure Trusted Signing is planned); every platform's download is still minisign-verified by the updater.
 
 The macOS legs **fail fast** if any Apple secret is missing, so a release can never ship unsigned (an unsigned macOS bundle can't be auto-updated). Set all of these before tagging:
 
@@ -330,12 +330,21 @@ The S3 auto-update channel uses **GitHub OIDC**, so there are **no AWS secrets**
 #### How auto-update works (private source, public binaries)
 
 The source repo can stay private. CI assumes a least-privilege IAM role via GitHub OIDC (no stored AWS
-keys) and uploads only the **signed, notarized** macOS updater bundles (`*.app.tar.gz` + `.sig`) and a
-`latest.json` manifest to a **public-read** S3 prefix (`<bucket>/stable/`). The in-app updater fetches
-`latest.json` anonymously and verifies each download's minisign signature against the public key in
+keys) and uploads only the updater bundles (each with its minisign `.sig`) and a `latest.json` manifest
+to a **public-read** S3 prefix (`<bucket>/stable/`): macOS `.app.tar.gz` (signed + notarized), Linux
+`.AppImage`/`.deb`/`.rpm`, and Windows `-setup.exe`/`.msi`. The in-app updater fetches `latest.json`
+anonymously and verifies each download's minisign signature against the public key in
 `tauri.conf.json` — so no GitHub token is embedded in the app, and a tampered artifact is rejected. Only
 the compiled binaries are exposed, never the source. See [`terraform/`](./terraform) to provision the
 bucket and role.
+
+`latest.json` carries one entry per bundle type (`linux-x86_64-deb`, `windows-x86_64-msi`, …) so
+package-manager installs update in place, plus the bare `{target}-{arch}` fallback keys the updater
+uses when no bundle-specific key matches: `linux-x86_64` points at the AppImage, and `windows-x86_64`
+points at the **NSIS** `-setup.exe`. The Windows fallback deliberately diverges from tauri-action's
+MSI default — NSIS is Tauri's recommended updater installer (passive in-place reinstall, per-user
+installs without elevation) — so don't "fix" it back; the MSI stays reachable under
+`windows-x86_64-msi`.
 
 To generate the updater key pair (do this once; **store the private key and its password in a password
 manager — losing them means existing installs can no longer accept updates**):
