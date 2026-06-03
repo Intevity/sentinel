@@ -199,13 +199,18 @@ export type RoundRobinStrategy = 'balance' | 'earliest-reset';
  *   cumulative  — running-total line chart over the lookback window.
  *   byPattern   — horizontal bars ranking detection heuristics by
  *                 opportunity count.
+ *   compression — daily bars of estimated savings from in-flight
+ *                 tool_result compression (the other views slice
+ *                 subagent savings; this is the compression half of
+ *                 the header totals).
  */
 export type OptimizeChartView =
   | 'realized'
   | 'bySubagent'
   | 'comparison'
   | 'cumulative'
-  | 'byPattern';
+  | 'byPattern'
+  | 'compression';
 
 /** The Optimize tab's time-range presets. `custom` means "use the explicit
  *  start/end the user picked"; `all` means all-time. Persisted in

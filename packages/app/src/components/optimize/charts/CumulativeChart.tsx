@@ -11,6 +11,7 @@ import {
   TOOLTIP_LABEL_STYLE,
   TOOLTIP_STYLE,
   valueFormatter,
+  yAxisWidth,
 } from './shared.js';
 
 const COLOR_REALIZED = '#34d399';
@@ -24,16 +25,19 @@ const COLOR_TOTAL = '#60a5fa';
 export default function CumulativeChart({
   daily,
   units,
+  embedded = false,
 }: {
   daily: OptimizationMetrics['daily'];
   units: SavingsUnits;
+  embedded?: boolean;
 }): React.ReactElement {
-  if (daily.length === 0) return <ChartEmptyState />;
+  if (daily.length === 0) return <ChartEmptyState embedded={embedded} />;
   const data = buildCumulativeSeries(daily, units);
   const fmt = valueFormatter(units);
   return (
     <ChartFrame
       title="Cumulative savings"
+      embedded={embedded}
       legend={
         <>
           <LegendDot color={COLOR_REALIZED} label="Realized" />
@@ -42,12 +46,13 @@ export default function CumulativeChart({
       }
     >
       <ResponsiveContainer width="100%" height={160}>
-        <LineChart data={data} margin={{ top: 0, right: 0, bottom: 0, left: -12 }}>
+        <LineChart data={data} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
           <XAxis dataKey="day" tick={AXIS_TICK_STYLE} axisLine={false} tickLine={false} />
           <YAxis
             tick={AXIS_TICK_STYLE}
             axisLine={false}
             tickLine={false}
+            width={yAxisWidth(data.map((d) => fmt(d.total)))}
             tickFormatter={(v: number) => fmt(v)}
           />
           <Tooltip

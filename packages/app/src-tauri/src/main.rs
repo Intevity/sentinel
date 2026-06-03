@@ -263,10 +263,13 @@ fn main() {
                 }
             }
 
-            // Fire-and-forget update check. No-op unless the user has toggled
-            // "Automatically install updates" in Settings. Silent success
-            // (triggers a restart when an update lands) and silent failure.
-            updater::maybe_check_on_startup(app.handle().clone());
+            // Background update checks: shortly after launch, then every
+            // 4 h. Found updates either install silently (user opted in via
+            // "Automatically install updates", proxy idle) or stage the
+            // in-app update modal. The managed state holds the pending
+            // update between the check and the modal's Install click.
+            app.manage(updater::PendingUpdate(std::sync::Mutex::new(None)));
+            updater::spawn_update_timer(app.handle().clone());
 
             Ok(())
         })
@@ -282,6 +285,7 @@ fn main() {
             sound::play_system_sound,
             notify::display_os_notification,
             updater::check_for_updates,
+            updater::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Claude Sentinel");

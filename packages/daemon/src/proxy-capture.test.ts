@@ -91,6 +91,11 @@ function makeRes(): { res: ServerResponse } {
     end: vi.fn(),
     write: vi.fn(),
     pipe: vi.fn(),
+    // The proxy's activity tracker (idle gate for silent auto-updates)
+    // registers a `close` listener on every upstream-bound response. A real
+    // ServerResponse is an EventEmitter; this stub only needs the method to
+    // exist — these tests never assert on in-flight counts.
+    once: (_event: string, _cb: () => void) => res,
   } as unknown as ServerResponse;
   return { res };
 }

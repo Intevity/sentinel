@@ -739,6 +739,7 @@ describe('settings', () => {
         'comparison',
         'cumulative',
         'byPattern',
+        'compression',
       ] as const) {
         writeRawWithSig(path, JSON.stringify({ ...DEFAULT_SETTINGS, optimizeChartView: view }));
         expect(loadSettings(path).optimizeChartView).toBe(view);

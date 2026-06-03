@@ -460,7 +460,7 @@ export default function SettingsPanel({
               <Section title="Updates">
                 <ToggleRow
                   label="Automatically install updates"
-                  description="Check GitHub for a new release on launch and install it silently. Sentinel will restart when the update is ready."
+                  description="Install new releases silently in the background. Sentinel checks every few hours and waits until Claude Code is idle before restarting. When off, Sentinel still checks and offers updates in a dialog instead."
                   checked={settings.autoUpdate}
                   onChange={setAutoUpdate}
                 />

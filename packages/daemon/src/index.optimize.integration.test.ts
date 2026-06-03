@@ -409,6 +409,61 @@ describe('Optimize IPC end-to-end', () => {
     expect(ev?.sourceCalls[0]?.responseSizeBytes).toBe(99_000);
   });
 
+  it('list_optimization_events honors the window filter end-to-end', async () => {
+    ctx = await startTestDaemon();
+
+    // Two measured events a week apart; the Optimize page's range selector
+    // sends `window` so only the recent one should come back.
+    const DAY = 86_400_000;
+    const now = Date.now();
+    const seed = new Database(ctx.dbPath);
+    try {
+      const insert = seed.prepare(
+        `INSERT INTO optimization_events
+           (ts, account_id, session_id, curated_id, kind, pattern,
+            savings_usd, actual_input_tokens, actual_cached_tokens,
+            actual_cost_usd, hypothetical_cost_usd, source_tool_call_ids)
+         VALUES (?, ?, ?, ?, 'measured', ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insert.run(
+        now - 7 * DAY,
+        'acct-x',
+        'sess-old',
+        'log-analyzer',
+        'bash_log_parse',
+        0.1,
+        500,
+        0,
+        0.2,
+        0.1,
+        '[]',
+      );
+      insert.run(
+        now,
+        'acct-x',
+        'sess-new',
+        'file-explorer',
+        'short_turn_after_large_read',
+        0.42,
+        1000,
+        0,
+        0.5,
+        0.08,
+        '[]',
+      );
+    } finally {
+      seed.close();
+    }
+
+    const r = await ctx.request<{
+      events: Array<{ curatedId: string }>;
+      total: number;
+    }>({ type: 'list_optimization_events', window: { sinceMs: now - DAY } });
+    expect(r.success).toBe(true);
+    expect(r.data?.events.map((e) => e.curatedId)).toEqual(['file-explorer']);
+    expect(r.data?.total).toBe(1);
+  });
+
   it('get_context_inventory returns the empty shape on a fresh daemon', async () => {
     ctx = await startTestDaemon();
     const r = await ctx.request<{

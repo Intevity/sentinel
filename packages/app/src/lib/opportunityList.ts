@@ -4,7 +4,7 @@
  * (the app package's vitest setup only collects `*.test.ts`).
  */
 
-import type { ListOptimizationEventsMessage } from '@claude-sentinel/shared';
+import type { ListOptimizationEventsMessage, MetricsWindow } from '@claude-sentinel/shared';
 
 export type StatusFilter = 'all' | 'realized' | 'regression' | 'potential' | 'dismissed';
 
@@ -23,6 +23,10 @@ export type StatusFilter = 'all' | 'realized' | 'regression' | 'potential' | 'di
  *
  * `search` is sent verbatim; the daemon LIKEs against curated_id,
  * pattern, and session_id (case-insensitive).
+ *
+ * `window` scopes rows to the page-level range selector. An empty window
+ * (`{}`, the 'all' preset) is elided so the wire payload matches the
+ * legacy all-time request exactly.
  */
 export function buildListRequest(
   status: StatusFilter,
@@ -30,12 +34,16 @@ export function buildListRequest(
   limit: number,
   offset: number,
   search: string,
+  window?: MetricsWindow,
 ): ListOptimizationEventsMessage {
   const req: ListOptimizationEventsMessage = {
     type: 'list_optimization_events',
     limit,
     offset,
   };
+  if (window && (window.sinceMs !== undefined || window.untilMs !== undefined)) {
+    req.window = window;
+  }
   if (status === 'realized') {
     req.kind = 'measured';
     req.realized = true;

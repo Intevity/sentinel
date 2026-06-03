@@ -817,6 +817,25 @@ export interface GetProcessedTokensMessage {
   window?: MetricsWindow;
 }
 
+/** Idle gate for silent auto-updates. The Tauri updater asks the daemon
+ *  whether the proxy is mid-session before silently installing an update:
+ *  the restart kills the proxy, so an in-flight or very recent request
+ *  means a live Claude Code session that must not be interrupted.
+ *  Sentinel's own background rate-limit probes are excluded from these
+ *  figures so an idle machine reads as idle. */
+export interface GetProxyActivityMessage {
+  type: 'get_proxy_activity';
+}
+
+/** Response shape for {@link GetProxyActivityMessage}. */
+export interface ProxyActivity {
+  /** Upstream-bound requests currently being served by the proxy. */
+  inFlightRequests: number;
+  /** Epoch ms of the most recent upstream-bound request, or null when the
+   *  proxy has served none since daemon start. */
+  lastRequestTs: number | null;
+}
+
 /** Response shape for {@link GetProcessedTokensMessage}. Exact token counts as
  *  reported by the Anthropic `usage` object (not byte estimates). Output tokens
  *  are intentionally absent: savings are input-side, so the denominator is too. */
@@ -984,6 +1003,9 @@ export interface ListOptimizationEventsMessage {
   search?: string;
   limit?: number;
   offset?: number;
+  /** Absolute time window for `oe.ts`, matching the Optimize page's
+   *  range selector. Omitted or empty = all-time (legacy behavior). */
+  window?: MetricsWindow;
 }
 
 /** Slim summary of a tool_call linked from an optimization_event row.
@@ -1771,7 +1793,8 @@ export type AppToDaemonMessage =
   | TestOtelExporterMessage
   | GetOtelDriftStateMessage
   | RepatchOtelSettingsMessage
-  | PromoteForeignOtelEndpointMessage;
+  | PromoteForeignOtelEndpointMessage
+  | GetProxyActivityMessage;
 
 /** Response payload alias re-exports for convenience in consumers. */
 export type {

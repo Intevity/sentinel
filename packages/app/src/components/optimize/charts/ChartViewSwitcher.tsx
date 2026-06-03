@@ -10,6 +10,7 @@ export const CHART_VIEW_OPTIONS: ReadonlyArray<{ id: OptimizeChartView; label: s
   { id: 'comparison', label: 'Comparison' },
   { id: 'cumulative', label: 'Cumulative' },
   { id: 'byPattern', label: 'By pattern' },
+  { id: 'compression', label: 'Compression' },
 ];
 
 /** Segmented control that swaps the Optimize dashboard's chart variant.

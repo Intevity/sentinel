@@ -11,6 +11,7 @@ import {
   TOOLTIP_LABEL_STYLE,
   TOOLTIP_STYLE,
   valueFormatter,
+  yAxisWidth,
 } from './shared.js';
 
 /** Daily stacked bar chart broken out per curated subagent. Each color
@@ -21,27 +22,36 @@ import {
 export default function BySubagentChart({
   dailyBySubagent,
   units,
+  embedded = false,
 }: {
   dailyBySubagent: OptimizationMetrics['dailyBySubagent'];
   units: SavingsUnits;
+  embedded?: boolean;
 }): React.ReactElement {
-  if (dailyBySubagent.length === 0) return <ChartEmptyState />;
+  if (dailyBySubagent.length === 0) return <ChartEmptyState embedded={embedded} />;
   const { data, curatedIds } = buildBySubagentSeries(dailyBySubagent, units);
   const fmt = valueFormatter(units);
+  // Stack height per day = sum over every subagent column; the y-axis must
+  // fit the formatted total, not any single series.
+  const stackTotals = data.map((row) =>
+    fmt(curatedIds.reduce((sum, id) => sum + (typeof row[id] === 'number' ? row[id] : 0), 0)),
+  );
   return (
     <ChartFrame
       title="Daily savings by subagent"
+      embedded={embedded}
       legend={curatedIds.map((id) => (
         <LegendDot key={id} color={colorForCuratedId(id)} label={id} />
       ))}
     >
       <ResponsiveContainer width="100%" height={160}>
-        <BarChart data={data} barSize={14} margin={{ top: 0, right: 0, bottom: 0, left: -12 }}>
+        <BarChart data={data} barSize={14} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
           <XAxis dataKey="day" tick={AXIS_TICK_STYLE} axisLine={false} tickLine={false} />
           <YAxis
             tick={AXIS_TICK_STYLE}
             axisLine={false}
             tickLine={false}
+            width={yAxisWidth(stackTotals)}
             tickFormatter={(v: number) => fmt(v)}
           />
           <Tooltip

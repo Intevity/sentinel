@@ -73,6 +73,18 @@ describe('buildListRequest', () => {
     expect(buildListRequest('all', 'all', 50, 0, '   ').search).toBeUndefined();
     expect(buildListRequest('all', 'all', 50, 0, '  foo ').search).toBe('foo');
   });
+
+  it('passes a bounded window through to the request', () => {
+    const r = buildListRequest('all', 'all', 50, 0, '', { sinceMs: 1000, untilMs: 2000 });
+    expect(r.window).toEqual({ sinceMs: 1000, untilMs: 2000 });
+    const sinceOnly = buildListRequest('all', 'all', 50, 0, '', { sinceMs: 1000 });
+    expect(sinceOnly.window).toEqual({ sinceMs: 1000 });
+  });
+
+  it("omits an empty window so the 'all' preset matches the legacy payload", () => {
+    expect(buildListRequest('all', 'all', 50, 0, '', {}).window).toBeUndefined();
+    expect(buildListRequest('all', 'all', 50, 0, '').window).toBeUndefined();
+  });
 });
 
 describe('humanPattern', () => {

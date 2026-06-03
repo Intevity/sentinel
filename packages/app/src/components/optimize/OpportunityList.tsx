@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, ListTree } from 'lucide-react';
-import type { OptimizationEventRecord, OptimizationEventSourceCall } from '@claude-sentinel/shared';
+import type {
+  MetricsWindow,
+  OptimizationEventRecord,
+  OptimizationEventSourceCall,
+} from '@claude-sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../../lib/ipc.js';
 import {
   buildListRequest,
@@ -42,7 +46,15 @@ interface ListResponse {
   total: number;
 }
 
-export default function OpportunityList({ units }: { units: SavingsUnits }): React.ReactElement {
+export default function OpportunityList({
+  units,
+  metricsWindow,
+}: {
+  units: SavingsUnits;
+  /** Window from the page-level range selector; the list shows the same
+   *  span as the Optimize header above it. */
+  metricsWindow: MetricsWindow;
+}): React.ReactElement {
   const [events, setEvents] = useState<OptimizationEventRecord[]>([]);
   const [total, setTotal] = useState<number>(0);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -73,6 +85,7 @@ export default function OpportunityList({ units }: { units: SavingsUnits }): Rea
         PAGE_SIZE,
         currentOffset,
         currentSearch,
+        metricsWindow,
       );
       const r = await sendToSentinel<ListResponse>(req);
       if (r.success && r.data) {
@@ -83,7 +96,7 @@ export default function OpportunityList({ units }: { units: SavingsUnits }): Rea
       }
       setLoading(false);
     },
-    [],
+    [metricsWindow],
   );
 
   // Debounce the search input so each keystroke doesn't fire a request.
@@ -92,11 +105,11 @@ export default function OpportunityList({ units }: { units: SavingsUnits }): Rea
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  // Reset offset on any filter / search change. Keeps the user from
-  // landing on an out-of-range page after narrowing the result set.
+  // Reset offset on any filter / search / window change. Keeps the user
+  // from landing on an out-of-range page after narrowing the result set.
   useEffect(() => {
     setOffset(0);
-  }, [statusFilter, curatedFilter, search]);
+  }, [statusFilter, curatedFilter, search, metricsWindow]);
 
   useEffect(() => {
     void fetchEvents(statusFilter, curatedFilter, search, offset);

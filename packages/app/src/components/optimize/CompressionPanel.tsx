@@ -5,6 +5,7 @@ import type {
   CompressionLevel,
   McpInstallScope,
   McpInstallRecord,
+  MetricsWindow,
   RetrievalMcpStatus,
 } from '@claude-sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../../lib/ipc.js';
@@ -83,7 +84,13 @@ function dirBasename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
-export default function CompressionPanel(): React.ReactElement {
+export default function CompressionPanel({
+  metricsWindow,
+}: {
+  /** Window from the page-level range selector; the pane's stats and
+   *  charts describe the same span as the Optimize header above it. */
+  metricsWindow: MetricsWindow;
+}): React.ReactElement {
   const { settings, update } = useSettings();
   const [metrics, setMetrics] = useState<CompressionMetrics>(EMPTY_METRICS);
   const [mcp, setMcp] = useState<RetrievalMcpStatus>(EMPTY_STATUS);
@@ -93,12 +100,16 @@ export default function CompressionPanel(): React.ReactElement {
 
   const refresh = useCallback(async () => {
     const [m, s] = await Promise.all([
-      sendToSentinel<CompressionMetrics>({ type: 'get_compression_metrics', days: 0 }),
+      sendToSentinel<CompressionMetrics>({
+        type: 'get_compression_metrics',
+        days: 0,
+        window: metricsWindow,
+      }),
       sendToSentinel<RetrievalMcpStatus>({ type: 'get_retrieval_mcp_status' }),
     ]);
     if (m.success && m.data) setMetrics(m.data);
     if (s.success && s.data) setMcp(s.data);
-  }, []);
+  }, [metricsWindow]);
 
   useEffect(() => {
     void refresh();

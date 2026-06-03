@@ -7,6 +7,7 @@ import {
   ChartFrame,
   TOOLTIP_LABEL_STYLE,
   TOOLTIP_STYLE,
+  yAxisWidth,
 } from './shared.js';
 
 const COLOR = '#60a5fa';
@@ -26,15 +27,16 @@ export default function CompressionRatioChart({
     return <ChartEmptyState>No compression activity yet.</ChartEmptyState>;
   }
   return (
-    <ChartFrame title="Bytes removed per day">
+    <ChartFrame title="Bytes removed per day" collapsible defaultOpen={false}>
       <ResponsiveContainer width="100%" height={160}>
-        <LineChart data={data} margin={{ top: 0, right: 0, bottom: 0, left: -16 }}>
+        <LineChart data={data} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
           <XAxis dataKey="day" tick={AXIS_TICK_STYLE} axisLine={false} tickLine={false} />
           <YAxis
             tick={AXIS_TICK_STYLE}
             axisLine={false}
             tickLine={false}
             domain={[0, 100]}
+            width={yAxisWidth(['100%'])}
             tickFormatter={(v: number) => `${v}%`}
           />
           <Tooltip

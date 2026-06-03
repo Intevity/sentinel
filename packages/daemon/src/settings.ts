@@ -677,6 +677,7 @@ const VALID_CHART_VIEWS: readonly Settings['optimizeChartView'][] = [
   'comparison',
   'cumulative',
   'byPattern',
+  'compression',
 ];
 
 function isOptimizeChartView(v: string): v is Settings['optimizeChartView'] {

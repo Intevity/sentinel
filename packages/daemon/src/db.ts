@@ -4911,6 +4911,9 @@ const SAVINGS_POSITIVE_THRESHOLD_USD = 0.005;
  *   - `search` — case-insensitive LIKE against curated_id, pattern,
  *      and session_id. File-path search is deferred (would require
  *      joining tool_calls or denormalising paths into this table).
+ *   - `window` — absolute `oe.ts` bounds from the Optimize page's range
+ *      selector; an empty/omitted window is all-time. Applies to both
+ *      the page rows and the pagination `total`.
  *   - `limit` (1–500) and `offset` (≥0) for server-side pagination.
  */
 export function listOptimizationEventsWithSources(
@@ -4922,6 +4925,7 @@ export function listOptimizationEventsWithSources(
     regressionsOnly?: boolean;
     positiveSavingsOnly?: boolean;
     search?: string;
+    window?: MetricsWindow;
     limit?: number;
     offset?: number;
   } = {},
@@ -4965,6 +4969,16 @@ export function listOptimizationEventsWithSources(
       '(LOWER(oe.curated_id) LIKE @search OR LOWER(oe.pattern) LIKE @search OR LOWER(oe.session_id) LIKE @search)',
     );
     params['search'] = `%${search.toLowerCase()}%`;
+  }
+  // Same half-open bounds convention as getOptimizationMetrics, so the
+  // list always counts exactly the rows the savings chart aggregates.
+  if (opts.window?.sinceMs !== undefined) {
+    conditions.push('oe.ts >= @sinceMs');
+    params['sinceMs'] = opts.window.sinceMs;
+  }
+  if (opts.window?.untilMs !== undefined) {
+    conditions.push('oe.ts < @untilMs');
+    params['untilMs'] = opts.window.untilMs;
   }
   const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
