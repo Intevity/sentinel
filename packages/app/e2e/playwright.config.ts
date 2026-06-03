@@ -19,6 +19,15 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:5173',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
+    // CI escape hatch for cdn.playwright.dev outages: the browser-download
+    // step has repeatedly stalled on GitHub runners (zip reaches 100%, the
+    // follow-up artifact fetch hangs; bounded retries all stall identically,
+    // so it's a deterministic CDN-path failure, not flakiness). Setting
+    // PLAYWRIGHT_CHANNEL=chrome launches the runner image's preinstalled
+    // Google Chrome instead of a downloaded Chromium, removing the download
+    // dependency entirely. Unset locally, the default downloaded Chromium
+    // keeps local runs hermetic.
+    ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
   },
   projects: [
     {

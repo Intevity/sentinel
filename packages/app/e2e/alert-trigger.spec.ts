@@ -52,6 +52,10 @@ test('Create 90% alert, then trigger and verify broadcast + UI row', async ({ pa
   // Jump to the Alerts tab (internally "notifications" per App.tsx).
   await page.locator('[data-tour-id="tab-notifications"]').click();
 
+  // The alert sections are collapsed SettingsCards by default; expand
+  // "5-Hour Alerts" to reach its Add alert button.
+  await page.getByRole('button', { name: /5-hour alerts/i }).click();
+
   // Click "Add alert". Threshold defaults to 90%, so we can save immediately.
   await page
     .getByRole('button', { name: /Add alert/i })
