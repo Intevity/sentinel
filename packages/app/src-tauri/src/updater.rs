@@ -28,7 +28,11 @@
 //!
 //! On macOS the `.app` replacement step requires a signed + notarized bundle;
 //! installs on unsigned builds will fail at the Gatekeeper check. That's why
-//! the user-facing setting defaults to `false`.
+//! the user-facing setting defaults to `false`. On Windows and Linux the
+//! plugin runs the matching installer (NSIS/MSI in `passive` mode, AppImage
+//! in-place swap, deb/rpm via the package manager); the bundles carry no OS
+//! code signature yet (Trusted Signing is planned), but every download is
+//! still minisign-verified against the pubkey in tauri.conf.json.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -186,7 +190,9 @@ async fn scheduled_check(app: &AppHandle, notified_version: &mut Option<String>)
             tokio::time::sleep(retry).await;
         }
         // Install errors are silent like check errors: recoverable on the
-        // next tick and not worth interrupting the user.
+        // next tick and not worth interrupting the user. On Windows the
+        // passive installer exits + relaunches the process itself, so the
+        // explicit restart is the macOS/Linux path.
         if update.download_and_install(|_, _| {}, || {}).await.is_ok() {
             app.restart();
         }
@@ -253,7 +259,9 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
     };
     // download_and_install takes two callbacks (progress + done). We ignore
     // both; the modal shows an indeterminate "Installing…" state and the
-    // restart is the completion signal.
+    // restart is the completion signal. On Windows the passive installer
+    // exits + relaunches the process itself, so the explicit restart is the
+    // macOS/Linux path.
     update
         .download_and_install(|_, _| {}, || {})
         .await
