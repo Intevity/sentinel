@@ -26,12 +26,14 @@ const COLOR_POTENTIAL = '#60a5fa';
 export default function ComparisonChart({
   bySubagent,
   units,
+  embedded = false,
 }: {
   bySubagent: OptimizationMetrics['bySubagent'];
   units: SavingsUnits;
+  embedded?: boolean;
 }): React.ReactElement {
   const data = buildComparisonSeries(bySubagent, units);
-  if (data.length === 0) return <ChartEmptyState />;
+  if (data.length === 0) return <ChartEmptyState embedded={embedded} />;
   const fmt = valueFormatter(units);
   // 28 px per row + 30 px padding for axis. Caps tall enough for the
   // full curated library without dominating the dashboard.
@@ -39,6 +41,7 @@ export default function ComparisonChart({
   return (
     <ChartFrame
       title="Subagent comparison"
+      embedded={embedded}
       legend={
         <>
           <LegendDot color={COLOR_REALIZED} label="Realized" />

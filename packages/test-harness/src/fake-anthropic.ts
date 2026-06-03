@@ -57,6 +57,10 @@ export interface FakeScenario {
    *  interceptor / default error-handler branches. Only meaningful with
    *  `sseEvents`; ignored otherwise. */
   abortAfterFirstEvent?: boolean;
+  /** Hold the /v1/messages response for this many ms before writing
+   *  anything. Lets tests observe in-flight proxy state (e.g. the
+   *  `get_proxy_activity` idle gate) deterministically. */
+  delayMs?: number;
 }
 
 export interface TokenRecord {
@@ -305,6 +309,17 @@ export async function startFakeAnthropic(
   function handleMessages(req: IncomingMessage, res: ServerResponse): void {
     if (!requireAuth(req, res)) return;
     const override = popOverride('/v1/messages');
+    if (override?.delayMs !== undefined && override.delayMs > 0) {
+      // Re-dispatch with the delay consumed so the response logic below
+      // runs unchanged after the hold.
+      const { delayMs: _consumed, ...rest } = override;
+      setTimeout(() => respondMessages(res, rest), override.delayMs);
+      return;
+    }
+    respondMessages(res, override);
+  }
+
+  function respondMessages(res: ServerResponse, override: FakeScenario | undefined): void {
     const scenario = SCENARIOS[activeScenario];
     const status = override?.status ?? scenario.messagesStatus ?? 200;
     const headers: Record<string, string> = {

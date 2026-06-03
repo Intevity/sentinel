@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { formatTokens, type SavingsUnits } from '../../../lib/optimizeUnits.js';
 
 /** Always show 2 decimals; preserve sign so negative values read as
@@ -12,6 +13,17 @@ export function formatUsd(n: number): string {
 
 export function valueFormatter(units: SavingsUnits): (v: number) => string {
   return units === 'cost' ? formatUsd : formatTokens;
+}
+
+/** Explicit YAxis width sized to the longest expected tick label. Recharts
+ *  defaults to width=60, and the charts here used negative left margins to
+ *  trim the dead space — which clipped long labels (e.g. "$1,234.56") on
+ *  the left. Sizing the axis to the data (~6.2px per character at the 10px
+ *  tick font, one character of headroom for rounded tick values) removes
+ *  the clipping without re-introducing a fixed gutter of dead space. */
+export function yAxisWidth(labels: string[]): number {
+  const longest = labels.reduce((max, l) => Math.max(max, l.length), 0);
+  return Math.max(28, Math.ceil((longest + 1) * 6.2));
 }
 
 // Recharts reads these as inline styles, so we can't use Tailwind classes.
@@ -35,9 +47,18 @@ export const TOOLTIP_LABEL_STYLE: React.CSSProperties = { color: '#8E8E93', font
 // AA contrast in both modes.
 export const AXIS_TICK_STYLE = { fontSize: 10, fill: 'rgb(var(--muted))' } as const;
 
-export function ChartEmptyState({ children }: { children?: React.ReactNode }): React.ReactElement {
+export function ChartEmptyState({
+  children,
+  embedded = false,
+}: {
+  children?: React.ReactNode;
+  /** Render without the glass-card chrome, for use inside a parent pane. */
+  embedded?: boolean;
+}): React.ReactElement {
   return (
-    <div className="glass-card px-4 py-6 text-center text-xs text-foreground/55">
+    <div
+      className={`${embedded ? '' : 'glass-card '}px-4 py-6 text-center text-xs text-foreground/55`}
+    >
       {children ??
         'Once Sentinel sees enough Claude Code traffic, your daily savings will appear here.'}
     </div>
@@ -48,16 +69,50 @@ export function ChartFrame({
   title,
   children,
   legend,
+  embedded = false,
+  collapsible = false,
+  defaultOpen = true,
 }: {
   title: string;
   children: React.ReactNode;
   legend?: React.ReactNode;
+  /** Render without the glass-card chrome and without the title row, for
+   *  charts hosted inside a parent pane whose section header already names
+   *  the chart (e.g. the Optimize pane's collapsible savings section). */
+  embedded?: boolean;
+  /** Title row becomes a chevron toggle that shows/hides the chart body.
+   *  Ignored when `embedded` (the host pane owns collapsing there). */
+  collapsible?: boolean;
+  defaultOpen?: boolean;
 }): React.ReactElement {
-  return (
-    <div className="glass-card px-4 pt-4 pb-3">
-      <p className="mb-3 text-[11px] font-semibold text-muted">{title}</p>
+  const [open, setOpen] = useState(defaultOpen);
+  const body = (
+    <>
       {children}
       {legend !== undefined && <div className="mt-2 flex flex-wrap gap-3">{legend}</div>}
+    </>
+  );
+  if (embedded) return <div>{body}</div>;
+  return (
+    <div className="glass-card px-4 pt-4 pb-3">
+      {collapsible ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className={`flex w-full items-center gap-1.5 text-left ${open ? 'mb-3' : 'pb-1'}`}
+          aria-expanded={open}
+        >
+          {open ? (
+            <ChevronDown className="h-3.5 w-3.5 text-foreground/55" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-foreground/55" />
+          )}
+          <p className="text-[11px] font-semibold text-muted">{title}</p>
+        </button>
+      ) : (
+        <p className="mb-3 text-[11px] font-semibold text-muted">{title}</p>
+      )}
+      {(!collapsible || open) && body}
     </div>
   );
 }

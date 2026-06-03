@@ -77,7 +77,7 @@ import { deleteOtelExporterSecret, writeOtelExporterSecret } from './otel-forwar
 import { RequestAccountMap } from './request-account-map.js';
 import { OverageStateMachine } from './overage.js';
 import { SonnetSaturationMachine, buildSonnetSaturationBody } from './sonnet-saturation.js';
-import { createProxyServer, getDaemonPort } from './proxy.js';
+import { createProxyServer, getDaemonPort, getProxyActivity } from './proxy.js';
 import type { ActiveToken, ActiveAccountId } from './proxy.js';
 import type { AddressInfo } from 'node:net';
 import { RateLimitStore } from './rate-limit-store.js';
@@ -2617,6 +2617,17 @@ export async function startDaemon(): Promise<DaemonHandle> {
         });
         break;
       }
+      case 'get_proxy_activity': {
+        // Idle gate for silent auto-updates: the Tauri updater refuses to
+        // restart the app (and therefore the proxy) while a Claude Code
+        // session is in flight or was active moments ago.
+        respond({
+          requestType: 'get_proxy_activity',
+          success: true,
+          data: getProxyActivity(),
+        });
+        break;
+      }
       case 'install_retrieval_mcp': {
         const directory = msg.directory ?? null;
         if (msg.scope !== 'user' && (directory === null || directory.length === 0)) {
@@ -2744,6 +2755,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
         if (msg.positiveSavingsOnly !== undefined)
           opts.positiveSavingsOnly = msg.positiveSavingsOnly;
         if (msg.search !== undefined) opts.search = msg.search;
+        if (msg.window !== undefined) opts.window = msg.window;
         if (msg.limit !== undefined) opts.limit = msg.limit;
         if (msg.offset !== undefined) opts.offset = msg.offset;
         const result = listOptimizationEventsWithSources(db, opts);

@@ -42,6 +42,7 @@ import Tour from './components/Tour.js';
 import type { TourStep } from './lib/tourSteps.js';
 import LogsViewer from './components/LogsViewer.js';
 import { usePendingSecurityBlocks } from './hooks/usePendingSecurityBlocks.js';
+import UpdateModal from './components/UpdateModal.js';
 import AuditTamperBanner from './components/AuditTamperBanner.js';
 import Footer from './components/Footer.js';
 import { useAutoResizeWindow } from './hooks/useAutoResizeWindow.js';
@@ -155,6 +156,29 @@ export default function App(): React.ReactElement {
       unlisten?.();
     };
   }, [navigateToSecurityEvent]);
+
+  // "Update available" dialog. The Rust updater emits this after any check
+  // that finds an update (tray item, Settings button, or the background
+  // timer) and has already stashed the update for `install_update`. The
+  // window may be hidden when a background check fires; the state persists
+  // so the dialog greets the user the next time they open Sentinel.
+  const [pendingUpdate, setPendingUpdate] = useState<{
+    version: string;
+    currentVersion: string;
+  } | null>(null);
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<{ version: string; currentVersion: string }>('update_available', (event) => {
+      setPendingUpdate(event.payload);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
   // Dismiss the slip banner whenever the user arrives at the Security
   // tab by any path (clicking the tab, the red dot, the banner itself,
@@ -462,6 +486,14 @@ export default function App(): React.ReactElement {
             onFinish={finishTour}
             onStepEnter={handleTourStepEnter}
             replayMode={tourForceOpen}
+          />
+        )}
+
+        {pendingUpdate !== null && (
+          <UpdateModal
+            version={pendingUpdate.version}
+            currentVersion={pendingUpdate.currentVersion}
+            onClose={() => setPendingUpdate(null)}
           />
         )}
 

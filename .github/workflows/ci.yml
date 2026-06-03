@@ -177,10 +177,16 @@ jobs:
         if: steps.build-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @claude-sentinel/test-harness run build
 
-      - name: Install Playwright browsers
-        run: pnpm --filter @claude-sentinel/app exec playwright install --with-deps chromium
-
+      # No `playwright install` step on purpose. cdn.playwright.dev has
+      # repeatedly stalled on GitHub runners (the chromium zip reaches 100%,
+      # then the follow-up artifact fetch hangs; bounded retries all stalled
+      # identically, so it's a deterministic CDN-path failure). The runner
+      # image ships Google Chrome, and PLAYWRIGHT_CHANNEL=chrome (see
+      # e2e/playwright.config.ts) makes the suite launch it directly —
+      # nothing to download, nothing to stall.
       - name: Run Playwright
+        env:
+          PLAYWRIGHT_CHANNEL: chrome
         run: pnpm --filter @claude-sentinel/app run e2e
 
       - name: Upload Playwright report

@@ -2710,6 +2710,67 @@ describe('listOptimizationEventsWithSources', () => {
     expect(fe.events[0]?.curatedId).toBe('file-explorer');
   });
 
+  it('window narrows rows AND the pagination total by oe.ts', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    const DAY = 86_400_000;
+    const base = Date.now();
+    await seedEvent({ ts: base - 2 * DAY, curatedId: 'too-old' });
+    await seedEvent({ ts: base, curatedId: 'in-window' });
+    await seedEvent({ ts: base + 2 * DAY, curatedId: 'too-new' });
+    const r = listOptimizationEventsWithSources(db, {
+      window: { sinceMs: base - DAY, untilMs: base + DAY },
+    });
+    expect(r.events.map((e) => e.curatedId)).toEqual(['in-window']);
+    expect(r.total).toBe(1);
+  });
+
+  it('window bounds are half-open: sinceMs inclusive, untilMs exclusive', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    const DAY = 86_400_000;
+    const t0 = Date.now();
+    const t1 = t0 + DAY;
+    await seedEvent({ ts: t0, curatedId: 'at-since' });
+    await seedEvent({ ts: t1, curatedId: 'at-until' });
+    const r = listOptimizationEventsWithSources(db, { window: { sinceMs: t0, untilMs: t1 } });
+    expect(r.events.map((e) => e.curatedId)).toEqual(['at-since']);
+    expect(r.total).toBe(1);
+  });
+
+  it('an empty window object behaves as all-time', async () => {
+    const { listOptimizationEventsWithSources } = await import('./db.js');
+    const DAY = 86_400_000;
+    await seedEvent({ ts: Date.now() - 90 * DAY, curatedId: 'ancient' });
+    await seedEvent({ ts: Date.now(), curatedId: 'fresh' });
+    const r = listOptimizationEventsWithSources(db, { window: {} });
+    expect(r.events).toHaveLength(2);
+    expect(r.total).toBe(2);
+  });
+
+  it('window composes with the realized filter (JS-counted total path)', async () => {
+    const { upsertSubagentInstall, listOptimizationEventsWithSources } = await import('./db.js');
+    const DAY = 86_400_000;
+    const t = Date.now();
+    upsertSubagentInstall(db, {
+      name: 'file-explorer',
+      source: 'curated',
+      curatedId: 'file-explorer',
+      gapFingerprint: null,
+      mdPath: '/tmp/fe.md',
+      mdHash: 'h',
+      installedAt: t - 5 * DAY,
+    });
+    // Two realized events, only one inside the window.
+    await seedEvent({ ts: t - 3 * DAY, curatedId: 'file-explorer' });
+    await seedEvent({ ts: t, curatedId: 'file-explorer' });
+    const r = listOptimizationEventsWithSources(db, {
+      realized: true,
+      window: { sinceMs: t - DAY },
+    });
+    expect(r.events).toHaveLength(1);
+    expect(r.events[0]?.realized).toBe(true);
+    expect(r.total).toBe(1);
+  });
+
   it('filters by realized=true after the LEFT JOIN computes the flag', async () => {
     const { upsertSubagentInstall, listOptimizationEventsWithSources } = await import('./db.js');
     const t = Date.now();

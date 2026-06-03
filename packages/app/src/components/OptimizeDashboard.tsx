@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Sparkles, CheckCircle2, Trash2, Bot } from 'lucide-react';
+import { Sparkles, CheckCircle2, ChevronDown, ChevronRight, Trash2, Bot, Zap } from 'lucide-react';
 import type {
   OptimizationMetrics,
   OptimizationMetricsBySubagent,
@@ -21,6 +21,7 @@ import {
   ComparisonChart,
   CumulativeChart,
   ByPatternChart,
+  CompressionSavingsChart,
   ChartViewSwitcher,
 } from './optimize/charts/index.js';
 
@@ -94,6 +95,10 @@ export default function OptimizeDashboard(): React.ReactElement {
      *  bytesIn) — the compression half of the "% of optimized content" ratio. */
     grossTokens: number;
   }>({ tokens: 0, cost: 0, potTokens: 0, potCost: 0, grossTokens: 0 });
+  // Daily breakdown for the "Compression" chart view. Kept separate from
+  // `comp` (header totals) so the totals shape doesn't have to carry the
+  // whole CompressionMetrics payload.
+  const [compDaily, setCompDaily] = useState<CompressionMetrics['daily']>([]);
   // Total input tokens Sentinel forwarded over the window — denominator for
   // the "saved X of Y input tokens" headline.
   const [processed, setProcessed] = useState<ProcessedTokens>({
@@ -122,35 +127,45 @@ export default function OptimizeDashboard(): React.ReactElement {
   const [customStart, setCustomStart] = useState<string>('');
   const [customEnd, setCustomEnd] = useState<string>('');
 
-  // One window drives all three metric fetches so the header, charts, and
-  // percentage all describe the same span. Local-midnight boundaries align
-  // with the daemon's local-time day buckets.
-  const metricsWindow = useMemo(
-    () => windowForRange(range, customStart, customEnd),
-    [range, customStart, customEnd],
+  // One window drives all the metric fetches (including the Compression
+  // and Opportunities panes below) so every figure describes the same span.
+  // Local-midnight boundaries align with the daemon's local-time day
+  // buckets. The bounds are resolved fresh inside refresh() rather than
+  // memoized: windowForRange captures `new Date()`, and memoizing it froze
+  // 1D at the previous midnight when the app ran overnight (the "Optimize
+  // shows yesterday's data" bug). The state copy is equality-guarded so
+  // unchanged bounds don't loop renders; child panes refetch when the
+  // bounds actually move.
+  const [metricsWindow, setMetricsWindow] = useState<MetricsWindow>(() =>
+    windowForRange('all', '', ''),
   );
 
   const refresh = useCallback(async () => {
+    const win = windowForRange(range, customStart, customEnd);
+    setMetricsWindow((prev) =>
+      prev.sinceMs === win.sinceMs && prev.untilMs === win.untilMs ? prev : win,
+    );
     const [lib, inst, met, compm, proc, settings] = await Promise.all([
       sendToSentinel<CuratedEntry[]>({ type: 'get_curated_library' }),
       sendToSentinel<InstalledRow[]>({ type: 'list_installed_subagents' }),
       sendToSentinel<OptimizationMetrics>({
         type: 'get_optimization_metrics',
         days: 0,
-        window: metricsWindow,
+        window: win,
       }),
       sendToSentinel<CompressionMetrics>({
         type: 'get_compression_metrics',
         days: 0,
-        window: metricsWindow,
+        window: win,
       }),
-      sendToSentinel<ProcessedTokens>({ type: 'get_processed_tokens', window: metricsWindow }),
+      sendToSentinel<ProcessedTokens>({ type: 'get_processed_tokens', window: win }),
       sendToSentinel<Settings>({ type: 'get_settings' }),
     ]);
     if (lib.success) setLibrary(lib.data ?? []);
     if (inst.success) setInstalled(inst.data ?? []);
     if (met.success && met.data) setMetrics(met.data);
     if (compm.success && compm.data) {
+      setCompDaily(compm.data.daily);
       // `estTokensPotential` is a historical sum of what raising compression
       // would have saved on past traffic, measured at lower tiers. Aggressive
       // is the top tier: there's no further config change to advertise, so we
@@ -172,10 +187,15 @@ export default function OptimizeDashboard(): React.ReactElement {
       setChartView(settings.data.optimizeChartView);
       setRange(settings.data.optimizeRange);
     }
-  }, [metricsWindow]);
+  }, [range, customStart, customEnd]);
 
   useEffect(() => {
     void refresh();
+    // Reopening the tray window re-resolves the range presets: after a day
+    // rollover, 1D must move from yesterday's bounds to today's. Same
+    // focus-refetch pattern as AccountSwitcher.
+    const onFocus = (): void => void refresh();
+    window.addEventListener('focus', onFocus);
     const unsubP = onDaemonMessage((msg) => {
       if (
         msg.type === 'subagent_installed' ||
@@ -189,6 +209,7 @@ export default function OptimizeDashboard(): React.ReactElement {
       }
     });
     return () => {
+      window.removeEventListener('focus', onFocus);
       void unsubP.then((u) => u());
     };
   }, [refresh]);
@@ -275,13 +296,17 @@ export default function OptimizeDashboard(): React.ReactElement {
         rangeLabel={RANGE_LABELS[range]}
         units={units}
         onToggleUnits={onToggleUnits}
-      />
-      <div className="flex justify-start">
-        <ChartViewSwitcher value={chartView} onChange={onChangeChartView} />
-      </div>
-      {renderChart(chartView, metrics, units)}
+      >
+        <SavingsChartSection
+          chartView={chartView}
+          onChangeChartView={onChangeChartView}
+          metrics={metrics}
+          compDaily={compDaily}
+          units={units}
+        />
+      </SavingsHeader>
 
-      <CompressionPanel />
+      <CompressionPanel metricsWindow={metricsWindow} />
 
       {error !== null && (
         <div className="glass-card px-4 py-3 text-sm text-red-700 dark:text-red-300">{error}</div>
@@ -371,7 +396,7 @@ export default function OptimizeDashboard(): React.ReactElement {
         </div>
       )}
 
-      <OpportunityList units={units} />
+      <OpportunityList units={units} metricsWindow={metricsWindow} />
       <ContextInventoryPanel />
     </div>
   );
@@ -529,6 +554,7 @@ function SavingsHeader({
   rangeLabel,
   units,
   onToggleUnits,
+  children,
 }: {
   metrics: OptimizationMetrics;
   /** Compression's realized estimated tokens saved (folded into the total). */
@@ -549,6 +575,9 @@ function SavingsHeader({
   rangeLabel: string;
   units: SavingsUnits;
   onToggleUnits: (next: SavingsUnits) => void;
+  /** Extra pane content rendered at the bottom of the card; hosts the
+   *  collapsible savings-chart section. */
+  children?: React.ReactNode;
 }): React.ReactElement {
   const subTokens = metrics.totals.tokensRealized;
   const subCost = metrics.totals.savingsUsdRealized;
@@ -586,7 +615,9 @@ function SavingsHeader({
     <div className="glass-card px-4 py-3">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h2 className="text-base font-semibold text-foreground">Optimize</h2>
+          <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
+            <Zap className="h-4 w-4" /> Optimize
+          </h2>
           <p className="mt-0.5 text-xs text-foreground/60">
             Cut token costs by routing routine work to cheaper-model subagents and compressing tool
             output in flight.
@@ -647,6 +678,65 @@ function SavingsHeader({
         {' · '}
         {opportunities} opportunit{opportunities === 1 ? 'y' : 'ies'} {rangeLabel}
       </p>
+
+      {children}
+    </div>
+  );
+}
+
+/** Section-header titles for the collapsible chart area inside the
+ *  Optimize pane. Tracks the active view so the collapsed row still says
+ *  what it hides; mirrors each chart's own ChartFrame title. */
+const CHART_VIEW_TITLES: Record<OptimizeChartView, string> = {
+  realized: 'Daily savings',
+  bySubagent: 'Daily savings by subagent',
+  comparison: 'Subagent comparison',
+  cumulative: 'Cumulative savings',
+  byPattern: 'Detection patterns by frequency',
+  compression: 'Compression savings',
+};
+
+/** Collapsible chart area folded into the bottom of the Optimize pane:
+ *  view switcher + the active chart, rendered embedded (the charts skip
+ *  their own card + title since this header carries it). Open by default;
+ *  collapse state is local, matching OpportunityList. */
+function SavingsChartSection({
+  chartView,
+  onChangeChartView,
+  metrics,
+  compDaily,
+  units,
+}: {
+  chartView: OptimizeChartView;
+  onChangeChartView: (next: OptimizeChartView) => void;
+  metrics: OptimizationMetrics;
+  compDaily: CompressionMetrics['daily'];
+  units: SavingsUnits;
+}): React.ReactElement {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="mt-3 border-t border-border-subtle/10 pt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 py-1 text-left"
+        aria-expanded={open}
+      >
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5 text-foreground/55" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 text-foreground/55" />
+        )}
+        <span className="text-[11px] font-semibold text-muted">{CHART_VIEW_TITLES[chartView]}</span>
+      </button>
+      {open && (
+        <div className="mt-1 space-y-2">
+          <div className="flex justify-start">
+            <ChartViewSwitcher value={chartView} onChange={onChangeChartView} />
+          </div>
+          {renderChart(chartView, metrics, compDaily, units)}
+        </div>
+      )}
     </div>
   );
 }
@@ -744,19 +834,22 @@ function SubagentSavingsBadge({
 function renderChart(
   view: OptimizeChartView,
   metrics: OptimizationMetrics,
+  compDaily: CompressionMetrics['daily'],
   units: SavingsUnits,
 ): React.ReactElement {
   switch (view) {
     case 'bySubagent':
-      return <BySubagentChart dailyBySubagent={metrics.dailyBySubagent} units={units} />;
+      return <BySubagentChart dailyBySubagent={metrics.dailyBySubagent} units={units} embedded />;
     case 'comparison':
-      return <ComparisonChart bySubagent={metrics.bySubagent} units={units} />;
+      return <ComparisonChart bySubagent={metrics.bySubagent} units={units} embedded />;
     case 'cumulative':
-      return <CumulativeChart daily={metrics.daily} units={units} />;
+      return <CumulativeChart daily={metrics.daily} units={units} embedded />;
     case 'byPattern':
-      return <ByPatternChart byPattern={metrics.byPattern} units={units} />;
+      return <ByPatternChart byPattern={metrics.byPattern} units={units} embedded />;
+    case 'compression':
+      return <CompressionSavingsChart daily={compDaily} units={units} embedded />;
     case 'realized':
     default:
-      return <RealizedChart daily={metrics.daily} units={units} />;
+      return <RealizedChart daily={metrics.daily} units={units} embedded />;
   }
 }

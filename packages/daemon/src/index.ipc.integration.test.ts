@@ -1081,6 +1081,49 @@ describe('IPC — OTEL drift detection', () => {
   });
 });
 
+// ─── Proxy activity (idle gate for silent auto-updates) ────────────────────
+
+describe('IPC — proxy activity', () => {
+  it('get_proxy_activity starts idle and reflects a proxied request', async () => {
+    ctx = await startWithActiveAccount();
+
+    // Fresh daemon: nothing proxied yet. Startup rate-limit probes carry the
+    // sentinel-probe user-agent and are deliberately excluded.
+    const before = await ctx.request<{ inFlightRequests: number; lastRequestTs: number | null }>({
+      type: 'get_proxy_activity',
+    });
+    expect(before.success).toBe(true);
+    expect(before.data).toEqual({ inFlightRequests: 0, lastRequestTs: null });
+
+    // Drive one real request through the daemon's proxy port.
+    const t0 = Date.now();
+    await fetch(`http://127.0.0.1:${ctx.daemonPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer active-token' },
+      body: JSON.stringify({
+        model: 'claude-opus-4-7',
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    });
+
+    // The in-flight decrement fires on the response's `close` event, which
+    // can land a tick after fetch resolves — poll briefly.
+    let after = await ctx.request<{ inFlightRequests: number; lastRequestTs: number | null }>({
+      type: 'get_proxy_activity',
+    });
+    for (let i = 0; i < 50 && after.data?.inFlightRequests !== 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      after = await ctx.request<{ inFlightRequests: number; lastRequestTs: number | null }>({
+        type: 'get_proxy_activity',
+      });
+    }
+    expect(after.success).toBe(true);
+    expect(after.data?.inFlightRequests).toBe(0);
+    expect(after.data?.lastRequestTs).toBeGreaterThanOrEqual(t0);
+  });
+});
+
 // ─── Scan benchmark ─────────────────────────────────────────────────────────
 
 describe('IPC — scan benchmark', () => {

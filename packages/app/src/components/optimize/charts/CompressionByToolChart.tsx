@@ -36,7 +36,7 @@ export default function CompressionByToolChart({
     return [`${formatTokens(v)} · ${blocks} block${blocks === 1 ? '' : 's'}`, 'Saved'];
   };
   return (
-    <ChartFrame title="Estimated tokens saved by tool">
+    <ChartFrame title="Estimated tokens saved by tool" collapsible defaultOpen={false}>
       <ResponsiveContainer width="100%" height={height}>
         <BarChart
           data={data}

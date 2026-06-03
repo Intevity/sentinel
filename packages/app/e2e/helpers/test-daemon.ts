@@ -15,10 +15,10 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { startFakeAnthropic, type FakeAnthropic } from '@claude-sentinel/test-harness';
 import type { DaemonToAppMessage, OAuthAccount } from '@claude-sentinel/shared';
@@ -97,56 +97,59 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
   // so the first-run modals never mount. Mirrors the coerce() expectations
   // in settings.ts — partial writes would work too, but the full shape
   // is the more durable contract against sprint drift.
-  writeFileSync(
-    settingsFile,
-    JSON.stringify(
-      {
-        launchAtLogin: false,
-        switchingMode: 'off',
-        alertSoundName: 'Glass',
-        overageOsNotify: false,
-        autoUpdate: false,
-        poolExcludedIds: [],
-        overageEnabledIds: [],
-        budgetWeeklyUsdByAccount: {},
-        budgetWeeklyUsdGlobal: null,
-        overageBufferPct: 5,
-        roundRobinStrategy: 'balance',
-        backgroundProbeIntervalSec: 300,
-        telemetryRetentionDays: 30,
-        securityScanEnabled: true,
-        securityEnforcementMode: null,
-        securityScanSecrets: true,
-        securityScanInjection: false,
-        securityScanToolUse: true,
-        securityOsNotifyThreshold: 'off',
-        securityPersistSnippet: true,
-        securityEventRetentionDays: 30,
-        securityApproveHoldSec: 60,
-        toolPermissionsEnabled: false,
-        toolPermissionDefaultAction: 'allow',
-        toolPermissionSkipInAutoMode: true,
-        toolPermissionAutoModeActive: false,
-        securityOversizedThresholdMb: 4,
-        securityScanOversizedSync: false,
-        securityMuteScanDeferred: false,
-        securityMuteScanTruncated: false,
-        securityMuteScanSkipped: false,
-        lastScanBenchmark: null,
-        claudeCodeSyncEnabled: false,
-        logLevel: 'info',
-        requestLoggingEnabled: false,
-        requestLogRetentionDays: 7,
-        requestLogMaxBodyKb: 256,
-        requestLogCaptureResponse: true,
-        requestLogRedactAuthHeaders: true,
-        cacheTtlForceOneHour: false,
-        securitySetupCompleted: true,
-        tourCompleted: true,
-      },
-      null,
-      2,
-    ),
+  //
+  // The actual write happens below, AFTER the keychain is seeded: since the
+  // settings-integrity sprint, settings.json must be mode 0o600 and carry a
+  // valid HMAC sidecar (.sig) or loadSettings falls back to defaults — which
+  // re-enables the tour and its overlay swallows every click in the specs.
+  // Signing needs the HMAC key in the same test keychain the daemon reads.
+  const seedSettings = JSON.stringify(
+    {
+      launchAtLogin: false,
+      switchingMode: 'off',
+      alertSoundName: 'Glass',
+      overageOsNotify: false,
+      autoUpdate: false,
+      poolExcludedIds: [],
+      overageEnabledIds: [],
+      budgetWeeklyUsdByAccount: {},
+      budgetWeeklyUsdGlobal: null,
+      overageBufferPct: 5,
+      roundRobinStrategy: 'balance',
+      backgroundProbeIntervalSec: 300,
+      telemetryRetentionDays: 30,
+      securityScanEnabled: true,
+      securityEnforcementMode: null,
+      securityScanSecrets: true,
+      securityScanInjection: false,
+      securityScanToolUse: true,
+      securityOsNotifyThreshold: 'off',
+      securityPersistSnippet: true,
+      securityEventRetentionDays: 30,
+      securityApproveHoldSec: 60,
+      toolPermissionsEnabled: false,
+      toolPermissionDefaultAction: 'allow',
+      toolPermissionSkipInAutoMode: true,
+      toolPermissionAutoModeActive: false,
+      securityOversizedThresholdMb: 4,
+      securityScanOversizedSync: false,
+      securityMuteScanDeferred: false,
+      securityMuteScanTruncated: false,
+      securityMuteScanSkipped: false,
+      lastScanBenchmark: null,
+      claudeCodeSyncEnabled: false,
+      logLevel: 'info',
+      requestLoggingEnabled: false,
+      requestLogRetentionDays: 7,
+      requestLogMaxBodyKb: 256,
+      requestLogCaptureResponse: true,
+      requestLogRedactAuthHeaders: true,
+      cacheTtlForceOneHour: false,
+      securitySetupCompleted: true,
+      tourCompleted: true,
+    },
+    null,
+    2,
   );
 
   writeFileSync(keychainFile, JSON.stringify({ 'Claude Sentinel-credentials': {} }));
@@ -204,6 +207,27 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
     };
     writeFileSync(claudeJsonFile, JSON.stringify({ oauthAccount }, null, 2));
   }
+
+  // Write + sign the settings seed (see comment at `seedSettings`). The
+  // daemon's own settings-integrity module does the signing so the HMAC
+  // format can never drift from what loadSettings verifies. Imported by
+  // path (like daemonBin below) — the app package doesn't depend on the
+  // daemon package. The env var must point at this run's keychain BEFORE
+  // signing so getOrCreateSettingsHmacKey writes the key where the daemon
+  // subprocess will read it; the cache reset drops any key cached from a
+  // previous startTestDaemon call in this worker.
+  process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainFile;
+  const { resetSettingsHmacKeyCache, signSettings } = (await import(
+    pathToFileURL(resolve(REPO_ROOT, 'packages/daemon/dist/settings-integrity.js')).href
+  )) as {
+    resetSettingsHmacKeyCache: () => void;
+    signSettings: (bytes: string) => string;
+  };
+  resetSettingsHmacKeyCache();
+  writeFileSync(settingsFile, seedSettings);
+  writeFileSync(`${settingsFile}.sig`, signSettings(seedSettings));
+  chmodSync(settingsFile, 0o600);
+  chmodSync(`${settingsFile}.sig`, 0o600);
 
   // Ephemeral daemon port so the test daemon doesn't collide with the
   // user's live desktop app (which binds 47284). Sprint 6's getDaemonPort

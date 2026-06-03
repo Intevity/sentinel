@@ -23,12 +23,14 @@ const COLOR = '#a78bfa';
 export default function ByPatternChart({
   byPattern,
   units,
+  embedded = false,
 }: {
   byPattern: OptimizationMetrics['byPattern'];
   units: SavingsUnits;
+  embedded?: boolean;
 }): React.ReactElement {
   const data = buildPatternSeries(byPattern);
-  if (data.length === 0) return <ChartEmptyState />;
+  if (data.length === 0) return <ChartEmptyState embedded={embedded} />;
   const height = Math.min(data.length * 28 + 30, 320);
   const renderTooltip = (
     v: number,
@@ -43,7 +45,7 @@ export default function ByPatternChart({
     return [`${opps} · ${savings}`, 'Pattern'];
   };
   return (
-    <ChartFrame title="Detection patterns by frequency">
+    <ChartFrame title="Detection patterns by frequency" embedded={embedded}>
       <ResponsiveContainer width="100%" height={height}>
         <BarChart
           data={data}

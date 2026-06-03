@@ -61,6 +61,40 @@ const ANTHROPIC_PATHS = ['/v1/messages', '/v1/complete', '/v1/models', '/v1/coun
 // OTEL paths handled locally
 const OTEL_PATHS = ['/v1/metrics', '/v1/logs'];
 
+// --- Proxy activity (idle gate for silent auto-updates) -------------------
+// The Tauri updater asks for this via `get_proxy_activity` before silently
+// installing an update: the restart kills the proxy, so an in-flight or very
+// recent request means a live Claude Code session that must not be
+// interrupted. Module-level on purpose — one proxy per daemon, mirroring
+// getDaemonPort()'s module-level convention. Sentinel's own rate-limit
+// probes (rate-limit-probe.ts routes them through this server) are excluded
+// via their user-agent marker so background probing doesn't make an idle
+// machine look busy.
+const PROBE_USER_AGENT = 'claude-cli/sentinel-probe';
+
+const proxyActivity = {
+  inFlightRequests: 0,
+  lastRequestTs: null as number | null,
+};
+
+/** Snapshot of upstream-bound proxy activity for the `get_proxy_activity`
+ *  IPC handler. Mirrors `ProxyActivity` in @claude-sentinel/shared. */
+export function getProxyActivity(): { inFlightRequests: number; lastRequestTs: number | null } {
+  return { ...proxyActivity };
+}
+
+/** Count an upstream-bound request toward activity. `close` fires exactly
+ *  once per response on both clean finish and client abort, balancing the
+ *  increment. */
+function trackUpstreamRequest(req: IncomingMessage, res: ServerResponse): void {
+  if (req.headers['user-agent'] === PROBE_USER_AGENT) return;
+  proxyActivity.inFlightRequests += 1;
+  proxyActivity.lastRequestTs = Date.now();
+  res.once('close', () => {
+    proxyActivity.inFlightRequests -= 1;
+  });
+}
+
 /** Mutable reference to the active account's Bearer token for header injection. */
 export interface ActiveToken {
   value: string | null;
@@ -667,6 +701,7 @@ export function createProxyServer(
     // non-messages endpoints, probes with overrides) uses the sync fast
     // path — they don't depend on model identity for routing.
     if (req.method === 'POST' && url.startsWith('/v1/messages')) {
+      trackUpstreamRequest(req, res);
       handleMessagesPost(req, res).catch((err) => {
         console.error('[Proxy] Messages POST handler error:', err);
         if (!res.headersSent) {
@@ -696,6 +731,7 @@ export function createProxyServer(
     }
 
     if (ANTHROPIC_PATHS.some((p) => url.startsWith(p))) {
+      trackUpstreamRequest(req, res);
       proxyToAnthropic(
         req,
         res,
