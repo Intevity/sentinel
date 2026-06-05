@@ -97,6 +97,11 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     compressionMaxBodyKb: 4096,
     compressionRetrievalEnabled: false,
     compressionRetrievalInstalls: [],
+    codeModeEnabled: false,
+    codeModeMigrations: [],
+    codeModeSkillInstalled: false,
+    mcpDisabledStashes: [],
+    optimizeSubTab: 'subagents',
     ...overrides,
   };
 }

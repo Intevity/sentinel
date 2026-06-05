@@ -16,21 +16,27 @@ export const CHART_VIEW_OPTIONS: ReadonlyArray<{ id: OptimizeChartView; label: s
 /** Segmented control that swaps the Optimize dashboard's chart variant.
  *  Mirrors the styling of the existing UnitsToggle (Tokens / Cost) so
  *  the two toggles read as a paired control row in the dashboard
- *  header. */
+ *  header. `views` scopes the options to the hosting tab's charts
+ *  (subagent views on the Subagents tab; compression on its own tab). */
 export default function ChartViewSwitcher({
   value,
   onChange,
+  views,
 }: {
   value: OptimizeChartView;
   onChange: (next: OptimizeChartView) => void;
+  views?: OptimizeChartView[];
 }): React.ReactElement {
+  const options = views
+    ? CHART_VIEW_OPTIONS.filter((opt) => views.includes(opt.id))
+    : CHART_VIEW_OPTIONS;
   return (
     <div
       className="flex flex-wrap rounded border border-border-subtle/10 p-0.5 text-[10px] uppercase tracking-wide"
       role="group"
       aria-label="Chart view"
     >
-      {CHART_VIEW_OPTIONS.map((opt) => (
+      {options.map((opt) => (
         <button
           key={opt.id}
           type="button"

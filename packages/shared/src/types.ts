@@ -215,7 +215,14 @@ export type OptimizeChartView =
 /** The Optimize tab's time-range presets. `custom` means "use the explicit
  *  start/end the user picked"; `all` means all-time. Persisted in
  *  {@link Settings.optimizeRange}. */
-export type OptimizeRangePreset = '1d' | '1w' | '1m' | '3m' | '1y' | 'all' | 'custom';
+export type OptimizeRangePreset = '1d' | '1w' | '1m' | '3m' | '6m' | '1y' | 'all' | 'custom';
+
+/** Which section of the Optimize page is active. Each of the three
+ *  optimization features owns one sub-tab below the sticky savings bar:
+ *  curated subagents, in-flight compression, and context (MCP definition
+ *  costs + code execution). Persisted in {@link Settings.optimizeSubTab}
+ *  so the user's last section survives daemon restarts. */
+export type OptimizeSubTab = 'subagents' | 'compression' | 'context';
 
 /**
  * Aggressiveness tier for in-flight tool_result compression.
@@ -250,6 +257,27 @@ export interface McpInstallRecord {
   scope: McpInstallScope;
   directory: string | null;
   installedAt: number;
+}
+
+/** A native MCP server the user migrated to code execution. The daemon owns
+ *  the MCP client connection and Claude calls tools through the loopback
+ *  `/code-mode/call` endpoint instead of carrying the server's tool
+ *  definitions in every request.
+ *
+ *  `originalEntry` is the exact JSON value removed from `mcpServers` so
+ *  "Switch back" restores it byte-identically. Secrets the entry may carry
+ *  (env vars, auth headers) stay inside settings.json (0600 + HMAC sidecar)
+ *  and are only ever read by the daemon at connect time; they are never
+ *  written into generated workspace files or the skill. */
+export interface CodeModeMigration {
+  /** Server name as it appeared under `mcpServers`. */
+  server: string;
+  scope: McpInstallScope;
+  /** Directory for `local`/`project` scopes; null for `user`. */
+  directory: string | null;
+  /** The exact config object stashed from `mcpServers[server]`. */
+  originalEntry: unknown;
+  migratedAt: number;
 }
 
 /**
@@ -582,6 +610,10 @@ export interface Settings {
    *  client-held start/end dates (not persisted). Defaults to 'all'. Persisted
    *  so the user's last range survives daemon restarts. */
   optimizeRange: OptimizeRangePreset;
+  /** Active sub-tab on the Optimize page (subagents / compression /
+   *  context). Defaults to 'subagents'. Persisted so the user's last
+   *  section survives daemon restarts. */
+  optimizeSubTab: OptimizeSubTab;
 
   // ─── tool_result compression ───────────────────────────────────────
   /** Master switch for in-flight tool_result compression. Opt-in; default
@@ -610,6 +642,27 @@ export interface Settings {
    *  config. Used by the Optimize page to show status and offer uninstall.
    *  Empty by default. */
   compressionRetrievalInstalls: McpInstallRecord[];
+
+  // ─── MCP code execution (code mode) ────────────────────────────────
+  /** Master switch for the code-mode bridge endpoint (`/code-mode/call`).
+   *  Off by default; flipped on automatically when the first server is
+   *  migrated and back off when the last one reverts. When false the
+   *  endpoint refuses every call regardless of recorded migrations. */
+  codeModeEnabled: boolean;
+  /** Native MCP servers migrated to code execution. Doubles as the
+   *  bridge's server allowlist: the daemon only ever connects to servers
+   *  recorded here, so the endpoint cannot be used to spawn arbitrary
+   *  configured servers. */
+  codeModeMigrations: CodeModeMigration[];
+  /** True once the sentinel-code-mode skill exists under
+   *  `~/.claude/skills/`. Tracked so revert can clean it up when the
+   *  last migration is removed. */
+  codeModeSkillInstalled: boolean;
+  /** Servers disabled via the plain "Disable" action (no bridging), with
+   *  their stashed entries so Enable restores byte-identically. Same record
+   *  shape as a migration but deliberately a separate list: entries here
+   *  are NOT part of the bridge allowlist and are never connectable. */
+  mcpDisabledStashes: CodeModeMigration[];
 
   // ─── External OTEL forwarding ──────────────────────────────────────
   /** Master switch for forwarding the OTLP/HTTP request bodies that

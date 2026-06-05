@@ -30,7 +30,14 @@ const EMPTY: ContextInventory = {
   globalSubagents: [],
 };
 
-export default function ContextInventoryPanel(): React.ReactElement {
+export default function ContextInventoryPanel({
+  hideMcpServers = false,
+}: {
+  /** The Context tab renders the richer MCP cost table above this panel,
+   *  so it hides the inventory's own MCP section to avoid double listing.
+   *  Defaults to false so the panel stays complete standalone. */
+  hideMcpServers?: boolean;
+} = {}): React.ReactElement {
   const [inventory, setInventory] = useState<ContextInventory>(EMPTY);
   const [open, setOpen] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,9 +77,10 @@ export default function ContextInventoryPanel(): React.ReactElement {
         <div className="mt-3 space-y-3">
           <p className="text-[11px] text-foreground/55">
             Each item below contributes to every Claude Code request's context. Disable items you
-            don't actively use to reduce token cost. To disable, edit{' '}
+            don't actively use to reduce token cost. MCP servers can be disabled or bridged from the
+            table above; for the rest, edit{' '}
             <code className="text-foreground/75">~/.claude.json</code> or use Claude Code's native
-            config; Sentinel doesn't yet write to these files.
+            config.
           </p>
 
           {error !== null && (
@@ -81,42 +89,44 @@ export default function ContextInventoryPanel(): React.ReactElement {
             </div>
           )}
 
-          <Section title={`MCP servers (${mcpServers.length})`}>
-            {mcpServers.length === 0 ? (
-              <Empty text="No MCP servers configured." />
-            ) : (
-              <ul className="space-y-1">
-                {mcpServers.map((s) => (
-                  <li
-                    key={`${s.project}:${s.name}`}
-                    className="grid grid-cols-[1fr_auto_auto_auto] items-baseline gap-2 text-[11px] text-foreground/80"
-                  >
-                    <span className="truncate">
-                      <span className="font-mono">{s.name}</span>
-                      <span className="ml-1 text-[10px] text-foreground/45">
-                        {truncatePath(s.project)}
+          {!hideMcpServers && (
+            <Section title={`MCP servers (${mcpServers.length})`}>
+              {mcpServers.length === 0 ? (
+                <Empty text="No MCP servers configured." />
+              ) : (
+                <ul className="space-y-1">
+                  {mcpServers.map((s) => (
+                    <li
+                      key={`${s.project}:${s.name}`}
+                      className="grid grid-cols-[1fr_auto_auto_auto] items-baseline gap-2 text-[11px] text-foreground/80"
+                    >
+                      <span className="truncate">
+                        <span className="font-mono">{s.name}</span>
+                        <span className="ml-1 text-[10px] text-foreground/45">
+                          {truncatePath(s.project)}
+                        </span>
                       </span>
-                    </span>
-                    {s.enabled ? (
-                      <span className="rounded bg-emerald-500/15 px-1 py-px text-[9px] uppercase text-emerald-700 dark:text-emerald-300">
-                        enabled
+                      {s.enabled ? (
+                        <span className="rounded bg-emerald-500/15 px-1 py-px text-[9px] uppercase text-emerald-700 dark:text-emerald-300">
+                          enabled
+                        </span>
+                      ) : (
+                        <span className="rounded bg-surface-overlay/10 px-1 py-px text-[9px] uppercase text-foreground/55">
+                          disabled
+                        </span>
+                      )}
+                      <span className="tabular-nums text-foreground/55">
+                        {s.recent7d.calls} call{s.recent7d.calls === 1 ? '' : 's'}
                       </span>
-                    ) : (
-                      <span className="rounded bg-surface-overlay/10 px-1 py-px text-[9px] uppercase text-foreground/55">
-                        disabled
+                      <span className="tabular-nums text-foreground/65">
+                        {formatTokens(s.recent7d.estimatedTokens)}
                       </span>
-                    )}
-                    <span className="tabular-nums text-foreground/55">
-                      {s.recent7d.calls} call{s.recent7d.calls === 1 ? '' : 's'}
-                    </span>
-                    <span className="tabular-nums text-foreground/65">
-                      {formatTokens(s.recent7d.estimatedTokens)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Section>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Section>
+          )}
 
           <Section title={`CLAUDE.md files (${inventory.claudeMdFiles.length})`}>
             {inventory.claudeMdFiles.length === 0 ? (

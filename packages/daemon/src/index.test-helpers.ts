@@ -119,6 +119,9 @@ const TEST_ENV_KEYS = [
   'CLAUDE_SENTINEL_TEST_DB_FILE',
   'CLAUDE_SENTINEL_TEST_REQUEST_LOG_DB_FILE',
   'CLAUDE_SENTINEL_TEST_COMPRESSION_DB_FILE',
+  'CLAUDE_SENTINEL_TEST_CONTEXT_COST_DB_FILE',
+  'CLAUDE_SENTINEL_TEST_CODE_MODE_DIR',
+  'CLAUDE_SENTINEL_TEST_HOME',
   'CLAUDE_SENTINEL_TEST_CLAUDE_JSON',
   'CLAUDE_SENTINEL_TEST_SETTINGS_FILE',
   'CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE',
@@ -200,6 +203,14 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   // production; redirect to tmp so we don't touch the dev's real
   // subagents directory.
   process.env.CLAUDE_SENTINEL_TEST_AGENTS_DIR = join(workdir, 'agents');
+  // Context-cost store + code-mode workspace/skill: redirect to tmp so the
+  // daemon under test never opens the dev's real context-cost.db, never
+  // writes wrapper files under ~/.claude-sentinel, and never installs a
+  // skill into the dev's real ~/.claude/skills (CLAUDE_SENTINEL_TEST_HOME
+  // also isolates context-bloat's CLAUDE.md/memory walks).
+  process.env.CLAUDE_SENTINEL_TEST_CONTEXT_COST_DB_FILE = join(workdir, 'context-cost.db');
+  process.env.CLAUDE_SENTINEL_TEST_CODE_MODE_DIR = join(workdir, 'code-mode');
+  process.env.CLAUDE_SENTINEL_TEST_HOME = workdir;
   process.env.CLAUDE_SENTINEL_TEST_CLAUDE_SETTINGS_FILE = claudeSettingsPath;
   process.env.ANTHROPIC_UPSTREAM_URL = fake.origin;
   process.env.OAUTH_TOKEN_URL = fake.tokenUrl;

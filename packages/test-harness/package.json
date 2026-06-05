@@ -17,12 +17,19 @@
     "./scenarios": {
       "import": "./dist/scenarios.js",
       "types": "./dist/scenarios.d.ts"
+    },
+    "./fake-mcp-server": {
+      "import": "./dist/fake-mcp-server.js",
+      "types": "./dist/fake-mcp-server.d.ts"
     }
   },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
