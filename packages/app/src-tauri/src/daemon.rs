@@ -147,6 +147,9 @@ async fn send_kill(pid: u32, force: bool) -> bool {
     #[cfg(windows)]
     {
         let mut cmd = tokio::process::Command::new("taskkill");
+        // CREATE_NO_WINDOW — taskkill is a console app; without this it
+        // flashes a console window on every launch that evicts a stale daemon.
+        cmd.creation_flags(0x0800_0000);
         if force {
             cmd.arg("/F");
         }
@@ -228,11 +231,17 @@ pub fn spawn(_app: &AppHandle) {
         // "waiting for daemon" forever.
         evict_stale_daemon().await;
 
-        match tokio::process::Command::new(&path)
-            .arg("start")
-            .stdin(Stdio::piped())
-            .spawn()
-        {
+        let mut cmd = tokio::process::Command::new(&path);
+        cmd.arg("start").stdin(Stdio::piped());
+        // CREATE_NO_WINDOW — the daemon is a pkg console-subsystem exe; the
+        // parent GUI app has no console, so without this flag Windows
+        // allocates a visible console window for the child. The flag only
+        // suppresses console allocation; the piped-stdin handshake below is
+        // unaffected.
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000);
+
+        match cmd.spawn() {
             Ok(mut child) => {
                 // Write the handshake token to the daemon's stdin and
                 // drop the writer. The daemon's `readHandshakeTokenFromStdin`
