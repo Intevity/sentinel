@@ -1,6 +1,7 @@
-import { execSync } from 'child_process';
-import { userInfo as osUserInfo } from 'os';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { execFileSync, execSync } from 'child_process';
+import { homedir, userInfo as osUserInfo } from 'os';
+import { dirname, join } from 'path';
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import type { ClaudeCodeCredentials } from '@claude-sentinel/shared';
 
 /** Claude Code's keychain service name (single shared slot, keyed by OS username). */
@@ -165,8 +166,11 @@ export function readCredentialBlob(service: string, account: string): string | n
   }
   try {
     if (process.platform === 'darwin') return readDarwin(service, account);
-    /* v8 ignore next 3 */
-    if (process.platform === 'win32') return readWindows(service);
+    // Non-darwin: Claude Code keeps its credentials in a plain file, not the
+    // OS secret store — route the CC slot there (see the CC file section).
+    /* v8 ignore next 4 */
+    if (service === CC_SERVICE) return readClaudeCodeFile();
+    if (process.platform === 'win32') return readWindows(service, account);
     return readLinux(service, account);
   } catch {
     return null;
@@ -185,7 +189,12 @@ export function writeCredentialBlob(service: string, account: string, blob: stri
     writeDarwin(service, account, blob);
     return;
   }
-  /* v8 ignore next 3 */
+  // Non-darwin: Claude Code's slot is a plain file (see the CC file section).
+  /* v8 ignore next 8 */
+  if (service === CC_SERVICE) {
+    writeClaudeCodeFile(blob);
+    return;
+  }
   if (process.platform === 'win32') {
     writeWindows(service, account, blob);
     return;
@@ -193,7 +202,7 @@ export function writeCredentialBlob(service: string, account: string, blob: stri
   writeLinux(service, account, blob);
 }
 
-/* v8 ignore next 14 */
+/* v8 ignore next 23 */
 export function deleteCredentialBlob(service: string, account: string): void {
   if (testKeychainPath()) {
     const data = readTestKeychain();
@@ -207,8 +216,13 @@ export function deleteCredentialBlob(service: string, account: string): void {
     deleteDarwin(service, account);
     return;
   }
+  // Non-darwin: Claude Code's slot is a plain file (see the CC file section).
+  if (service === CC_SERVICE) {
+    deleteClaudeCodeFile();
+    return;
+  }
   if (process.platform === 'win32') {
-    deleteWindows(service);
+    deleteWindows(service, account);
     return;
   }
   deleteLinux(service, account);
@@ -244,35 +258,155 @@ function deleteDarwin(service: string, account: string): void {
 }
 
 // ─── Windows ─────────────────────────────────────────────────────────────────
+//
+// Windows Credential Manager has no usable in-box CLI: `cmdkey` cannot read
+// secrets back (and mangles JSON blobs passed on the command line), and
+// PowerShell's Get-StoredCredential needs a third-party module. Instead we
+// keep one DPAPI-protected file — ~/.claude-sentinel/credentials.dat —
+// holding the same { [service]: { [account]: blob } } map shape as the test
+// keychain. DPAPI with CurrentUser scope is the same per-user protection
+// Credential Manager itself relies on. The PowerShell scripts travel via
+// -EncodedCommand and the payload via stdin/stdout as base64, so neither
+// shell quoting nor the console codepage can corrupt the data.
 
-/* v8 ignore next 15 */
-function readWindows(service: string): string | null {
-  const psScript = `
-    try {
-      $cred = Get-StoredCredential -Target ${JSON.stringify(service)}
-      if ($cred) { [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($cred.Password)) }
-    } catch { }
-  `.trim();
-  const result = execSync(`powershell -Command "${psScript}"`, { encoding: 'utf-8' }).trim();
-  return result || null;
+/** Shape of the DPAPI-protected store (matches the test-keychain file). */
+export type CredentialMap = Record<string, Record<string, string>>;
+
+export function serializeCredentialMap(map: CredentialMap): string {
+  return JSON.stringify(map);
 }
 
-/* v8 ignore next 5 */
-function writeWindows(service: string, account: string, blob: string): void {
-  execSync(
-    `cmdkey /add:${JSON.stringify(service)} /user:${JSON.stringify(account)} /pass:${JSON.stringify(blob)}`,
-    { encoding: 'utf-8' },
+/** Parse a serialized credential map; malformed input degrades to `{}`. */
+export function parseCredentialMap(json: string): CredentialMap {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed as CredentialMap;
+  } catch {
+    return {};
+  }
+}
+
+export function mapGet(map: CredentialMap, service: string, account: string): string | null {
+  return map[service]?.[account] ?? null;
+}
+
+/** Immutable insert/update of one (service, account) blob. */
+export function mapSet(
+  map: CredentialMap,
+  service: string,
+  account: string,
+  blob: string,
+): CredentialMap {
+  return { ...map, [service]: { ...(map[service] ?? {}), [account]: blob } };
+}
+
+/** Immutable removal of one (service, account) entry; no-op when absent. */
+export function mapDelete(map: CredentialMap, service: string, account: string): CredentialMap {
+  if (!map[service]) return map;
+  const inner = { ...map[service] };
+  delete inner[account];
+  return { ...map, [service]: inner };
+}
+
+// stdin → base64-decode → DPAPI Protect/Unprotect → base64 on stdout.
+// ProtectedData ships in-box with Windows PowerShell 5.1 (System.Security
+// is a framework assembly — no module install, no C# compile).
+const DPAPI_PROTECT_SCRIPT = [
+  "$ErrorActionPreference='Stop'",
+  'Add-Type -AssemblyName System.Security',
+  '$in=[Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())',
+  "$out=[Security.Cryptography.ProtectedData]::Protect($in,$null,'CurrentUser')",
+  '[Console]::Out.Write([Convert]::ToBase64String($out))',
+].join(';');
+
+const DPAPI_UNPROTECT_SCRIPT = [
+  "$ErrorActionPreference='Stop'",
+  'Add-Type -AssemblyName System.Security',
+  '$in=[Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())',
+  "$out=[Security.Cryptography.ProtectedData]::Unprotect($in,$null,'CurrentUser')",
+  '[Console]::Out.Write([Convert]::ToBase64String($out))',
+].join(';');
+
+// `powershell -EncodedCommand` takes the script as UTF-16LE base64, so the
+// script text never touches a shell parser either.
+const DPAPI_PROTECT_B64 = Buffer.from(DPAPI_PROTECT_SCRIPT, 'utf16le').toString('base64');
+const DPAPI_UNPROTECT_B64 = Buffer.from(DPAPI_UNPROTECT_SCRIPT, 'utf16le').toString('base64');
+
+// win32-only DPAPI store: needs powershell.exe + DPAPI, unreachable on the
+// macOS/Linux machines that run the test suite. The pure map layer above
+// carries the unit coverage for everything that doesn't shell out.
+/* v8 ignore start */
+const winStoreDir = () => join(homedir(), '.claude-sentinel');
+const winStorePath = () => join(winStoreDir(), 'credentials.dat');
+
+/** Decrypted-store cache so reads don't spawn PowerShell repeatedly (the
+ *  token rotator re-reads every account on each refresh). The daemon is the
+ *  only writer (port-bound singleton), so within-process invalidation on
+ *  write is sufficient. */
+let winCache: CredentialMap | null = null;
+
+function runPowerShell(scriptUtf16leB64: string, inputB64: string): string {
+  return execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand',
+      scriptUtf16leB64,
+    ],
+    { input: inputB64, encoding: 'utf-8', windowsHide: true },
   );
 }
 
-/* v8 ignore next 7 */
-function deleteWindows(service: string): void {
-  try {
-    execSync(`cmdkey /delete:${JSON.stringify(service)}`, { encoding: 'utf-8' });
-  } catch {
-    // Missing target — fine.
-  }
+function dpapiProtect(plaintext: string): string {
+  const b64 = Buffer.from(plaintext, 'utf-8').toString('base64');
+  return runPowerShell(DPAPI_PROTECT_B64, b64).trim();
 }
+
+function dpapiUnprotect(cipherB64: string): string {
+  const b64 = runPowerShell(DPAPI_UNPROTECT_B64, cipherB64).trim();
+  return Buffer.from(b64, 'base64').toString('utf-8');
+}
+
+function loadWinMap(): CredentialMap {
+  if (winCache) return winCache;
+  try {
+    const cipher = existsSync(winStorePath()) ? readFileSync(winStorePath(), 'utf-8').trim() : '';
+    winCache = cipher ? parseCredentialMap(dpapiUnprotect(cipher)) : {};
+  } catch {
+    // Undecryptable/corrupt store — degrade to empty rather than crash;
+    // every secret in it (tokens, HMAC key) is regenerable.
+    winCache = {};
+  }
+  return winCache;
+}
+
+function saveWinMap(map: CredentialMap): void {
+  const cipher = dpapiProtect(serializeCredentialMap(map));
+  mkdirSync(winStoreDir(), { recursive: true });
+  const tmp = `${winStorePath()}.tmp.${process.pid}.${Date.now()}`;
+  writeFileSync(tmp, cipher, 'utf-8');
+  renameSync(tmp, winStorePath()); // atomic replace, mirrors claude-state.ts
+  winCache = map;
+}
+
+function readWindows(service: string, account: string): string | null {
+  return mapGet(loadWinMap(), service, account);
+}
+
+function writeWindows(service: string, account: string, blob: string): void {
+  winCache = null; // re-read the file before read-modify-write
+  saveWinMap(mapSet(loadWinMap(), service, account, blob));
+}
+
+function deleteWindows(service: string, account: string): void {
+  winCache = null;
+  saveWinMap(mapDelete(loadWinMap(), service, account));
+}
+/* v8 ignore stop */
 
 // ─── Linux ───────────────────────────────────────────────────────────────────
 
@@ -302,5 +436,48 @@ function deleteLinux(service: string, account: string): void {
     );
   } catch {
     // secret-tool clear is a no-op/non-zero when no match — treat as success.
+  }
+}
+
+// ─── Claude Code credentials file (win32 + linux) ────────────────────────────
+//
+// Claude Code only uses the OS keychain on macOS. On Windows and Linux it
+// reads/writes <config dir>/.credentials.json (config dir = CLAUDE_CONFIG_DIR
+// or ~/.claude), so the CC_SERVICE slot must target that file — otherwise
+// account switches and existing-login imports are invisible to Claude Code.
+// The CC blob is already exactly the file's content shape
+// ({"claudeAiOauth": {...}}), so blobs pass through verbatim.
+
+/** Resolve Claude Code's credentials file, honoring CLAUDE_CONFIG_DIR. */
+export function claudeCredentialsFilePath(): string {
+  const base = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+  return join(base, '.credentials.json');
+}
+
+export function readClaudeCodeFile(): string | null {
+  try {
+    return readFileSync(claudeCredentialsFilePath(), 'utf-8');
+  } catch {
+    // Missing or unreadable — same as an empty keychain slot.
+    return null;
+  }
+}
+
+export function writeClaudeCodeFile(blob: string): void {
+  const p = claudeCredentialsFilePath();
+  mkdirSync(dirname(p), { recursive: true });
+  // Fresh tmp + rename = atomic replace. Mode 0600 matches Claude Code's own
+  // file permissions (user-only bits, so umask cannot widen it); the mode is
+  // ignored on Windows, where ACLs come from the profile directory.
+  const tmp = `${p}.tmp.${process.pid}.${Date.now()}`;
+  writeFileSync(tmp, blob, { encoding: 'utf-8', mode: 0o600 });
+  renameSync(tmp, p);
+}
+
+export function deleteClaudeCodeFile(): void {
+  try {
+    unlinkSync(claudeCredentialsFilePath());
+  } catch {
+    // Already gone — fine.
   }
 }
