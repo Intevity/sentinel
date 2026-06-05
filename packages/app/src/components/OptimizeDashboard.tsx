@@ -1,11 +1,14 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Sparkles, CheckCircle2, ChevronDown, ChevronRight, Trash2, Bot, Zap } from 'lucide-react';
+import { motion } from 'motion/react';
 import type {
   OptimizationMetrics,
   OptimizationMetricsBySubagent,
   OptimizeChartView,
   OptimizeRangePreset,
+  OptimizeSubTab,
   CompressionMetrics,
+  McpContextCosts,
   ProcessedTokens,
   MetricsWindow,
   Settings,
@@ -15,6 +18,7 @@ import { formatTokens, type SavingsUnits } from '../lib/optimizeUnits.js';
 import OpportunityList from './optimize/OpportunityList.js';
 import ContextInventoryPanel from './optimize/ContextInventoryPanel.js';
 import CompressionPanel from './optimize/CompressionPanel.js';
+import ContextPanel from './optimize/ContextPanel.js';
 import {
   RealizedChart,
   BySubagentChart,
@@ -99,6 +103,14 @@ export default function OptimizeDashboard(): React.ReactElement {
   // `comp` (header totals) so the totals shape doesn't have to carry the
   // whole CompressionMetrics payload.
   const [compDaily, setCompDaily] = useState<CompressionMetrics['daily']>([]);
+  // Context (code mode) savings, the third source folded into the header
+  // totals. The ContextPanel owns the per-server breakdown.
+  const [ctx, setCtx] = useState<{
+    tokens: number;
+    cost: number;
+    potTokens: number;
+    potCost: number;
+  }>({ tokens: 0, cost: 0, potTokens: 0, potCost: 0 });
   // Total input tokens Sentinel forwarded over the window — denominator for
   // the "saved X of Y input tokens" headline.
   const [processed, setProcessed] = useState<ProcessedTokens>({
@@ -116,6 +128,10 @@ export default function OptimizeDashboard(): React.ReactElement {
   // framing — `tokensRealized` on the metrics shape is that single
   // value the daemon computes.
   const [units, setUnits] = useState<SavingsUnits>('tokens');
+  // Active sub-tab is server-persisted via Settings.optimizeSubTab so the
+  // user's last section survives restarts. Each of the three optimization
+  // features owns one tab; the sticky savings bar above them stays global.
+  const [subTab, setSubTab] = useState<OptimizeSubTab>('subagents');
   // Chart-view selection is server-persisted via Settings.optimizeChartView.
   // Default 'realized' matches the daemon default and preserves the
   // pre-existing chart for users who don't touch the new switcher.
@@ -145,7 +161,7 @@ export default function OptimizeDashboard(): React.ReactElement {
     setMetricsWindow((prev) =>
       prev.sinceMs === win.sinceMs && prev.untilMs === win.untilMs ? prev : win,
     );
-    const [lib, inst, met, compm, proc, settings] = await Promise.all([
+    const [lib, inst, met, compm, proc, settings, ctxCosts] = await Promise.all([
       sendToSentinel<CuratedEntry[]>({ type: 'get_curated_library' }),
       sendToSentinel<InstalledRow[]>({ type: 'list_installed_subagents' }),
       sendToSentinel<OptimizationMetrics>({
@@ -160,6 +176,7 @@ export default function OptimizeDashboard(): React.ReactElement {
       }),
       sendToSentinel<ProcessedTokens>({ type: 'get_processed_tokens', window: win }),
       sendToSentinel<Settings>({ type: 'get_settings' }),
+      sendToSentinel<McpContextCosts>({ type: 'get_mcp_context_costs', window: win }),
     ]);
     if (lib.success) setLibrary(lib.data ?? []);
     if (inst.success) setInstalled(inst.data ?? []);
@@ -186,6 +203,15 @@ export default function OptimizeDashboard(): React.ReactElement {
       setUnits(settings.data.optimizeUnits);
       setChartView(settings.data.optimizeChartView);
       setRange(settings.data.optimizeRange);
+      setSubTab(settings.data.optimizeSubTab);
+    }
+    if (ctxCosts.success && ctxCosts.data) {
+      setCtx({
+        tokens: ctxCosts.data.savings.realized.estTokens,
+        cost: ctxCosts.data.savings.realized.estUsd,
+        potTokens: ctxCosts.data.savings.potential.estTokens,
+        potCost: ctxCosts.data.savings.potential.estUsd,
+      });
     }
   }, [range, customStart, customEnd]);
 
@@ -203,6 +229,8 @@ export default function OptimizeDashboard(): React.ReactElement {
         msg.type === 'agents_sync_status' ||
         msg.type === 'optimization_metrics_updated' ||
         msg.type === 'compression_metrics_updated' ||
+        msg.type === 'mcp_context_costs_updated' ||
+        msg.type === 'code_mode_status' ||
         msg.type === 'settings_changed'
       ) {
         void refresh();
@@ -230,6 +258,15 @@ export default function OptimizeDashboard(): React.ReactElement {
     await sendToSentinel({
       type: 'update_settings',
       settings: { optimizeChartView: next },
+    });
+  }, []);
+
+  const onChangeSubTab = useCallback(async (next: OptimizeSubTab) => {
+    // Same optimistic-then-persist pattern as the units toggle.
+    setSubTab(next);
+    await sendToSentinel({
+      type: 'update_settings',
+      settings: { optimizeSubTab: next },
     });
   }, []);
 
@@ -277,7 +314,25 @@ export default function OptimizeDashboard(): React.ReactElement {
 
   return (
     <div className="space-y-3">
-      <RangeSelector
+      {/* Sticky savings bar: the "Content reduced" headline stays visible
+          while any tab scrolls; click to expand into the full metric tiles
+          plus the global units + range controls (one MetricsWindow drives
+          every tab). <main> in App.tsx is the scrolling ancestor. */}
+      <StickySavingsBar
+        metrics={metrics}
+        compTokens={comp.tokens}
+        compCost={comp.cost}
+        compPotTokens={comp.potTokens}
+        compPotCost={comp.potCost}
+        compGrossTokens={comp.grossTokens}
+        ctxTokens={ctx.tokens}
+        ctxCost={ctx.cost}
+        ctxPotTokens={ctx.potTokens}
+        ctxPotCost={ctx.potCost}
+        processedInputTokens={processed.inputSideTokens}
+        rangeLabel={RANGE_LABELS[range]}
+        units={units}
+        onToggleUnits={onToggleUnits}
         range={range}
         customStart={customStart}
         customEnd={customEnd}
@@ -285,33 +340,143 @@ export default function OptimizeDashboard(): React.ReactElement {
         onChangeCustomStart={setCustomStart}
         onChangeCustomEnd={setCustomEnd}
       />
-      <SavingsHeader
-        metrics={metrics}
-        compTokens={comp.tokens}
-        compCost={comp.cost}
-        compPotTokens={comp.potTokens}
-        compPotCost={comp.potCost}
-        compGrossTokens={comp.grossTokens}
-        processedInputTokens={processed.inputSideTokens}
-        rangeLabel={RANGE_LABELS[range]}
-        units={units}
-        onToggleUnits={onToggleUnits}
-      >
-        <SavingsChartSection
-          chartView={chartView}
-          onChangeChartView={onChangeChartView}
-          metrics={metrics}
-          compDaily={compDaily}
-          units={units}
-        />
-      </SavingsHeader>
 
-      <CompressionPanel metricsWindow={metricsWindow} />
+      <OptimizeSubTabs value={subTab} onChange={(t) => void onChangeSubTab(t)} />
 
       {error !== null && (
         <div className="glass-card px-4 py-3 text-sm text-red-700 dark:text-red-300">{error}</div>
       )}
 
+      {subTab === 'compression' && (
+        <>
+          <CompressionPanel metricsWindow={metricsWindow} />
+          <div className="glass-card px-4 py-3">
+            <SavingsChartSection
+              chartView="compression"
+              metrics={metrics}
+              compDaily={compDaily}
+              units={units}
+              allowedViews={['compression']}
+            />
+          </div>
+        </>
+      )}
+
+      {subTab === 'context' && (
+        <>
+          <ContextPanel metricsWindow={metricsWindow} />
+          <ContextInventoryPanel hideMcpServers />
+        </>
+      )}
+
+      {subTab === 'subagents' && (
+        <SubagentsSection
+          library={library}
+          installed={installed}
+          installedNames={installedNames}
+          savingsByCuratedId={savingsByCuratedId}
+          busy={busy}
+          units={units}
+          metricsWindow={metricsWindow}
+          chartView={chartView}
+          onChangeChartView={(v) => void onChangeChartView(v)}
+          metrics={metrics}
+          compDaily={compDaily}
+          onInstall={(id) => void onInstall(id)}
+          onUninstall={(name) => void onUninstall(name)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Segmented sub-tab bar separating the three optimization features.
+ *  Mirrors SecurityRulesOverlay's nested tab pattern (motion pill). */
+function OptimizeSubTabs({
+  value,
+  onChange,
+}: {
+  value: OptimizeSubTab;
+  onChange: (next: OptimizeSubTab) => void;
+}): React.ReactElement {
+  const tabs: Array<{ id: OptimizeSubTab; label: string }> = [
+    { id: 'subagents', label: 'Subagents' },
+    { id: 'compression', label: 'Compression' },
+    { id: 'context', label: 'Context' },
+  ];
+  return (
+    <div role="tablist" aria-label="Optimize features" className="flex gap-1">
+      {tabs.map((tab) => {
+        const active = tab.id === value;
+        return (
+          <button
+            key={tab.id}
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(tab.id)}
+            className={`relative flex-1 text-[11px] font-semibold px-2 py-1 rounded-full transition-colors ${
+              active ? 'text-white' : 'text-muted hover:text-black dark:hover:text-white'
+            }`}
+          >
+            {active && (
+              <motion.span
+                layoutId="optimize-subtab-pill"
+                className="absolute inset-0 bg-ios-blue rounded-full -z-[1]"
+                transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+              />
+            )}
+            <span className="relative">{tab.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Subagents tab content: curated library, local subagents, opportunity
+ *  drill-down, and the subagent chart views. Everything here moved verbatim
+ *  from the pre-tab single-page layout. */
+function SubagentsSection({
+  library,
+  installed,
+  installedNames,
+  savingsByCuratedId,
+  busy,
+  units,
+  metricsWindow,
+  chartView,
+  onChangeChartView,
+  metrics,
+  compDaily,
+  onInstall,
+  onUninstall,
+}: {
+  library: CuratedEntry[];
+  installed: InstalledRow[];
+  installedNames: Set<string>;
+  savingsByCuratedId: Map<string, OptimizationMetricsBySubagent>;
+  busy: string | null;
+  units: SavingsUnits;
+  metricsWindow: MetricsWindow;
+  chartView: OptimizeChartView;
+  onChangeChartView: (next: OptimizeChartView) => void;
+  metrics: OptimizationMetrics;
+  compDaily: CompressionMetrics['daily'];
+  onInstall: (curatedId: string) => void;
+  onUninstall: (name: string) => void;
+}): React.ReactElement {
+  // The persisted view may be 'compression' (it lives on the Compression
+  // tab now); fall back to the default subagent view here.
+  const subagentViews: OptimizeChartView[] = [
+    'realized',
+    'bySubagent',
+    'comparison',
+    'cumulative',
+    'byPattern',
+  ];
+  const effectiveView = subagentViews.includes(chartView) ? chartView : 'realized';
+  return (
+    <>
       <div className="glass-card px-4 py-3">
         <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-foreground">
           <Sparkles className="h-3.5 w-3.5" /> Curated subagents
@@ -350,7 +515,7 @@ export default function OptimizeDashboard(): React.ReactElement {
                   <button
                     type="button"
                     disabled={isBusy}
-                    onClick={() => void onUninstall(entry.curatedId)}
+                    onClick={() => onUninstall(entry.curatedId)}
                     className="flex shrink-0 items-center gap-1 rounded border border-border-subtle/15 px-2 py-1 text-xs text-foreground/70 hover:bg-surface-overlay/5"
                   >
                     <Trash2 className="h-3 w-3" /> Remove
@@ -359,7 +524,7 @@ export default function OptimizeDashboard(): React.ReactElement {
                   <button
                     type="button"
                     disabled={isBusy}
-                    onClick={() => void onInstall(entry.curatedId)}
+                    onClick={() => onInstall(entry.curatedId)}
                     className="flex shrink-0 items-center gap-1 rounded bg-surface-overlay/15 px-2 py-1 text-xs text-foreground hover:bg-surface-overlay/25"
                   >
                     <Sparkles className="h-3 w-3" /> Install
@@ -397,8 +562,18 @@ export default function OptimizeDashboard(): React.ReactElement {
       )}
 
       <OpportunityList units={units} metricsWindow={metricsWindow} />
-      <ContextInventoryPanel />
-    </div>
+
+      <div className="glass-card px-4 py-3">
+        <SavingsChartSection
+          chartView={effectiveView}
+          onChangeChartView={onChangeChartView}
+          metrics={metrics}
+          compDaily={compDaily}
+          units={units}
+          allowedViews={subagentViews}
+        />
+      </div>
+    </>
   );
 }
 
@@ -423,6 +598,7 @@ const RANGE_LABELS: Record<OptimizeRangePreset, string> = {
   '1w': 'in the last 7 days',
   '1m': 'in the last month',
   '3m': 'in the last 3 months',
+  '6m': 'in the last 6 months',
   '1y': 'in the last year',
   all: 'all-time',
   custom: 'in the selected range',
@@ -433,6 +609,7 @@ const RANGE_OPTIONS: Array<{ value: OptimizeRangePreset; label: string }> = [
   { value: '1w', label: '1W' },
   { value: '1m', label: '1M' },
   { value: '3m', label: '3M' },
+  { value: '6m', label: '6M' },
   { value: '1y', label: '1Y' },
   { value: 'all', label: 'All' },
   { value: 'custom', label: 'Custom' },
@@ -468,6 +645,10 @@ function windowForRange(
       return {
         sinceMs: startOfLocalDay(new Date(now.getFullYear(), now.getMonth() - 3, now.getDate())),
       };
+    case '6m':
+      return {
+        sinceMs: startOfLocalDay(new Date(now.getFullYear(), now.getMonth() - 6, now.getDate())),
+      };
     case '1y':
       return {
         sinceMs: startOfLocalDay(new Date(now.getFullYear() - 1, now.getMonth(), now.getDate())),
@@ -499,10 +680,21 @@ function RangeSelector({
   onChangeCustomStart: (next: string) => void;
   onChangeCustomEnd: (next: string) => void;
 }): React.ReactElement {
+  // Two layout modes share the row's full width:
+  //   - Preset active: the segmented group stretches edge to edge and every
+  //     button gets an equal share (flex-1), so nothing looks scrunched left.
+  //   - Custom active: the group collapses to its natural width (tighter
+  //     button padding) and the two date inputs flex into the freed space.
+  // flex-wrap stays as the safety net: if a platform's native date inputs
+  // are too wide to share the row (e.g. Windows), they wrap to their own
+  // line instead of overflowing.
+  const customActive = range === 'custom';
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex w-full flex-wrap items-center gap-x-2 gap-y-1.5">
       <div
-        className="flex rounded border border-border-subtle/10 p-0.5 text-[10px] uppercase tracking-wide"
+        className={`flex min-w-0 rounded border border-border-subtle/10 p-0.5 text-[10px] uppercase tracking-wide ${
+          customActive ? '' : 'flex-1'
+        }`}
         role="group"
         aria-label="Time range"
       >
@@ -512,30 +704,36 @@ function RangeSelector({
             type="button"
             aria-pressed={range === o.value}
             onClick={() => onChangeRange(o.value)}
-            className={`rounded px-2 py-0.5 ${range === o.value ? 'bg-surface-overlay/15 text-foreground' : 'text-foreground/55 hover:text-foreground/85'}`}
+            className={`rounded py-0.5 text-center transition-colors ${
+              customActive ? 'px-1.5' : 'flex-1 px-2'
+            } ${
+              range === o.value
+                ? 'bg-surface-overlay/15 text-foreground'
+                : 'text-foreground/55 hover:text-foreground/85'
+            }`}
           >
             {o.label}
           </button>
         ))}
       </div>
-      {range === 'custom' && (
-        <div className="flex items-center gap-1 text-[11px] text-foreground/60">
+      {customActive && (
+        <div className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-foreground/60">
           <input
             type="date"
             value={customStart}
             max={customEnd || undefined}
             onChange={(e) => onChangeCustomStart(e.target.value)}
             aria-label="Start date"
-            className="rounded border border-border-subtle/15 bg-transparent px-1.5 py-0.5 text-foreground"
+            className="min-w-0 flex-1 rounded border border-border-subtle/15 bg-transparent px-1 py-0.5 text-foreground"
           />
-          <span>to</span>
+          <span className="shrink-0">to</span>
           <input
             type="date"
             value={customEnd}
             min={customStart || undefined}
             onChange={(e) => onChangeCustomEnd(e.target.value)}
             aria-label="End date"
-            className="rounded border border-border-subtle/15 bg-transparent px-1.5 py-0.5 text-foreground"
+            className="min-w-0 flex-1 rounded border border-border-subtle/15 bg-transparent px-1 py-0.5 text-foreground"
           />
         </div>
       )}
@@ -543,18 +741,27 @@ function RangeSelector({
   );
 }
 
-function SavingsHeader({
+function StickySavingsBar({
   metrics,
   compTokens,
   compCost,
   compPotTokens,
   compPotCost,
   compGrossTokens,
+  ctxTokens,
+  ctxCost,
+  ctxPotTokens,
+  ctxPotCost,
   processedInputTokens,
   rangeLabel,
   units,
   onToggleUnits,
-  children,
+  range,
+  customStart,
+  customEnd,
+  onChangeRange,
+  onChangeCustomStart,
+  onChangeCustomEnd,
 }: {
   metrics: OptimizationMetrics;
   /** Compression's realized estimated tokens saved (folded into the total). */
@@ -568,6 +775,15 @@ function SavingsHeader({
   /** Gross input tokens of the tool output compression acted on (est. from
    *  bytesIn) — compression half of the "% of optimized content" denominator. */
   compGrossTokens: number;
+  /** Context (code mode): definition tokens kept out of requests since
+   *  bridging (realized, folded into the total). */
+  ctxTokens: number;
+  /** Context realized estimated USD (cached rates). */
+  ctxCost: number;
+  /** Context potential tokens (bridging the recommended servers). */
+  ctxPotTokens: number;
+  /** Context potential USD. */
+  ctxPotCost: number;
   /** Total input-side tokens Sentinel forwarded over the window — the broad
    *  denominator for the savings percentage. */
   processedInputTokens: number;
@@ -575,20 +791,46 @@ function SavingsHeader({
   rangeLabel: string;
   units: SavingsUnits;
   onToggleUnits: (next: SavingsUnits) => void;
-  /** Extra pane content rendered at the bottom of the card; hosts the
-   *  collapsible savings-chart section. */
-  children?: React.ReactNode;
+  range: OptimizeRangePreset;
+  customStart: string;
+  customEnd: string;
+  onChangeRange: (next: OptimizeRangePreset) => void;
+  onChangeCustomStart: (next: string) => void;
+  onChangeCustomEnd: (next: string) => void;
 }): React.ReactElement {
+  // Collapsed by default: the hero number at a glance. Ephemeral component
+  // state (like SavingsChartSection's open flag): re-collapses on remount.
+  const [open, setOpen] = useState(false);
+  // True while the bar is pinned by position:sticky. Drives the visual
+  // separation (bottom hairline + lifted shadow) that distinguishes the
+  // sticky chrome from content scrolling beneath it. Detected via a 1px
+  // sentinel at the bar's natural position: the instant the bar pins, the
+  // sentinel scrolls out of <main>'s clipped viewport and stops
+  // intersecting. IntersectionObserver clips by overflow ancestors, so the
+  // default (viewport) root works.
+  const [stuck, setStuck] = useState(false);
+  const stuckSentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = stuckSentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(([entry]) =>
+      setStuck(entry ? !entry.isIntersecting : false),
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   const subTokens = metrics.totals.tokensRealized;
   const subCost = metrics.totals.savingsUsdRealized;
   const subPotTokens = metrics.totals.tokensPotential;
   const subPotCost = metrics.totals.savingsUsdPotential;
-  // Both totals combine the two sources. Subagent and compression savings are
-  // both input-token savings (and both estimates), so summing is meaningful.
-  const savedTokens = subTokens + compTokens;
-  const savedCost = subCost + compCost;
-  const potentialTokens = subPotTokens + compPotTokens;
-  const potentialCost = subPotCost + compPotCost;
+  // The totals combine all three sources. Subagent, compression, and context
+  // (code mode) savings are all input-token reductions (and all estimates),
+  // so summing is meaningful; context dollars use cached rates since
+  // definitions ride as cache reads.
+  const savedTokens = subTokens + compTokens + ctxTokens;
+  const savedCost = subCost + compCost + ctxCost;
+  const potentialTokens = subPotTokens + compPotTokens + ctxPotTokens;
+  const potentialCost = subPotCost + compPotCost + ctxPotCost;
   const installs = metrics.totals.installs;
   const opportunities = metrics.totals.opportunities;
   const disp = (cost: number, tokens: number): string =>
@@ -599,7 +841,9 @@ function SavingsHeader({
   // removed over that content's ORIGINAL size (compressed tool output +
   // subagent-absorbed reads). Independent of prompt caching: it measures the
   // optimized content itself, not its share of the request.
-  const optimizedDenom = compGrossTokens + metrics.totals.hypotheticalInputTokens;
+  // Context's slice of the denominator is its realized tokens themselves:
+  // removed definitions are a 100% reduction of their original size.
+  const optimizedDenom = compGrossTokens + metrics.totals.hypotheticalInputTokens + ctxTokens;
   const optimizedPct = optimizedDenom > 0 ? (savedTokens / optimizedDenom) * 100 : 0;
   // SECONDARY (total-bill): saved as a share of ALL input tokens forwarded over
   // the window (input + cache reads + cache writes). Honest but small and
@@ -609,78 +853,195 @@ function SavingsHeader({
   const totalInputPct = totalInput > 0 ? (savedTokens / totalInput) * 100 : 0;
   const pctStr = (n: number): string => `${n.toFixed(n >= 10 || n === 0 ? 0 : 1)}%`;
   const heroPct = optimizedDenom > 0 ? pctStr(optimizedPct) : '—';
-  const srcSaved = `subagents ${disp(subCost, subTokens)} · compression ${disp(compCost, compTokens)}`;
-  const srcPotential = `subagents ${disp(subPotCost, subPotTokens)} · compression ${disp(compPotCost, compPotTokens)}`;
+  const srcSaved = `subagents ${disp(subCost, subTokens)} · compression ${disp(compCost, compTokens)} · context ${disp(ctxCost, ctxTokens)}`;
+  const srcPotential = `subagents ${disp(subPotCost, subPotTokens)} · compression ${disp(compPotCost, compPotTokens)} · context ${disp(ctxPotCost, ctxPotTokens)}`;
+  // `sticky` works because <main> (App.tsx) is the overflow-y-scroll
+  // ancestor; the bar pins to its top while tab content scrolls beneath. The
+  // range selector renders in BOTH states so the window can be changed at any
+  // time without expanding; collapsed surfaces two glance metrics (Content
+  // reduced + Saved) so the headline numbers stay visible at a glance.
   return (
-    <div className="glass-card px-4 py-3">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
-            <Zap className="h-4 w-4" /> Optimize
-          </h2>
-          <p className="mt-0.5 text-xs text-foreground/60">
-            Cut token costs by routing routine work to cheaper-model subagents and compressing tool
-            output in flight.
-          </p>
-        </div>
-        <UnitsToggle units={units} onChange={onToggleUnits} />
-      </div>
-
-      <div className="mt-3 grid grid-cols-3 gap-2">
-        {/* Hero: how much smaller Sentinel made the content it optimized (a
-            compression ratio; cache-independent). */}
+    <>
+      {/* 1px sentinel at the bar's natural position (net-zero layout via the
+          negative margin); see the `stuck` state above. */}
+      <div ref={stuckSentinelRef} aria-hidden="true" className="-mb-px h-px" />
+      {/* Sticky wrapper — transparent except for a page-colored strip masking
+          ONLY the top corner radius (h-4 = the card's rounded-2xl radius).
+          Content scrolling beneath can never poke through the TOP corner
+          notches (which made them read as squared), but stays visible sliding
+          under the card's bottom rounded corners — the card floats over it.
+          Separation while stuck comes from the lifted drop shadow alone; no
+          hairline (a straight edge-to-edge line fights the rounded corners).
+          The card is `relative` so it paints above the mask; `!mt-0` keeps the
+          parent's space-y-3 from inserting a gap now that the sentinel is the
+          preceding sibling. Mask colors match the page bg OverlayPanel uses
+          for its sticky chrome. */}
+      <div className="sticky top-0 z-10 !mt-0">
         <div
-          className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2.5"
-          title="How much smaller Sentinel makes the content it optimizes: tokens removed from compressed tool output plus subagent-absorbed reads, over that content's original size. This is a compression ratio (comparable to tool-compression benchmarks) and is independent of prompt caching."
+          aria-hidden="true"
+          className="absolute inset-x-0 top-0 h-4 bg-[#F2F2F7] dark:bg-[#111111]"
+        />
+        <div
+          className={`glass-card relative px-4 py-2.5 transition-shadow duration-200 ${
+            stuck ? 'shadow-sticky dark:shadow-sticky-dark' : ''
+          }`}
         >
-          <div className="text-[10px] uppercase tracking-wide text-foreground/55">
-            Content reduced
-          </div>
-          <div className={`mt-0.5 text-3xl font-semibold tabular-nums ${colorClass(savedTokens)}`}>
-            {heroPct}
-          </div>
-          <div className="mt-0.5 text-[11px] text-foreground/55">
-            {optimizedDenom > 0
-              ? `${formatTokens(savedTokens)} of ${formatTokens(optimizedDenom)} optimized tokens ${rangeLabel}`
-              : `no compressible content ${rangeLabel}`}
-          </div>
-        </div>
+          {open ? (
+            <div className="flex items-start justify-between gap-4">
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                aria-expanded={true}
+                className="min-w-0 text-left"
+                title="Collapse to the thin bar"
+              >
+                <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
+                  <Zap className="h-4 w-4" /> Optimize
+                  <ChevronDown className="h-3.5 w-3.5 text-foreground/55" />
+                </h2>
+                <p className="mt-0.5 text-xs text-foreground/60">
+                  Cut token costs by routing routine work to cheaper-model subagents, compressing
+                  tool output in flight, and moving MCP tool definitions out of context.
+                </p>
+              </button>
+              <UnitsToggle units={units} onChange={onToggleUnits} />
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              aria-expanded={false}
+              className="flex w-full items-center gap-2 text-left"
+              title="Expand for the full savings breakdown"
+            >
+              <Zap className="h-4 w-4 shrink-0 text-foreground" />
+              <span className="text-sm font-semibold text-foreground">Optimize</span>
+              <span className="ml-auto flex items-center gap-2.5">
+                <GlanceStat
+                  label="Content reduced"
+                  value={heroPct}
+                  valueClass={colorClass(savedTokens)}
+                  title="How much smaller Sentinel makes the content it optimizes: tokens removed over that content's original size."
+                />
+                <span className="h-3.5 w-px bg-border-subtle/15" aria-hidden="true" />
+                <GlanceStat
+                  label="Saved"
+                  value={disp(savedCost, savedTokens)}
+                  valueClass={colorClass(savedTokens)}
+                  title={srcSaved}
+                />
+              </span>
+              <ChevronRight className="ml-1 h-3.5 w-3.5 shrink-0 text-foreground/55" />
+            </button>
+          )}
 
-        {/* Saved (absolute). Per-source split lives in the tooltip. */}
-        <div className="rounded-lg border border-border-subtle/10 px-3 py-2.5" title={srcSaved}>
-          <div className="text-[10px] uppercase tracking-wide text-foreground/55">Saved</div>
-          <div className={`mt-0.5 text-2xl font-semibold tabular-nums ${colorClass(savedTokens)}`}>
-            {disp(savedCost, savedTokens)}
-          </div>
-          <div className="mt-0.5 text-[11px] text-foreground/45">realized {rangeLabel}</div>
-        </div>
+          {open && (
+            <>
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                {/* Hero: how much smaller Sentinel made the content it optimized (a
+                compression ratio; cache-independent). */}
+                <div
+                  className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2.5"
+                  title="How much smaller Sentinel makes the content it optimizes: tokens removed from compressed tool output plus subagent-absorbed reads, over that content's original size. This is a compression ratio (comparable to tool-compression benchmarks) and is independent of prompt caching."
+                >
+                  <div className="text-[10px] uppercase tracking-wide text-foreground/55">
+                    Content reduced
+                  </div>
+                  <div
+                    className={`mt-0.5 text-3xl font-semibold tabular-nums ${colorClass(savedTokens)}`}
+                  >
+                    {heroPct}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-foreground/55">
+                    {optimizedDenom > 0
+                      ? `${formatTokens(savedTokens)} of ${formatTokens(optimizedDenom)}`
+                      : `no compressible content ${rangeLabel}`}
+                  </div>
+                </div>
 
-        {/* Potential (absolute). Per-source split lives in the tooltip. */}
-        <div className="rounded-lg border border-border-subtle/10 px-3 py-2.5" title={srcPotential}>
-          <div className="text-[10px] uppercase tracking-wide text-foreground/55">Potential</div>
-          <div className="mt-0.5 text-2xl font-semibold tabular-nums text-sky-700 dark:text-sky-300">
-            {disp(potentialCost, potentialTokens)}
+                {/* Saved (absolute). Per-source split lives in the tooltip. */}
+                <div
+                  className="rounded-lg border border-border-subtle/10 px-3 py-2.5"
+                  title={srcSaved}
+                >
+                  <div className="text-[10px] uppercase tracking-wide text-foreground/55">
+                    Saved
+                  </div>
+                  <div
+                    className={`mt-0.5 text-2xl font-semibold tabular-nums ${colorClass(savedTokens)}`}
+                  >
+                    {disp(savedCost, savedTokens)}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-foreground/45">realized {rangeLabel}</div>
+                </div>
+
+                {/* Potential (absolute). Per-source split lives in the tooltip. */}
+                <div
+                  className="rounded-lg border border-border-subtle/10 px-3 py-2.5"
+                  title={srcPotential}
+                >
+                  <div className="text-[10px] uppercase tracking-wide text-foreground/55">
+                    Potential
+                  </div>
+                  <div className="mt-0.5 text-2xl font-semibold tabular-nums text-sky-700 dark:text-sky-300">
+                    {disp(potentialCost, potentialTokens)}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-foreground/45">additional, available</div>
+                </div>
+              </div>
+
+              <p className="mt-2 text-[11px] text-foreground/45">
+                {totalInput > 0 && (
+                  <>
+                    <span title="Saved as a share of ALL input tokens forwarded over the window, including cached context (cache reads) that Sentinel does not compress. Much smaller than the compression ratio because compressible tool output is only a slice of total input.">
+                      ≈{pctStr(totalInputPct)} of total input incl. cached context
+                    </span>
+                    {' · '}
+                  </>
+                )}
+                {installs} subagent{installs === 1 ? '' : 's'} installed
+                {' · '}
+                {opportunities} opportunit{opportunities === 1 ? 'y' : 'ies'} {rangeLabel}
+              </p>
+            </>
+          )}
+
+          {/* Range selector — always visible (collapsed or expanded) so the window
+          is changeable at any time. */}
+          <div className="mt-2.5 border-t border-border-subtle/10 pt-2.5">
+            <RangeSelector
+              range={range}
+              customStart={customStart}
+              customEnd={customEnd}
+              onChangeRange={onChangeRange}
+              onChangeCustomStart={onChangeCustomStart}
+              onChangeCustomEnd={onChangeCustomEnd}
+            />
           </div>
-          <div className="mt-0.5 text-[11px] text-foreground/45">additional, available</div>
         </div>
       </div>
+    </>
+  );
+}
 
-      <p className="mt-2 text-[11px] text-foreground/45">
-        {totalInput > 0 && (
-          <>
-            <span title="Saved as a share of ALL input tokens forwarded over the window, including cached context (cache reads) that Sentinel does not compress. Much smaller than the compression ratio because compressible tool output is only a slice of total input.">
-              ≈{pctStr(totalInputPct)} of total input incl. cached context
-            </span>
-            {' · '}
-          </>
-        )}
-        {installs} subagent{installs === 1 ? '' : 's'} installed
-        {' · '}
-        {opportunities} opportunit{opportunities === 1 ? 'y' : 'ies'} {rangeLabel}
-      </p>
-
-      {children}
-    </div>
+/** Compact label+value stat for the collapsed sticky bar. Inline baseline so
+ *  the bar stays thin; mirrors the expanded tiles' label styling. */
+function GlanceStat({
+  label,
+  value,
+  valueClass,
+  title,
+}: {
+  label: string;
+  value: string;
+  valueClass: string;
+  title?: string;
+}): React.ReactElement {
+  return (
+    <span className="flex items-baseline gap-1.5" title={title}>
+      <span className="text-[10px] uppercase tracking-wide text-foreground/55">{label}</span>
+      <span className={`text-sm font-semibold tabular-nums ${valueClass}`}>{value}</span>
+    </span>
   );
 }
 
@@ -696,26 +1057,31 @@ const CHART_VIEW_TITLES: Record<OptimizeChartView, string> = {
   compression: 'Compression savings',
 };
 
-/** Collapsible chart area folded into the bottom of the Optimize pane:
- *  view switcher + the active chart, rendered embedded (the charts skip
- *  their own card + title since this header carries it). Open by default;
- *  collapse state is local, matching OpportunityList. */
+/** Collapsible chart area at the bottom of a feature tab: view switcher +
+ *  the active chart, rendered embedded (the charts skip their own card +
+ *  title since this header carries it). Open by default; collapse state is
+ *  local, matching OpportunityList. `allowedViews` scopes the switcher to
+ *  the tab's own views; a single-view tab (Compression) hides the switcher
+ *  entirely. */
 function SavingsChartSection({
   chartView,
   onChangeChartView,
   metrics,
   compDaily,
   units,
+  allowedViews,
 }: {
   chartView: OptimizeChartView;
-  onChangeChartView: (next: OptimizeChartView) => void;
+  /** Omitted when the tab pins a single view (no switcher rendered). */
+  onChangeChartView?: (next: OptimizeChartView) => void;
   metrics: OptimizationMetrics;
   compDaily: CompressionMetrics['daily'];
   units: SavingsUnits;
+  allowedViews: OptimizeChartView[];
 }): React.ReactElement {
   const [open, setOpen] = useState(true);
   return (
-    <div className="mt-3 border-t border-border-subtle/10 pt-2">
+    <div className="border-t border-border-subtle/10 pt-2 first:border-t-0 first:pt-0">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -731,9 +1097,15 @@ function SavingsChartSection({
       </button>
       {open && (
         <div className="mt-1 space-y-2">
-          <div className="flex justify-start">
-            <ChartViewSwitcher value={chartView} onChange={onChangeChartView} />
-          </div>
+          {onChangeChartView && allowedViews.length > 1 && (
+            <div className="flex justify-start">
+              <ChartViewSwitcher
+                value={chartView}
+                onChange={onChangeChartView}
+                views={allowedViews}
+              />
+            </div>
+          )}
           {renderChart(chartView, metrics, compDaily, units)}
         </div>
       )}

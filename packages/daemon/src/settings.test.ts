@@ -897,6 +897,120 @@ describe('settings', () => {
     });
   });
 
+  describe('code mode', () => {
+    it('defaults off with no migrations and no skill', () => {
+      expect(DEFAULT_SETTINGS.codeModeEnabled).toBe(false);
+      expect(DEFAULT_SETTINGS.codeModeMigrations).toEqual([]);
+      expect(DEFAULT_SETTINGS.codeModeSkillInstalled).toBe(false);
+      const loaded = loadSettings(path);
+      expect(loaded.codeModeEnabled).toBe(false);
+      expect(loaded.codeModeMigrations).toEqual([]);
+      expect(loaded.codeModeSkillInstalled).toBe(false);
+    });
+
+    it('round-trips codeModeEnabled and codeModeSkillInstalled', () => {
+      const next = updateSettings({ codeModeEnabled: true, codeModeSkillInstalled: true }, path);
+      expect(next.codeModeEnabled).toBe(true);
+      expect(next.codeModeSkillInstalled).toBe(true);
+      const reloaded = loadSettings(path);
+      expect(reloaded.codeModeEnabled).toBe(true);
+      expect(reloaded.codeModeSkillInstalled).toBe(true);
+    });
+
+    it('coerces codeModeMigrations, keeping valid entries and dropping malformed ones', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          codeModeMigrations: [
+            {
+              server: 'github',
+              scope: 'user',
+              directory: null,
+              originalEntry: { type: 'http', url: 'https://x' },
+              migratedAt: 100,
+            },
+            {
+              server: 'mongo',
+              scope: 'local',
+              directory: '/home/me/proj',
+              originalEntry: { command: 'npx', args: ['mongo-mcp'] },
+              migratedAt: 200,
+            },
+            // dropped: empty server name
+            { server: '', scope: 'user', directory: null, originalEntry: {}, migratedAt: 300 },
+            // dropped: non-user scope without a directory
+            { server: 'x', scope: 'local', directory: '', originalEntry: {}, migratedAt: 400 },
+            // dropped: unknown scope
+            { server: 'x', scope: 'global', directory: '/x', originalEntry: {}, migratedAt: 500 },
+            // dropped: non-finite migratedAt
+            { server: 'x', scope: 'user', directory: null, originalEntry: {}, migratedAt: 'soon' },
+            // dropped: not an object
+            'nope',
+          ],
+        }),
+      );
+      const migrations = loadSettings(path).codeModeMigrations;
+      expect(migrations).toEqual([
+        {
+          server: 'github',
+          scope: 'user',
+          directory: null,
+          originalEntry: { type: 'http', url: 'https://x' },
+          migratedAt: 100,
+        },
+        {
+          server: 'mongo',
+          scope: 'local',
+          directory: '/home/me/proj',
+          originalEntry: { command: 'npx', args: ['mongo-mcp'] },
+          migratedAt: 200,
+        },
+      ]);
+    });
+
+    it('normalizes a user-scope migration to a null directory and preserves originalEntry verbatim', () => {
+      const entry = { type: 'http', url: 'https://api.example/mcp', headers: { 'X-K': 'v' } };
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          codeModeMigrations: [
+            {
+              server: 's',
+              scope: 'user',
+              directory: '/ignored',
+              originalEntry: entry,
+              migratedAt: 1,
+            },
+          ],
+        }),
+      );
+      expect(loadSettings(path).codeModeMigrations).toEqual([
+        { server: 's', scope: 'user', directory: null, originalEntry: entry, migratedAt: 1 },
+      ]);
+    });
+
+    it('falls back to [] when codeModeMigrations is not an array', () => {
+      writeRawWithSig(path, JSON.stringify({ codeModeMigrations: { nope: true } }));
+      expect(loadSettings(path).codeModeMigrations).toEqual([]);
+    });
+  });
+
+  describe('optimizeSubTab', () => {
+    it('defaults to subagents', () => {
+      expect(DEFAULT_SETTINGS.optimizeSubTab).toBe('subagents');
+      expect(loadSettings(path).optimizeSubTab).toBe('subagents');
+    });
+
+    it('round-trips every valid value and rejects unknown ones', () => {
+      for (const tab of ['subagents', 'compression', 'context'] as const) {
+        writeRawWithSig(path, JSON.stringify({ optimizeSubTab: tab }));
+        expect(loadSettings(path).optimizeSubTab).toBe(tab);
+      }
+      writeRawWithSig(path, JSON.stringify({ optimizeSubTab: 'charts' }));
+      expect(loadSettings(path).optimizeSubTab).toBe('subagents');
+    });
+  });
+
   describe('dataRetentionDays', () => {
     it('defaults to 365 (1 year) when the file is missing', () => {
       expect(loadSettings(path).dataRetentionDays).toBe(365);
@@ -933,7 +1047,7 @@ describe('settings', () => {
     });
 
     it('round-trips every valid preset', () => {
-      for (const r of ['1d', '1w', '1m', '3m', '1y', 'all', 'custom'] as const) {
+      for (const r of ['1d', '1w', '1m', '3m', '6m', '1y', 'all', 'custom'] as const) {
         writeRawWithSig(path, JSON.stringify({ optimizeRange: r }));
         expect(loadSettings(path).optimizeRange).toBe(r);
       }

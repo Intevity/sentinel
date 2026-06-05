@@ -35,6 +35,9 @@ import type {
   CompressionRetrievalRecord,
 } from './optimize/compress/compression-stats-db.js';
 import type { McpHttpHandler } from './optimize/compress/mcp-retrieve-server.js';
+import type { CodeModeHttpHandler } from './optimize/code-mode/code-mode-server.js';
+import { measureToolDefinitions } from './context-bloat/mcp-definition-cost.js';
+import type { ContextCostStore } from './context-bloat/context-cost-db.js';
 import type { PauseReason } from '@claude-sentinel/shared';
 
 export const DAEMON_PORT = 47284;
@@ -184,10 +187,22 @@ interface ProxyOptions {
    *  compresses the outbound /v1/messages body and records the savings here.
    *  Gated per-request so the toggle takes effect without a daemon restart. */
   compressionStore?: CompressionStatsStore;
+  /** Dedicated store for measured MCP tool-definition costs. When set AND
+   *  `settings.optimizeCaptureEnabled` is true at request time, the proxy
+   *  measures the outbound /v1/messages tools[] array per MCP server and
+   *  records the context-window tax here. Pure observer — never mutates
+   *  the body. Gated per-request so the toggle takes effect without a
+   *  daemon restart. */
+  contextCostStore?: ContextCostStore;
   /** Handler for the local `/mcp` retrieval endpoint (reversible compression).
    *  When set, GET/POST/DELETE to `/mcp` are served by Sentinel's MCP server.
    *  Built in index.ts from the compression store + bearer token. */
   mcpHandler?: McpHttpHandler;
+  /** Handler for the local `/code-mode/call` bridge endpoint. When set,
+   *  POSTs there invoke tools on bridged MCP servers via the daemon's
+   *  client manager. Built in index.ts from the manager + its own bearer
+   *  token. */
+  codeModeHandler?: CodeModeHttpHandler;
   /** Short-lived table mapping Anthropic `request-id` → per-request Sentinel
    *  key. Populated here on every upstream response that carries the header,
    *  consumed by OtelReceiver so round-robin-routed OTEL events land on the
@@ -399,7 +414,9 @@ export function createProxyServer(
     permissionsEnforcer,
     requestLogStore,
     compressionStore,
+    contextCostStore,
     mcpHandler,
+    codeModeHandler,
     requestAccountMap,
     onUpstreamAuthFailure,
     onToolCallsFlushed,
@@ -596,6 +613,7 @@ export function createProxyServer(
       retryProvider,
       onToolCallsFlushed,
       compressionStore,
+      contextCostStore,
     );
   };
 
@@ -688,6 +706,23 @@ export function createProxyServer(
         await mcpHandler(req, res, body);
       })().catch((err) => {
         console.error('[Proxy] MCP handler error:', err);
+        if (!res.headersSent) {
+          res.writeHead(500);
+          res.end();
+        }
+      });
+      return;
+    }
+
+    // Code-mode bridge endpoint. Invokes tools on bridged MCP servers via
+    // the daemon's client manager; never proxied upstream. The handler
+    // validates its own bearer token and enforces the server allowlist.
+    if (codeModeHandler && url.split('?')[0] === '/code-mode/call') {
+      void (async () => {
+        const body = req.method === 'POST' ? await readBody(req) : null;
+        await codeModeHandler(req, res, body);
+      })().catch((err) => {
+        console.error('[Proxy] code-mode handler error:', err);
         if (!res.headersSent) {
           res.writeHead(500);
           res.end();
@@ -828,6 +863,9 @@ async function proxyToAnthropic(
   /** Compression feature: dedicated store for per-request compression stats.
    *  See ProxyOptions.compressionStore. */
   compressionStore?: CompressionStatsStore,
+  /** Optimize feature: dedicated store for measured MCP tool-definition
+   *  costs. See ProxyOptions.contextCostStore. */
+  contextCostStore?: ContextCostStore,
 ): Promise<void> {
   let body = preReadBody ?? (await readBody(req));
 
@@ -1194,6 +1232,36 @@ async function proxyToAnthropic(
         perRule: {},
         estTokensPotential: potentialTokens,
       });
+    }
+  }
+
+  // MCP definition-cost measurement — pure observer behind the same
+  // optimizeCaptureEnabled kill switch as the tool-call extractor. Measures
+  // the tools[] array of the FINAL outbound body (post permissions-strip;
+  // compression never touches tools[]) so the recorded context-window tax is
+  // exactly what shipped upstream. Re-parses the body rather than sharing a
+  // parse with compression/cache-TTL/extractor: each consumer parses
+  // independently today, and threading one parsed object through all of them
+  // is a refactor deliberately deferred.
+  if (contextCostStore && isMessagesPost && settings.optimizeCaptureEnabled) {
+    try {
+      const m = measureToolDefinitions(JSON.parse(body.toString('utf-8')) as unknown);
+      if (m.totalToolBytes > 0) {
+        contextCostStore.enqueue({
+          ts: Date.now(),
+          accountId: rlKey,
+          perServer: [...m.perServer.entries()].map(([server, s]) => ({
+            server,
+            defBytes: s.defBytes,
+            toolCount: s.toolCount,
+            toolNames: s.toolNames,
+          })),
+          nativeBytes: m.nativeBytes,
+          nativeToolCount: m.nativeToolCount,
+        });
+      }
+    } catch {
+      // Malformed JSON body — skip measurement; never stall the hot path.
     }
   }
 

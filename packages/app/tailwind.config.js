@@ -43,6 +43,13 @@ export default {
       boxShadow: {
         card: '0 1px 4px rgba(0,0,0,0.07), 0 0 0 0.5px rgba(0,0,0,0.05)',
         'card-md': '0 4px 20px rgba(0,0,0,0.10), 0 0 0 0.5px rgba(0,0,0,0.05)',
+        // Pinned sticky chrome (e.g. the Optimize savings bar): pronounced
+        // enough to clearly separate the floating card from content scrolling
+        // beneath it. The dark variant needs far higher opacity — soft black
+        // shadows all but vanish on the #111 page background.
+        sticky:
+          '0 8px 24px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.06)',
+        'sticky-dark': '0 10px 28px rgba(0,0,0,0.70), 0 2px 8px rgba(0,0,0,0.50)',
       },
       borderRadius: {
         '2xl': '16px',

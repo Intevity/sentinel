@@ -150,6 +150,27 @@ import {
   getCompressionStatsStore,
   closeCompressionStatsStore,
 } from './optimize/compress/compression-stats-db.js';
+import { getContextCostStore, closeContextCostStore } from './context-bloat/context-cost-db.js';
+import { buildMcpContextInsights, sanitizeServerName } from './context-bloat/mcp-insights.js';
+import { createMcpClientManager } from './optimize/code-mode/mcp-client-manager.js';
+import { createCodeModeHandler } from './optimize/code-mode/code-mode-server.js';
+import { getOrCreateCodeModeToken } from './optimize/code-mode/code-mode-token.js';
+import {
+  disableNativeServer,
+  restoreNativeServer,
+  isNativeDisabled,
+  findNativeServerEntries,
+} from './optimize/code-mode/server-migration.js';
+import {
+  generateServerWorkspace,
+  removeServerWorkspace,
+  resolveCodeModeDir,
+} from './optimize/code-mode/workspace-gen.js';
+import {
+  installCodeModeSkill,
+  uninstallCodeModeSkill,
+  writeCodeModeTokenFile,
+} from './optimize/code-mode/skill-install.js';
 import {
   createRetrieveMcpHandler,
   RETRIEVE_QUALIFIED_NAME,
@@ -2777,6 +2798,273 @@ export async function startDaemon(): Promise<DaemonHandle> {
         });
         break;
       }
+      case 'get_mcp_context_costs': {
+        // Per-server MCP insight: config presence + measured tools[]
+        // definition cost + 7d usage, with recommendation badges and
+        // bridge status. Powers the Context tab's cost table.
+        respond({
+          requestType: 'get_mcp_context_costs',
+          success: true,
+          data: buildMcpContextInsights({
+            db,
+            contextStore: contextCostStore,
+            migrations: currentSettings.codeModeMigrations,
+            unavailableServers: codeModeUnavailable,
+            window: windowFromMessage(msg.window),
+          }),
+        });
+        break;
+      }
+      case 'disable_mcp_server': {
+        // Plain disable (no bridging): remove the entry, stash it for
+        // Enable. Stash list is separate from migrations on purpose — a
+        // disabled server must never join the bridge allowlist.
+        const directory = msg.scope === 'user' ? null : (msg.directory ?? null);
+        if (msg.scope !== 'user' && (directory === null || directory.length === 0)) {
+          respond({
+            requestType: 'disable_mcp_server',
+            success: false,
+            error: 'A directory is required for local/project scope.',
+          });
+          break;
+        }
+        try {
+          const ref = { server: msg.server, scope: msg.scope, directory };
+          const { originalEntry } = disableNativeServer(ref);
+          const stashes = [
+            ...currentSettings.mcpDisabledStashes.filter(
+              (s) =>
+                !(s.server === msg.server && s.scope === msg.scope && s.directory === directory),
+            ),
+            { ...ref, originalEntry, migratedAt: Date.now() },
+          ];
+          currentSettings = writeSettings({ mcpDisabledStashes: stashes });
+          ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+          ipcServer.broadcast({ type: 'mcp_context_costs_updated' });
+          respond({
+            requestType: 'disable_mcp_server',
+            success: true,
+            data: { restartRequired: true },
+          });
+        } catch (err) {
+          respond({
+            requestType: 'disable_mcp_server',
+            success: false,
+            error: err instanceof Error ? err.message : 'disable failed',
+          });
+        }
+        break;
+      }
+      case 'enable_mcp_server': {
+        const directory = msg.scope === 'user' ? null : (msg.directory ?? null);
+        const stash = currentSettings.mcpDisabledStashes.find(
+          (s) => s.server === msg.server && s.scope === msg.scope && s.directory === directory,
+        );
+        if (!stash) {
+          respond({
+            requestType: 'enable_mcp_server',
+            success: false,
+            error: `No stashed entry for '${msg.server}' at ${msg.scope} scope; re-add it in Claude Code instead.`,
+          });
+          break;
+        }
+        try {
+          restoreNativeServer({ ...stash, originalEntry: stash.originalEntry });
+          currentSettings = writeSettings({
+            mcpDisabledStashes: currentSettings.mcpDisabledStashes.filter((s) => s !== stash),
+          });
+          ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+          ipcServer.broadcast({ type: 'mcp_context_costs_updated' });
+          respond({
+            requestType: 'enable_mcp_server',
+            success: true,
+            data: { restartRequired: true },
+          });
+        } catch (err) {
+          respond({
+            requestType: 'enable_mcp_server',
+            success: false,
+            error: err instanceof Error ? err.message : 'enable failed',
+          });
+        }
+        break;
+      }
+      case 'migrate_server_to_code_mode': {
+        // Safety ordering: verify we can bridge BEFORE touching the user's
+        // config. A server we can't connect to is never disabled. Migration
+        // acts on EVERY configured entry for the server (user scope + each
+        // project's local scope): Claude Code resolves same-named servers
+        // local-over-global, so disabling only one entry would leave the
+        // others loading the definitions natively. Idempotent: entries
+        // already recorded as migrated are skipped, so re-running bridges
+        // entries added since.
+        void (async () => {
+          const recorded = new Set(
+            currentSettings.codeModeMigrations
+              .filter((m) => m.server === msg.server)
+              .map((m) => `${m.scope}:${m.directory ?? ''}`),
+          );
+          const entries = findNativeServerEntries(msg.server).filter(
+            (e) => !recorded.has(`${e.scope}:${e.directory ?? ''}`),
+          );
+          if (entries.length === 0) {
+            respond({
+              requestType: 'migrate_server_to_code_mode',
+              success: false,
+              error:
+                recorded.size > 0
+                  ? `Every configured entry for '${msg.server}' is already bridged.`
+                  : `MCP server '${msg.server}' not found in ~/.claude.json.`,
+            });
+            return;
+          }
+          codeModePendingEntries.set(msg.server, entries[0]!.entry);
+          try {
+            const verified = await codeModeManager.verify(msg.server);
+            if (!verified.ok) {
+              respond({
+                requestType: 'migrate_server_to_code_mode',
+                success: false,
+                error: `Could not connect to '${msg.server}': ${verified.error}. The native server was left untouched.`,
+              });
+              return;
+            }
+            const workspaceDir = await generateServerWorkspace({
+              server: msg.server,
+              tools: verified.tools,
+              port: getDaemonPort(),
+            });
+            await writeCodeModeTokenFile(getOrCreateCodeModeToken());
+            const migratedAt = Date.now();
+            const newRecords = entries.map((e) => {
+              const { originalEntry } = disableNativeServer({
+                server: msg.server,
+                scope: e.scope,
+                directory: e.directory,
+              });
+              return {
+                server: msg.server,
+                scope: e.scope,
+                directory: e.directory,
+                originalEntry,
+                migratedAt,
+              };
+            });
+            const migrations = [...currentSettings.codeModeMigrations, ...newRecords];
+            await installCodeModeSkill({
+              servers: [...new Set(migrations.map((m) => m.server))],
+              port: getDaemonPort(),
+            });
+            currentSettings = writeSettings({
+              codeModeMigrations: migrations,
+              codeModeEnabled: true,
+              codeModeSkillInstalled: true,
+            });
+            ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+            ipcServer.broadcast({ type: 'code_mode_status' });
+            ipcServer.broadcast({ type: 'mcp_context_costs_updated' });
+            respond({
+              requestType: 'migrate_server_to_code_mode',
+              success: true,
+              data: {
+                restartRequired: true,
+                workspaceDir,
+                toolCount: verified.tools.length,
+                entriesDisabled: newRecords.length,
+              },
+            });
+          } finally {
+            codeModePendingEntries.delete(msg.server);
+          }
+        })().catch((err: unknown) => {
+          respond({
+            requestType: 'migrate_server_to_code_mode',
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+        break;
+      }
+      case 'revert_server_from_code_mode': {
+        // Restores EVERY stashed entry for the server: one migration may
+        // span the user scope plus several projects' local scopes.
+        const mine = currentSettings.codeModeMigrations.filter((m) => m.server === msg.server);
+        if (mine.length === 0) {
+          respond({
+            requestType: 'revert_server_from_code_mode',
+            success: false,
+            error: `No recorded code-mode migration for '${msg.server}'.`,
+          });
+          break;
+        }
+        void (async () => {
+          for (const migration of mine) {
+            restoreNativeServer({ ...migration, originalEntry: migration.originalEntry });
+          }
+          const remaining = currentSettings.codeModeMigrations.filter(
+            (m) => m.server !== msg.server,
+          );
+          await removeServerWorkspace(msg.server);
+          if (remaining.length > 0) {
+            await installCodeModeSkill({
+              servers: [...new Set(remaining.map((m) => m.server))],
+              port: getDaemonPort(),
+            });
+          } else {
+            await uninstallCodeModeSkill();
+          }
+          currentSettings = writeSettings({
+            codeModeMigrations: remaining,
+            codeModeEnabled: remaining.length > 0,
+            codeModeSkillInstalled: remaining.length > 0,
+          });
+          codeModeUnavailable.delete(sanitizeServerName(msg.server));
+          ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+          ipcServer.broadcast({ type: 'code_mode_status' });
+          ipcServer.broadcast({ type: 'mcp_context_costs_updated' });
+          respond({
+            requestType: 'revert_server_from_code_mode',
+            success: true,
+            data: { restartRequired: true },
+          });
+        })().catch((err: unknown) => {
+          respond({
+            requestType: 'revert_server_from_code_mode',
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+        break;
+      }
+      case 'get_code_mode_status': {
+        // `drifted` flags a migration whose native entry has been hand-
+        // restored in the config file (the disable is no longer in effect),
+        // mirroring get_retrieval_mcp_status's verify-against-reality.
+        const migrations = currentSettings.codeModeMigrations.map((m) => ({
+          ...m,
+          drifted: !isNativeDisabled(m),
+        }));
+        respond({
+          requestType: 'get_code_mode_status',
+          success: true,
+          data: {
+            enabled: currentSettings.codeModeEnabled,
+            skillInstalled: currentSettings.codeModeSkillInstalled,
+            migrations,
+            endpointUrl: `http://127.0.0.1:${getDaemonPort()}/code-mode/call`,
+            workspaceDir: resolveCodeModeDir(),
+          },
+        });
+        break;
+      }
+      case 'get_code_mode_audit': {
+        respond({
+          requestType: 'get_code_mode_audit',
+          success: true,
+          data: contextCostStore.getAudit(windowFromMessage(msg.window), msg.limit ?? 50),
+        });
+        break;
+      }
     }
   });
 
@@ -3011,6 +3299,58 @@ export async function startDaemon(): Promise<DaemonHandle> {
   runCompressionPurge();
   const compressionPurgeTimer = setInterval(runCompressionPurge, 24 * 60 * 60 * 1000);
 
+  // Context-cost store — measured MCP tool-definition costs (the Optimize
+  // page's Context tab) plus the code-mode call audit. Opened up-front like
+  // the compression store so get_mcp_context_costs always answers; purge
+  // reuses the same retention window and cadence.
+  const contextCostStore = getContextCostStore({ ipcServer });
+  // Bridged servers the code-mode client manager failed to connect to since
+  // startup. Surfaced as bridgeStatus 'unavailable' on the Context tab so a
+  // broken bridge is visible rather than silently dropping tool access.
+  // Keyed by SANITIZED server name to match the insights join key.
+  const codeModeUnavailable = new Set<string>();
+  // Entries registered transiently by the migrate handler so verify() can
+  // connect BEFORE the server is bridged (post-migration connects read the
+  // stash in settings instead). Cleared in the handler's finally block.
+  const codeModePendingEntries = new Map<string, unknown>();
+  // Code-mode bridge: the daemon-side MCP client manager plus the
+  // `/code-mode/call` HTTP handler the proxy routes to. The allowlist is the
+  // recorded migrations — the endpoint can never reach a server the user
+  // didn't explicitly bridge.
+  const codeModeManager = createMcpClientManager({
+    resolveEntry: (server) =>
+      currentSettings.codeModeMigrations.find((m) => m.server === server)?.originalEntry ??
+      codeModePendingEntries.get(server),
+    isAllowed: (server) => currentSettings.codeModeMigrations.some((m) => m.server === server),
+    onAvailability: (server, available) => {
+      const key = sanitizeServerName(server);
+      if (available) codeModeUnavailable.delete(key);
+      else codeModeUnavailable.add(key);
+    },
+  });
+  const codeModeHandler = createCodeModeHandler({
+    manager: codeModeManager,
+    getToken: () => getOrCreateCodeModeToken(),
+    isEnabled: () => currentSettings.codeModeEnabled,
+    recordCall: (row) => contextCostStore.recordCall(row),
+  });
+  const runContextCostPurge = (): void => {
+    try {
+      const cutoff = Date.now() - currentSettings.dataRetentionDays * 24 * 60 * 60 * 1000;
+      const purged = contextCostStore.purgeOlderThan(cutoff);
+      if (purged > 0) {
+        console.log(
+          `[ContextCost] Purged ${purged} row(s) older than ${currentSettings.dataRetentionDays} days`,
+        );
+      }
+      /* v8 ignore next 3 */
+    } catch (err) {
+      console.error('[ContextCost] retention purge failed:', err);
+    }
+  };
+  runContextCostPurge();
+  const contextCostPurgeTimer = setInterval(runContextCostPurge, 24 * 60 * 60 * 1000);
+
   // Sprint 8 forensic incident replay recorder. Built once and shared
   // with both scanner + enforcer so the same in-memory ring buffer is
   // captured regardless of which subsystem fires the security event.
@@ -3181,7 +3521,9 @@ export async function startDaemon(): Promise<DaemonHandle> {
       permissionsEnforcer,
       requestLogStore,
       compressionStore,
+      contextCostStore,
       mcpHandler,
+      codeModeHandler,
       requestAccountMap,
       // A 401 on a real Claude Code request means the token was revoked
       // server-side while the local `expiresAt` still claims it's valid —
@@ -3403,10 +3745,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
     clearInterval(optimizationPurgeTimer);
     clearInterval(requestLogPurgeTimer);
     clearInterval(compressionPurgeTimer);
+    clearInterval(contextCostPurgeTimer);
     clearInterval(securityEventPurgeTimer);
     clearInterval(chainIntegrityTimer);
     spendTracker.stop();
     permissionsEnforcer.shutdown();
+    await codeModeManager.stopAll();
     optimizationAnalyzer.stop();
     agentsSyncEngine.stop();
     otelSettingsWatcher.stop();
@@ -3417,6 +3761,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     closeDb();
     closeRequestLogStore();
     closeCompressionStatsStore();
+    closeContextCostStore();
   };
 
   return { httpServer, ipcServer, shutdown };

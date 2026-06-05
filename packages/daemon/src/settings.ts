@@ -25,6 +25,8 @@ import type {
   CompressionLevel,
   McpInstallScope,
   McpInstallRecord,
+  CodeModeMigration,
+  OptimizeSubTab,
 } from '@claude-sentinel/shared';
 import { SECURITY_CONTEXT_WINDOW_CHARS, VALID_DETECTOR_TIERS } from '@claude-sentinel/shared';
 import { signSettings, verifySettings } from './settings-integrity.js';
@@ -119,11 +121,16 @@ export const DEFAULT_SETTINGS: Settings = {
   optimizeUnits: 'tokens',
   optimizeChartView: 'realized',
   optimizeRange: 'all',
+  optimizeSubTab: 'subagents',
   compressionEnabled: false,
   compressionLevel: 'conservative',
   compressionMaxBodyKb: 4096,
   compressionRetrievalEnabled: false,
   compressionRetrievalInstalls: [],
+  codeModeEnabled: false,
+  codeModeMigrations: [],
+  codeModeSkillInstalled: false,
+  mcpDisabledStashes: [],
   otelForwardingEnabled: false,
   otelForwardMetrics: true,
   otelForwardLogs: true,
@@ -199,6 +206,7 @@ const VALID_COMPRESSION_LEVELS: readonly CompressionLevel[] = [
   'aggressive',
 ];
 const VALID_MCP_SCOPES: readonly McpInstallScope[] = ['user', 'local', 'project'];
+const VALID_OPTIMIZE_SUB_TABS: readonly OptimizeSubTab[] = ['subagents', 'compression', 'context'];
 
 /** Coerce an arbitrary value into a clean McpInstallRecord[], dropping any
  *  malformed entries. `user`-scope records carry a null directory; `local`
@@ -218,6 +226,45 @@ function coerceMcpInstalls(raw: unknown): McpInstallRecord[] {
       out.push({ scope: 'user', directory: null, installedAt });
     } else if (typeof directory === 'string' && directory.length > 0) {
       out.push({ scope: scope as McpInstallScope, directory, installedAt });
+    }
+  }
+  return out;
+}
+
+/** Coerce an arbitrary value into a clean CodeModeMigration[], dropping any
+ *  malformed entries. Mirrors `coerceMcpInstalls`: `user`-scope records carry
+ *  a null directory; `local`/`project` require a non-empty directory string.
+ *  `originalEntry` is kept verbatim (it is an opaque stash of the user's own
+ *  config; restore must be byte-identical, so no shaping is applied). */
+function coerceCodeModeMigrations(raw: unknown): CodeModeMigration[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CodeModeMigration[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    const server = e['server'];
+    if (typeof server !== 'string' || server.length === 0) continue;
+    const scope = e['scope'];
+    if (typeof scope !== 'string' || !VALID_MCP_SCOPES.includes(scope as McpInstallScope)) continue;
+    const migratedAt = e['migratedAt'];
+    if (typeof migratedAt !== 'number' || !Number.isFinite(migratedAt)) continue;
+    const directory = e['directory'];
+    if (scope === 'user') {
+      out.push({
+        server,
+        scope: 'user',
+        directory: null,
+        originalEntry: e['originalEntry'],
+        migratedAt,
+      });
+    } else if (typeof directory === 'string' && directory.length > 0) {
+      out.push({
+        server,
+        scope: scope as McpInstallScope,
+        directory,
+        originalEntry: e['originalEntry'],
+        migratedAt,
+      });
     }
   }
   return out;
@@ -588,6 +635,12 @@ function coerce(raw: unknown): Settings {
   if (typeof obj['optimizeRange'] === 'string' && isOptimizeRange(obj['optimizeRange'])) {
     next.optimizeRange = obj['optimizeRange'];
   }
+  if (
+    typeof obj['optimizeSubTab'] === 'string' &&
+    VALID_OPTIMIZE_SUB_TABS.includes(obj['optimizeSubTab'] as OptimizeSubTab)
+  ) {
+    next.optimizeSubTab = obj['optimizeSubTab'] as OptimizeSubTab;
+  }
   if (typeof obj['compressionEnabled'] === 'boolean') {
     next.compressionEnabled = obj['compressionEnabled'];
   }
@@ -609,6 +662,18 @@ function coerce(raw: unknown): Settings {
   }
   if (obj['compressionRetrievalInstalls'] !== undefined) {
     next.compressionRetrievalInstalls = coerceMcpInstalls(obj['compressionRetrievalInstalls']);
+  }
+  if (typeof obj['codeModeEnabled'] === 'boolean') {
+    next.codeModeEnabled = obj['codeModeEnabled'];
+  }
+  if (obj['codeModeMigrations'] !== undefined) {
+    next.codeModeMigrations = coerceCodeModeMigrations(obj['codeModeMigrations']);
+  }
+  if (typeof obj['codeModeSkillInstalled'] === 'boolean') {
+    next.codeModeSkillInstalled = obj['codeModeSkillInstalled'];
+  }
+  if (obj['mcpDisabledStashes'] !== undefined) {
+    next.mcpDisabledStashes = coerceCodeModeMigrations(obj['mcpDisabledStashes']);
   }
   if (typeof obj['otelForwardingEnabled'] === 'boolean') {
     next.otelForwardingEnabled = obj['otelForwardingEnabled'];
@@ -689,6 +754,7 @@ const VALID_OPTIMIZE_RANGES: readonly Settings['optimizeRange'][] = [
   '1w',
   '1m',
   '3m',
+  '6m',
   '1y',
   'all',
   'custom',

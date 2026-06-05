@@ -31,6 +31,7 @@ import type {
   OtelDriftDetails,
   McpInstallScope,
   McpInstallRecord,
+  CodeModeMigration,
 } from './types.js';
 
 // ─── Daemon → App messages ────────────────────────────────────────────────────
@@ -320,6 +321,21 @@ export interface CompressionMetricsUpdatedMessage {
   type: 'compression_metrics_updated';
 }
 
+/** Broadcast when the context-cost store flushes a batch of measured MCP
+ *  tool-definition costs. The Optimize page's Context tab refetches
+ *  `get_mcp_context_costs`. Debounced inside the store so a burst of
+ *  requests yields one broadcast. */
+export interface McpContextCostsUpdatedMessage {
+  type: 'mcp_context_costs_updated';
+}
+
+/** Broadcast after any code-mode state change: a server migrated or
+ *  reverted, or the skill installed/removed. The Context tab refetches
+ *  `get_code_mode_status`. */
+export interface CodeModeStatusChangedMessage {
+  type: 'code_mode_status';
+}
+
 /** Broadcast once per OTEL HTTP batch (metrics or logs) after any events
  *  were written to the telemetry tables. The Metrics tab listens for this
  *  and refetches its rollup so dashboards update live as Claude Code emits. */
@@ -533,6 +549,8 @@ export type DaemonToAppMessage =
   | SubagentUninstalledMessage
   | OptimizationMetricsUpdatedMessage
   | CompressionMetricsUpdatedMessage
+  | McpContextCostsUpdatedMessage
+  | CodeModeStatusChangedMessage
   | MetricsUpdatedMessage
   | OverageGrantsUpdatedMessage
   | SpendUpdateMessage
@@ -1112,6 +1130,205 @@ export interface ContextInventory {
   memoryDirs: ContextInventoryMemoryDir[];
   plugins: ContextInventoryPlugin[];
   globalSubagents: ContextInventorySubagent[];
+}
+
+// ─── MCP context costs + code execution (code mode) ──────────────────────────
+
+/** Context tab: per-server MCP insight combining config presence, measured
+ *  static tool-definition cost (parsed from live request `tools[]` arrays),
+ *  and observed usage. The definition window matches the page's range
+ *  selector; usage is a fixed 7-day lookback (same as the inventory). */
+export interface GetMcpContextCostsMessage {
+  type: 'get_mcp_context_costs';
+  /** Absolute time window for measured definition costs. Omitted or
+   *  empty = all-time. */
+  window?: MetricsWindow;
+}
+
+/** Recommendation pill the daemon attaches to a server insight. The UI
+ *  renders these verbatim; thresholds live daemon-side so they can be
+ *  tuned without a UI redeploy.
+ *
+ *   unused        — configured and measured in traffic, but zero calls in
+ *                   the usage lookback.
+ *   duplicate     — another configured server exposes the same tool-name
+ *                   set; `detail` carries the other server's name.
+ *   code-mode     — high definition cost with low usage: the headline
+ *                   "switch to code execution" opportunity.
+ *   disabled      — present in `disabledMcpServers`; shown so users
+ *                   remember the server exists. */
+export interface McpRecommendationBadge {
+  kind: 'unused' | 'duplicate' | 'code-mode' | 'disabled';
+  /** Optional context, e.g. the duplicate server's name. */
+  detail?: string;
+}
+
+/** One MCP server's context-cost insight. `definition.measured` is false
+ *  until the server's tools have been seen in live proxy traffic (fresh
+ *  installs, or servers only configured in projects the user hasn't
+ *  opened); the UI shows config-derived facts only in that case. */
+export interface McpContextInsight {
+  server: string;
+  /** Every `~/.claude.json:projects` key the server is configured under.
+   *  Empty for servers configured only at the top level (user scope). */
+  projects: string[];
+  /** True when at least one config entry for this server is enabled. */
+  enabled: boolean;
+  /** True when the server is configured at the top level (user scope),
+   *  i.e. loads in every project. */
+  global: boolean;
+  definition: {
+    /** Max observed serialized bytes of this server's tool definitions
+     *  in a single request over the window. */
+    bytes: number;
+    /** `bytes` through the shared byte-to-token ruler. This is the
+     *  context-window tax: tokens occupied in every request that
+     *  carries the server. */
+    estTokens: number;
+    /** Max distinct tools observed in a single request. */
+    toolCount: number;
+    /** Requests in the window that carried this server's definitions. */
+    requestCount: number;
+    measured: boolean;
+  };
+  /** Observed calls over the trailing 7 days (from tool_calls). */
+  usage7d: {
+    calls: number;
+    bytesIn: number;
+    bytesOut: number;
+    estTokens: number;
+  };
+  /** Honest dollar estimate: definitions are cache reads most of the
+   *  time, so the recurring cost is cache-write amplification when the
+   *  prefix re-writes. `~`-prefixed in the UI. */
+  cacheWriteEstUsd: number;
+  recommendations: McpRecommendationBadge[];
+  bridgeStatus: 'native' | 'bridged' | 'unavailable';
+}
+
+/** Realized + potential savings for the Context feature, window-scoped like
+ *  every other Optimize metric. All values are estimates and the dollar
+ *  figures deliberately use CACHED rates: definitions ride as cache reads
+ *  (0.1x) on most requests and re-write to cache (1.25x) roughly once per
+ *  session, so billing them at full input price would overstate savings. */
+export interface McpContextSavings {
+  /** Definition tokens kept out of requests since each server's migration:
+   *  defTokens × requests observed after migratedAt that no longer carried
+   *  them (requests that still did, e.g. on the migration day or after a
+   *  hand-restore, are subtracted out). */
+  realized: { estTokens: number; estUsd: number };
+  /** What bridging the currently-recommended servers (code-mode badge)
+   *  would have saved on the window's observed traffic: the definition
+   *  bytes those servers actually carried. */
+  potential: { estTokens: number; estUsd: number };
+  /** Realized attribution per bridged server, heaviest first. */
+  byServer: Array<{ server: string; estTokens: number; estUsd: number; requests: number }>;
+}
+
+/** Aggregate response shape for {@link GetMcpContextCostsMessage}. */
+export interface McpContextCosts {
+  insights: McpContextInsight[];
+  /** Max observed serialized bytes of NON-MCP (built-in) tool definitions
+   *  in a single request over the window, for the "MCP share of tools[]"
+   *  framing. */
+  nativeDefBytes: number;
+  /** Total requests in the window that carried any tools[] array. */
+  measuredRequests: number;
+  savings: McpContextSavings;
+}
+
+/** Disable a native MCP server without bridging it (the plain "this is
+ *  unused, turn it off" action). Moves the entry out of `mcpServers` into
+ *  `disabledMcpServers` for the given scope, stashing the original so
+ *  {@link EnableMcpServerMessage} can restore it byte-identically.
+ *  `directory` is required for `local`/`project` scopes. */
+export interface DisableMcpServerMessage {
+  type: 'disable_mcp_server';
+  server: string;
+  scope: McpInstallScope;
+  directory?: string;
+}
+
+/** Restore a server previously disabled via {@link DisableMcpServerMessage}
+ *  or migrated via {@link MigrateServerToCodeModeMessage}. */
+export interface EnableMcpServerMessage {
+  type: 'enable_mcp_server';
+  server: string;
+  scope: McpInstallScope;
+  directory?: string;
+}
+
+/** Migrate a native MCP server to code execution. Acts on EVERY configured
+ *  entry for the server (top-level user scope plus each project's local
+ *  scope): Claude Code resolves same-named servers local-over-global, so a
+ *  partial migration would leave projects loading the definitions natively.
+ *  Verifies connectivity first, generates the wrapper workspace, ensures the
+ *  skill, then disables each entry (stashed for exact revert). Idempotent:
+ *  re-running bridges entries added since the last migration. Fails without
+ *  touching the config if verification fails. */
+export interface MigrateServerToCodeModeMessage {
+  type: 'migrate_server_to_code_mode';
+  server: string;
+}
+
+/** Revert a code-mode migration: restore every stashed entry for the server
+ *  (a migration may span the user scope plus several projects) and drop its
+ *  migration records. Wrapper files and the skill are removed once no
+ *  migrations remain. */
+export interface RevertServerFromCodeModeMessage {
+  type: 'revert_server_from_code_mode';
+  server: string;
+}
+
+export interface GetCodeModeStatusMessage {
+  type: 'get_code_mode_status';
+}
+
+/** Response shape for {@link GetCodeModeStatusMessage}. */
+export interface CodeModeStatus {
+  /** Mirror of `Settings.codeModeEnabled`. */
+  enabled: boolean;
+  /** Mirror of `Settings.codeModeSkillInstalled`. */
+  skillInstalled: boolean;
+  /** Recorded migrations, each verified still reflected in the config
+   *  file (a hand-restored entry flips the record's `drifted` flag). */
+  migrations: Array<CodeModeMigration & { drifted: boolean }>;
+  /** The loopback endpoint URL the skill calls. */
+  endpointUrl: string;
+  /** Absolute path of the generated wrapper workspace. */
+  workspaceDir: string;
+}
+
+/** Read recent bridge calls for the Context tab's audit list. Rows carry
+ *  metadata only (server, tool, outcome, sizes); arguments and results are
+ *  never persisted. */
+export interface GetCodeModeAuditMessage {
+  type: 'get_code_mode_audit';
+  window?: MetricsWindow;
+  /** Defaults to 50, max 500. */
+  limit?: number;
+}
+
+/** One audited bridge call. */
+export interface CodeModeAuditRow {
+  ts: number;
+  server: string;
+  tool: string;
+  ok: boolean;
+  bytesOut: number;
+  durationMs: number;
+}
+
+/** Response payload for {@link MigrateServerToCodeModeMessage}. */
+export interface CodeModeMigrateResult {
+  /** Claude Code reloads MCP config per session; surfaced so the UI can
+   *  tell the user to restart their session. */
+  restartRequired: boolean;
+  workspaceDir: string;
+  toolCount: number;
+  /** How many config entries this call disabled (user scope + per-project
+   *  local entries). */
+  entriesDisabled: number;
 }
 
 export interface GetRemovedAccountsMessage {
@@ -1735,6 +1952,13 @@ export type AppToDaemonMessage =
   | DismissOptimizationMessage
   | ListOptimizationEventsMessage
   | GetContextInventoryMessage
+  | GetMcpContextCostsMessage
+  | DisableMcpServerMessage
+  | EnableMcpServerMessage
+  | MigrateServerToCodeModeMessage
+  | RevertServerFromCodeModeMessage
+  | GetCodeModeStatusMessage
+  | GetCodeModeAuditMessage
   | GetAgentsSyncStatusMessage
   | GetRemovedAccountsMessage
   | PurgeAccountMessage

@@ -45,7 +45,9 @@ function constantTimeEquals(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
-function bearerAuthorized(req: IncomingMessage, token: string): boolean {
+/** Exported for the code-mode bridge endpoint, which gates on the same
+ *  constant-time bearer check (with its own token). */
+export function bearerAuthorized(req: IncomingMessage, token: string): boolean {
   const header = req.headers['authorization'];
   if (typeof header !== 'string') return false;
   const m = /^Bearer\s+(.+)$/i.exec(header.trim());

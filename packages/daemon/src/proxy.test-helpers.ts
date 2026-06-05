@@ -57,7 +57,9 @@ import {
 } from './security/permissions/enforcer.js';
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from './settings.js';
 import type { CompressionStatsStore } from './optimize/compress/compression-stats-db.js';
+import type { ContextCostStore } from './context-bloat/context-cost-db.js';
 import type { McpHttpHandler } from './optimize/compress/mcp-retrieve-server.js';
+import type { CodeModeHttpHandler } from './optimize/code-mode/code-mode-server.js';
 import type { IpcServer } from './ipc.js';
 import { OverageStateMachine } from './overage.js';
 import type { PauseReason } from '@claude-sentinel/shared';
@@ -241,9 +243,16 @@ export interface StartProxyOpts {
   /** Dedicated compression stats store. Wired into ProxyOptions.compressionStore
    *  so tests can assert on the compressed upstream body and recorded stats. */
   compressionStore?: CompressionStatsStore;
+  /** Dedicated MCP definition-cost store. Wired into
+   *  ProxyOptions.contextCostStore so tests can assert on measured tools[]
+   *  costs. */
+  contextCostStore?: ContextCostStore;
   /** Retrieval MCP handler. Wired into ProxyOptions.mcpHandler so tests can
    *  drive the `/mcp` endpoint with a real MCP client. */
   mcpHandler?: McpHttpHandler;
+  /** Code-mode bridge handler. Wired into ProxyOptions.codeModeHandler so
+   *  tests can drive `/code-mode/call` end-to-end. */
+  codeModeHandler?: CodeModeHttpHandler;
 }
 
 export interface StartedProxy {
@@ -359,7 +368,9 @@ export async function startProxyWithFake(opts: StartProxyOpts = {}): Promise<Sta
   if (opts.onUpstreamAuthFailure) proxyOpts.onUpstreamAuthFailure = opts.onUpstreamAuthFailure;
   if (opts.onToolCallsFlushed) proxyOpts.onToolCallsFlushed = opts.onToolCallsFlushed;
   if (opts.compressionStore) proxyOpts.compressionStore = opts.compressionStore;
+  if (opts.contextCostStore) proxyOpts.contextCostStore = opts.contextCostStore;
   if (opts.mcpHandler) proxyOpts.mcpHandler = opts.mcpHandler;
+  if (opts.codeModeHandler) proxyOpts.codeModeHandler = opts.codeModeHandler;
   if (securityScanner) proxyOpts.securityScanner = securityScanner;
   if (permissionsEnforcer) proxyOpts.permissionsEnforcer = permissionsEnforcer;
 
