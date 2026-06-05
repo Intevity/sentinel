@@ -264,6 +264,12 @@ pnpm --filter @claude-sentinel/app run tauri:build -- --target aarch64-apple-dar
 pnpm --filter @claude-sentinel/app run tauri:build -- --target x86_64-apple-darwin
 ```
 
+> **`tauri:build` is the full release build.** Because the updater is configured
+> (`plugins.updater.pubkey` + `bundle.createUpdaterArtifacts`), it signs the
+> updater artifacts and will prompt for the `~/.tauri/*.key` password. For local
+> iteration use **`pnpm build:app`** instead (see [Running a local build](#running-a-local-build)) —
+> it builds unsigned and runs your changes on any OS.
+
 What `tauri:build` does internally:
 
 1. Compiles the daemon TypeScript (`tsc`)
@@ -278,6 +284,74 @@ Artifacts land in `packages/app/src-tauri/target/release/bundle/`:
 | macOS    | `macos/Claude Sentinel.app`, `.dmg` |
 | Linux    | `.deb`, `.rpm`, `.AppImage`         |
 | Windows  | `.msi`, NSIS installer              |
+
+### Running a local build
+
+**One command, any OS — `pnpm build:app`.** It detects your platform
+([`scripts/build-app.mjs`](./scripts/build-app.mjs)), builds your local changes
+**unsigned** (so there's **no `~/.tauri/*.key` password prompt**, via the shared
+[`tauri.dev.conf.json`](./packages/app/src-tauri/tauri.dev.conf.json) override),
+and launches the result:
+
+```sh
+pnpm build:app
+```
+
+| OS          | What `pnpm build:app` does                                                                       |
+| ----------- | ------------------------------------------------------------------------------------------------ |
+| **macOS**   | Builds the `.app`, replaces `/Applications/Claude Sentinel.app`, re-signs ad-hoc, and opens it   |
+| **Linux**   | Builds an unsigned `.AppImage` and launches it (`--appimage-extract-and-run`, so no FUSE needed) |
+| **Windows** | Builds the unsigned NSIS `-setup.exe` and launches the installer                                 |
+
+> Quit Claude Sentinel before running on macOS — the script refuses to swap a
+> running app. Preview the per-OS plan without building via
+> `node scripts/build-app.mjs --dry-run` (add `--platform=linux|win32|darwin`).
+>
+> Why per-OS: only macOS needs the install-and-re-sign dance — it defeats the
+> amfid code-signature cache that would otherwise SIGKILL the daemon sidecar.
+> Linux/Windows have no such cache, so they just build and run the bundle.
+
+**Inner dev loop (all OSes), with hot-reload:** for fast iteration use
+`tauri dev` instead of a full bundle. It does **not** run the sidecar build (its
+`beforeDevCommand` is just Vite), so build the daemon binary once first:
+
+```sh
+pnpm --filter @claude-sentinel/daemon run build
+pnpm --filter @claude-sentinel/daemon run build:sidecar
+pnpm --filter @claude-sentinel/app run tauri:dev
+```
+
+> **Signed release build:** `pnpm build:app:release` runs the full `tauri build`
+> (all bundle targets + signed updater artifacts) and **will** prompt for the
+> updater key password. CI does this via tauri-action; you rarely need it locally.
+
+#### macOS: how the install path works (`pnpm build:app` → `install-app.sh`)
+
+On macOS, `pnpm build:app` runs [`scripts/install-app.sh`](./scripts/install-app.sh)
+(also runnable directly, or via the `pnpm install:app` alias), which:
+
+1. Builds an **unsigned** `.app` (updater artifacts disabled via
+   [`tauri.dev.conf.json`](./packages/app/src-tauri/tauri.dev.conf.json)), so
+   there is **no signing-key password prompt** and no Apple Developer ID
+   requirement (the bundle is ad-hoc signed).
+2. Refuses to run if Claude Sentinel is still open (quit it from the tray first).
+3. Removes the existing `/Applications/Claude Sentinel.app`, copies the fresh
+   bundle, re-signs it ad-hoc, verifies, and launches it.
+
+> **Do not `cp -R` a build over the existing app yourself.** `cp -R` into an
+> existing `/Applications/Claude Sentinel.app` _merges_ into it, and macOS
+> protects the installed app's files — so you get `cp: ... Operation not permitted`
+> for `Contents/MacOS/...`, `Info.plist`, etc. The script avoids this by removing
+> the old app first; the ad-hoc re-sign step is also load-bearing (without it the
+> daemon sidecar is SIGKILLed on first launch by a stale code-signature cache).
+>
+> If `rm -rf` itself reports "Operation not permitted", grant your terminal **App
+> Management** under System Settings → Privacy & Security → App Management, then
+> re-run.
+
+For a daemon-only change you don't need a full app rebuild — see the fast
+iteration loop in [`CLAUDE.md`](./CLAUDE.md) (rebuild the sidecar and swap just
+the binary in the installed bundle).
 
 ### Build the daemon binary standalone
 

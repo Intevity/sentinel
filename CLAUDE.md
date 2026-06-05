@@ -80,23 +80,42 @@ node -e "
 ## Full app build (Rust/frontend changes)
 
 ```sh
-pnpm install:app
+pnpm build:app
 ```
 
-This runs `scripts/install-app.sh`, which: builds the bundle, replaces
-`/Applications/Claude Sentinel.app` cleanly (`rm -rf` first to avoid the
-`cp -R` merge-not-replace footgun), re-signs ad-hoc, verifies, and
-launches. The user should quit Sentinel from the tray before running.
+`pnpm build:app` is the **cross-platform** dev entrypoint
+(`scripts/build-app.mjs`): it detects the OS, builds **unsigned** (no
+`~/.tauri/*.key` prompt, via `src-tauri/tauri.dev.conf.json` which sets
+`bundle.createUpdaterArtifacts: false`), then launches your changes. macOS
+installs to `/Applications`, ad-hoc re-signs, and opens; Linux builds and
+runs an `.AppImage`; Windows builds and runs the NSIS `-setup.exe`. No
+Apple Developer ID signing happens unless `APPLE_SIGNING_IDENTITY` is
+exported. Preview without building: `node scripts/build-app.mjs --dry-run`
+(add `--platform=linux|win32|darwin`). `install:app` is a back-compat
+alias for the same script.
 
-The re-sign step is mandatory: `cp -R` over an existing bundle leaves
-macOS's amfid/Gatekeeper cache stale, and the first child the app
-spawns (the daemon sidecar) gets SIGKILLed silently — looks identical
-to "the daemon didn't open". `codesign --force --deep --sign -` clears
-the cache. The script handles this for you; do not skip it by running
-the steps manually.
+Use `pnpm build:app:release` for the SIGNED release build (full
+`tauri build`, all targets, signed updater artifacts — prompts for the key
+password). CI does this via tauri-action; you rarely need it locally. Do
+NOT use `build:app:release` for the dev loop — it blocks on the key prompt.
+
+On macOS the dispatcher delegates to `scripts/install-app.sh`, which builds
+the unsigned `.app`, replaces `/Applications/Claude Sentinel.app` cleanly
+(`rm -rf` first to avoid the `cp -R` merge-not-replace footgun), re-signs
+ad-hoc, verifies, and launches. It aborts if Sentinel is still running —
+quit it from the tray first.
+
+Never `cp -R` a build over the existing app manually: macOS protects the
+installed bundle's files, so each `Contents/...` file fails with
+"Operation not permitted". The `rm -rf`-first swap is what avoids it. The
+re-sign step is also mandatory: `cp -R` over an existing bundle leaves
+macOS's amfid/Gatekeeper cache stale, and the first child the app spawns
+(the daemon sidecar) gets SIGKILLed silently — looks identical to "the
+daemon didn't open". `codesign --force --deep --sign -` clears the cache.
+The script handles all of this; do not skip it by running steps manually.
 
 Artifacts also land in `packages/app/src-tauri/target/release/bundle/macos/`
-for direct inspection of the .app and `.dmg`.
+for direct inspection of the .app (the dev build skips the `.dmg`).
 
 ## Tests
 
