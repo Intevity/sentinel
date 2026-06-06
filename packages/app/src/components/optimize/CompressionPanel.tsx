@@ -14,6 +14,7 @@ import InfoModal from '../InfoModal.js';
 import { useSettings } from '../../hooks/useSettings.js';
 import { formatTokens } from '../../lib/optimizeUnits.js';
 import { formatUsd } from './charts/shared.js';
+import { MetricTile } from './MetricTile.js';
 import CompressionByToolChart from './charts/CompressionByToolChart.js';
 import CompressionRatioChart from './charts/CompressionRatioChart.js';
 
@@ -239,16 +240,17 @@ export default function CompressionPanel({
             </li>
             <li>
               <span className="font-semibold text-black dark:text-white">Moderate</span>: truncates
-              very long tool output (keeping the start and end) and collapses long repetitive stack
-              traces.{' '}
+              very long tool output (keeping the start and end), collapses repetitive stack traces
+              and near-duplicate log lines, folds and samples large JSON arrays, trims oversized
+              diffs and search results, and extracts text from HTML.{' '}
               <span className="font-medium text-amber-600 dark:text-amber-400">
                 Lossy: may omit detail
               </span>{' '}
-              from the middle that Claude would have used.
+              that Claude would have used.
             </li>
             <li>
-              <span className="font-semibold text-black dark:text-white">Aggressive</span>: trims
-              hardest, with lower truncation thresholds plus folding of large JSON arrays.{' '}
+              <span className="font-semibold text-black dark:text-white">Aggressive</span>: the same
+              rules with the lowest thresholds and tightest caps.{' '}
               <span className="font-medium text-amber-600 dark:text-amber-400">Most lossy</span>, so
               the accuracy risk is highest.
             </li>
@@ -302,14 +304,15 @@ export default function CompressionPanel({
       )}
 
       <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <Stat
+        <MetricTile
           label="Est. input tokens saved"
+          tone="saved"
           value={formatTokens(t.estTokensSaved)}
           title="Input tokens removed from request bodies before they reach Anthropic. Output tokens are not affected by compression."
         />
-        <Stat label="Est. cost saved" value={formatUsd(t.estCostSavedUsd)} />
-        <Stat label="Bytes removed" value={`${removedPct}%`} />
-        <Stat
+        <MetricTile label="Est. cost saved" tone="good" value={formatUsd(t.estCostSavedUsd)} />
+        <MetricTile label="Bytes removed" value={`${removedPct}%`} />
+        <MetricTile
           label="Cache hit ratio"
           value={`${cachePct}%`}
           tone={cacheHealthy ? 'good' : 'warn'}
@@ -476,31 +479,6 @@ export default function CompressionPanel({
           <p className="mt-2 text-[11px] text-red-600 dark:text-red-400">{mcpError}</p>
         )}
       </div>
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  tone,
-  title,
-}: {
-  label: string;
-  value: string;
-  tone?: 'good' | 'warn';
-  title?: string;
-}): React.ReactElement {
-  const valueColor =
-    tone === 'warn'
-      ? 'text-amber-600 dark:text-amber-400'
-      : tone === 'good'
-        ? 'text-emerald-700 dark:text-emerald-300'
-        : 'text-foreground';
-  return (
-    <div className="rounded-md border border-border-subtle/10 px-2.5 py-2" title={title}>
-      <div className="text-[10px] uppercase tracking-wide text-foreground/55">{label}</div>
-      <div className={`mt-0.5 text-base font-semibold tabular-nums ${valueColor}`}>{value}</div>
     </div>
   );
 }

@@ -18,15 +18,39 @@ export type SavingsUnits = 'tokens' | 'cost';
 
 const TOKEN_NOISE_FLOOR = 1; // < 1 input token of difference is noise
 
+/** Bare token magnitude with no unit suffix: "12", "1.2K", "3.40M" (or "0"
+ *  near zero). For places where an adjacent labeled value already carries the
+ *  unit, so repeating " tk" would be redundant and overflow the line — e.g.
+ *  the Saved tile's "120.00M of 180.22M" subtext under a value that already
+ *  reads "120.00M tk". Same magnitude buckets and sign rule as formatTokens. */
+export function formatTokenCount(n: number): string {
+  if (Math.abs(n) < TOKEN_NOISE_FLOOR) return '0';
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  if (abs < 1000) return `${sign}${Math.round(abs)}`;
+  if (abs < 1_000_000) return `${sign}${(abs / 1000).toFixed(1)}K`;
+  return `${sign}${(abs / 1_000_000).toFixed(2)}M`;
+}
+
 /** Format an input-token savings number. Mirrors `formatUsd`'s sign
  *  semantics (clamps near-zero to "0 tk" without a leading "-"). */
 export function formatTokens(n: number): string {
-  if (Math.abs(n) < TOKEN_NOISE_FLOOR) return '0 tk';
-  const sign = n < 0 ? '-' : '';
-  const abs = Math.abs(n);
-  if (abs < 1000) return `${sign}${Math.round(abs)} tk`;
-  if (abs < 1_000_000) return `${sign}${(abs / 1000).toFixed(1)}K tk`;
-  return `${sign}${(abs / 1_000_000).toFixed(2)}M tk`;
+  return `${formatTokenCount(n)} tk`;
+}
+
+/** "Ax" label for the effective context-window multiplier of a reduction:
+ *  content that would have cost `denomTokens` fits in `denomTokens -
+ *  savedTokens`, so the same window holds denom/(denom - saved) times as
+ *  much (67% saved ≈ 3.03x). At most 2 decimals, trailing zeros trimmed
+ *  ("3x", "2.5x", "3.03x"). Returns null when there is no compressible
+ *  content (denom 0) or the reduction is total (remainder 0), where a
+ *  multiplier is undefined. */
+export function windowMultiplierLabel(savedTokens: number, denomTokens: number): string | null {
+  if (denomTokens <= 0) return null;
+  const remaining = denomTokens - savedTokens;
+  if (remaining <= 0) return null;
+  const rounded = Math.round((denomTokens / remaining) * 100) / 100;
+  return `${rounded}x`;
 }
 
 /** Color class for a token savings number. Same emerald/red/neutral

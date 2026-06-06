@@ -381,6 +381,14 @@ export interface DaemonHandle {
 }
 
 export async function startDaemon(): Promise<DaemonHandle> {
+  // The Tauri app pipes our stdout/stderr into ~/.claude-sentinel/app.log
+  // for Windows diagnosability. The daemon deliberately outlives the app
+  // process, and once the parent exits the pipes' read ends close; without
+  // these guards the next console write raises an unhandled EPIPE stream
+  // error and crashes the proxy mid-session.
+  process.stdout.on('error', () => undefined);
+  process.stderr.on('error', () => undefined);
+
   // Read the IPC handshake token from stdin before any I/O so the parent's
   // pipe write isn't lost if startup races. Tauri-spawned daemons see a
   // value within ms; the dev CLI sees null after the grace window.
@@ -3237,16 +3245,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
   const chainIntegrityTimer = setInterval(runChainIntegrityCheck, 24 * 60 * 60 * 1000);
 
   // Purge stale OTEL telemetry (usage_events, tool_events, api_errors,
-  // activity_events) per the retention window. Runs once at startup and
-  // re-runs every 24h so an always-on daemon doesn't accumulate data
-  // indefinitely.
+  // activity_events) per the Metrics page's retention window. Runs once at
+  // startup and re-runs every 24h so an always-on daemon doesn't accumulate
+  // data indefinitely.
   const runTelemetryPurge = (): void => {
     try {
-      const cutoff = Date.now() - currentSettings.dataRetentionDays * 24 * 60 * 60 * 1000;
+      const cutoff = Date.now() - currentSettings.metricsRetentionDays * 24 * 60 * 60 * 1000;
       const purged = purgeTelemetryOlderThan(db, cutoff);
       if (purged > 0) {
         console.log(
-          `[Telemetry] Purged ${purged} row(s) older than ${currentSettings.dataRetentionDays} days`,
+          `[Telemetry] Purged ${purged} row(s) older than ${currentSettings.metricsRetentionDays} days`,
         );
       }
       /* v8 ignore next 3 */
@@ -3257,15 +3265,15 @@ export async function startDaemon(): Promise<DaemonHandle> {
   runTelemetryPurge();
   const telemetryPurgeTimer = setInterval(runTelemetryPurge, 24 * 60 * 60 * 1000);
 
-  // Optimize analyzer rows (optimization_events) follow the same unified
-  // analytics retention; runs at startup + every 24h like telemetry.
+  // Optimize analyzer rows (optimization_events) follow the Optimize page's
+  // retention window; runs at startup + every 24h like telemetry.
   const runOptimizationPurge = (): void => {
     try {
-      const cutoff = Date.now() - currentSettings.dataRetentionDays * 24 * 60 * 60 * 1000;
+      const cutoff = Date.now() - currentSettings.optimizeRetentionDays * 24 * 60 * 60 * 1000;
       const purged = purgeOptimizationOlderThan(db, cutoff);
       if (purged > 0) {
         console.log(
-          `[Optimize] Purged ${purged} optimization row(s) older than ${currentSettings.dataRetentionDays} days`,
+          `[Optimize] Purged ${purged} optimization row(s) older than ${currentSettings.optimizeRetentionDays} days`,
         );
       }
       /* v8 ignore next 3 */
@@ -3300,8 +3308,8 @@ export async function startDaemon(): Promise<DaemonHandle> {
 
   // Compression stats store — opened up-front so the Optimize page can always
   // fetch get_compression_metrics even when compression is disabled (table
-  // just stays empty). Per-request rows reuse the telemetry retention window;
-  // purge runs at startup + every 24h like telemetry/request-logs.
+  // just stays empty). Per-request rows follow the Optimize page's retention
+  // window; purge runs at startup + every 24h like telemetry/request-logs.
   const compressionStore = getCompressionStatsStore({ ipcServer });
   // Reversible-compression retrieval MCP endpoint, served on the daemon's
   // HTTP server at `/mcp`. Reads originals from the compression store; gated
@@ -3312,11 +3320,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
   });
   const runCompressionPurge = (): void => {
     try {
-      const cutoff = Date.now() - currentSettings.dataRetentionDays * 24 * 60 * 60 * 1000;
+      const cutoff = Date.now() - currentSettings.optimizeRetentionDays * 24 * 60 * 60 * 1000;
       const purged = compressionStore.purgeOlderThan(cutoff);
       if (purged > 0) {
         console.log(
-          `[Compression] Purged ${purged} row(s) older than ${currentSettings.dataRetentionDays} days`,
+          `[Compression] Purged ${purged} row(s) older than ${currentSettings.optimizeRetentionDays} days`,
         );
       }
       /* v8 ignore next 3 */
@@ -3377,11 +3385,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
   });
   const runContextCostPurge = (): void => {
     try {
-      const cutoff = Date.now() - currentSettings.dataRetentionDays * 24 * 60 * 60 * 1000;
+      const cutoff = Date.now() - currentSettings.optimizeRetentionDays * 24 * 60 * 60 * 1000;
       const purged = contextCostStore.purgeOlderThan(cutoff);
       if (purged > 0) {
         console.log(
-          `[ContextCost] Purged ${purged} row(s) older than ${currentSettings.dataRetentionDays} days`,
+          `[ContextCost] Purged ${purged} row(s) older than ${currentSettings.optimizeRetentionDays} days`,
         );
       }
       /* v8 ignore next 3 */

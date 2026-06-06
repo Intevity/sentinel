@@ -14,11 +14,17 @@ import type {
   Settings,
 } from '@claude-sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
-import { formatTokens, type SavingsUnits } from '../lib/optimizeUnits.js';
+import {
+  formatTokens,
+  formatTokenCount,
+  windowMultiplierLabel,
+  type SavingsUnits,
+} from '../lib/optimizeUnits.js';
 import OpportunityList from './optimize/OpportunityList.js';
 import ContextInventoryPanel from './optimize/ContextInventoryPanel.js';
 import CompressionPanel from './optimize/CompressionPanel.js';
 import ContextPanel from './optimize/ContextPanel.js';
+import { MetricTile } from './optimize/MetricTile.js';
 import { RangeSelector } from './RangeSelector.js';
 import { RANGE_LABELS, windowForRange } from '../lib/dateRange.js';
 import {
@@ -144,6 +150,11 @@ export default function OptimizeDashboard(): React.ReactElement {
   const [range, setRange] = useState<OptimizeRangePreset>('all');
   const [customStart, setCustomStart] = useState<string>('');
   const [customEnd, setCustomEnd] = useState<string>('');
+  // The Optimize page's retention window (Settings.optimizeRetentionDays)
+  // decides which range presets the selector offers; the daemon snaps the
+  // persisted preset when the window shrinks, and the settings_changed
+  // refresh below pulls both back in sync.
+  const [retentionDays, setRetentionDays] = useState<number>(365);
 
   // One window drives all the metric fetches (including the Compression
   // and Opportunities panes below) so every figure describes the same span.
@@ -206,6 +217,7 @@ export default function OptimizeDashboard(): React.ReactElement {
       setChartView(settings.data.optimizeChartView);
       setRange(settings.data.optimizeRange);
       setSubTab(settings.data.optimizeSubTab);
+      setRetentionDays(settings.data.optimizeRetentionDays);
     }
     if (ctxCosts.success && ctxCosts.data) {
       setCtx({
@@ -336,6 +348,7 @@ export default function OptimizeDashboard(): React.ReactElement {
         units={units}
         onToggleUnits={onToggleUnits}
         range={range}
+        retentionDays={retentionDays}
         customStart={customStart}
         customEnd={customEnd}
         onChangeRange={(r) => void onChangeRange(r)}
@@ -477,8 +490,38 @@ function SubagentsSection({
     'byPattern',
   ];
   const effectiveView = subagentViews.includes(chartView) ? chartView : 'realized';
+  const t = metrics.totals;
+  const money = (usd: number, tokens: number): string =>
+    units === 'cost' ? formatUsd(usd) : formatTokens(tokens);
   return (
     <>
+      {/* Quick-stat tiles, shared with the Context and Compression tabs via
+          MetricTile so the three rows read identically. Saved/Potential honor
+          the header units toggle; Installed/Opportunities are plain counts. */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <MetricTile
+          label="Saved"
+          tone="saved"
+          value={money(t.savingsUsdRealized, t.tokensRealized)}
+          title="Parent-context tokens (or cost) the installed subagents have already kept out of your conversation over this window."
+        />
+        <MetricTile
+          label="Potential"
+          tone="potential"
+          value={money(t.savingsUsdPotential, t.tokensPotential)}
+          title="Additional savings the analyzer detected for recommended subagents that are not installed. Install them to start realizing it."
+        />
+        <MetricTile
+          label="Installed"
+          value={String(installedNames.size)}
+          title="Curated subagents currently written to ~/.claude/agents/."
+        />
+        <MetricTile
+          label="Opportunities"
+          value={String(t.opportunities)}
+          title="Times the analyzer detected a subagent could have absorbed a large read in this window (realized + potential)."
+        />
+      </div>
       <div className="glass-card px-4 py-3">
         <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-foreground">
           <Sparkles className="h-3.5 w-3.5" /> Curated subagents
@@ -609,6 +652,7 @@ function StickySavingsBar({
   units,
   onToggleUnits,
   range,
+  retentionDays,
   customStart,
   customEnd,
   onChangeRange,
@@ -644,6 +688,8 @@ function StickySavingsBar({
   units: SavingsUnits;
   onToggleUnits: (next: SavingsUnits) => void;
   range: OptimizeRangePreset;
+  /** Optimize-page retention window in days; drives the selector's ladder. */
+  retentionDays: number;
   customStart: string;
   customEnd: string;
   onChangeRange: (next: OptimizeRangePreset) => void;
@@ -705,6 +751,10 @@ function StickySavingsBar({
   const totalInputPct = totalInput > 0 ? (savedTokens / totalInput) * 100 : 0;
   const pctStr = (n: number): string => `${n.toFixed(n >= 10 || n === 0 ? 0 : 1)}%`;
   const heroPct = optimizedDenom > 0 ? pctStr(optimizedPct) : '—';
+  // "3.03x window multiplier": the same context window holds this many times
+  // more content at the current reduction. Null when there is nothing to
+  // measure; the subtext then falls back to the token ratio / empty state.
+  const windowMult = windowMultiplierLabel(savedTokens, optimizedDenom);
   const srcSaved = `subagents ${disp(subCost, subTokens)} · compression ${disp(compCost, compTokens)} · context ${disp(ctxCost, ctxTokens)}`;
   const srcPotential = `subagents ${disp(subPotCost, subPotTokens)} · compression ${disp(compPotCost, compPotTokens)} · context ${disp(ctxPotCost, ctxPotTokens)}`;
   // `sticky` works because <main> (App.tsx) is the overflow-y-scroll
@@ -794,7 +844,7 @@ function StickySavingsBar({
                 compression ratio; cache-independent). */}
                 <div
                   className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2.5"
-                  title="How much smaller Sentinel makes the content it optimizes: tokens removed from compressed tool output plus subagent-absorbed reads, over that content's original size. This is a compression ratio (comparable to tool-compression benchmarks) and is independent of prompt caching."
+                  title="How much smaller Sentinel makes the content it optimizes: tokens removed from compressed tool output plus subagent-absorbed reads, over that content's original size. This is a compression ratio (comparable to tool-compression benchmarks) and is independent of prompt caching. The window multiplier is how many times more of that content fits in the same context window at this reduction."
                 >
                   <div className="text-[10px] uppercase tracking-wide text-foreground/55">
                     Content reduced
@@ -805,9 +855,11 @@ function StickySavingsBar({
                     {heroPct}
                   </div>
                   <div className="mt-0.5 text-[11px] text-foreground/55">
-                    {optimizedDenom > 0
-                      ? `${formatTokens(savedTokens)} of ${formatTokens(optimizedDenom)}`
-                      : `no compressible content ${rangeLabel}`}
+                    {windowMult
+                      ? `${windowMult} window multiplier`
+                      : optimizedDenom > 0
+                        ? `${formatTokens(savedTokens)} of ${formatTokens(optimizedDenom)}`
+                        : `no compressible content ${rangeLabel}`}
                   </div>
                 </div>
 
@@ -824,7 +876,11 @@ function StickySavingsBar({
                   >
                     {disp(savedCost, savedTokens)}
                   </div>
-                  <div className="mt-0.5 text-[11px] text-foreground/45">realized {rangeLabel}</div>
+                  <div className="mt-0.5 text-[11px] text-foreground/45">
+                    {optimizedDenom > 0
+                      ? `${formatTokenCount(savedTokens)} of ${formatTokenCount(optimizedDenom)}`
+                      : `realized ${rangeLabel}`}
+                  </div>
                 </div>
 
                 {/* Potential (absolute). Per-source split lives in the tooltip. */}
@@ -863,6 +919,7 @@ function StickySavingsBar({
           <div className="mt-2.5 border-t border-border-subtle/10 pt-2.5">
             <RangeSelector
               range={range}
+              retentionDays={retentionDays}
               customStart={customStart}
               customEnd={customEnd}
               onChangeRange={onChangeRange}

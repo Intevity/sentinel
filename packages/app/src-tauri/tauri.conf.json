@@ -44,6 +44,15 @@
     "macOS": {
       "infoPlist": "Info.plist",
       "entitlements": "entitlements.plist"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/hooks.nsh"
+      },
+      "wix": {
+        "fragmentPaths": ["./windows/daemon-close.wxs"],
+        "componentRefs": ["DaemonCloseMarker"]
+      }
     }
   },
   "plugins": {

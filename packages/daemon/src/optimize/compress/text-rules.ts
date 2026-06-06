@@ -135,7 +135,7 @@ const LOG_FRAMEWORK_RE =
 /** A line worth keeping verbatim: an error, failure, warning, or test summary.
  *  Case-insensitive; intentionally broad on the keep side because dropping a
  *  real error is far worse than keeping a benign line. */
-const LOG_INTERESTING_RE =
+export const LOG_INTERESTING_RE =
   /(?:\berror(?:s)?\b|\bfail(?:ed|ure|ing)?\b|\bexception\b|traceback|\bpanic\b|\bfatal\b|\bassert(?:ion)?\b|error\[E\d|npm ERR!|warning:|\bdenied\b|\brefused\b|\btimed? ?out\b|\bnot found\b|test result:|[✗✕×●])/i;
 
 export interface ErrorExtractOpts {

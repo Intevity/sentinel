@@ -19,7 +19,10 @@
     "security:test": "node scripts/security-test.mjs",
     "alerts:test": "node scripts/alerts-test.mjs",
     "mock:budget": "node scripts/mock-budget.mjs",
-    "mock:budget:update": "node scripts/mock-budget.mjs --update"
+    "mock:budget:update": "node scripts/mock-budget.mjs --update",
+    "icons:generate": "node scripts/generate-ico.mjs",
+    "icons:verify": "node scripts/generate-ico.mjs --verify",
+    "bench:compression": "SENTINEL_BENCH_TABLE=1 vitest run packages/daemon/bench/compression-bench.test.ts --reporter=basic"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
@@ -29,6 +32,7 @@
     "eslint": "^9.0.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "prettier": "^3.0.0",
+    "sharp": "^0.33.0",
     "typescript": "^5.5.0",
     "typescript-eslint": "^8.0.0",
     "vitest": "^2.0.0"
@@ -40,7 +44,8 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "better-sqlite3",
-      "esbuild"
+      "esbuild",
+      "sharp"
     ]
   }
 }

@@ -214,8 +214,20 @@ export type OptimizeChartView =
 
 /** The Optimize tab's time-range presets. `custom` means "use the explicit
  *  start/end the user picked"; `all` means all-time. Persisted in
- *  {@link Settings.optimizeRange}. */
-export type OptimizeRangePreset = '1d' | '1w' | '1m' | '3m' | '6m' | '1y' | 'all' | 'custom';
+ *  {@link Settings.optimizeRange}. Which presets the selector actually offers
+ *  depends on the page's retention window: see `rangeLadder` in
+ *  `range-ladder.ts`. */
+export type OptimizeRangePreset =
+  | '1d'
+  | '1w'
+  | '2w'
+  | '1m'
+  | '2m'
+  | '3m'
+  | '6m'
+  | '1y'
+  | 'all'
+  | 'custom';
 
 /** Which section of the Optimize page is active. Each of the three
  *  optimization features owns one sub-tab below the sticky savings bar:
@@ -377,13 +389,25 @@ export interface Settings {
    *  after upgrade, `dataRetentionDays` is seeded from this value when the
    *  newer key is absent. No purge reads this field anymore. */
   telemetryRetentionDays: number;
-  /** Master retention for ANALYTICS data: telemetry (usage_events, tool_events,
-   *  api_errors, activity_events), optimize (optimization_events), and
-   *  compression (events + retrievals). Rows older than this are purged at
-   *  daemon startup and once/day thereafter. Clamped to [1, 3650]. Default 365
-   *  (1 year). The security audit chain and request log keep their own
-   *  independent retention so integrity isn't weakened by this general knob. */
+  /** @deprecated Superseded by the per-feature {@link Settings.optimizeRetentionDays}
+   *  and {@link Settings.metricsRetentionDays}. Kept for settings round-trip +
+   *  one-time migration: on first load after upgrade, both newer keys are seeded
+   *  from this value (clamped into [90, 1095]) when absent. No purge reads this
+   *  field anymore. */
   dataRetentionDays: number;
+  /** Retention for the Optimize page's data: optimization_events, compression
+   *  stats + retrievals, and MCP context-cost rows. Rows older than this are
+   *  purged at daemon startup and once/day thereafter. Clamped to [90, 1095]
+   *  (3 months to 3 years). Default 365 (1 year). The Optimize page's
+   *  range-preset ladder adapts to this window (see `rangeLadder`). */
+  optimizeRetentionDays: number;
+  /** Retention for the Metrics page's telemetry: usage_events, tool_events,
+   *  api_errors, activity_events. Same purge cadence, clamp, and default as
+   *  {@link Settings.optimizeRetentionDays}, tuned independently. The Metrics
+   *  page's range-preset ladder adapts to this window. The security audit
+   *  chain and request log keep their own independent retention so integrity
+   *  isn't weakened by these general knobs. */
+  metricsRetentionDays: number;
 
   // ─── Security scanning ─────────────────────────────────────────────
   /** Master on/off for the security scanning subsystem. */

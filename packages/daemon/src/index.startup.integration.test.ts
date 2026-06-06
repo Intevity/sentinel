@@ -51,6 +51,26 @@ describe('startDaemon — bring-up', () => {
     expect(resp.success).toBe(true);
     expect(resp.data?.switchingMode).toBe('round-robin');
   });
+
+  it('snaps persisted range presets onto each page retention ladder at boot', async () => {
+    // A pre-upgrade file can hold a range wider than a (newly shrunk)
+    // retention window; the daemon must serve the snapped value so the
+    // selector never renders a preset its ladder does not offer.
+    ctx = await startTestDaemon({
+      settings: {
+        optimizeRetentionDays: 90,
+        optimizeRange: '6m',
+        metricsRetentionDays: 180,
+        metricsRange: '1y',
+      },
+    });
+    const resp = await ctx.request<{ optimizeRange: string; metricsRange: string }>({
+      type: 'get_settings',
+    });
+    expect(resp.success).toBe(true);
+    expect(resp.data?.optimizeRange).toBe('3m');
+    expect(resp.data?.metricsRange).toBe('6m');
+  });
 });
 
 describe('startDaemon — preseeded state', () => {

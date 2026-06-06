@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Kill the daemon sidecar before MSI validation/file-costing so the install
+  (or uninstall) can replace claude-sentinel-daemon.exe. Windows locks the
+  executable of a running process, and the daemon deliberately outlives the
+  UI window; without this, an MSI over a running daemon trips the
+  files-in-use path (Tauri #7931 class). Mirrors the NSIS hook in hooks.nsh.
+
+  Two deliberate quirks, do not "clean up":
+  - No xmlns:util declaration. WixQuietExec ships in WixUtilExtension, which
+    tauri-bundler already passes to light.exe; declaring the util namespace
+    in a fragment makes the bundler add a DUPLICATE -ext WixUtilExtension
+    and the link fails (tauri #6103). BinaryKey="WixCA" + DllEntry reach the
+    same code without the namespace.
+  - The do-nothing registry marker component exists only so this fragment is
+    referenced: the WiX linker drops unreferenced fragments (tauri #5970),
+    and tauri.conf.json can only reference components
+    (bundle.windows.wix.componentRefs), not custom actions.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="DaemonCloseMarker" Guid="CD25F091-F537-4694-892F-0CABF789893B">
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\Claude Sentinel"
+          Name="DaemonCloseHook"
+          Type="integer"
+          Value="1"
+          KeyPath="yes"
+        />
+      </Component>
+    </DirectoryRef>
+
+    <!-- WiX 3 QuietExec: immediate action reads WixQuietExecCmdLine. /F
+         force-kill (the daemon is windowless, WM_CLOSE never lands);
+         Return="ignore" because "process not found" is the normal case on a
+         clean install. Scheduled before InstallValidate so the files-in-use
+         scan never sees the daemon at all; runs on install, upgrade, AND
+         uninstall (no Custom condition, on purpose). -->
+    <Property
+      Id="WixQuietExecCmdLine"
+      Value="&quot;[System64Folder]taskkill.exe&quot; /F /IM claude-sentinel-daemon.exe"
+    />
+    <CustomAction
+      Id="CloseDaemonSidecar"
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec"
+      Execute="immediate"
+      Return="ignore"
+    />
+    <InstallExecuteSequence>
+      <Custom Action="CloseDaemonSidecar" Before="InstallValidate" />
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

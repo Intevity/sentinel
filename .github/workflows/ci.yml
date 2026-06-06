@@ -130,6 +130,13 @@ jobs:
       - name: Detector ReDoS check
         run: node scripts/check-detector-regex.mjs
 
+      # Asserts the committed icon.ico keeps the full DPI ladder with the
+      # 256px PNG entry FIRST (tauri #14596 renders the runtime window icon
+      # from entries()[0]). Re-running `tauri icon` would silently ship the
+      # 32-first, 6-entry ladder and reintroduce pixelated Windows icons.
+      - name: Windows icon ladder check
+        run: node scripts/generate-ico.mjs --verify
+
       - name: Fake API contract check
         run: pnpm exec vitest run packages/test-harness/src/fake-anthropic.contract.test.ts
 

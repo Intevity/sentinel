@@ -14,6 +14,10 @@ export {
   truncateLog,
 } from './text-rules.js';
 export { tryParseJson, minifyJsonWhitespace, tabularDedup } from './json-rules.js';
+export { isUnifiedDiff, trimUnifiedDiff } from './diff-rules.js';
+export { isSearchOutput, extractSearchMatches } from './search-rules.js';
+export { normalizeTemplate, foldNearDuplicateLines } from './log-fold-rules.js';
+export { isHtml, extractHtmlText } from './html-rules.js';
 export { byteLen, estimateTokensFromBytes, hashOriginal } from './types.js';
 export type {
   CompressionLevel,

@@ -51,16 +51,16 @@ const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string }> = [
   { id: 'data', label: 'Data' },
 ];
 
-/** Retention presets for the analytics data-retention control. Values are in
- *  days and stay within the daemon's [1, 3650] clamp. */
+/** Retention presets for the per-feature (Optimize / Metrics) data-retention
+ *  controls. Values are in days and span the daemon's [90, 1095] clamp: a 3
+ *  month floor keeps the range-preset ladder meaningful, a 3 year cap bounds
+ *  All-range aggregate scans over the SQLite stores. */
 const RETENTION_OPTIONS: Array<{ days: number; label: string }> = [
-  { days: 30, label: '30 days' },
-  { days: 90, label: '90 days' },
+  { days: 90, label: '3 months' },
   { days: 180, label: '6 months' },
   { days: 365, label: '1 year' },
   { days: 730, label: '2 years' },
-  { days: 1825, label: '5 years' },
-  { days: 3650, label: '10 years' },
+  { days: 1095, label: '3 years' },
 ];
 
 interface SettingsPanelProps {
@@ -178,8 +178,12 @@ export default function SettingsPanel({
     void update({ backgroundProbeIntervalSec: secs }).catch(() => undefined);
   };
 
-  const setDataRetentionDays = (days: number): void => {
-    void update({ dataRetentionDays: days }).catch(() => undefined);
+  const setOptimizeRetentionDays = (days: number): void => {
+    void update({ optimizeRetentionDays: days }).catch(() => undefined);
+  };
+
+  const setMetricsRetentionDays = (days: number): void => {
+    void update({ metricsRetentionDays: days }).catch(() => undefined);
   };
 
   const setSecurityContextVerbosity = (v: 'compact' | 'standard' | 'verbose'): void => {
@@ -653,17 +657,19 @@ export default function SettingsPanel({
                 <div className="px-3 py-2.5">
                   <div className="flex items-center justify-between text-[13px] mb-0.5">
                     <span className="font-medium text-black dark:text-white">
-                      Keep analytics for
+                      Keep Optimize data for
                     </span>
                     <select
-                      value={settings.dataRetentionDays}
-                      onChange={(e) => setDataRetentionDays(Number(e.target.value))}
+                      value={settings.optimizeRetentionDays}
+                      onChange={(e) => setOptimizeRetentionDays(Number(e.target.value))}
                       className="rounded border border-border-subtle/20 bg-transparent px-2 py-1 text-[13px] font-semibold text-black dark:text-white"
                     >
-                      {!RETENTION_OPTIONS.some((o) => o.days === settings.dataRetentionDays) && (
-                        <option value={settings.dataRetentionDays}>
-                          {settings.dataRetentionDays}{' '}
-                          {settings.dataRetentionDays === 1 ? 'day' : 'days'}
+                      {!RETENTION_OPTIONS.some(
+                        (o) => o.days === settings.optimizeRetentionDays,
+                      ) && (
+                        <option value={settings.optimizeRetentionDays}>
+                          {settings.optimizeRetentionDays}{' '}
+                          {settings.optimizeRetentionDays === 1 ? 'day' : 'days'}
                         </option>
                       )}
                       {RETENTION_OPTIONS.map((o) => (
@@ -674,9 +680,38 @@ export default function SettingsPanel({
                     </select>
                   </div>
                   <p className="text-[11px] text-muted leading-snug">
-                    Usage and telemetry, Optimize savings history, and compression stats older than
+                    Optimize savings history, compression stats, and MCP context costs older than
                     this are purged at daemon startup and once every 24 hours. Default is 1 year.
-                    The security audit log and request logs keep their own separate retention below.
+                  </p>
+                </div>
+                <div className="px-3 py-2.5">
+                  <div className="flex items-center justify-between text-[13px] mb-0.5">
+                    <span className="font-medium text-black dark:text-white">
+                      Keep Metrics data for
+                    </span>
+                    <select
+                      value={settings.metricsRetentionDays}
+                      onChange={(e) => setMetricsRetentionDays(Number(e.target.value))}
+                      className="rounded border border-border-subtle/20 bg-transparent px-2 py-1 text-[13px] font-semibold text-black dark:text-white"
+                    >
+                      {!RETENTION_OPTIONS.some((o) => o.days === settings.metricsRetentionDays) && (
+                        <option value={settings.metricsRetentionDays}>
+                          {settings.metricsRetentionDays}{' '}
+                          {settings.metricsRetentionDays === 1 ? 'day' : 'days'}
+                        </option>
+                      )}
+                      {RETENTION_OPTIONS.map((o) => (
+                        <option key={o.days} value={o.days}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <p className="text-[11px] text-muted leading-snug">
+                    Usage, tool, error, and activity telemetry shown on the Metrics page is purged
+                    on the same schedule. The date selector on each page adapts its presets to the
+                    retention window you pick here; the security audit log and request logs keep
+                    their own separate retention below.
                   </p>
                 </div>
               </Section>
