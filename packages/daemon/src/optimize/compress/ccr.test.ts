@@ -90,7 +90,9 @@ describe('compressMessagesBody reversible mode', () => {
     expect(idInBody).toBe(cap.id);
     // ...and the id is the hash of the captured original (the elided middle).
     expect(cap.id).toBe(hashOriginal(cap.original));
-    expect(cap.ruleId).toBe('log_truncate');
+    // The 500 near-identical lines share one template ("log line <N>"), so the
+    // near-duplicate fold elides them before truncate ever sees the text.
+    expect(cap.ruleId).toBe('log_near_dup_fold');
     // The captured original is the lines that were dropped from the body.
     expect(cap.original).toContain('log line 200');
     expect(trContent).not.toContain('log line 200');

@@ -15,6 +15,7 @@ import {
   sampleJsonArray,
   type SampleOpts,
 } from './json-rules.js';
+import { hashOriginal } from './types.js';
 import { compressToolResultText } from './tiers.js';
 
 const ESC = '\x1b';
@@ -361,6 +362,99 @@ describe('tabularDedup', () => {
     expect(reparsed.ok).toBe(true);
     expect(tabularDedup(once, reparsed.value)).toBe(once);
   });
+
+  it('expands a uniform depth-1 nested object into dotted columns in place', () => {
+    const value = Array.from({ length: 5 }, (_, i) => ({
+      id: i,
+      addr: { city: `c${i}`, zip: i * 10 },
+      ok: true,
+    }));
+    const out = tabularDedup(JSON.stringify(value), value);
+    const parsed = JSON.parse(out) as { _sentinelTable: { columns: string[]; rows: unknown[][] } };
+    // Dotted columns sit at the parent's position, sub-keys in row-0 order.
+    expect(parsed._sentinelTable.columns).toEqual(['id', 'addr.city', 'addr.zip', 'ok']);
+    expect(parsed._sentinelTable.rows[0]).toEqual([0, 'c0', 0, true]);
+    expect(parsed._sentinelTable.rows[4]).toEqual([4, 'c4', 40, true]);
+  });
+
+  it('reconstructs the original nested objects from dotted columns losslessly', () => {
+    const value = Array.from({ length: 6 }, (_, i) => ({
+      id: i,
+      addr: { city: `c${i}`, zip: i * 10 },
+    }));
+    const out = tabularDedup(JSON.stringify(value), value);
+    const parsed = JSON.parse(out) as { _sentinelTable: { columns: string[]; rows: unknown[][] } };
+    const reconstructed = parsed._sentinelTable.rows.map((r) => {
+      const obj: Record<string, unknown> = {};
+      parsed._sentinelTable.columns.forEach((c, i) => {
+        const dot = c.indexOf('.');
+        if (dot === -1) {
+          obj[c] = r[i];
+        } else {
+          const parent = c.slice(0, dot);
+          const sub = c.slice(dot + 1);
+          const nested = (obj[parent] as Record<string, unknown>) ?? {};
+          nested[sub] = r[i];
+          obj[parent] = nested;
+        }
+      });
+      return obj;
+    });
+    expect(reconstructed).toEqual(value);
+  });
+
+  it('does not expand a nested key when one row is missing a sub-key', () => {
+    const value = [
+      { id: 0, addr: { city: 'a', zip: 1 } },
+      { id: 1, addr: { city: 'b', zip: 2 } },
+      { id: 2, addr: { city: 'c' } }, // missing zip => non-uniform sub-signature
+      { id: 3, addr: { city: 'd', zip: 4 } },
+      { id: 4, addr: { city: 'e', zip: 5 } },
+    ];
+    const out = tabularDedup(JSON.stringify(value), value);
+    const parsed = JSON.parse(out) as { _sentinelTable: { columns: string[]; rows: unknown[][] } };
+    // addr stays a single column carrying the verbatim nested object.
+    expect(parsed._sentinelTable.columns).toEqual(['id', 'addr']);
+    expect(parsed._sentinelTable.rows[2]).toEqual([2, { city: 'c' }]);
+  });
+
+  it('does not expand a key whose dotted name collides with another top-level key', () => {
+    const value = Array.from({ length: 5 }, (_, i) => ({
+      meta: { region: `r${i}` },
+      'meta.region': i,
+    }));
+    const out = tabularDedup(JSON.stringify(value), value);
+    const parsed = JSON.parse(out) as { _sentinelTable: { columns: string[]; rows: unknown[][] } };
+    // meta would produce 'meta.region', colliding with the literal top-level
+    // key 'meta.region', so meta is kept whole.
+    expect(parsed._sentinelTable.columns).toEqual(['meta', 'meta.region']);
+    expect(parsed._sentinelTable.rows[0]).toEqual([{ region: 'r0' }, 0]);
+  });
+
+  it('mixes flat and dotted columns and keeps nested array values as cells', () => {
+    const value = Array.from({ length: 5 }, (_, i) => ({
+      id: i,
+      dims: { w: i, h: i + 1 },
+      tags: ['a', 'b'],
+    }));
+    const out = tabularDedup(JSON.stringify(value), value);
+    const parsed = JSON.parse(out) as { _sentinelTable: { columns: string[]; rows: unknown[][] } };
+    // dims expands (uniform object); tags stays a single column (array, not a
+    // plain object) with the array verbatim as the cell value (depth 1).
+    expect(parsed._sentinelTable.columns).toEqual(['id', 'dims.w', 'dims.h', 'tags']);
+    expect(parsed._sentinelTable.rows[2]).toEqual([2, 2, 3, ['a', 'b']]);
+  });
+
+  it('keeps a nested-array-valued sub-column verbatim (depth 1 only)', () => {
+    const value = Array.from({ length: 5 }, (_, i) => ({
+      box: { label: `b${i}`, points: [i, i + 1] },
+    }));
+    const out = tabularDedup(JSON.stringify(value), value);
+    const parsed = JSON.parse(out) as { _sentinelTable: { columns: string[]; rows: unknown[][] } };
+    expect(parsed._sentinelTable.columns).toEqual(['box.label', 'box.points']);
+    // points is an array sub-value: used as-is, not recursively flattened.
+    expect(parsed._sentinelTable.rows[3]).toEqual(['b3', [3, 4]]);
+  });
 });
 
 describe('sampleJsonArray', () => {
@@ -455,6 +549,158 @@ describe('sampleJsonArray', () => {
     const value = Array.from({ length: 40 }, (_, i) => ({ id: i }));
     expect(sample(value)).not.toContain('id=');
   });
+
+  it('summarizes dropped numeric fields with exact hand-computed stats', () => {
+    // 30 objects with a numeric field `v`. head 3 + tail 3 kept, 24 dropped.
+    // Use values that exercise even-count median and 4-decimal rounding.
+    const all = [
+      0, // kept (head)
+      1, // kept (head)
+      2, // kept (head)
+      ...Array.from({ length: 24 }, (_, i) => i + 3), // dropped: 3..26
+      27, // kept (tail)
+      28, // kept (tail)
+      29, // kept (tail)
+    ];
+    const value = all.map((v) => ({ v }));
+    const o: SampleOpts = { minRows: 30, headN: 3, tailN: 3, sigma: 100 };
+    const out = JSON.parse(sample(value, o)) as {
+      _sentinelSample: {
+        droppedCount: number;
+        stats: Record<
+          string,
+          { count: number; min: number; max: number; mean: number; median: number; stdev: number }
+        >;
+      };
+    };
+    expect(out._sentinelSample.droppedCount).toBe(24);
+    const dropped = Array.from({ length: 24 }, (_, i) => i + 3); // 3..26
+    const count = dropped.length; // 24
+    const sum = dropped.reduce((a, b) => a + b, 0); // 3+..+26 = 348
+    const mean = sum / count; // 14.5
+    const variance = dropped.reduce((a, b) => a + (b - mean) ** 2, 0) / count;
+    const stdev = Math.round(Math.sqrt(variance) * 1e4) / 1e4; // population stdev, round4
+    // Even count => mean of the two middle elements: (14 + 15) / 2 = 14.5
+    const median = (dropped[11]! + dropped[12]!) / 2;
+    expect(out._sentinelSample.stats['v']).toEqual({
+      count: 24,
+      min: 3,
+      max: 26,
+      mean: 14.5,
+      median: 14.5,
+      stdev,
+    });
+    expect(median).toBe(14.5);
+  });
+
+  it('rounds mean/median/stdev to exactly 4 decimals', () => {
+    // Three dropped values 1,2,2 => mean 1.6666..., stdev 0.4714..., both
+    // truncated by round4 to a 4-decimal value (visible rounding).
+    const value = [
+      { x: 9 }, // kept head
+      { x: 9 }, // kept head
+      { x: 9 }, // kept head
+      { x: 1 }, // dropped
+      { x: 2 }, // dropped
+      { x: 2 }, // dropped
+      { x: 9 }, // kept tail
+      { x: 9 }, // kept tail
+      { x: 9 }, // kept tail
+    ];
+    const o: SampleOpts = { minRows: 9, headN: 3, tailN: 3, sigma: 100 };
+    const out = JSON.parse(sample(value, o)) as {
+      _sentinelSample: { stats: Record<string, { mean: number; median: number; stdev: number }> };
+    };
+    // mean = 5/3 = 1.66666... => round4 1.6667
+    expect(out._sentinelSample.stats['x']?.mean).toBe(1.6667);
+    // odd count median = middle of sorted [1,2,2] = 2
+    expect(out._sentinelSample.stats['x']?.median).toBe(2);
+    // population stdev of [1,2,2]: variance = ((1-5/3)^2+2*(2-5/3)^2)/3 = 0.2222...
+    // sqrt = 0.4714045... => round4 0.4714
+    expect(out._sentinelSample.stats['x']?.stdev).toBe(0.4714);
+  });
+
+  it('summarizes a dropped scalar-number array under the empty-string field', () => {
+    // 30 numbers; head 3 + tail 3 kept, 24 dropped (all value 5 => stdev 0).
+    const value = [10, 11, 12, ...Array(24).fill(5), 13, 14, 15];
+    const o: SampleOpts = { minRows: 30, headN: 3, tailN: 3, sigma: 100 };
+    const out = JSON.parse(sample(value, o)) as {
+      _sentinelSample: {
+        stats: Record<
+          string,
+          { count: number; min: number; max: number; mean: number; stdev: number }
+        >;
+      };
+    };
+    expect(out._sentinelSample.stats['']).toEqual({
+      count: 24,
+      min: 5,
+      max: 5,
+      mean: 5,
+      median: 5,
+      stdev: 0,
+    });
+  });
+
+  it('omits the stats key entirely for an all-string dropped population', () => {
+    const value = Array.from({ length: 40 }, (_, i) => `row ${i}`);
+    const serialized = sample(value);
+    // No numeric fields among dropped items => no stats key at all.
+    expect(serialized).not.toContain('"stats"');
+    const out = JSON.parse(serialized) as { _sentinelSample: Record<string, unknown> };
+    expect('stats' in out._sentinelSample).toBe(false);
+  });
+
+  it('orders stats last in the _sentinelSample key order', () => {
+    const value = Array.from({ length: 40 }, (_, i) => ({ id: i }));
+    const out = JSON.parse(sample(value)) as { _sentinelSample: Record<string, unknown> };
+    expect(Object.keys(out._sentinelSample)).toEqual(['kept', 'droppedCount', 'note', 'stats']);
+  });
+
+  it('produces identical output across two runs (determinism)', () => {
+    const value = Array.from({ length: 50 }, (_, i) => ({ id: i, score: (i * 7) % 13 }));
+    expect(sample(value)).toBe(sample(value));
+  });
+
+  it('is idempotent: sampling its own (object) output returns it unchanged', () => {
+    const value = Array.from({ length: 50 }, (_, i) => ({ id: i }));
+    const once = sample(value);
+    const reparsed = tryParseJson(once);
+    expect(reparsed.ok).toBe(true);
+    expect(sampleJsonArray(once, reparsed.value, opts)).toBe(once);
+  });
+
+  it('embeds the hashOriginal id of the exact dropped-source text in the marker', () => {
+    const value = Array.from({ length: 50 }, (_, i) => ({ id: i }));
+    const source = JSON.stringify(value);
+    const captures: Array<{ rule: string; original: string }> = [];
+    const out = sampleJsonArray(source, value, opts, (rule, original) => {
+      captures.push({ rule, original });
+      return hashOriginal(original);
+    });
+    const parsed = JSON.parse(out) as { _sentinelSample: { note: string } };
+    const expectedId = hashOriginal(source);
+    expect(parsed._sentinelSample.note).toContain(`id="${expectedId}"`);
+    expect(captures[0]?.original).toBe(source);
+    // The recorded capture reconstructs the original array byte-for-byte.
+    expect(captures[0]!.original).toBe(source);
+    expect(JSON.parse(captures[0]!.original)).toEqual(value);
+  });
+
+  it('does not fire when the array length equals minRows minus one (boundary)', () => {
+    const value = Array.from({ length: 29 }, (_, i) => ({ id: i }));
+    const o: SampleOpts = { minRows: 30, headN: 3, tailN: 3, sigma: 2 };
+    // 29 < 30 => below trigger, returned unchanged (same instance).
+    const text = JSON.stringify(value);
+    expect(sampleJsonArray(text, value, o)).toBe(text);
+  });
+
+  it('fires when the array length is exactly minRows (one over the boundary)', () => {
+    const value = Array.from({ length: 30 }, (_, i) => ({ id: i }));
+    const o: SampleOpts = { minRows: 30, headN: 3, tailN: 3, sigma: 100 };
+    const out = JSON.parse(sample(value, o)) as { _sentinelSample: { droppedCount: number } };
+    expect(out._sentinelSample.droppedCount).toBe(24);
+  });
 });
 
 describe('compressToolResultText (tiers)', () => {
@@ -474,18 +720,43 @@ describe('compressToolResultText (tiers)', () => {
   });
 
   it('moderate truncates very long logs', () => {
-    const log = Array.from({ length: 500 }, (_, i) => `line ${i}`).join('\n');
+    // Template-DISTINCT lines (adjacent words differ), so the near-duplicate
+    // fold cannot pre-empt and the tier-level truncate is what fires.
+    const words = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta'];
+    const log = Array.from({ length: 500 }, (_, i) => `${words[i % words.length]} step ${i}`).join(
+      '\n',
+    );
     const r = compressToolResultText(log, 'moderate');
     expect(r.text).toContain('lines elided by Claude Sentinel');
     expect(r.perRule.log_truncate?.hits).toBe(1);
     expect((r.perRule.log_truncate?.bytesSaved ?? 0) > 0).toBe(true);
   });
 
+  it('moderate folds near-duplicate log lines (template-identical runs)', () => {
+    // Same template every line ("req <N> served in <N>ms"): the near-dup fold
+    // collapses the run to first line + one marker, pre-empting truncate.
+    const log = Array.from({ length: 500 }, (_, i) => `req ${i} served in ${i % 90}ms`).join('\n');
+    const r = compressToolResultText(log, 'moderate');
+    expect(r.perRule.log_near_dup_fold?.hits).toBe(1);
+    expect(r.perRule.log_truncate).toBeUndefined();
+    const lines = r.text.split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe('req 0 served in 0ms');
+    expect(lines[1]).toContain('[499 similar lines elided by Claude Sentinel');
+  });
+
   it('extracts errors from framework logs at moderate/aggressive, not conservative', () => {
+    // Distinct test NAMES per line (like real pytest output), so adjacent
+    // templates differ and the near-duplicate fold leaves the log to the
+    // error-extract rule.
+    const words = ['login', 'search', 'cache', 'parse', 'render', 'stream', 'merge'];
     const log = [
       '============================= test session starts ==============================',
       'collected 300 items',
-      ...Array.from({ length: 250 }, (_, i) => `tests/test_a.py::test_${i} PASSED`),
+      ...Array.from(
+        { length: 250 },
+        (_, i) => `tests/test_a.py::test_${words[i % words.length]}_case${i} PASSED`,
+      ),
       'tests/test_a.py::test_boom FAILED',
       'E   RuntimeError: kaboom',
       '=========================== 1 failed, 299 passed ===========================',
@@ -499,20 +770,26 @@ describe('compressToolResultText (tiers)', () => {
     // Conservative never elides.
     const cons = compressToolResultText(log, 'conservative');
     expect(cons.perRule.log_error_extract).toBeUndefined();
-    expect(cons.text).toContain('test_0 PASSED');
+    expect(cons.text).toContain('test_login_case0 PASSED');
   });
 
-  it('aggressive folds homogeneous JSON arrays; moderate does not', () => {
+  it('moderate and aggressive both fold homogeneous JSON arrays; conservative does not', () => {
     const value = Array.from({ length: 10 }, (_, i) => ({ id: i, label: `row-${i}` }));
     const text = JSON.stringify(value, null, 2);
     const agg = compressToolResultText(text, 'aggressive');
     expect(agg.text).toContain('_sentinelTable');
     expect(agg.perRule.json_tabular?.hits).toBe(1);
 
+    // The fold is lossless, so it runs at moderate too (re-gated for parity
+    // with content-type compressors; see tiers.ts).
     const mod = compressToolResultText(text, 'moderate');
-    expect(mod.text).not.toContain('_sentinelTable');
-    // moderate still minifies the JSON whitespace.
-    expect(mod.perRule.json_minify?.hits).toBe(1);
+    expect(mod.text).toContain('_sentinelTable');
+    expect(mod.perRule.json_tabular?.hits).toBe(1);
+
+    const cons = compressToolResultText(text, 'conservative');
+    expect(cons.text).not.toContain('_sentinelTable');
+    // conservative still minifies the JSON whitespace.
+    expect(cons.perRule.json_minify?.hits).toBe(1);
   });
 
   it('aggressive samples a large array (sampling wins over the tabular fold)', () => {
@@ -525,10 +802,103 @@ describe('compressToolResultText (tiers)', () => {
     expect(agg.text).not.toContain('_sentinelTable');
     expect(agg.perRule.json_tabular).toBeUndefined();
 
-    // Moderate never samples.
+    // Moderate's gentle threshold (minRows 120) leaves a 60-item array to the
+    // lossless tabular fold instead.
     const mod = compressToolResultText(text, 'moderate');
     expect(mod.text).not.toContain('_sentinelSample');
     expect(mod.perRule.json_sample).toBeUndefined();
+    expect(mod.text).toContain('_sentinelTable');
+    expect(mod.perRule.json_tabular?.hits).toBe(1);
+  });
+
+  it('moderate samples a genuinely large array with gentle thresholds', () => {
+    const value = Array.from({ length: 130 }, (_, i) => ({ id: i, ms: 10 + (i % 7) }));
+    const text = JSON.stringify(value, null, 2);
+    const mod = compressToolResultText(text, 'moderate');
+    expect(mod.perRule.json_sample?.hits).toBe(1);
+    const parsed = JSON.parse(mod.text) as {
+      _sentinelSample: { kept: Array<{ id: number }>; droppedCount: number };
+    };
+    // headN 8 + tailN 8 boundary items survive (no errors; sigma-3 outliers
+    // cannot flag in this uniform data).
+    expect(parsed._sentinelSample.kept).toHaveLength(16);
+    expect(parsed._sentinelSample.kept[0]?.id).toBe(0);
+    expect(parsed._sentinelSample.kept[7]?.id).toBe(7);
+    expect(parsed._sentinelSample.kept[8]?.id).toBe(122);
+    expect(parsed._sentinelSample.kept[15]?.id).toBe(129);
+    expect(parsed._sentinelSample.droppedCount).toBe(114);
+  });
+
+  it('routes a unified diff to diff_trim and skips the generic log chain', () => {
+    // 6 hunks (> aggressive maxHunks 4) whose bodies contain `at ` and `error`
+    // lookalikes that the log rules would mangle if they ran.
+    const hunks = Array.from({ length: 6 }, (_, h) =>
+      [
+        `@@ -${h * 10 + 1},4 +${h * 10 + 1},4 @@`,
+        ' const ctx = 1;',
+        `-  at oldHandler(${h});`,
+        `+  at newHandler(${h});`,
+        ' // error: handled below',
+      ].join('\n'),
+    );
+    const diff = [
+      'diff --git a/src/app.ts b/src/app.ts',
+      '--- a/src/app.ts',
+      '+++ b/src/app.ts',
+      ...hunks,
+    ].join('\n');
+    const r = compressToolResultText(diff, 'aggressive');
+    expect(r.perRule.diff_trim?.hits).toBe(1);
+    expect(r.text).toContain('hunks elided by Claude Sentinel');
+    // Routed: none of the generic log rules fired on the diff body.
+    expect(r.perRule.log_error_extract).toBeUndefined();
+    expect(r.perRule.stack_trace_collapse).toBeUndefined();
+    expect(r.perRule.log_near_dup_fold).toBeUndefined();
+  });
+
+  it('routes ripgrep output to search_extract and skips the generic log chain', () => {
+    const lines: string[] = [];
+    for (let f = 0; f < 20; f++) {
+      for (let m = 0; m < 8; m++) {
+        lines.push(`src/dir${f}/file${f}.ts:${10 + m}:  const error${m} = handle(${f});`);
+      }
+    }
+    const r = compressToolResultText(lines.join('\n'), 'aggressive');
+    expect(r.perRule.search_extract?.hits).toBe(1);
+    expect(r.text).toContain('more files with');
+    expect(r.perRule.log_error_extract).toBeUndefined();
+    expect(r.perRule.log_near_dup_fold).toBeUndefined();
+  });
+
+  it('routes HTML to html_extract and falls through to the generic chain', () => {
+    const cards = Array.from(
+      { length: 40 },
+      (_, i) => `<div class="card"><p>Widget ${i} costs &#36;${i}.99</p></div>`,
+    ).join('\n');
+    const html = `<!DOCTYPE html>\n<html><head><style>.card{color:red}</style></head><body>\n${cards}\n</body></html>`;
+    const r = compressToolResultText(html, 'moderate');
+    expect(r.perRule.html_extract?.hits).toBe(1);
+    expect(r.text).toContain('bytes of HTML markup elided by Claude Sentinel');
+    expect(r.text).toContain('Widget 0 costs $0.99');
+    expect(r.text).not.toContain('<div');
+    expect(r.text).not.toContain('color:red');
+  });
+
+  it('conservative routes nothing: diffs, search output, and HTML ride through verbatim', () => {
+    const diff = ['--- a/x', '+++ b/x', '@@ -1 +1 @@', '-a', '+b'].join('\n');
+    const rd = compressToolResultText(diff, 'conservative');
+    expect(rd.text).toBe(diff);
+    expect(rd.perRule.diff_trim).toBeUndefined();
+
+    const search = Array.from({ length: 80 }, (_, i) => `src/a${i}.ts:${i + 1}:hit`).join('\n');
+    const rs = compressToolResultText(search, 'conservative');
+    expect(rs.text).toBe(search);
+    expect(rs.perRule.search_extract).toBeUndefined();
+
+    const html = '<!DOCTYPE html><html><body><p>hello</p></body></html>';
+    const rh = compressToolResultText(html, 'conservative');
+    expect(rh.text).toBe(html);
+    expect(rh.perRule.html_extract).toBeUndefined();
   });
 
   it('aggressive falls back to the tabular fold for arrays below the sample threshold', () => {

@@ -239,16 +239,17 @@ export default function CompressionPanel({
             </li>
             <li>
               <span className="font-semibold text-black dark:text-white">Moderate</span>: truncates
-              very long tool output (keeping the start and end) and collapses long repetitive stack
-              traces.{' '}
+              very long tool output (keeping the start and end), collapses repetitive stack traces
+              and near-duplicate log lines, folds and samples large JSON arrays, trims oversized
+              diffs and search results, and extracts text from HTML.{' '}
               <span className="font-medium text-amber-600 dark:text-amber-400">
                 Lossy: may omit detail
               </span>{' '}
-              from the middle that Claude would have used.
+              that Claude would have used.
             </li>
             <li>
-              <span className="font-semibold text-black dark:text-white">Aggressive</span>: trims
-              hardest, with lower truncation thresholds plus folding of large JSON arrays.{' '}
+              <span className="font-semibold text-black dark:text-white">Aggressive</span>: the same
+              rules with the lowest thresholds and tightest caps.{' '}
               <span className="font-medium text-amber-600 dark:text-amber-400">Most lossy</span>, so
               the accuracy risk is highest.
             </li>
