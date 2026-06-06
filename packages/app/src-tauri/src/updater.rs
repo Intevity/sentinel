@@ -22,9 +22,19 @@
 //!     restart mid-request would break the user's live Claude Code session,
 //!     so a busy proxy defers the install and the timer retries.
 //!
-//! The daemon sidecar is a child of the app process, so exiting the app
-//! terminates the daemon; the new bundle's daemon binary spawns fresh on
-//! relaunch (see daemon.rs). No special coordination needed.
+//! The daemon sidecar is deliberately long-lived: it keeps proxying Claude
+//! Code traffic while the UI window is closed and is NOT killed when the
+//! window hides. At update time it is therefore still running and, on
+//! Windows, still holds an exclusive lock on claude-sentinel-daemon.exe —
+//! the NSIS/MSI passive installers then fail with "Error opening file for
+//! writing" (Tauri #7931 class). Both install sites below download first
+//! (proxy keeps serving), then call `daemon::stop_daemon_for_update()`
+//! (graceful IPC shutdown, kill escalation fallback) right before
+//! `update.install()`; `app.restart()` and the Windows installer's own
+//! relaunch respawn a fresh daemon. If the install fails instead, we
+//! respawn the daemon ourselves so the proxy comes back on the old version
+//! (`daemon::spawn` reuses the session's handshake token, so the existing
+//! IPC client still authenticates).
 //!
 //! On macOS the `.app` replacement step requires a signed + notarized bundle;
 //! installs on unsigned builds will fail at the Gatekeeper check. That's why
@@ -189,12 +199,28 @@ async fn scheduled_check(app: &AppHandle, notified_version: &mut Option<String>)
         while proxy_is_busy().await {
             tokio::time::sleep(retry).await;
         }
-        // Install errors are silent like check errors: recoverable on the
-        // next tick and not worth interrupting the user. On Windows the
+        // Download BEFORE stopping the daemon: the proxy keeps serving while
+        // the bytes stream down, and the daemon is only offline for the brief
+        // install window. Download errors are silent like check errors:
+        // recoverable on the next tick and not worth interrupting the user.
+        let Ok(bytes) = update.download(|_, _| {}, || {}).await else {
+            return;
+        };
+        // Stop the daemon so the installer can overwrite its (Windows-locked)
+        // binary; the relaunch respawns it on the new version. On Windows the
         // passive installer exits + relaunches the process itself, so the
         // explicit restart is the macOS/Linux path.
-        if update.download_and_install(|_, _| {}, || {}).await.is_ok() {
-            app.restart();
+        crate::daemon::stop_daemon_for_update().await;
+        match update.install(bytes) {
+            Ok(()) => app.restart(),
+            Err(e) => {
+                // Bring the daemon back on the current version so the proxy
+                // isn't left dead until the next 4-hourly tick.
+                crate::app_log::app_log(&format!(
+                    "Silent update install failed ({e}); respawning daemon on the current version"
+                ));
+                crate::daemon::spawn(app);
+            }
         }
     } else {
         let version = update.version.clone();
@@ -257,14 +283,27 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
                 .ok_or_else(|| "No update available.".to_string())?
         }
     };
-    // download_and_install takes two callbacks (progress + done). We ignore
-    // both; the modal shows an indeterminate "Installing…" state and the
-    // restart is the completion signal. On Windows the passive installer
-    // exits + relaunches the process itself, so the explicit restart is the
-    // macOS/Linux path.
-    update
-        .download_and_install(|_, _| {}, || {})
+    // download takes two callbacks (progress + done). We ignore both; the
+    // modal shows an indeterminate "Installing…" state and the restart is
+    // the completion signal. Download happens BEFORE the daemon stops so the
+    // proxy keeps serving until the bytes are local.
+    let bytes = update
+        .download(|_, _| {}, || {})
         .await
         .map_err(|e| e.to_string())?;
+    // Stop the daemon so the installer can overwrite its (Windows-locked)
+    // binary; the post-install relaunch respawns it on the new version.
+    crate::daemon::stop_daemon_for_update().await;
+    // On Windows the passive installer exits + relaunches the process
+    // itself, so the explicit restart is the macOS/Linux path.
+    if let Err(e) = update.install(bytes) {
+        // Failed install: bring the daemon back on the current version so
+        // the proxy isn't dead behind the error the modal shows.
+        crate::app_log::app_log(&format!(
+            "Update install failed ({e}); respawning daemon on the current version"
+        ));
+        crate::daemon::spawn(&app);
+        return Err(e.to_string());
+    }
     app.restart();
 }

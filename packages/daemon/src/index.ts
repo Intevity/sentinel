@@ -381,6 +381,14 @@ export interface DaemonHandle {
 }
 
 export async function startDaemon(): Promise<DaemonHandle> {
+  // The Tauri app pipes our stdout/stderr into ~/.claude-sentinel/app.log
+  // for Windows diagnosability. The daemon deliberately outlives the app
+  // process, and once the parent exits the pipes' read ends close; without
+  // these guards the next console write raises an unhandled EPIPE stream
+  // error and crashes the proxy mid-session.
+  process.stdout.on('error', () => undefined);
+  process.stderr.on('error', () => undefined);
+
   // Read the IPC handshake token from stdin before any I/O so the parent's
   // pipe write isn't lost if startup races. Tauri-spawned daemons see a
   // value within ms; the dev CLI sees null after the grace window.

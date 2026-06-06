@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod activation;
+mod app_log;
 mod daemon;
 mod first_run;
 mod ipc;

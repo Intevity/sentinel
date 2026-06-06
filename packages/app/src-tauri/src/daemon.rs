@@ -35,7 +35,9 @@ use std::time::Duration;
 
 use rand::RngCore;
 use tauri::AppHandle;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+use crate::app_log::app_log;
 
 /// One-shot store for the IPC handshake token. Populated before the
 /// daemon is spawned (in `spawn`); read by `ipc::connect_daemon` when it
@@ -174,24 +176,83 @@ async fn evict_stale_daemon() {
         return;
     };
 
-    eprintln!(
-        "[sentinel] Found existing daemon (pid {pid}) — requesting graceful shutdown so a fresh handshake token can be installed"
-    );
+    app_log(&format!(
+        "Found existing daemon (pid {pid}) — requesting graceful shutdown so a fresh handshake token can be installed"
+    ));
     send_kill(pid, false).await;
 
     // Poll until the port is free, up to ~5 s.
     for _ in 0..25 {
         tokio::time::sleep(Duration::from_millis(200)).await;
         if probe_daemon_pid().await.is_none() {
-            eprintln!("[sentinel] Existing daemon exited cleanly");
+            app_log("Existing daemon exited cleanly");
             return;
         }
     }
 
-    eprintln!("[sentinel] Existing daemon did not exit after SIGTERM; escalating to SIGKILL");
+    app_log("Existing daemon did not exit after SIGTERM; escalating to SIGKILL");
     send_kill(pid, true).await;
     // Give the OS a beat to reclaim the port after a forced kill.
     tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Re-verify instead of assuming the force kill landed. A PID-targeted
+    // kill can miss when the /health PID is stale (daemon restarted between
+    // probe and kill) or when MULTIPLE daemons linger — the dual-install
+    // state a Windows NSIS-then-MSI upgrade leaves behind.
+    if probe_daemon_pid().await.is_none() {
+        app_log("Existing daemon exited after force kill");
+        return;
+    }
+    #[cfg(windows)]
+    {
+        // Image-name catch-all: kills every claude-sentinel-daemon.exe
+        // regardless of which install spawned it or what PID it reports.
+        app_log("Daemon still bound after force kill; falling back to image-name taskkill");
+        let mut cmd = tokio::process::Command::new("taskkill");
+        cmd.creation_flags(0x0800_0000);
+        cmd.args(["/F", "/IM", "claude-sentinel-daemon.exe"]);
+        match cmd.output().await {
+            Ok(out) => {
+                if !out.status.success() {
+                    app_log(&format!(
+                        "taskkill /F /IM claude-sentinel-daemon.exe failed: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ));
+                }
+            }
+            Err(e) => app_log(&format!("taskkill /F /IM failed to launch: {e}")),
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    if probe_daemon_pid().await.is_some() {
+        app_log("Eviction FAILED: a daemon still owns port 47284; the fresh spawn will exit and IPC will not authenticate");
+    }
+}
+
+/// Stop the running daemon so an installer can replace its binary. Windows
+/// locks running executables, so the NSIS/MSI passive installers fail with
+/// "Error opening file for writing: …claude-sentinel-daemon.exe" if the
+/// daemon survives into the install (Tauri #7931 class). Called before every
+/// updater `download_and_install`; harmless on macOS/Linux (no exe lock
+/// there) and the post-install relaunch respawns the daemon regardless.
+pub async fn stop_daemon_for_update() {
+    if probe_daemon_pid().await.is_none() {
+        return;
+    }
+    app_log("Stopping daemon before update install");
+    // Graceful first: the daemon closes its stores and exits on
+    // shutdown_daemon. A disconnected IPC socket errors instantly, so this
+    // never stalls the install path; the port poll below is the real gate.
+    let _ = crate::ipc::send_internal(serde_json::json!({ "type": "shutdown_daemon" })).await;
+    for _ in 0..15 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        if probe_daemon_pid().await.is_none() {
+            app_log("Daemon stopped gracefully before update install");
+            return;
+        }
+    }
+    app_log("Daemon did not stop via IPC; escalating to kill before update install");
+    evict_stale_daemon().await;
 }
 
 /// Spawn the daemon sidecar in the background.
@@ -202,26 +263,27 @@ async fn evict_stale_daemon() {
 /// developer starts the daemon manually.
 pub fn spawn(_app: &AppHandle) {
     let Some(path) = sidecar_path() else {
-        eprintln!("[sentinel] Could not resolve daemon sidecar path");
+        app_log("Could not resolve daemon sidecar path");
         return;
     };
 
     if !path.exists() {
-        eprintln!(
-            "[sentinel] Daemon binary not found at {} — start it manually for dev",
+        app_log(&format!(
+            "Daemon binary not found at {} — start it manually for dev",
             path.display()
-        );
+        ));
         return;
     }
 
-    // Generate the token BEFORE spawn so it's available to the IPC client
-    // by the time the read loop starts. `set` is fallible if a prior call
-    // already populated the cell — which only happens if `spawn` is
-    // called twice (we don't), so log and continue.
-    let token = generate_handshake_token();
-    if IPC_HANDSHAKE_TOKEN.set(token.clone()).is_err() {
-        eprintln!("[sentinel] IPC handshake token already initialised — reusing existing");
-    }
+    // Resolve the token BEFORE spawn so it's available to the IPC client by
+    // the time the read loop starts. `get_or_init` (not `set`) so a SECOND
+    // spawn — e.g. respawning after a failed update install — writes the
+    // SAME token the IPC client keeps presenting. The old generate-then-set
+    // shape handed a fresh, never-stored token to the new child, leaving the
+    // IPC handshake permanently mismatched.
+    let token = IPC_HANDSHAKE_TOKEN
+        .get_or_init(generate_handshake_token)
+        .clone();
 
     tauri::async_runtime::spawn(async move {
         // Evict any stale daemon left over from a previous app launch
@@ -232,7 +294,16 @@ pub fn spawn(_app: &AppHandle) {
         evict_stale_daemon().await;
 
         let mut cmd = tokio::process::Command::new(&path);
-        cmd.arg("start").stdin(Stdio::piped());
+        cmd.arg("start")
+            .stdin(Stdio::piped())
+            // Pipe stdout/stderr and tee them into app.log below. Release
+            // builds use windows_subsystem="windows", so inherited pipes go
+            // nowhere — which made "the daemon didn't start" undiagnosable
+            // on exactly the platform that needed it. The daemon guards its
+            // streams against EPIPE (see startDaemon) so it survives this
+            // app exiting while it keeps proxying.
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         // CREATE_NO_WINDOW — the daemon is a pkg console-subsystem exe; the
         // parent GUI app has no console, so without this flag Windows
         // allocates a visible console window for the child. The flag only
@@ -264,10 +335,31 @@ pub fn spawn(_app: &AppHandle) {
                 // Explicitly drop stdin to release the pipe.
                 drop(child.stdin.take());
 
+                // Tee daemon output into app.log. The daemon's own logger
+                // only exists once it boots; these lines cover the window
+                // before that (pkg bootstrap errors, port-bind exits) and
+                // double as the only daemon console capture on Windows.
+                if let Some(stdout) = child.stdout.take() {
+                    tauri::async_runtime::spawn(async move {
+                        let mut lines = BufReader::new(stdout).lines();
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            app_log(&format!("[daemon stdout] {line}"));
+                        }
+                    });
+                }
+                if let Some(stderr) = child.stderr.take() {
+                    tauri::async_runtime::spawn(async move {
+                        let mut lines = BufReader::new(stderr).lines();
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            app_log(&format!("[daemon stderr] {line}"));
+                        }
+                    });
+                }
+
                 let status = child.wait().await;
-                eprintln!("[sentinel] Daemon process exited: {status:?}");
+                app_log(&format!("Daemon process exited: {status:?}"));
             }
-            Err(e) => eprintln!("[sentinel] Failed to spawn daemon: {e}"),
+            Err(e) => app_log(&format!("Failed to spawn daemon: {e}")),
         }
     });
 }
