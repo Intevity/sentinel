@@ -17,8 +17,40 @@ permissions:
   id-token: write # the reusable finalize workflow's S3 publish assumes the AWS role via OIDC
 
 jobs:
+  # Release notes, generated mechanically from the conventional commits
+  # between the previous tag and this one (scripts/release-notes.mjs — pure
+  # git parsing, no LLM). Runs once; every build-tauri matrix leg passes the
+  # same body to tauri-action, so whichever leg creates the draft release
+  # stamps the notes onto it.
+  prepare-notes:
+    name: Generate release notes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      notes: ${{ steps.notes.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The generator diffs against the previous semver tag.
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build notes from conventional commits
+        id: notes
+        run: |
+          set -euo pipefail
+          node scripts/release-notes.mjs "$GITHUB_REF_NAME" | tee notes.md
+          {
+            echo 'notes<<NOTES_EOF'
+            cat notes.md
+            echo 'NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
   build-tauri:
     name: Build Tauri app (${{ matrix.platform }})
+    needs: [prepare-notes]
     runs-on: ${{ matrix.os }}
     # macOS notarization is NO LONGER awaited here: this leg signs the bundle and submits
     # to Apple's notary WITHOUT waiting (see the "Submit to notary" step), then exits. The
@@ -238,8 +270,7 @@ jobs:
           projectPath: packages/app
           tagName: ${{ github.ref_name }}
           releaseName: Claude Sentinel ${{ github.ref_name }}
-          releaseBody: |
-            See [CHANGELOG.md](https://github.com/Intevity/claude-sentinel/blob/main/CHANGELOG.md) for release notes.
+          releaseBody: ${{ needs.prepare-notes.outputs.notes }}
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
