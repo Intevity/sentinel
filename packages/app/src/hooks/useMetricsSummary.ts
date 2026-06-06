@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { MetricsSummary } from '@claude-sentinel/shared';
+import type { MetricsSummary, OptimizeRangePreset } from '@claude-sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
+import { windowForRange } from '../lib/dateRange.js';
 
 /** Describes which accounts a metrics rollup should cover.
  *  - `active`: follow whatever Claude Code currently has bound
@@ -20,30 +21,37 @@ interface UseMetricsSummaryResult {
   summary: MetricsSummary | null;
   loading: boolean;
   error: string | null;
-  days: number;
-  setDays: (days: number) => void;
   refetch: () => Promise<void>;
 }
 
 /**
  * Fetch the full Metrics tab rollup (cost, tokens, errors, tools, activity,
  * edit accept rate, skills, plugins) for a given scope over the selected
- * window. One `get_metrics_summary` IPC per period or scope change.
+ * range. One `get_metrics_summary` IPC per range or scope change.
  *
  * @param scope Which accounts to roll up. Undefined defaults to the
  *        active-account fallback (legacy behavior).
+ * @param range Shared range preset (the same selector the Optimize page
+ *        uses). Resolved to an absolute window at FETCH time so a dashboard
+ *        left open overnight doesn't pin '1D' to the previous midnight.
+ * @param customStart `YYYY-MM-DD` start when `range === 'custom'`.
+ * @param customEnd `YYYY-MM-DD` end (inclusive) when `range === 'custom'`.
  *
  * A re-fetch fires on:
  *   - mount
- *   - days selector change
+ *   - range / custom date change
  *   - scope change
  *   - account_switched broadcast (only when scope is 'active' — a pinned
  *     or pooled view shouldn't move underneath the user)
  *   - metrics_updated broadcast (fires once per OTEL batch that wrote
  *     telemetry rows) so dashboards update live
  */
-export function useMetricsSummary(scope?: MetricsScope): UseMetricsSummaryResult {
-  const [days, setDays] = useState(7);
+export function useMetricsSummary(
+  scope: MetricsScope | undefined,
+  range: OptimizeRangePreset,
+  customStart: string,
+  customEnd: string,
+): UseMetricsSummaryResult {
   const [summary, setSummary] = useState<MetricsSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,11 +64,14 @@ export function useMetricsSummary(scope?: MetricsScope): UseMetricsSummaryResult
     setLoading(true);
     setError(null);
     try {
+      // Resolve the preset to absolute bounds NOW (see the range param doc).
+      const window = windowForRange(range, customStart, customEnd);
       const payload =
         scope && scope.kind === 'pool'
           ? {
               type: 'get_metrics_summary' as const,
-              days,
+              days: 0,
+              window,
               accountIds: scope.accountIds,
               scopeKind: 'pool' as const,
               scopeLabel: scope.label,
@@ -68,14 +79,15 @@ export function useMetricsSummary(scope?: MetricsScope): UseMetricsSummaryResult
           : scope && scope.kind === 'all'
             ? {
                 type: 'get_metrics_summary' as const,
-                days,
+                days: 0,
+                window,
                 accountIds: scope.accountIds,
                 scopeKind: 'all' as const,
                 scopeLabel: scope.label,
               }
             : scope && scope.kind === 'account'
-              ? { type: 'get_metrics_summary' as const, days, accountId: scope.id }
-              : { type: 'get_metrics_summary' as const, days };
+              ? { type: 'get_metrics_summary' as const, days: 0, window, accountId: scope.id }
+              : { type: 'get_metrics_summary' as const, days: 0, window };
       const res = await sendToSentinel<MetricsSummary>(payload);
       if (res.success) {
         setSummary(res.data ?? null);
@@ -86,7 +98,7 @@ export function useMetricsSummary(scope?: MetricsScope): UseMetricsSummaryResult
       setError(err instanceof Error ? err.message : 'Failed to fetch metrics');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [days, scopeKey]);
+  }, [range, customStart, customEnd, scopeKey]);
 
   useEffect(() => {
     void fetchSummary().finally(() => setLoading(false));
@@ -113,5 +125,5 @@ export function useMetricsSummary(scope?: MetricsScope): UseMetricsSummaryResult
     };
   }, [fetchSummary, isActiveScope]);
 
-  return { summary, loading, error, days, setDays, refetch: fetchSummary };
+  return { summary, loading, error, refetch: fetchSummary };
 }
