@@ -95,6 +95,25 @@ Sentinel also splits prompt-cache activity by TTL, a breakdown OTEL does not exp
 </tr>
 </table>
 
+## 🗜️ Up to 99% fewer tokens on the output that bloats your context
+
+Sentinel's in-flight compressor rewrites tool results — and only tool results — on their way to Anthropic. Ten content-aware rules cover the payloads that actually eat your window: JSON API arrays are sampled with statistical summaries (errors and outliers always kept), grep/Glob results are capped per file, unified diffs lose their lockfile noise and excess hunks, build and incident logs fold to their errors, and HTML reduces to its text.
+
+Measured on the checked-in benchmark suite (`pnpm bench:compression`, reversible mode on, aggressive tier):
+
+| Workload          | Tokens in | Tokens out | Saved |
+| ----------------- | --------- | ---------- | ----- |
+| SRE incident log  | 68,105    | 305        | 99.6% |
+| Build log (cargo) | 20,287    | 413        | 98.0% |
+| HTML page         | 19,849    | 403        | 98.0% |
+| JSON API array    | 42,575    | 919        | 97.8% |
+| Code search (rg)  | 54,313    | 3,451      | 93.6% |
+| Unified diff      | 13,145    | 869        | 93.4% |
+
+Three honest caveats you won't find on other tools' landing pages. First, these are per-payload best cases on ideal workloads — across a whole mixed conversation the realized average is necessarily lower (for every tool in this category: one popular competitor advertises "up to 95%" while its own docs report a 4.8% median on production traffic). Sentinel's Optimize tab shows your real number. Second, every rule is deterministic and byte-stable, so Anthropic prompt caching keeps working — compression that busts your cache prefix costs more than it saves. Third, nothing is silently lost: with reversible retrieval on, every elision carries a content-addressed id and Claude can fetch the original bytes back through the `mcp__sentinel__retrieve` tool the moment it needs them. The benchmark suite enforces all three properties in CI — savings floors per content type, error-line survival ("same FATAL found"), and idempotency.
+
+See [documentation/COMPRESSION.md](documentation/COMPRESSION.md) for the full rule reference, tier table, and design contract.
+
 ## 🔔 Know before you hit the wall
 
 Set a threshold on the 5-hour window — 50%, 80%, 95%, whatever keeps you sane — and Sentinel fires a native OS notification the moment you cross it. In round-robin mode you can alert on pool-wide mean usage too. Pick your own notification sound per alert type. Per-window deduped (one alert per rolling cycle, no spam), with a unified Notification Center that captures every usage threshold, overage transition, account switch, and security finding in one scrollable timeline.
