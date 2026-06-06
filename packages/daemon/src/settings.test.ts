@@ -1129,4 +1129,144 @@ describe('settings', () => {
       expect(loadSettings(path).metricsRange).toBe('1w');
     });
   });
+
+  describe('optimizeRetentionDays / metricsRetentionDays', () => {
+    it('default to 365 (1 year) when the file is missing', () => {
+      const s = loadSettings(path);
+      expect(s.optimizeRetentionDays).toBe(365);
+      expect(s.metricsRetentionDays).toBe(365);
+    });
+
+    it('round-trip valid values and floor fractions', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({ optimizeRetentionDays: 180, metricsRetentionDays: 90 }),
+      );
+      const s = loadSettings(path);
+      expect(s.optimizeRetentionDays).toBe(180);
+      expect(s.metricsRetentionDays).toBe(90);
+      writeRawWithSig(path, JSON.stringify({ optimizeRetentionDays: 365.9 }));
+      expect(loadSettings(path).optimizeRetentionDays).toBe(365);
+    });
+
+    it('clamps out-of-range values into [90, 1095] instead of rejecting them', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({ optimizeRetentionDays: 30, metricsRetentionDays: 3650 }),
+      );
+      const s = loadSettings(path);
+      expect(s.optimizeRetentionDays).toBe(90);
+      expect(s.metricsRetentionDays).toBe(1095);
+    });
+
+    it('keeps the default on non-numeric values', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({ optimizeRetentionDays: 'year', metricsRetentionDays: null }),
+      );
+      const s = loadSettings(path);
+      expect(s.optimizeRetentionDays).toBe(365);
+      expect(s.metricsRetentionDays).toBe(365);
+    });
+
+    it('seeds both from dataRetentionDays when absent (upgrade path), clamped into [90, 1095]', () => {
+      writeRawWithSig(path, JSON.stringify({ dataRetentionDays: 200 }));
+      let s = loadSettings(path);
+      expect(s.optimizeRetentionDays).toBe(200);
+      expect(s.metricsRetentionDays).toBe(200);
+      // Legacy values outside the new bounds clamp rather than reset: a 30-day
+      // beta install keeps MORE data (90), a 10-year install drops to 3 years.
+      writeRawWithSig(path, JSON.stringify({ dataRetentionDays: 30 }));
+      s = loadSettings(path);
+      expect(s.optimizeRetentionDays).toBe(90);
+      expect(s.metricsRetentionDays).toBe(90);
+      writeRawWithSig(path, JSON.stringify({ dataRetentionDays: 3650 }));
+      s = loadSettings(path);
+      expect(s.optimizeRetentionDays).toBe(1095);
+      expect(s.metricsRetentionDays).toBe(1095);
+    });
+
+    it('lets an explicit per-feature value win over the dataRetentionDays seed, independently', () => {
+      writeRawWithSig(path, JSON.stringify({ dataRetentionDays: 200, optimizeRetentionDays: 90 }));
+      const s = loadSettings(path);
+      expect(s.optimizeRetentionDays).toBe(90);
+      expect(s.metricsRetentionDays).toBe(200);
+    });
+
+    it('updates independently via updateSettings', () => {
+      const got = updateSettings({ optimizeRetentionDays: 90 }, path);
+      expect(got.optimizeRetentionDays).toBe(90);
+      expect(got.metricsRetentionDays).toBe(365);
+    });
+  });
+
+  describe('range snapping to the retention ladder', () => {
+    it('snaps a persisted preset wider than the retention window down to the ladder top', () => {
+      writeRawWithSig(path, JSON.stringify({ optimizeRetentionDays: 180, optimizeRange: '1y' }));
+      expect(loadSettings(path).optimizeRange).toBe('6m');
+      writeRawWithSig(path, JSON.stringify({ optimizeRetentionDays: 90, optimizeRange: '6m' }));
+      expect(loadSettings(path).optimizeRange).toBe('3m');
+    });
+
+    it('snaps a fine-grained preset to its adjacent rung when retention grows past its ladder', () => {
+      // 2w/2m only exist on the sub-1y ladders; at a 1-year window they map
+      // to the neighbouring narrower rung, never balloon to the ladder top.
+      writeRawWithSig(path, JSON.stringify({ optimizeRetentionDays: 365, optimizeRange: '2w' }));
+      expect(loadSettings(path).optimizeRange).toBe('1w');
+      writeRawWithSig(path, JSON.stringify({ metricsRetentionDays: 365, metricsRange: '2m' }));
+      expect(loadSettings(path).metricsRange).toBe('1m');
+    });
+
+    it('round-trips 2w and 2m on the ladders that offer them', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          optimizeRetentionDays: 90,
+          optimizeRange: '2w',
+          metricsRetentionDays: 90,
+          metricsRange: '2m',
+        }),
+      );
+      const s = loadSettings(path);
+      expect(s.optimizeRange).toBe('2w');
+      expect(s.metricsRange).toBe('2m');
+    });
+
+    it('leaves all and custom untouched at any retention', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          optimizeRetentionDays: 90,
+          optimizeRange: 'all',
+          metricsRetentionDays: 90,
+          metricsRange: 'custom',
+        }),
+      );
+      const s = loadSettings(path);
+      expect(s.optimizeRange).toBe('all');
+      expect(s.metricsRange).toBe('custom');
+    });
+
+    it('snaps each page independently', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          optimizeRetentionDays: 90,
+          optimizeRange: '1y',
+          metricsRetentionDays: 365,
+          metricsRange: '1y',
+        }),
+      );
+      const s = loadSettings(path);
+      expect(s.optimizeRange).toBe('3m');
+      expect(s.metricsRange).toBe('1y');
+    });
+
+    it('snaps on the update path: shrinking retention rewrites the persisted range', () => {
+      writeRawWithSig(path, JSON.stringify({ optimizeRange: '1y' }));
+      expect(loadSettings(path).optimizeRange).toBe('1y');
+      const got = updateSettings({ optimizeRetentionDays: 90 }, path);
+      expect(got.optimizeRange).toBe('3m');
+    });
+  });
 });

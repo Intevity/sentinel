@@ -17,7 +17,9 @@ describe('windowForRange', () => {
   it('anchors every preset at a local midnight', () => {
     expect(windowForRange('1d', '', '')).toEqual({ sinceMs: midnight(2026, 5, 15) });
     expect(windowForRange('1w', '', '')).toEqual({ sinceMs: midnight(2026, 5, 9) });
+    expect(windowForRange('2w', '', '')).toEqual({ sinceMs: midnight(2026, 5, 2) });
     expect(windowForRange('1m', '', '')).toEqual({ sinceMs: midnight(2026, 4, 15) });
+    expect(windowForRange('2m', '', '')).toEqual({ sinceMs: midnight(2026, 3, 15) });
     expect(windowForRange('3m', '', '')).toEqual({ sinceMs: midnight(2026, 2, 15) });
     expect(windowForRange('6m', '', '')).toEqual({ sinceMs: midnight(2025, 11, 15) });
     expect(windowForRange('1y', '', '')).toEqual({ sinceMs: midnight(2025, 5, 15) });
@@ -55,7 +57,9 @@ describe('RANGE_LABELS', () => {
     expect(RANGE_LABELS).toEqual({
       '1d': 'today',
       '1w': 'in the last 7 days',
+      '2w': 'in the last 2 weeks',
       '1m': 'in the last month',
+      '2m': 'in the last 2 months',
       '3m': 'in the last 3 months',
       '6m': 'in the last 6 months',
       '1y': 'in the last year',

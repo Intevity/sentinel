@@ -34,6 +34,8 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     backgroundProbeIntervalSec: 300,
     telemetryRetentionDays: 30,
     dataRetentionDays: 365,
+    optimizeRetentionDays: 365,
+    metricsRetentionDays: 365,
     optimizeRange: 'all',
     metricsRange: '1w',
     securityScanEnabled: false,

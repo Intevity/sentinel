@@ -144,6 +144,11 @@ export default function OptimizeDashboard(): React.ReactElement {
   const [range, setRange] = useState<OptimizeRangePreset>('all');
   const [customStart, setCustomStart] = useState<string>('');
   const [customEnd, setCustomEnd] = useState<string>('');
+  // The Optimize page's retention window (Settings.optimizeRetentionDays)
+  // decides which range presets the selector offers; the daemon snaps the
+  // persisted preset when the window shrinks, and the settings_changed
+  // refresh below pulls both back in sync.
+  const [retentionDays, setRetentionDays] = useState<number>(365);
 
   // One window drives all the metric fetches (including the Compression
   // and Opportunities panes below) so every figure describes the same span.
@@ -206,6 +211,7 @@ export default function OptimizeDashboard(): React.ReactElement {
       setChartView(settings.data.optimizeChartView);
       setRange(settings.data.optimizeRange);
       setSubTab(settings.data.optimizeSubTab);
+      setRetentionDays(settings.data.optimizeRetentionDays);
     }
     if (ctxCosts.success && ctxCosts.data) {
       setCtx({
@@ -336,6 +342,7 @@ export default function OptimizeDashboard(): React.ReactElement {
         units={units}
         onToggleUnits={onToggleUnits}
         range={range}
+        retentionDays={retentionDays}
         customStart={customStart}
         customEnd={customEnd}
         onChangeRange={(r) => void onChangeRange(r)}
@@ -609,6 +616,7 @@ function StickySavingsBar({
   units,
   onToggleUnits,
   range,
+  retentionDays,
   customStart,
   customEnd,
   onChangeRange,
@@ -644,6 +652,8 @@ function StickySavingsBar({
   units: SavingsUnits;
   onToggleUnits: (next: SavingsUnits) => void;
   range: OptimizeRangePreset;
+  /** Optimize-page retention window in days; drives the selector's ladder. */
+  retentionDays: number;
   customStart: string;
   customEnd: string;
   onChangeRange: (next: OptimizeRangePreset) => void;
@@ -863,6 +873,7 @@ function StickySavingsBar({
           <div className="mt-2.5 border-t border-border-subtle/10 pt-2.5">
             <RangeSelector
               range={range}
+              retentionDays={retentionDays}
               customStart={customStart}
               customEnd={customEnd}
               onChangeRange={onChangeRange}

@@ -127,7 +127,7 @@ Every setting Sentinel exposes lives in one tabbed panel, grouped by concern. No
 - **General** — launch at login, switching mode (off / round-robin), round-robin strategy (balance / earliest-reset), alert sounds, background probe interval, auto-update.
 - **Accounts** — refresh an account's token, soft-remove (preserve history) or purge (delete all data), toggle round-robin pool inclusion per account.
 - **Security** — enable/disable each detector category, choose enforcement mode, configure oversized-request handling, manage tool permission rules, set the OS notification threshold, tune event retention, and mute specific scanner telemetry events.
-- **Data** — request/response logging toggle, retention window, max body size, auth-header redaction, OTEL metrics retention, one-click clear buttons.
+- **Data** — request/response logging toggle, per-feature data retention for the Optimize and Metrics pages (3 months to 3 years; each page's date-range presets adapt to its window), max body size, auth-header redaction, OTEL metrics retention, one-click clear buttons.
 
 <table>
 <tr>

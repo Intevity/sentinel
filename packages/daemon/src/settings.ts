@@ -28,7 +28,11 @@ import type {
   CodeModeMigration,
   OptimizeSubTab,
 } from '@claude-sentinel/shared';
-import { SECURITY_CONTEXT_WINDOW_CHARS, VALID_DETECTOR_TIERS } from '@claude-sentinel/shared';
+import {
+  SECURITY_CONTEXT_WINDOW_CHARS,
+  VALID_DETECTOR_TIERS,
+  snapRangeToLadder,
+} from '@claude-sentinel/shared';
 import { signSettings, verifySettings } from './settings-integrity.js';
 
 /** Default settings-file path. Tests can override via
@@ -60,6 +64,8 @@ export const DEFAULT_SETTINGS: Settings = {
   backgroundProbeIntervalSec: 300,
   telemetryRetentionDays: 30,
   dataRetentionDays: 365,
+  optimizeRetentionDays: 365,
+  metricsRetentionDays: 365,
   securityScanEnabled: true,
   securityEnforcementMode: null,
   securityScanSecrets: true,
@@ -399,6 +405,22 @@ function coerce(raw: unknown): Settings {
     // analytics-retention knob inherit their old telemetry value once. After
     // the next save the file carries `dataRetentionDays` and this never fires.
     next.dataRetentionDays = next.telemetryRetentionDays;
+  }
+  // Per-feature retention: clamped (not rejected) into [90, 1095] — 3 months
+  // to 3 years. The floor keeps the range-preset ladder meaningful; the cap
+  // bounds All-range aggregate scans over the SQLite stores. Clamping (vs the
+  // reject-and-keep-default style above) is deliberate: the seed below must
+  // map legacy out-of-range `dataRetentionDays` values (30, 3650, …)
+  // deterministically into the new bounds.
+  const clampFeatureRetention = (v: number): number | null =>
+    Number.isFinite(v) ? Math.min(1095, Math.max(90, Math.floor(v))) : null;
+  for (const key of ['optimizeRetentionDays', 'metricsRetentionDays'] as const) {
+    // Back-compat seed: upgrading users whose file predates the per-feature
+    // retention split inherit their unified analytics value once. After the
+    // next save the file carries both new keys and the seed never fires.
+    const source = typeof obj[key] === 'number' ? obj[key] : obj['dataRetentionDays'];
+    const n = typeof source === 'number' ? clampFeatureRetention(source) : null;
+    if (n !== null) next[key] = n;
   }
   if (typeof obj['securityScanEnabled'] === 'boolean') {
     next.securityScanEnabled = obj['securityScanEnabled'];
@@ -755,6 +777,13 @@ function coerce(raw: unknown): Settings {
   } else {
     next.otelServiceInstanceId = randomUUID();
   }
+  // Snap each page's persisted range preset onto the ladder for its (possibly
+  // just-shrunk) retention window, so a stored '1y' can't linger after the
+  // user drops that page's retention to 6 months. Runs after every field is
+  // resolved because retention and range may arrive in the same patch.
+  // 'all' / 'custom' always pass through.
+  next.optimizeRange = snapRangeToLadder(next.optimizeRange, next.optimizeRetentionDays);
+  next.metricsRange = snapRangeToLadder(next.metricsRange, next.metricsRetentionDays);
   return next;
 }
 
@@ -774,7 +803,9 @@ function isOptimizeChartView(v: string): v is Settings['optimizeChartView'] {
 const VALID_OPTIMIZE_RANGES: readonly Settings['optimizeRange'][] = [
   '1d',
   '1w',
+  '2w',
   '1m',
+  '2m',
   '3m',
   '6m',
   '1y',

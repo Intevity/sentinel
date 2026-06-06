@@ -12,7 +12,9 @@ import type { MetricsWindow, OptimizeRangePreset } from '@claude-sentinel/shared
 export const RANGE_LABELS: Record<OptimizeRangePreset, string> = {
   '1d': 'today',
   '1w': 'in the last 7 days',
+  '2w': 'in the last 2 weeks',
   '1m': 'in the last month',
+  '2m': 'in the last 2 months',
   '3m': 'in the last 3 months',
   '6m': 'in the last 6 months',
   '1y': 'in the last year',
@@ -44,9 +46,15 @@ export function windowForRange(
       return { sinceMs: today0 };
     case '1w':
       return { sinceMs: today0 - 6 * DAY };
+    case '2w':
+      return { sinceMs: today0 - 13 * DAY };
     case '1m':
       return {
         sinceMs: startOfLocalDay(new Date(now.getFullYear(), now.getMonth() - 1, now.getDate())),
+      };
+    case '2m':
+      return {
+        sinceMs: startOfLocalDay(new Date(now.getFullYear(), now.getMonth() - 2, now.getDate())),
       };
     case '3m':
       return {

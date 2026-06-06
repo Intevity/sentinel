@@ -126,6 +126,7 @@ export default function MetricsDashboard({
         <div className="min-w-0 flex-1">
           <RangeSelector
             range={range}
+            retentionDays={settings?.metricsRetentionDays ?? 365}
             customStart={customStart}
             customEnd={customEnd}
             onChangeRange={onChangeRange}
