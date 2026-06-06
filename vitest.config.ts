@@ -3,7 +3,14 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     globals: true,
-    include: ['packages/*/src/**/*.test.ts', 'packages/*/src/**/*.spec.ts'],
+    include: [
+      'packages/*/src/**/*.test.ts',
+      'packages/*/src/**/*.spec.ts',
+      // Compression benchmark: a normal spec (its savings floors are the
+      // regression guard), but it lives outside src/ so its large fixture
+      // builders are never coverage-instrumented.
+      'packages/daemon/bench/**/*.test.ts',
+    ],
     // Exclude Playwright specs — they use @playwright/test, not vitest,
     // and fail if vitest tries to collect them.
     exclude: ['**/node_modules/**', '**/dist/**', 'packages/app/e2e/**'],
@@ -36,6 +43,10 @@ export default defineConfig({
         // Benchmark harness: runs via `vitest bench`, not `vitest run`, so
         // it's never exercised during the CI test step.
         'packages/daemon/src/security/scanner.bench.ts',
+        // Compression benchmark fixtures + spec: the spec runs in CI (savings
+        // floors guard regressions) but only EXERCISES already-instrumented
+        // src/ code; the bench dir itself stays out of the coverage gate.
+        'packages/daemon/bench/**',
         // Test infrastructure — shared factory imported only by proxy.*.integration.test.ts
         // siblings. Has no production callers. Added in Sprint 1 of the
         // test migration (see documentation/TEST_MIGRATION_PLAN.md).

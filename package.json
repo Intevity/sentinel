@@ -19,7 +19,8 @@
     "security:test": "node scripts/security-test.mjs",
     "alerts:test": "node scripts/alerts-test.mjs",
     "mock:budget": "node scripts/mock-budget.mjs",
-    "mock:budget:update": "node scripts/mock-budget.mjs --update"
+    "mock:budget:update": "node scripts/mock-budget.mjs --update",
+    "bench:compression": "SENTINEL_BENCH_TABLE=1 vitest run packages/daemon/bench/compression-bench.test.ts --reporter=basic"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
