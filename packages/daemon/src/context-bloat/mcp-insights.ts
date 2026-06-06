@@ -23,6 +23,7 @@
 
 import type Database from 'better-sqlite3';
 import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import type {
   CodeModeMigration,
   McpContextCosts,
@@ -79,6 +80,25 @@ function detectGlobalServers(claudeJson: unknown): string[] {
   return Object.keys(servers);
 }
 
+/** Project-scope servers from each known project's `.mcp.json` (Claude
+ *  Code's `project` scope). The project list comes from `~/.claude.json:
+ *  projects` — the same set of directories Claude Code has been run in —
+ *  so this never walks the filesystem blindly. */
+function detectMcpJsonServers(claudeJson: unknown): Array<{ project: string; name: string }> {
+  if (!claudeJson || typeof claudeJson !== 'object') return [];
+  const projects = (claudeJson as { projects?: unknown }).projects;
+  if (!projects || typeof projects !== 'object') return [];
+  const out: Array<{ project: string; name: string }> = [];
+  for (const dir of Object.keys(projects)) {
+    const mcpJson = safeReadJson(join(dir, '.mcp.json'));
+    if (!mcpJson || typeof mcpJson !== 'object') continue;
+    const servers = (mcpJson as { mcpServers?: unknown }).mcpServers;
+    if (!servers || typeof servers !== 'object') continue;
+    for (const name of Object.keys(servers)) out.push({ project: dir, name });
+  }
+  return out;
+}
+
 /** Tool suffix (the part after `mcp__<server>__`), for duplicate
  *  comparison across server-name variants. */
 function toolSuffixes(toolNames: string[], sanitizedServer: string): Set<string> {
@@ -94,6 +114,8 @@ interface ConfigPresence {
   /** Display name (config spelling). */
   name: string;
   projects: string[];
+  /** Projects whose `.mcp.json` carries the entry (scope `project`). */
+  mcpJsonProjects: string[];
   enabledAnywhere: boolean;
   global: boolean;
 }
@@ -103,6 +125,11 @@ export interface BuildInsightsDeps {
   contextStore: ContextCostStore;
   /** Recorded code-mode migrations; doubles as the bridged-server set. */
   migrations: CodeModeMigration[];
+  /** Sentinel's plain-disable stashes. A user- or project-scope disable
+   *  removes the config entry outright (no `disabledMcpServers` marker
+   *  exists at those scopes), so without these the row would look
+   *  measured-only and lose its Enable action. */
+  disabledStashes?: CodeModeMigration[];
   /** Servers the bridge failed to verify/connect to since startup. */
   unavailableServers?: ReadonlySet<string>;
   window?: MetricsWindow;
@@ -116,6 +143,7 @@ export function buildMcpContextInsights(deps: BuildInsightsDeps): McpContextCost
   const claudeJson = safeReadJson(getClaudeJsonPath());
   const configRows = detectMcpServers(claudeJson);
   const globalServers = detectGlobalServers(claudeJson);
+  const mcpJsonRows = detectMcpJsonServers(claudeJson);
   const usage = estimateMcpCosts(db);
   const measured = contextStore
     .getServerDefinitionCosts(win)
@@ -127,21 +155,40 @@ export function buildMcpContextInsights(deps: BuildInsightsDeps): McpContextCost
   // Collapse config rows by sanitized name: one insight per server identity,
   // with every project it appears under.
   const configByKey = new Map<string, ConfigPresence>();
-  const upsertConfig = (name: string, project: string | null, enabled: boolean): void => {
+  const upsertConfig = (
+    name: string,
+    project: string | null,
+    enabled: boolean,
+    bucket: 'local' | 'mcpjson' = 'local',
+  ): void => {
     const key = sanitizeServerName(name);
     const cur = configByKey.get(key) ?? {
       name,
       projects: [],
+      mcpJsonProjects: [],
       enabledAnywhere: false,
       global: false,
     };
-    if (project !== null && !cur.projects.includes(project)) cur.projects.push(project);
+    const list = bucket === 'mcpjson' ? cur.mcpJsonProjects : cur.projects;
+    if (project !== null && !list.includes(project)) list.push(project);
     if (project === null) cur.global = true;
     if (enabled) cur.enabledAnywhere = true;
     configByKey.set(key, cur);
   };
   for (const row of configRows) upsertConfig(row.name, row.project, row.enabled);
   for (const name of globalServers) upsertConfig(name, null, true);
+  for (const row of mcpJsonRows) upsertConfig(row.name, row.project, true, 'mcpjson');
+  // Stash-disabled servers: the entry left the config file, but Sentinel
+  // holds the restore payload, so the row must stay visible (and actionable)
+  // as "disabled" at the stash's scope.
+  for (const stash of deps.disabledStashes ?? []) {
+    upsertConfig(
+      stash.server,
+      stash.directory,
+      false,
+      stash.scope === 'project' ? 'mcpjson' : 'local',
+    );
+  }
 
   const measuredByKey = new Map(measured.map((m) => [m.server, m]));
   const usageByKey = new Map(usage.map((u) => [u.server, u]));
@@ -185,7 +232,15 @@ export function buildMcpContextInsights(deps: BuildInsightsDeps): McpContextCost
         recommendations.push({ kind: 'disabled' });
       } else {
         if (m && calls7d === 0) recommendations.push({ kind: 'unused' });
-        if (m && defTokens >= CODE_MODE_MIN_DEF_TOKENS && calls7d <= CODE_MODE_MAX_CALLS_7D) {
+        // The code-mode badge is a call to action, so it requires a config
+        // entry Sentinel can actually disable. Measured-only servers
+        // (plugins, remote connectors) would double-load if bridged.
+        if (
+          config &&
+          m &&
+          defTokens >= CODE_MODE_MIN_DEF_TOKENS &&
+          calls7d <= CODE_MODE_MAX_CALLS_7D
+        ) {
           recommendations.push({ kind: 'code-mode' });
         }
       }
@@ -194,8 +249,10 @@ export function buildMcpContextInsights(deps: BuildInsightsDeps): McpContextCost
     insights.push({
       server: config?.name ?? migrationNameByKey.get(key) ?? key,
       projects: config?.projects ?? [],
+      mcpJsonProjects: config?.mcpJsonProjects ?? [],
       enabled,
       global: config?.global ?? false,
+      managed: config !== undefined || bridged,
       definition: {
         bytes: defBytes,
         estTokens: defTokens,

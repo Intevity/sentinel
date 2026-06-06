@@ -112,14 +112,14 @@ export interface NativeServerEntry {
   entry: unknown;
 }
 
-/** Every `mcpServers` entry for the server that `~/.claude.json` holds: the
- *  top-level user scope plus each project's local scope, user first then
- *  projects in key order. Claude Code resolves same-named servers
- *  local-over-global, so migration must act on ALL of these — disabling only
- *  the global entry leaves every project with its own entry still loading
- *  the server natively. (`.mcp.json` project files are not scanned; those
- *  entries can still be managed individually via the explicit-scope
- *  functions above.) */
+/** Every `mcpServers` entry for the server across Claude Code's config
+ *  surfaces: `~/.claude.json` top-level (user scope), each project's local
+ *  scope, then each known project directory's `.mcp.json` (project scope) —
+ *  user first, then projects in key order. Claude Code resolves same-named
+ *  servers local-over-global, so migration must act on ALL of these —
+ *  disabling only the global entry leaves every project with its own entry
+ *  still loading the server natively. The `.mcp.json` scan is bounded by the
+ *  project list `~/.claude.json` already tracks; no blind filesystem walk. */
 export function findNativeServerEntries(server: string): NativeServerEntry[] {
   const state = readClaudeState();
   const out: NativeServerEntry[] = [];
@@ -129,6 +129,10 @@ export function findNativeServerEntries(server: string): NativeServerEntry[] {
   for (const [dir, project] of Object.entries(projects)) {
     const servers = asRecord(asRecord(project)['mcpServers']);
     if (server in servers) out.push({ scope: 'local', directory: dir, entry: servers[server] });
+  }
+  for (const dir of Object.keys(projects)) {
+    const servers = asRecord(readJsonObject(mcpJsonPath(dir))['mcpServers']);
+    if (server in servers) out.push({ scope: 'project', directory: dir, entry: servers[server] });
   }
   return out;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, unlinkSync, existsSync, rmSync } from 'fs';
+import { writeFileSync, unlinkSync, existsSync, rmSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type Database from 'better-sqlite3';
@@ -385,5 +385,107 @@ describe('buildMcpContextInsights', () => {
     expect(g?.enabled).toBe(true);
     expect(g?.projects).toEqual([]);
     expect(g?.global).toBe(false);
+  });
+
+  it('detects .mcp.json project-scope servers: original name, mcpJsonProjects, managed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sentinel-insights-mcpjson-'));
+    try {
+      writeFileSync(
+        join(dir, '.mcp.json'),
+        JSON.stringify({ mcpServers: { 'team-memory': { command: 'x' } } }),
+      );
+      writeClaudeJson({ projects: { [dir]: {} } });
+      seedMeasured('team-memory', 8_000, ['mcp__team-memory__recall']);
+      const out = build();
+      const row = out.insights.find((i) => i.server === 'team-memory');
+      expect(row?.managed).toBe(true);
+      expect(row?.mcpJsonProjects).toEqual([dir]);
+      expect(row?.projects).toEqual([]);
+      expect(row?.enabled).toBe(true);
+      expect(row?.definition.measured).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores a .mcp.json with no mcpServers key', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sentinel-insights-mcpjson-empty-'));
+    try {
+      writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ unrelated: true }));
+      writeClaudeJson({ projects: { [dir]: {} } });
+      const out = build();
+      expect(out.insights).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('marks measured-only servers unmanaged and never recommends code-mode for them', () => {
+    // Plugin-provided server shape: heavy definitions, low usage, but no
+    // config entry anywhere Sentinel can disable — bridging it would
+    // double-load the definitions.
+    writeClaudeJson({ mcpServers: {} });
+    seedMeasured('plugin_mongodb_mongodb', 70_000, ['mcp__plugin_mongodb_mongodb__find']);
+    const out = build();
+    const row = out.insights.find((i) => i.server === 'plugin_mongodb_mongodb');
+    expect(row?.managed).toBe(false);
+    expect(row?.mcpJsonProjects).toEqual([]);
+    expect(row?.recommendations.map((r) => r.kind)).not.toContain('code-mode');
+    // ...and it contributes nothing to potential savings.
+    expect(out.savings.potential.estTokens).toBe(0);
+  });
+
+  it('keeps a user-scope stash-disabled server visible: managed, global, disabled badge', () => {
+    // A plain Disable at user scope removes the entry from ~/.claude.json
+    // outright; only the stash proves it exists and is restorable.
+    writeClaudeJson({ mcpServers: {} });
+    seedMeasured('github', 35_000, ['mcp__github__search_code']);
+    const out = buildMcpContextInsights({
+      db,
+      contextStore: store,
+      migrations: [],
+      disabledStashes: [
+        { server: 'github', scope: 'user', directory: null, originalEntry: {}, migratedAt: 1 },
+      ],
+    });
+    const gh = out.insights.find((i) => i.server === 'github');
+    expect(gh?.managed).toBe(true);
+    expect(gh?.global).toBe(true);
+    expect(gh?.enabled).toBe(false);
+    expect(gh?.recommendations.map((r) => r.kind)).toEqual(['disabled']);
+  });
+
+  it('surfaces a project-scope stash in mcpJsonProjects so Enable targets the right scope', () => {
+    writeClaudeJson({ projects: { '/repo': {} } });
+    const out = buildMcpContextInsights({
+      db,
+      contextStore: store,
+      migrations: [],
+      disabledStashes: [
+        {
+          server: 'team-memory',
+          scope: 'project',
+          directory: '/repo',
+          originalEntry: {},
+          migratedAt: 1,
+        },
+      ],
+    });
+    const row = out.insights.find((i) => i.server === 'team-memory');
+    expect(row?.managed).toBe(true);
+    expect(row?.mcpJsonProjects).toEqual(['/repo']);
+    expect(row?.projects).toEqual([]);
+    expect(row?.enabled).toBe(false);
+    expect(row?.recommendations.map((r) => r.kind)).toEqual(['disabled']);
+  });
+
+  it('bridged servers stay managed even with no surviving config entry', () => {
+    writeClaudeJson({ mcpServers: {} });
+    const out = build([
+      { server: 'github', scope: 'user', directory: null, originalEntry: {}, migratedAt: 1 },
+    ]);
+    const gh = out.insights.find((i) => i.server === 'github');
+    expect(gh?.bridgeStatus).toBe('bridged');
+    expect(gh?.managed).toBe(true);
   });
 });

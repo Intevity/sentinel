@@ -396,7 +396,7 @@ export default function SettingsPanel({
               {active && (
                 <motion.span
                   layoutId="settings-tab-pill"
-                  className="absolute inset-0 bg-ios-blue rounded-full -z-[1]"
+                  className="absolute inset-0 bg-ios-blue rounded-full"
                   transition={{ type: 'spring', stiffness: 420, damping: 34 }}
                 />
               )}
