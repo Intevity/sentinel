@@ -178,6 +178,40 @@ A test that still passes when the feature is broken is not a test. Every new tes
 
 If a code path can't be exercised by a real scenario against the harness, the honest answers are (in order): integration-test it end-to-end, delete the unreachable branch, or escalate the design question to the user. Reaching for `/* v8 ignore */` or a shallow assertion to hit the coverage number is not one of the answers.
 
+## Commit messages (release notes are generated from them)
+
+GitHub release notes are produced mechanically by `scripts/release-notes.mjs`
+(pure git parsing; deliberately no LLM): every non-merge commit subject between
+two tags becomes one bullet, grouped by type, and body lines starting with `- `
+become its sub-bullets. CI enforces the shape on every PR (`commit-lint` job,
+`scripts/commit-lint.mjs`). Write EVERY commit as if its message will be read
+on the release page, because it will be:
+
+```
+<type>(<scope>): <imperative summary that reads as a release-note bullet>
+
+- one body bullet per distinct feature / fix / behavior change in the commit
+- keep each bullet to one line; implementation detail belongs in code comments
+```
+
+- `type`: feat | fix | perf | refactor | docs | test | ci | build | chore | style | revert
+- Subject ≤ 120 chars and must stand alone; move detail into body bullets.
+- A multi-change commit (especially a squash-merged PR) MUST enumerate each
+  change as a `- ` body bullet — that is where the release notes get their
+  per-feature granularity.
+- Trailers (Co-Authored-By, …) go after a blank line; they never leak into notes.
+- Preview the notes an upcoming tag would get: `node scripts/release-notes.mjs HEAD`.
+
+## Tagged releases
+
+Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`: the
+`prepare-notes` job generates the notes and every `tauri-action` leg stamps
+them onto the draft release, which `notarize-finalize` later publishes. When
+cutting a release, sanity-check `node scripts/release-notes.mjs HEAD` first;
+if the generated notes read poorly, fix the commit messages story going
+forward — do not hand-edit drafts as a routine (the generator must stay the
+source of truth).
+
 ## Logs
 
 ```sh

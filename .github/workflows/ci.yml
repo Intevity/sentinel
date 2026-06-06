@@ -26,6 +26,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # GitHub release notes are generated verbatim from commit messages
+  # (scripts/release-notes.mjs), so the conventional-commit shape is a
+  # release-quality gate, not a style nit. Dependency-free node script —
+  # deliberately no LLM and no commitlint package.
+  commit-lint:
+    name: Commit messages
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The lint walks base..HEAD, so it needs more than the default
+          # shallow single-commit checkout.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Lint commit messages (release notes are generated from them)
+        run: node scripts/commit-lint.mjs "origin/${{ github.base_ref }}" HEAD
+
   lint-test:
     name: Quality Checks
     runs-on: ubuntu-latest
