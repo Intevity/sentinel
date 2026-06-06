@@ -26,6 +26,10 @@ export type RuleId =
   | 'stack_trace_collapse'
   | 'log_truncate'
   | 'log_error_extract'
+  | 'log_near_dup_fold'
+  | 'search_extract'
+  | 'diff_trim'
+  | 'html_extract'
   | 'intra_body_fold';
 
 /** Why a request was processed but its body left unchanged. `null` skip
