@@ -14,7 +14,7 @@ import type {
   Settings,
 } from '@claude-sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
-import { formatTokens, type SavingsUnits } from '../lib/optimizeUnits.js';
+import { formatTokens, windowMultiplierLabel, type SavingsUnits } from '../lib/optimizeUnits.js';
 import OpportunityList from './optimize/OpportunityList.js';
 import ContextInventoryPanel from './optimize/ContextInventoryPanel.js';
 import CompressionPanel from './optimize/CompressionPanel.js';
@@ -715,6 +715,10 @@ function StickySavingsBar({
   const totalInputPct = totalInput > 0 ? (savedTokens / totalInput) * 100 : 0;
   const pctStr = (n: number): string => `${n.toFixed(n >= 10 || n === 0 ? 0 : 1)}%`;
   const heroPct = optimizedDenom > 0 ? pctStr(optimizedPct) : '—';
+  // "3.03x window multiplier": the same context window holds this many times
+  // more content at the current reduction. Null when there is nothing to
+  // measure; the subtext then falls back to the token ratio / empty state.
+  const windowMult = windowMultiplierLabel(savedTokens, optimizedDenom);
   const srcSaved = `subagents ${disp(subCost, subTokens)} · compression ${disp(compCost, compTokens)} · context ${disp(ctxCost, ctxTokens)}`;
   const srcPotential = `subagents ${disp(subPotCost, subPotTokens)} · compression ${disp(compPotCost, compPotTokens)} · context ${disp(ctxPotCost, ctxPotTokens)}`;
   // `sticky` works because <main> (App.tsx) is the overflow-y-scroll
@@ -804,7 +808,7 @@ function StickySavingsBar({
                 compression ratio; cache-independent). */}
                 <div
                   className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2.5"
-                  title="How much smaller Sentinel makes the content it optimizes: tokens removed from compressed tool output plus subagent-absorbed reads, over that content's original size. This is a compression ratio (comparable to tool-compression benchmarks) and is independent of prompt caching."
+                  title="How much smaller Sentinel makes the content it optimizes: tokens removed from compressed tool output plus subagent-absorbed reads, over that content's original size. This is a compression ratio (comparable to tool-compression benchmarks) and is independent of prompt caching. The window multiplier is how many times more of that content fits in the same context window at this reduction."
                 >
                   <div className="text-[10px] uppercase tracking-wide text-foreground/55">
                     Content reduced
@@ -815,9 +819,11 @@ function StickySavingsBar({
                     {heroPct}
                   </div>
                   <div className="mt-0.5 text-[11px] text-foreground/55">
-                    {optimizedDenom > 0
-                      ? `${formatTokens(savedTokens)} of ${formatTokens(optimizedDenom)}`
-                      : `no compressible content ${rangeLabel}`}
+                    {windowMult
+                      ? `${windowMult} window multiplier`
+                      : optimizedDenom > 0
+                        ? `${formatTokens(savedTokens)} of ${formatTokens(optimizedDenom)}`
+                        : `no compressible content ${rangeLabel}`}
                   </div>
                 </div>
 
@@ -834,7 +840,11 @@ function StickySavingsBar({
                   >
                     {disp(savedCost, savedTokens)}
                   </div>
-                  <div className="mt-0.5 text-[11px] text-foreground/45">realized {rangeLabel}</div>
+                  <div className="mt-0.5 text-[11px] text-foreground/45">
+                    {optimizedDenom > 0
+                      ? `${formatTokens(savedTokens)} of ${formatTokens(optimizedDenom)}`
+                      : `realized ${rangeLabel}`}
+                  </div>
                 </div>
 
                 {/* Potential (absolute). Per-source split lives in the tooltip. */}

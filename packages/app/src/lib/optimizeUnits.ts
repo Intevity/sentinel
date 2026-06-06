@@ -29,6 +29,21 @@ export function formatTokens(n: number): string {
   return `${sign}${(abs / 1_000_000).toFixed(2)}M tk`;
 }
 
+/** "Ax" label for the effective context-window multiplier of a reduction:
+ *  content that would have cost `denomTokens` fits in `denomTokens -
+ *  savedTokens`, so the same window holds denom/(denom - saved) times as
+ *  much (67% saved ≈ 3.03x). At most 2 decimals, trailing zeros trimmed
+ *  ("3x", "2.5x", "3.03x"). Returns null when there is no compressible
+ *  content (denom 0) or the reduction is total (remainder 0), where a
+ *  multiplier is undefined. */
+export function windowMultiplierLabel(savedTokens: number, denomTokens: number): string | null {
+  if (denomTokens <= 0) return null;
+  const remaining = denomTokens - savedTokens;
+  if (remaining <= 0) return null;
+  const rounded = Math.round((denomTokens / remaining) * 100) / 100;
+  return `${rounded}x`;
+}
+
 /** Color class for a token savings number. Same emerald/red/neutral
  *  rule as the cost view. */
 export function tokensColorClass(n: number): string {
