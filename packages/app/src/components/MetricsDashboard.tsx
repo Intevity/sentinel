@@ -1,14 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import type {
   MetricsSummary,
   MetricsByDayModel,
   CacheTtlSessionRow,
+  OptimizeRangePreset,
 } from '@claude-sentinel/shared';
 import { useMetricsSummary, type MetricsScope } from '../hooks/useMetricsSummary.js';
 import { useSettings } from '../hooks/useSettings.js';
 import InfoTooltip from './InfoTooltip.js';
 import OtelDriftBanner from './OtelDriftBanner.js';
+import { RangeSelector } from './RangeSelector.js';
+import { RANGE_LABELS } from '../lib/dateRange.js';
 
 const MODEL_COLORS: Record<string, string> = {
   'claude-opus-4': '#BF5AF2',
@@ -31,12 +34,6 @@ const TOKEN_TYPE_COLORS: Record<string, string> = {
   cacheRead: '#30D158',
   cacheCreate: '#FF9F0A',
 };
-
-const PERIODS = [
-  { days: 7, label: '7d' },
-  { days: 14, label: '14d' },
-  { days: 30, label: '30d' },
-];
 
 const OTEL_PROVENANCE = [
   'Metrics are emitted by Claude Code via OpenTelemetry and sent to',
@@ -95,32 +92,46 @@ interface MetricsDashboardProps {
 export default function MetricsDashboard({
   scope,
 }: MetricsDashboardProps = {}): React.ReactElement {
-  const { summary, loading, error, days, setDays } = useMetricsSummary(scope);
+  // Same range selector as the Optimize page (shared RangeSelector +
+  // windowForRange). The preset persists in Settings.metricsRange; the custom
+  // start/end dates are client-held only, mirroring the Optimize page.
+  const { settings, update } = useSettings();
+  const [range, setRange] = useState<OptimizeRangePreset>('1w');
+  const [customStart, setCustomStart] = useState<string>('');
+  const [customEnd, setCustomEnd] = useState<string>('');
+  const persistedRange = settings?.metricsRange;
+  useEffect(() => {
+    if (persistedRange) setRange(persistedRange);
+  }, [persistedRange]);
+  const onChangeRange = useCallback(
+    (next: OptimizeRangePreset) => {
+      setRange(next);
+      void update({ metricsRange: next }).catch(() => undefined);
+    },
+    [update],
+  );
+
+  const { summary, loading, error } = useMetricsSummary(scope, range, customStart, customEnd);
 
   return (
     <div className="space-y-3 pt-1">
       <OtelDriftBanner />
 
-      {/* ── Header + period selector ─────────────────────────────────── */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-1.5">
+      {/* ── Header + range selector (same control as the Optimize page) ── */}
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex shrink-0 items-center gap-1.5">
           <span className="section-label">Metrics</span>
           <InfoTooltip text={OTEL_PROVENANCE} />
         </div>
-        <div className="flex bg-black/[0.06] dark:bg-white/[0.08] rounded-lg p-[2px] gap-[2px]">
-          {PERIODS.map(({ days: d, label }) => (
-            <button
-              key={d}
-              onClick={() => setDays(d)}
-              className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all duration-150 ${
-                days === d
-                  ? 'bg-white dark:bg-[#3A3A3C] text-black dark:text-white shadow-[0_1px_2px_rgba(0,0,0,0.12)]'
-                  : 'text-muted'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="min-w-0 flex-1">
+          <RangeSelector
+            range={range}
+            customStart={customStart}
+            customEnd={customEnd}
+            onChangeRange={onChangeRange}
+            onChangeCustomStart={setCustomStart}
+            onChangeCustomEnd={setCustomEnd}
+          />
         </div>
       </div>
 
@@ -136,17 +147,19 @@ export default function MetricsDashboard({
         </div>
       )}
 
-      {summary && <MetricsContent summary={summary} days={days} />}
+      {summary && <MetricsContent summary={summary} rangeLabel={RANGE_LABELS[range]} />}
     </div>
   );
 }
 
 function MetricsContent({
   summary,
-  days,
+  rangeLabel,
 }: {
   summary: MetricsSummary;
-  days: number;
+  /** Human phrase for the selected range ("today", "in the last 7 days",
+   *  "all-time"), used in tile subtexts. */
+  rangeLabel: string;
 }): React.ReactElement {
   const { settings } = useSettings();
   // Aggregate totals across the period for the summary tiles.
@@ -181,7 +194,7 @@ function MetricsContent({
     <>
       {/* ── Summary tiles ─────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-2">
-        <Tile label="Total Cost" sub={`last ${days} days`}>
+        <Tile label="Total Cost" sub={rangeLabel}>
           <span className="text-[22px] font-bold tracking-tight text-black dark:text-white">
             ${formatCost(totalCost)}
           </span>
@@ -204,7 +217,7 @@ function MetricsContent({
           sub={
             summary.errors.retryExhaustedCount > 0
               ? `${summary.errors.retryExhaustedCount} retry-exhausted`
-              : `last ${days} days`
+              : rangeLabel
           }
         >
           <span
