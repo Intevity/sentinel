@@ -14,11 +14,17 @@ import type {
   Settings,
 } from '@claude-sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
-import { formatTokens, windowMultiplierLabel, type SavingsUnits } from '../lib/optimizeUnits.js';
+import {
+  formatTokens,
+  formatTokenCount,
+  windowMultiplierLabel,
+  type SavingsUnits,
+} from '../lib/optimizeUnits.js';
 import OpportunityList from './optimize/OpportunityList.js';
 import ContextInventoryPanel from './optimize/ContextInventoryPanel.js';
 import CompressionPanel from './optimize/CompressionPanel.js';
 import ContextPanel from './optimize/ContextPanel.js';
+import { MetricTile } from './optimize/MetricTile.js';
 import { RangeSelector } from './RangeSelector.js';
 import { RANGE_LABELS, windowForRange } from '../lib/dateRange.js';
 import {
@@ -484,8 +490,38 @@ function SubagentsSection({
     'byPattern',
   ];
   const effectiveView = subagentViews.includes(chartView) ? chartView : 'realized';
+  const t = metrics.totals;
+  const money = (usd: number, tokens: number): string =>
+    units === 'cost' ? formatUsd(usd) : formatTokens(tokens);
   return (
     <>
+      {/* Quick-stat tiles, shared with the Context and Compression tabs via
+          MetricTile so the three rows read identically. Saved/Potential honor
+          the header units toggle; Installed/Opportunities are plain counts. */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <MetricTile
+          label="Saved"
+          tone="saved"
+          value={money(t.savingsUsdRealized, t.tokensRealized)}
+          title="Parent-context tokens (or cost) the installed subagents have already kept out of your conversation over this window."
+        />
+        <MetricTile
+          label="Potential"
+          tone="potential"
+          value={money(t.savingsUsdPotential, t.tokensPotential)}
+          title="Additional savings the analyzer detected for recommended subagents that are not installed. Install them to start realizing it."
+        />
+        <MetricTile
+          label="Installed"
+          value={String(installedNames.size)}
+          title="Curated subagents currently written to ~/.claude/agents/."
+        />
+        <MetricTile
+          label="Opportunities"
+          value={String(t.opportunities)}
+          title="Times the analyzer detected a subagent could have absorbed a large read in this window (realized + potential)."
+        />
+      </div>
       <div className="glass-card px-4 py-3">
         <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-foreground">
           <Sparkles className="h-3.5 w-3.5" /> Curated subagents
@@ -842,7 +878,7 @@ function StickySavingsBar({
                   </div>
                   <div className="mt-0.5 text-[11px] text-foreground/45">
                     {optimizedDenom > 0
-                      ? `${formatTokens(savedTokens)} of ${formatTokens(optimizedDenom)}`
+                      ? `${formatTokenCount(savedTokens)} of ${formatTokenCount(optimizedDenom)}`
                       : `realized ${rangeLabel}`}
                   </div>
                 </div>

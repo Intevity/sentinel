@@ -18,15 +18,24 @@ export type SavingsUnits = 'tokens' | 'cost';
 
 const TOKEN_NOISE_FLOOR = 1; // < 1 input token of difference is noise
 
+/** Bare token magnitude with no unit suffix: "12", "1.2K", "3.40M" (or "0"
+ *  near zero). For places where an adjacent labeled value already carries the
+ *  unit, so repeating " tk" would be redundant and overflow the line — e.g.
+ *  the Saved tile's "120.00M of 180.22M" subtext under a value that already
+ *  reads "120.00M tk". Same magnitude buckets and sign rule as formatTokens. */
+export function formatTokenCount(n: number): string {
+  if (Math.abs(n) < TOKEN_NOISE_FLOOR) return '0';
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  if (abs < 1000) return `${sign}${Math.round(abs)}`;
+  if (abs < 1_000_000) return `${sign}${(abs / 1000).toFixed(1)}K`;
+  return `${sign}${(abs / 1_000_000).toFixed(2)}M`;
+}
+
 /** Format an input-token savings number. Mirrors `formatUsd`'s sign
  *  semantics (clamps near-zero to "0 tk" without a leading "-"). */
 export function formatTokens(n: number): string {
-  if (Math.abs(n) < TOKEN_NOISE_FLOOR) return '0 tk';
-  const sign = n < 0 ? '-' : '';
-  const abs = Math.abs(n);
-  if (abs < 1000) return `${sign}${Math.round(abs)} tk`;
-  if (abs < 1_000_000) return `${sign}${(abs / 1000).toFixed(1)}K tk`;
-  return `${sign}${(abs / 1_000_000).toFixed(2)}M tk`;
+  return `${formatTokenCount(n)} tk`;
 }
 
 /** "Ax" label for the effective context-window multiplier of a reduction:

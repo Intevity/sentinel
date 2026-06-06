@@ -13,6 +13,7 @@ import type {
 import { sendToSentinel, onDaemonMessage } from '../../lib/ipc.js';
 import { formatTokens } from '../../lib/optimizeUnits.js';
 import { formatUsd } from './charts/shared.js';
+import { MetricTile } from './MetricTile.js';
 
 /**
  * Context section of the Optimize tab: per-MCP-server definition costs
@@ -248,30 +249,20 @@ export default function ContextPanel({
           cache reads), hence the ~ prefix. */}
       {(costs.savings.realized.estTokens > 0 || costs.savings.potential.estTokens > 0) && (
         <div className="mb-3 grid grid-cols-2 gap-2">
-          <div
-            className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2"
+          <MetricTile
+            label="Saved"
+            tone="saved"
+            value={`~${formatTokens(costs.savings.realized.estTokens)}`}
+            subtext={`≈${formatUsd(costs.savings.realized.estUsd)} · kept out of context since bridging`}
             title="Definition tokens kept out of requests since bridging: each bridged server's definition size times the requests observed after its migration. Estimated at cached rates."
-          >
-            <div className="text-[10px] uppercase tracking-wide text-foreground/55">Saved</div>
-            <div className="mt-0.5 text-xl font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">
-              ~{formatTokens(costs.savings.realized.estTokens)}
-            </div>
-            <div className="mt-0.5 text-[11px] text-foreground/45">
-              ≈{formatUsd(costs.savings.realized.estUsd)} · kept out of context since bridging
-            </div>
-          </div>
-          <div
-            className="rounded-lg border border-border-subtle/10 px-3 py-2"
+          />
+          <MetricTile
+            label="Potential"
+            tone="potential"
+            value={`~${formatTokens(costs.savings.potential.estTokens)}`}
+            subtext={`≈${formatUsd(costs.savings.potential.estUsd)} · bridge recommended servers`}
             title="Definition tokens the recommended servers actually carried over this window: what bridging them would have saved."
-          >
-            <div className="text-[10px] uppercase tracking-wide text-foreground/55">Potential</div>
-            <div className="mt-0.5 text-xl font-semibold tabular-nums text-sky-700 dark:text-sky-300">
-              ~{formatTokens(costs.savings.potential.estTokens)}
-            </div>
-            <div className="mt-0.5 text-[11px] text-foreground/45">
-              ≈{formatUsd(costs.savings.potential.estUsd)} · bridge recommended servers
-            </div>
-          </div>
+          />
         </div>
       )}
 
