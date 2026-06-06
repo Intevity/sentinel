@@ -266,3 +266,161 @@ describe('compressMessagesBody', () => {
     expect(again.stats.skipReason).toBe('already_compressed');
   });
 });
+
+describe('compressMessagesBody intra-body fold', () => {
+  // A body with one assistant tool_use + user tool_result per supplied content.
+  function bodyWithResults(contents: unknown[]): Buffer {
+    const messages: unknown[] = [];
+    contents.forEach((content, i) => {
+      const id = `tu_${i}`;
+      messages.push({
+        role: 'assistant',
+        content: [{ type: 'tool_use', id, name: 'Read', input: {} }],
+      });
+      messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] });
+    });
+    return buf({ model: 'claude-sonnet-4-6', messages });
+  }
+
+  // A single-line payload comfortably over the fold threshold (no text rule
+  // fires on it, so the anchor stays byte-identical to the input).
+  const big = `payload ${'data '.repeat(300)}`;
+
+  function resultContents(out: Buffer): string[] {
+    const parsed = JSON.parse(out.toString('utf-8')) as {
+      messages: Array<{ role: string; content: Array<{ content?: unknown }> }>;
+    };
+    return parsed.messages
+      .filter((m) => m.role === 'user')
+      .map((m) => m.content[0]!.content as string);
+  }
+
+  it('folds a later byte-identical tool_result and keeps the anchor intact', () => {
+    const out = compressMessagesBody(bodyWithResults([big, big]), {
+      level: 'moderate',
+      maxBodyBytes: BIG,
+      reversible: true,
+    });
+    expect(out.stats.perRule.intra_body_fold?.hits).toBe(1);
+    expect((out.stats.perRule.intra_body_fold?.bytesSaved ?? 0) > 0).toBe(true);
+    const [anchor, folded] = resultContents(out.body);
+    expect(anchor).toBe(big);
+    expect(folded).toContain('identical to an earlier tool result');
+    expect(folded).toContain('elided by Claude Sentinel');
+    // Reversible: the capture restores the exact original, and its id is in the marker.
+    const cap = out.captures.find((c) => c.ruleId === 'intra_body_fold');
+    expect(cap?.original).toBe(big);
+    expect(folded).toContain(`id="${cap?.id}"`);
+  });
+
+  it('does not fold at the conservative tier', () => {
+    const out = compressMessagesBody(bodyWithResults([big, big]), {
+      level: 'conservative',
+      maxBodyBytes: BIG,
+    });
+    expect(out.stats.perRule.intra_body_fold).toBeUndefined();
+    expect(resultContents(out.body)[1]).toBe(big);
+  });
+
+  it('does not fold identical results below the size threshold', () => {
+    const out = compressMessagesBody(bodyWithResults(['tiny', 'tiny']), {
+      level: 'aggressive',
+      maxBodyBytes: BIG,
+    });
+    expect(out.stats.perRule.intra_body_fold).toBeUndefined();
+  });
+
+  it('does not fold medium duplicates that are still under the threshold', () => {
+    // ~600 bytes: would have folded under the old 200-byte floor, but the
+    // marker overhead makes it not worth it, so the 1 KiB floor skips it.
+    const medium = `m ${'x'.repeat(600)}`;
+    const out = compressMessagesBody(bodyWithResults([medium, medium]), {
+      level: 'aggressive',
+      maxBodyBytes: BIG,
+    });
+    expect(out.stats.perRule.intra_body_fold).toBeUndefined();
+  });
+
+  it('does not fold distinct results', () => {
+    const out = compressMessagesBody(bodyWithResults([big, `${big} extra`]), {
+      level: 'aggressive',
+      maxBodyBytes: BIG,
+    });
+    expect(out.stats.perRule.intra_body_fold).toBeUndefined();
+  });
+
+  it('folds every later duplicate (3 identical -> 2 folds)', () => {
+    const out = compressMessagesBody(bodyWithResults([big, big, big]), {
+      level: 'aggressive',
+      maxBodyBytes: BIG,
+      reversible: true,
+    });
+    expect(out.stats.perRule.intra_body_fold?.hits).toBe(2);
+    const contents = resultContents(out.body);
+    expect(contents[0]).toBe(big);
+    expect(contents[1]).toContain('identical to an earlier tool result');
+    expect(contents[2]).toContain('identical to an earlier tool result');
+  });
+
+  it('folds a single-text-element array result but leaves multi-part arrays alone', () => {
+    const single = compressMessagesBody(
+      bodyWithResults([[{ type: 'text', text: big }], [{ type: 'text', text: big }]]),
+      { level: 'aggressive', maxBodyBytes: BIG },
+    );
+    expect(single.stats.perRule.intra_body_fold?.hits).toBe(1);
+
+    const multi = compressMessagesBody(
+      bodyWithResults([
+        [
+          { type: 'text', text: big },
+          { type: 'text', text: 'trailer' },
+        ],
+        [
+          { type: 'text', text: big },
+          { type: 'text', text: 'trailer' },
+        ],
+      ]),
+      { level: 'aggressive', maxBodyBytes: BIG },
+    );
+    expect(multi.stats.perRule.intra_body_fold).toBeUndefined();
+  });
+
+  it('is idempotent and preserves cache_control while folding', () => {
+    const body = buf({
+      model: 'claude-sonnet-4-6',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Read', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: big }] },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'b', name: 'Read', input: {} }] },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'b',
+              content: big,
+              cache_control: { type: 'ephemeral' },
+            },
+          ],
+        },
+      ],
+    });
+    const before = parseCacheControlMarkers(body);
+    const first = compressMessagesBody(body, {
+      level: 'moderate',
+      maxBodyBytes: BIG,
+      reversible: true,
+    });
+    expect(first.stats.perRule.intra_body_fold?.hits).toBe(1);
+    expect(parseCacheControlMarkers(first.body)).toEqual(before);
+
+    // Re-compressing our own output changes nothing (cache-prefix stability).
+    const second = compressMessagesBody(first.body, {
+      level: 'moderate',
+      maxBodyBytes: BIG,
+      reversible: true,
+    });
+    expect(second.body).toBe(first.body);
+    expect(second.stats.skipReason).toBe('already_compressed');
+  });
+});

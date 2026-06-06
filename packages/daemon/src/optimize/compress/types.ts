@@ -22,8 +22,11 @@ export type RuleId =
   | 'collapse_duplicate_lines'
   | 'json_minify'
   | 'json_tabular'
+  | 'json_sample'
   | 'stack_trace_collapse'
-  | 'log_truncate';
+  | 'log_truncate'
+  | 'log_error_extract'
+  | 'intra_body_fold';
 
 /** Why a request was processed but its body left unchanged. `null` skip
  *  reason on {@link CompressionStats} means the body was compressed. */

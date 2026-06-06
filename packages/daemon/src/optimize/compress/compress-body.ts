@@ -24,8 +24,46 @@ import type {
   SkipReason,
 } from './types.js';
 import { byteLen, estimateTokensFromBytes, hashOriginal } from './types.js';
-import { compressToolResultText } from './tiers.js';
-import type { OnElide } from './text-rules.js';
+import { compressToolResultText, intraBodyFoldEnabled } from './tiers.js';
+import { retrievalHint, type OnElide } from './text-rules.js';
+
+/** Minimum tool_result text size (bytes) worth folding against an earlier
+ *  identical block. The reversible fold marker is ~165 bytes, so a low floor
+ *  saves almost nothing (a 200-byte duplicate nets ~36 bytes); 1 KiB keeps the
+ *  fold to cases where it removes the large majority of the block. */
+const MIN_FOLD_BYTES = 1024;
+
+/** The single foldable text of a tool_result block (string content, or a lone
+ *  `{type:'text'}` element), with a setter to overwrite it. Returns null for
+ *  multi-part or non-text content, which is left to per-block compression. */
+function foldableText(
+  block: Record<string, unknown>,
+): { text: string; set: (v: string) => void } | null {
+  const content = block['content'];
+  if (typeof content === 'string') {
+    return {
+      text: content,
+      set: (v) => {
+        block['content'] = v;
+      },
+    };
+  }
+  if (Array.isArray(content) && content.length === 1) {
+    const el = content[0];
+    if (el && typeof el === 'object') {
+      const e = el as Record<string, unknown>;
+      if (e['type'] === 'text' && typeof e['text'] === 'string') {
+        return {
+          text: e['text'],
+          set: (v) => {
+            e['text'] = v;
+          },
+        };
+      }
+    }
+  }
+  return null;
+}
 
 function emptyStats(skipReason: SkipReason): CompressionStats {
   return {
@@ -190,6 +228,15 @@ export function compressMessagesBody(body: Buffer, opts: CompressOpts): Compress
   let toolResultCount = 0;
   let anyChanged = false;
 
+  // Intra-body fold: content hashes of large tool_result texts already emitted
+  // in full earlier in THIS body. The first occurrence is the anchor; later
+  // byte-identical occurrences fold to a pointer. First-in-body-wins is
+  // deterministic and order-stable across replayed turns, so it never mutates
+  // an already-cached prefix. The duplicate stays recoverable (it is present in
+  // full at the anchor, and via the retrieve id).
+  const foldEnabled = intraBodyFoldEnabled(opts.level);
+  const seenFold = new Set<string>();
+
   for (const msg of messages) {
     if (!msg || typeof msg !== 'object') continue;
     const content = (msg as Record<string, unknown>)['content'];
@@ -200,6 +247,31 @@ export function compressMessagesBody(body: Buffer, opts: CompressOpts): Compress
       if (b['type'] !== 'tool_result') continue;
       toolResultCount++;
       const toolName = resolveToolName(toolNames, b['tool_use_id']);
+
+      if (foldEnabled) {
+        const f = foldableText(b);
+        if (f && byteLen(f.text) >= MIN_FOLD_BYTES) {
+          const h = hashOriginal(f.text);
+          if (seenFold.has(h)) {
+            const inB = byteLen(f.text);
+            const hint = retrievalHint(onElide, 'intra_body_fold', f.text);
+            const marker = `... [identical to an earlier tool result, ${inB} bytes, elided by Claude Sentinel${hint}] ...`;
+            f.set(marker);
+            const outB = byteLen(marker);
+            bytesIn += inB;
+            bytesOut += outB;
+            accPerTool(perTool, toolName, inB, outB);
+            const cur = perRule['intra_body_fold'] ?? { bytesSaved: 0, hits: 0 };
+            cur.bytesSaved += inB - outB;
+            cur.hits += 1;
+            perRule['intra_body_fold'] = cur;
+            anyChanged = true;
+            continue;
+          }
+          seenFold.add(h);
+        }
+      }
+
       const r = compressToolResultBlock(b, opts.level, onElide);
       bytesIn += r.bytesIn;
       bytesOut += r.bytesOut;

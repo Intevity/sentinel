@@ -114,7 +114,12 @@ describe('compressMessagesBody reversible mode', () => {
   });
 
   it('dedups identical elisions across blocks to a single capture', () => {
-    // Two tool_results with identical big logs -> same elided middle -> one id.
+    // Two logs that differ only in their head line (so the intra-body fold,
+    // which needs byte-identical blocks, does NOT fire) but share an identical
+    // elided middle -> truncate produces the same content-hash id -> one capture.
+    const tail = Array.from({ length: 499 }, (_, i) => `log line ${i + 1}`);
+    const logA = ['HEADER-A', ...tail].join('\n');
+    const logB = ['HEADER-B', ...tail].join('\n');
     const body = buf({
       model: 'claude-sonnet-4-6',
       messages: [
@@ -128,17 +133,19 @@ describe('compressMessagesBody reversible mode', () => {
         {
           role: 'user',
           content: [
-            { type: 'tool_result', tool_use_id: 'tu_1', content: bigLog },
-            { type: 'tool_result', tool_use_id: 'tu_2', content: bigLog },
+            { type: 'tool_result', tool_use_id: 'tu_1', content: logA },
+            { type: 'tool_result', tool_use_id: 'tu_2', content: logB },
           ],
         },
       ],
     });
-    const { captures } = compressMessagesBody(body, {
+    const { stats, captures } = compressMessagesBody(body, {
       level: 'moderate',
       maxBodyBytes: 4 * 1024 * 1024,
       reversible: true,
     });
+    // No fold (blocks differ); both truncations elide the same middle -> 1 id.
+    expect(stats.perRule.intra_body_fold).toBeUndefined();
     expect(captures).toHaveLength(1);
   });
 

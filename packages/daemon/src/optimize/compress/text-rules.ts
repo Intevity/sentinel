@@ -14,8 +14,13 @@ import type { RuleId } from './types.js';
 export type OnElide = (ruleId: RuleId, elided: string) => string;
 
 /** Build the trailing retrieval hint for an elision marker. Empty string when
- *  reversible mode is off, so the non-CCR marker is byte-identical to before. */
-function retrievalHint(onElide: OnElide | undefined, ruleId: RuleId, elided: string): string {
+ *  reversible mode is off, so the non-CCR marker is byte-identical to before.
+ *  Exported so the JSON rules can embed the same hint in their markers. */
+export function retrievalHint(
+  onElide: OnElide | undefined,
+  ruleId: RuleId,
+  elided: string,
+): string {
   if (!onElide) return '';
   return `; retrieve the full output with the sentinel retrieve tool, id="${onElide(ruleId, elided)}"`;
 }
@@ -116,6 +121,97 @@ export function collapseStackTraces(text: string, keep: number, onElide?: OnElid
     } else {
       i = j;
     }
+  }
+  return changed ? out.join('\n') : text;
+}
+
+/** Output of a recognized build/test runner. We only extract from logs that
+ *  match one of these so arbitrary prose/config/markdown is never mangled.
+ *  Anchored, multiline patterns: pytest/jest session lines, cargo compile +
+ *  `error[E####]`, npm errors, make recipes, and stack-frame `at ... (f:1:2)`. */
+const LOG_FRAMEWORK_RE =
+  /(?:={3,}\s*test session starts|^PASS\b|^FAIL\b|^Tests:\s|^Test Suites:\s|^\s*Compiling\s|error\[E\d{2,4}\]|^npm ERR!|^make(?:\[\d+\])?:\s|^\s*at\s.+\(.+:\d+:\d+\)|^test result:)/m;
+
+/** A line worth keeping verbatim: an error, failure, warning, or test summary.
+ *  Case-insensitive; intentionally broad on the keep side because dropping a
+ *  real error is far worse than keeping a benign line. */
+const LOG_INTERESTING_RE =
+  /(?:\berror(?:s)?\b|\bfail(?:ed|ure|ing)?\b|\bexception\b|traceback|\bpanic\b|\bfatal\b|\bassert(?:ion)?\b|error\[E\d|npm ERR!|warning:|\bdenied\b|\brefused\b|\btimed? ?out\b|\bnot found\b|test result:|[✗✕×●])/i;
+
+export interface ErrorExtractOpts {
+  /** Only act when the line count exceeds this. */
+  triggerLines: number;
+  /** Lines always kept from the start (the run header). */
+  headLines: number;
+  /** Lines always kept from the end (the summary). */
+  tailLines: number;
+  /** Lines of context kept on each side of an interesting line. */
+  contextLines: number;
+  /** Minimum contiguous non-kept run length to elide; shorter runs are kept
+   *  verbatim so the output stays readable and small gaps don't churn into
+   *  markers that the net-gain guard would just revert. */
+  minRun: number;
+}
+
+/**
+ * Format-aware log compression: in output from a recognized build/test runner,
+ * keep the error/warning/summary lines (with a little surrounding context) and
+ * the head/tail, eliding the long contiguous runs of passing/progress noise in
+ * between. Each elided run becomes a reversible marker carrying a retrieval id.
+ *
+ * Unlike head/tail {@link truncateLog}, this keeps position-independent errors
+ * that would otherwise fall in the truncated middle. It runs BEFORE truncate so
+ * truncate only sees the already-trimmed log.
+ *
+ * Deterministic (pure function of the text). Idempotent via the same marker
+ * guard the whole engine relies on: once any rule has written an "elided by
+ * Claude Sentinel" marker, a second pass returns the text unchanged. Returns
+ * the input unchanged when no framework is detected, the log is short, or no
+ * run is long enough to elide.
+ */
+export function extractLogErrors(text: string, opts: ErrorExtractOpts, onElide?: OnElide): string {
+  // Idempotency + non-interference: never re-process text that already carries
+  // an elision marker (ours, or a stack-collapse marker from an earlier rule
+  // in the same pass — both use this exact phrase).
+  if (text.includes('elided by Claude Sentinel')) return text;
+  const lines = text.split('\n');
+  if (lines.length <= opts.triggerLines) return text;
+  if (!LOG_FRAMEWORK_RE.test(text)) return text;
+
+  const keep = new Array<boolean>(lines.length).fill(false);
+  for (let i = 0; i < lines.length; i++) {
+    if (i < opts.headLines || i >= lines.length - opts.tailLines) {
+      keep[i] = true;
+      continue;
+    }
+    if (LOG_INTERESTING_RE.test(lines[i] ?? '')) {
+      const lo = Math.max(0, i - opts.contextLines);
+      const hi = Math.min(lines.length - 1, i + opts.contextLines);
+      for (let k = lo; k <= hi; k++) keep[k] = true;
+    }
+  }
+
+  const out: string[] = [];
+  let i = 0;
+  let changed = false;
+  while (i < lines.length) {
+    if (keep[i]) {
+      out.push(lines[i] ?? '');
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < lines.length && !keep[j]) j++;
+    const runLen = j - i;
+    if (runLen >= opts.minRun) {
+      const elided = lines.slice(i, j).join('\n');
+      const hint = retrievalHint(onElide, 'log_error_extract', elided);
+      out.push(`... [${runLen} lines elided by Claude Sentinel${hint}] ...`);
+      changed = true;
+    } else {
+      for (let k = i; k < j; k++) out.push(lines[k] ?? '');
+    }
+    i = j;
   }
   return changed ? out.join('\n') : text;
 }
