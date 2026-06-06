@@ -121,6 +121,7 @@ export const DEFAULT_SETTINGS: Settings = {
   optimizeUnits: 'tokens',
   optimizeChartView: 'realized',
   optimizeRange: 'all',
+  metricsRange: '1w',
   optimizeSubTab: 'subagents',
   compressionEnabled: false,
   compressionLevel: 'conservative',
@@ -231,6 +232,22 @@ function coerceMcpInstalls(raw: unknown): McpInstallRecord[] {
   return out;
 }
 
+/** Pull the optional realized-savings baselines off a raw migration entry,
+ *  keeping only finite numbers. Omitted (not nulled) when absent so the field
+ *  stays truly optional under exactOptionalPropertyTypes — a missing baseline
+ *  is later treated as "count from now" by the savings calculator. */
+function coerceBaselines(e: Record<string, unknown>): {
+  baselineNativeRequests?: number;
+  baselineServerRequests?: number;
+} {
+  const out: { baselineNativeRequests?: number; baselineServerRequests?: number } = {};
+  const n = e['baselineNativeRequests'];
+  if (typeof n === 'number' && Number.isFinite(n)) out.baselineNativeRequests = n;
+  const s = e['baselineServerRequests'];
+  if (typeof s === 'number' && Number.isFinite(s)) out.baselineServerRequests = s;
+  return out;
+}
+
 /** Coerce an arbitrary value into a clean CodeModeMigration[], dropping any
  *  malformed entries. Mirrors `coerceMcpInstalls`: `user`-scope records carry
  *  a null directory; `local`/`project` require a non-empty directory string.
@@ -256,6 +273,7 @@ function coerceCodeModeMigrations(raw: unknown): CodeModeMigration[] {
         directory: null,
         originalEntry: e['originalEntry'],
         migratedAt,
+        ...coerceBaselines(e),
       });
     } else if (typeof directory === 'string' && directory.length > 0) {
       out.push({
@@ -264,6 +282,7 @@ function coerceCodeModeMigrations(raw: unknown): CodeModeMigration[] {
         directory,
         originalEntry: e['originalEntry'],
         migratedAt,
+        ...coerceBaselines(e),
       });
     }
   }
@@ -634,6 +653,9 @@ function coerce(raw: unknown): Settings {
   }
   if (typeof obj['optimizeRange'] === 'string' && isOptimizeRange(obj['optimizeRange'])) {
     next.optimizeRange = obj['optimizeRange'];
+  }
+  if (typeof obj['metricsRange'] === 'string' && isOptimizeRange(obj['metricsRange'])) {
+    next.metricsRange = obj['metricsRange'];
   }
   if (
     typeof obj['optimizeSubTab'] === 'string' &&

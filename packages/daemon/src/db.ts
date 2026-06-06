@@ -3240,18 +3240,30 @@ export function insertActivityEvent(db: Database.Database, e: InsertActivityEven
 
 // ─── Metrics tab query helpers ────────────────────────────────────────────────
 
+/** Resolve the (days, window) pair the metrics helpers accept into absolute
+ *  ts bounds. An explicit window wins (absent edges mean unbounded; untilMs
+ *  is exclusive); otherwise the legacy rolling N-day lookback. `untilTs`
+ *  uses MAX_SAFE_INTEGER instead of null so callers can always bind it
+ *  positionally as `ts < ?`. */
+function resolveTsWindow(days: number, win?: MetricsWindow): { sinceTs: number; untilTs: number } {
+  if (win) return { sinceTs: win.sinceMs ?? 0, untilTs: win.untilMs ?? Number.MAX_SAFE_INTEGER };
+  return { sinceTs: Date.now() - days * 24 * 60 * 60 * 1000, untilTs: Number.MAX_SAFE_INTEGER };
+}
+
 /**
  * Per-day, per-model rollup with the full token breakdown (input / output /
  * cacheRead / cacheCreation) plus cost. Drives the Tokens and Cost charts on
- * the Metrics tab.
+ * the Metrics tab. An optional `win` overrides the rolling `days` lookback
+ * with absolute bounds (midnight presets, custom ranges, or all-time).
  */
 export function getTokensByDayModel(
   db: Database.Database,
   accountIds: string[],
   days: number,
+  win?: MetricsWindow,
 ): Record<string, Record<string, MetricsByDayModel>> {
   if (accountIds.length === 0) return {};
-  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const { sinceTs, untilTs } = resolveTsWindow(days, win);
   const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
@@ -3264,11 +3276,11 @@ export function getTokensByDayModel(
        COALESCE(SUM(cache_read), 0)          AS cache_read,
        COALESCE(SUM(cache_create), 0)        AS cache_create
      FROM usage_events
-     WHERE account_id IN (${placeholders}) AND ts >= ?
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ?
      GROUP BY day, model
      ORDER BY day ASC`,
     )
-    .all(...accountIds, sinceTs) as Array<{
+    .all(...accountIds, sinceTs, untilTs) as Array<{
     day: string;
     model: string;
     cost_usd: number;
@@ -3337,15 +3349,17 @@ export function getProcessedTokenTotals(
 /**
  * Cache-hit rate per model over the period. Rate = cacheRead / (input + cacheRead);
  * cache creation tokens are excluded from the denominator since they represent
- * the "first write" of cacheable content rather than a read.
+ * the "first write" of cacheable content rather than a read. An optional `win`
+ * overrides the rolling `days` lookback with absolute bounds.
  */
 export function getCacheHitRate(
   db: Database.Database,
   accountIds: string[],
   days: number,
+  win?: MetricsWindow,
 ): Record<string, CacheHitRate> {
   if (accountIds.length === 0) return {};
-  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const { sinceTs, untilTs } = resolveTsWindow(days, win);
   const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
@@ -3354,10 +3368,10 @@ export function getCacheHitRate(
        COALESCE(SUM(input_tokens), 0) AS input_tokens,
        COALESCE(SUM(cache_read), 0)   AS cache_read
      FROM usage_events
-     WHERE account_id IN (${placeholders}) AND ts >= ?
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ?
      GROUP BY model`,
     )
-    .all(...accountIds, sinceTs) as Array<{
+    .all(...accountIds, sinceTs, untilTs) as Array<{
     model: string;
     input_tokens: number;
     cache_read: number;
@@ -3437,15 +3451,17 @@ export function insertCacheTtlEvent(db: Database.Database, event: InsertCacheTtl
 /**
  * Per-day, per-model rollup of cache TTL events. Keyed by `YYYY-MM-DD` then
  * by model so the frontend can stack or split however it likes without a
- * second round-trip.
+ * second round-trip. An optional `win` overrides the rolling `days` lookback
+ * with absolute bounds.
  */
 export function getCacheTtlByDayModel(
   db: Database.Database,
   accountIds: string[],
   days: number,
+  win?: MetricsWindow,
 ): Record<string, Record<string, CacheTtlDayRow>> {
   if (accountIds.length === 0) return {};
-  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const { sinceTs, untilTs } = resolveTsWindow(days, win);
   const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
@@ -3462,11 +3478,11 @@ export function getCacheTtlByDayModel(
        COALESCE(SUM(cost_1h_write), 0)    AS cost_1h_write,
        COALESCE(SUM(cost_read), 0)        AS cost_read
      FROM cache_ttl_events
-     WHERE account_id IN (${placeholders}) AND ts >= ?
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ?
      GROUP BY day, model
      ORDER BY day ASC`,
     )
-    .all(...accountIds, sinceTs) as Array<{
+    .all(...accountIds, sinceTs, untilTs) as Array<{
     day: string;
     model: string;
     req_markers_5m: number;
@@ -3559,16 +3575,18 @@ export function getCacheHealthWindowRange(
 /**
  * Per-session rollup of cache TTL events, ordered by most-recently-seen.
  * Rows without a session_id are excluded. `limit` caps the result size
- * (default 50) so the UI never renders a runaway list.
+ * (default 50) so the UI never renders a runaway list. An optional `win`
+ * overrides the rolling `days` lookback with absolute bounds.
  */
 export function getCacheTtlBySession(
   db: Database.Database,
   accountIds: string[],
   days: number,
   limit = 50,
+  win?: MetricsWindow,
 ): CacheTtlSessionRow[] {
   if (accountIds.length === 0) return [];
-  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const { sinceTs, untilTs } = resolveTsWindow(days, win);
   const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
@@ -3592,12 +3610,12 @@ export function getCacheTtlBySession(
        COALESCE(SUM(cost_1h_write), 0)    AS cost_1h_write,
        COALESCE(SUM(cost_read), 0)        AS cost_read
      FROM cache_ttl_events
-     WHERE account_id IN (${placeholders}) AND ts >= ? AND session_id IS NOT NULL AND session_id <> ''
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ? AND session_id IS NOT NULL AND session_id <> ''
      GROUP BY session_id
      ORDER BY last_ts DESC
      LIMIT ?`,
     )
-    .all(...accountIds, sinceTs, limit) as Array<{
+    .all(...accountIds, sinceTs, untilTs, limit) as Array<{
     session_id: string;
     first_ts: number;
     last_ts: number;
@@ -3631,14 +3649,16 @@ export function getCacheTtlBySession(
   }));
 }
 
-/** Per-day counts of api_errors grouped by status code + retry-exhausted tally. */
+/** Per-day counts of api_errors grouped by status code + retry-exhausted tally.
+ *  An optional `win` overrides the rolling `days` lookback with absolute bounds. */
 export function getApiErrorsByDay(
   db: Database.Database,
   accountIds: string[],
   days: number,
+  win?: MetricsWindow,
 ): { byDay: Record<string, Record<string, number>>; retryExhaustedCount: number } {
   if (accountIds.length === 0) return { byDay: {}, retryExhaustedCount: 0 };
-  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const { sinceTs, untilTs } = resolveTsWindow(days, win);
   const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
@@ -3647,11 +3667,15 @@ export function getApiErrorsByDay(
        COALESCE(status_code, 'unknown') AS status_code,
        COUNT(*)                    AS n
      FROM api_errors
-     WHERE account_id IN (${placeholders}) AND ts >= ?
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ?
      GROUP BY day, status_code
      ORDER BY day ASC`,
     )
-    .all(...accountIds, sinceTs) as Array<{ day: string; status_code: string; n: number }>;
+    .all(...accountIds, sinceTs, untilTs) as Array<{
+    day: string;
+    status_code: string;
+    n: number;
+  }>;
 
   const byDay: Record<string, Record<string, number>> = {};
   for (const r of rows) {
@@ -3663,9 +3687,9 @@ export function getApiErrorsByDay(
   const exhaustedRow = db
     .prepare(
       `SELECT COUNT(*) AS n FROM api_errors
-       WHERE account_id IN (${placeholders}) AND ts >= ? AND attempt > 10`,
+       WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ? AND attempt > 10`,
     )
-    .get(...accountIds, sinceTs) as { n: number };
+    .get(...accountIds, sinceTs, untilTs) as { n: number };
 
   return { byDay, retryExhaustedCount: exhaustedRow.n };
 }
@@ -3673,15 +3697,17 @@ export function getApiErrorsByDay(
 /**
  * Per-tool rollup: calls, p50/p95 duration, success rate, most common error.
  * Returns tools ordered by call count (highest first). `limit` caps results.
+ * An optional `win` overrides the rolling `days` lookback with absolute bounds.
  */
 export function getToolStats(
   db: Database.Database,
   accountIds: string[],
   days: number,
   limit = 20,
+  win?: MetricsWindow,
 ): ToolStat[] {
   if (accountIds.length === 0) return [];
-  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const { sinceTs, untilTs } = resolveTsWindow(days, win);
   const placeholders = accountIds.map(() => '?').join(',');
 
   // First pass: per-tool totals + success counts
@@ -3692,12 +3718,12 @@ export function getToolStats(
        COUNT(*) AS calls,
        SUM(success) AS successes
      FROM tool_events
-     WHERE account_id IN (${placeholders}) AND ts >= ?
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ?
      GROUP BY tool_name
      ORDER BY calls DESC
      LIMIT ?`,
     )
-    .all(...accountIds, sinceTs, limit) as Array<{
+    .all(...accountIds, sinceTs, untilTs, limit) as Array<{
     tool_name: string;
     calls: number;
     successes: number;
@@ -3712,10 +3738,10 @@ export function getToolStats(
     const durations = db
       .prepare(
         `SELECT duration_ms FROM tool_events
-       WHERE account_id IN (${placeholders}) AND ts >= ? AND tool_name = ? AND duration_ms IS NOT NULL
+       WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ? AND tool_name = ? AND duration_ms IS NOT NULL
        ORDER BY duration_ms ASC`,
       )
-      .all(...accountIds, sinceTs, t.tool_name) as Array<{ duration_ms: number }>;
+      .all(...accountIds, sinceTs, untilTs, t.tool_name) as Array<{ duration_ms: number }>;
 
     const p50 = percentile(
       durations.map((r) => r.duration_ms),
@@ -3730,10 +3756,12 @@ export function getToolStats(
     const topErrorRow = db
       .prepare(
         `SELECT error, COUNT(*) AS n FROM tool_events
-       WHERE account_id IN (${placeholders}) AND ts >= ? AND tool_name = ? AND success = 0 AND error IS NOT NULL
+       WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ? AND tool_name = ? AND success = 0 AND error IS NOT NULL
        GROUP BY error ORDER BY n DESC LIMIT 1`,
       )
-      .get(...accountIds, sinceTs, t.tool_name) as { error: string; n: number } | undefined;
+      .get(...accountIds, sinceTs, untilTs, t.tool_name) as
+      | { error: string; n: number }
+      | undefined;
 
     result.push({
       toolName: t.tool_name,
@@ -3754,15 +3782,17 @@ function percentile(sortedValues: number[], q: number): number {
   return sortedValues[idx]!;
 }
 
-/** Per-day totals for a set of activity kinds. */
+/** Per-day totals for a set of activity kinds. An optional `win` overrides the
+ *  rolling `days` lookback with absolute bounds. */
 export function getActivityCounters(
   db: Database.Database,
   accountIds: string[],
   days: number,
   kinds: ActivityKind[],
+  win?: MetricsWindow,
 ): Record<string, Record<ActivityKind, number>> {
   if (kinds.length === 0 || accountIds.length === 0) return {};
-  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const { sinceTs, untilTs } = resolveTsWindow(days, win);
   const accountPlaceholders = accountIds.map(() => '?').join(',');
   const kindPlaceholders = kinds.map(() => '?').join(',');
   const rows = db
@@ -3772,11 +3802,11 @@ export function getActivityCounters(
        kind,
        COALESCE(SUM(value), COUNT(*)) AS total
      FROM activity_events
-     WHERE account_id IN (${accountPlaceholders}) AND ts >= ? AND kind IN (${kindPlaceholders})
+     WHERE account_id IN (${accountPlaceholders}) AND ts >= ? AND ts < ? AND kind IN (${kindPlaceholders})
      GROUP BY day, kind
      ORDER BY day ASC`,
     )
-    .all(...accountIds, sinceTs, ...kinds) as Array<{
+    .all(...accountIds, sinceTs, untilTs, ...kinds) as Array<{
     day: string;
     kind: ActivityKind;
     total: number;
@@ -3793,16 +3823,18 @@ export function getActivityCounters(
 /**
  * Edit-decision accept rate overall and broken down by programming language.
  * Only counts `kind = 'edit_decision'` rows (from code_edit_tool.decision metric).
+ * An optional `win` overrides the rolling `days` lookback with absolute bounds.
  */
 export function getEditAcceptRate(
   db: Database.Database,
   accountIds: string[],
   days: number,
+  win?: MetricsWindow,
 ): { overall: EditAcceptRate; byLanguage: Record<string, EditAcceptRate> } {
   if (accountIds.length === 0) {
     return { overall: { accepts: 0, rejects: 0, rate: 0 }, byLanguage: {} };
   }
-  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const { sinceTs, untilTs } = resolveTsWindow(days, win);
   const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
@@ -3811,10 +3843,10 @@ export function getEditAcceptRate(
        decision,
        COUNT(*)                       AS n
      FROM activity_events
-     WHERE account_id IN (${placeholders}) AND ts >= ? AND kind = 'edit_decision'
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ? AND kind = 'edit_decision'
      GROUP BY language, decision`,
     )
-    .all(...accountIds, sinceTs) as Array<{
+    .all(...accountIds, sinceTs, untilTs) as Array<{
     language: string;
     decision: string | null;
     n: number;
@@ -3857,12 +3889,14 @@ export function getEditAcceptRate(
  * Accept/reject breakdown from `tool_decision` OTEL events over the window.
  * Covers ALL tools that hit a permission prompt (Bash, Read, WebFetch, MCP,
  * etc.) — distinct from getEditAcceptRate which is the Edit/Write/NotebookEdit
- * metric only.
+ * metric only. An optional `win` overrides the rolling `days` lookback with
+ * absolute bounds.
  */
 export function getToolDecisionBreakdown(
   db: Database.Database,
   accountIds: string[],
   days: number,
+  win?: MetricsWindow,
 ): ToolDecisionBreakdown {
   if (accountIds.length === 0) {
     return {
@@ -3871,7 +3905,7 @@ export function getToolDecisionBreakdown(
       bySource: {},
     };
   }
-  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const { sinceTs, untilTs } = resolveTsWindow(days, win);
   const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
@@ -3881,10 +3915,10 @@ export function getToolDecisionBreakdown(
        decision,
        COUNT(*)                       AS n
      FROM activity_events
-     WHERE account_id IN (${placeholders}) AND ts >= ? AND kind = 'tool_decision'
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ? AND kind = 'tool_decision'
      GROUP BY tool_name, source, decision`,
     )
-    .all(...accountIds, sinceTs) as Array<{
+    .all(...accountIds, sinceTs, untilTs) as Array<{
     tool_name: string;
     source: string;
     decision: string | null;
@@ -3931,15 +3965,17 @@ export function getToolDecisionBreakdown(
 /**
  * Per-day rollup of `user_prompt` OTEL events over the window. `value` on
  * the activity row carries prompt character length (or NULL when the event
- * arrived without `prompt_length`).
+ * arrived without `prompt_length`). An optional `win` overrides the rolling
+ * `days` lookback with absolute bounds.
  */
 export function getUserPromptStats(
   db: Database.Database,
   accountIds: string[],
   days: number,
+  win?: MetricsWindow,
 ): PromptStats {
   if (accountIds.length === 0) return { total: 0, avgLength: 0, perDay: {} };
-  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const { sinceTs, untilTs } = resolveTsWindow(days, win);
   const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
@@ -3948,11 +3984,15 @@ export function getUserPromptStats(
        COUNT(*)                                                  AS n,
        AVG(value)                                                AS avg_len
      FROM activity_events
-     WHERE account_id IN (${placeholders}) AND ts >= ? AND kind = 'user_prompt'
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ? AND kind = 'user_prompt'
      GROUP BY day
      ORDER BY day`,
     )
-    .all(...accountIds, sinceTs) as Array<{ day: string; n: number; avg_len: number | null }>;
+    .all(...accountIds, sinceTs, untilTs) as Array<{
+    day: string;
+    n: number;
+    avg_len: number | null;
+  }>;
 
   let total = 0;
   let weightedLenSum = 0;
@@ -3974,15 +4014,17 @@ export function getUserPromptStats(
   };
 }
 
-/** Top skills invoked over the period, ordered by invocation count. */
+/** Top skills invoked over the period, ordered by invocation count. An optional
+ *  `win` overrides the rolling `days` lookback with absolute bounds. */
 export function getTopSkills(
   db: Database.Database,
   accountIds: string[],
   days: number,
   limit = 10,
+  win?: MetricsWindow,
 ): SkillUsage[] {
   if (accountIds.length === 0) return [];
-  const sinceTs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const { sinceTs, untilTs } = resolveTsWindow(days, win);
   const placeholders = accountIds.map(() => '?').join(',');
   const rows = db
     .prepare(
@@ -3991,12 +4033,12 @@ export function getTopSkills(
        COUNT(*)                 AS n,
        MAX(source)              AS plugin
      FROM activity_events
-     WHERE account_id IN (${placeholders}) AND ts >= ? AND kind = 'skill_activated' AND name IS NOT NULL
+     WHERE account_id IN (${placeholders}) AND ts >= ? AND ts < ? AND kind = 'skill_activated' AND name IS NOT NULL
      GROUP BY name
      ORDER BY n DESC
      LIMIT ?`,
     )
-    .all(...accountIds, sinceTs, limit) as Array<{
+    .all(...accountIds, sinceTs, untilTs, limit) as Array<{
     name: string;
     n: number;
     plugin: string | null;

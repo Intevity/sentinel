@@ -278,6 +278,17 @@ export interface CodeModeMigration {
   /** The exact config object stashed from `mcpServers[server]`. */
   originalEntry: unknown;
   migratedAt: number;
+  /** All-time `__native__` request count observed at migration time. Realized
+   *  savings count requests since bridging as the delta from this baseline, so
+   *  the figure reads 0 immediately after enabling regardless of how much
+   *  same-day pre-migration traffic the day bucket already holds. Optional for
+   *  back-compat with migrations recorded before this field existed; absent
+   *  baselines are backfilled at daemon start. */
+  baselineNativeRequests?: number;
+  /** All-time request count for THIS server's definitions at migration time.
+   *  Subtracted alongside the native baseline so requests that still carry the
+   *  server (e.g. unmigrated per-project entries) don't count as saved. */
+  baselineServerRequests?: number;
 }
 
 /**
@@ -610,6 +621,11 @@ export interface Settings {
    *  client-held start/end dates (not persisted). Defaults to 'all'. Persisted
    *  so the user's last range survives daemon restarts. */
   optimizeRange: OptimizeRangePreset;
+  /** Selected time range for the Metrics tab. Same presets and semantics as
+   *  {@link Settings.optimizeRange} (the two pages share one selector
+   *  component) but persisted independently so each page remembers its own
+   *  range. Defaults to '1w', matching the old 7-day period selector. */
+  metricsRange: OptimizeRangePreset;
   /** Active sub-tab on the Optimize page (subagents / compression /
    *  context). Defaults to 'subagents'. Persisted so the user's last
    *  section survives daemon restarts. */

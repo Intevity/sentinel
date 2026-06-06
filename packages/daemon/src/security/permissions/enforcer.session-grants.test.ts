@@ -38,6 +38,7 @@ function defaultSettings(over: Partial<Settings> = {}): Settings {
     telemetryRetentionDays: 30,
     dataRetentionDays: 365,
     optimizeRange: 'all',
+    metricsRange: '1w',
     securityScanEnabled: false,
     securityEnforcementMode: null,
     securityScanSecrets: false,

@@ -41,7 +41,11 @@ import {
 } from '../cache-ttl/pricing.js';
 import { detectMcpServers } from './mcp-detector.js';
 import { estimateMcpCosts } from './mcp-cost-estimator.js';
-import { NATIVE_SERVER_KEY, type ContextCostStore } from './context-cost-db.js';
+import {
+  NATIVE_SERVER_KEY,
+  type ContextCostStore,
+  type ServerDefinitionCostAggregate,
+} from './context-cost-db.js';
 
 /** "Switch to code execution" thresholds. A server qualifies when its
  *  measured definitions occupy at least this many tokens per request while
@@ -346,21 +350,33 @@ function computeContextSavings(args: {
     potentialUsd += (tokens / 1_000_000) * basePrice * CACHE_READ_MULTIPLIER + ins.cacheWriteEstUsd;
   }
 
-  // Realized: per bridged server, from the earliest migration timestamp.
-  const migratedAtByKey = new Map<string, number>();
+  // Realized: per bridged server, from the earliest migration timestamp. The
+  // request count is anchored to a baseline captured at migration time so a
+  // mid-day bridge doesn't credit that day's pre-migration traffic (see
+  // realizedRequests).
+  const migratedAtByKey = new Map<
+    string,
+    { migratedAt: number; baselineNative: number | undefined; baselineServer: number | undefined }
+  >();
   for (const mig of migrations) {
     const key = sanitizeServerName(mig.server);
     const prev = migratedAtByKey.get(key);
-    if (prev === undefined || mig.migratedAt < prev) migratedAtByKey.set(key, mig.migratedAt);
+    if (prev === undefined || mig.migratedAt < prev.migratedAt) {
+      migratedAtByKey.set(key, {
+        migratedAt: mig.migratedAt,
+        baselineNative: mig.baselineNativeRequests,
+        baselineServer: mig.baselineServerRequests,
+      });
+    }
   }
   const allTime = new Map(contextStore.getServerDefinitionCosts({}).map((a) => [a.server, a]));
   const byServer: McpContextSavings['byServer'] = [];
   let realizedTokens = 0;
   let realizedUsd = 0;
-  for (const [key, migratedAt] of migratedAtByKey) {
+  for (const [key, m] of migratedAtByKey) {
     const server = args.migrationNameByKey.get(key) ?? key;
     const defTokens = estimateTokensFromBytes(allTime.get(key)?.defBytesMax ?? 0);
-    const sinceMs = Math.max(win.sinceMs ?? 0, migratedAt);
+    const sinceMs = Math.max(win.sinceMs ?? 0, m.migratedAt);
     if (defTokens === 0 || (win.untilMs !== undefined && win.untilMs <= sinceMs)) {
       byServer.push({ server, estTokens: 0, estUsd: 0, requests: 0 });
       continue;
@@ -369,10 +385,7 @@ function computeContextSavings(args: {
       sinceMs,
       ...(win.untilMs !== undefined ? { untilMs: win.untilMs } : {}),
     };
-    const aggs = contextStore.getServerDefinitionCosts(sinceWin);
-    const nativeSince = aggs.find((a) => a.server === NATIVE_SERVER_KEY)?.requestCount ?? 0;
-    const stillCarried = aggs.find((a) => a.server === key)?.requestCount ?? 0;
-    const requests = Math.max(0, nativeSince - stillCarried);
+    const requests = realizedRequests({ contextStore, key, win, migration: m, allTime });
     const sessions = countSessions(db, sinceWin);
     const tokens = defTokens * requests;
     const usd =
@@ -389,6 +402,90 @@ function computeContextSavings(args: {
     potential: { estTokens: potentialTokens, estUsd: potentialUsd },
     byServer,
   };
+}
+
+/**
+ * Requests that benefited from a bridge: native requests minus those that still
+ * carried the server's definitions (e.g. unmigrated per-project entries).
+ *
+ * When the window's lower bound is the migration itself (the common case,
+ * including all-time), the count is anchored to the baseline request counts
+ * captured at migration time. Definition costs are stored bucketed by local
+ * day, so without the baseline a mid-day bridge would count that whole day's
+ * pre-migration native traffic as "saved since bridging" - the bogus ~1200 a
+ * user sees the instant they enable code mode. A missing baseline (migrations
+ * recorded before the field existed, before the startup backfill runs) defaults
+ * to the current count, i.e. zero saved so far: never an inflated figure.
+ *
+ * When the window starts strictly after the migration (the user zoomed into a
+ * recent sub-window of an older bridge), the day-bucketed window count is used;
+ * its coarseness is the window's own, not a migration-boundary artifact.
+ */
+function realizedRequests(args: {
+  contextStore: ContextCostStore;
+  key: string;
+  win: MetricsWindow;
+  migration: {
+    migratedAt: number;
+    baselineNative: number | undefined;
+    baselineServer: number | undefined;
+  };
+  allTime: Map<string, ServerDefinitionCostAggregate>;
+}): number {
+  const { contextStore, key, win, migration, allTime } = args;
+  if (migration.migratedAt >= (win.sinceMs ?? 0)) {
+    const upTo =
+      win.untilMs !== undefined
+        ? new Map(
+            contextStore
+              .getServerDefinitionCosts({ untilMs: win.untilMs })
+              .map((a) => [a.server, a]),
+          )
+        : allTime;
+    const nativeUpTo = upTo.get(NATIVE_SERVER_KEY)?.requestCount ?? 0;
+    const serverUpTo = upTo.get(key)?.requestCount ?? 0;
+    const baseNative = migration.baselineNative ?? nativeUpTo;
+    const baseServer = migration.baselineServer ?? serverUpTo;
+    return Math.max(0, Math.max(0, nativeUpTo - baseNative) - Math.max(0, serverUpTo - baseServer));
+  }
+  const aggs = contextStore.getServerDefinitionCosts({
+    ...(win.sinceMs !== undefined ? { sinceMs: win.sinceMs } : {}),
+    ...(win.untilMs !== undefined ? { untilMs: win.untilMs } : {}),
+  });
+  const nativeSince = aggs.find((a) => a.server === NATIVE_SERVER_KEY)?.requestCount ?? 0;
+  const stillCarried = aggs.find((a) => a.server === key)?.requestCount ?? 0;
+  return Math.max(0, nativeSince - stillCarried);
+}
+
+/**
+ * Fill in `baselineNativeRequests` / `baselineServerRequests` for any migration
+ * recorded before those fields existed, using the current all-time request
+ * counts as the baseline. Run once at daemon start. The effect for a legacy
+ * migration is that its realized-savings counter restarts from upgrade time
+ * (honest "since upgrade") instead of reporting the day-bucket inflated figure.
+ * Idempotent: migrations that already carry a baseline are returned untouched,
+ * and `changed` is false when nothing needed filling so the caller can skip the
+ * settings write.
+ */
+export function backfillMigrationBaselines(
+  migrations: CodeModeMigration[],
+  contextStore: Pick<ContextCostStore, 'getServerDefinitionCosts'>,
+): { changed: boolean; migrations: CodeModeMigration[] } {
+  if (!migrations.some((m) => m.baselineNativeRequests === undefined)) {
+    return { changed: false, migrations };
+  }
+  const allTime = new Map(contextStore.getServerDefinitionCosts({}).map((a) => [a.server, a]));
+  const nativeNow = allTime.get(NATIVE_SERVER_KEY)?.requestCount ?? 0;
+  const next = migrations.map((m) =>
+    m.baselineNativeRequests === undefined
+      ? {
+          ...m,
+          baselineNativeRequests: nativeNow,
+          baselineServerRequests: allTime.get(sanitizeServerName(m.server))?.requestCount ?? 0,
+        }
+      : m,
+  );
+  return { changed: true, migrations: next };
 }
 
 function annotateDuplicates(
