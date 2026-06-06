@@ -116,6 +116,63 @@ describe('proxy tool_result compression (integration)', () => {
     expect(content).not.toContain('log line 200');
   });
 
+  it('samples a large JSON array on the wire and persists the original for retrieval', async () => {
+    await start({
+      compressionEnabled: true,
+      compressionLevel: 'aggressive',
+      compressionRetrievalEnabled: true,
+    });
+    const arrayText = JSON.stringify(
+      Array.from({ length: 60 }, (_, i) => ({ id: i, name: `item-${i}` })),
+    );
+    const res = await postThroughProxy(started!.proxyPort, '/v1/messages', messagesBody(arrayText));
+    await res.text();
+    expect(res.status).toBe(200);
+
+    const reqs = started!.fake.requests().filter((r) => r.url.startsWith('/v1/messages'));
+    const parsed = JSON.parse(reqs[reqs.length - 1]!.body) as UpstreamBody;
+    const content = String(parsed.messages[1]!.content[0]!['content']);
+    expect(content).toContain('_sentinelSample');
+    expect(content).not.toContain('item-30'); // a dropped middle item
+    // The retrieval id lives in the sampled object's `note` field.
+    const note = (JSON.parse(content) as { _sentinelSample: { note: string } })._sentinelSample
+      .note;
+    const id = /id="([0-9a-f]{16})"/.exec(note)?.[1];
+    expect(id).toBeTruthy();
+    // Retrieval restores the exact original array byte-for-byte.
+    expect(store!.getRetrieval(id!)?.originalText).toBe(arrayText);
+  });
+
+  it('folds a duplicate tool_result on the wire and keeps the original retrievable', async () => {
+    await start({
+      compressionEnabled: true,
+      compressionLevel: 'moderate',
+      compressionRetrievalEnabled: true,
+    });
+    const big = `payload ${'data '.repeat(300)}`;
+    const body: UpstreamBody = {
+      model: 'claude-sonnet-4-6',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Read', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: big }] },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'b', name: 'Read', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'b', content: big }] },
+      ],
+    };
+    const res = await postThroughProxy(started!.proxyPort, '/v1/messages', body);
+    await res.text();
+    expect(res.status).toBe(200);
+
+    const reqs = started!.fake.requests().filter((r) => r.url.startsWith('/v1/messages'));
+    const parsed = JSON.parse(reqs[reqs.length - 1]!.body) as UpstreamBody;
+    const anchor = String(parsed.messages[1]!.content[0]!['content']);
+    const folded = String(parsed.messages[3]!.content[0]!['content']);
+    expect(anchor).toBe(big); // first occurrence rides in full
+    expect(folded).toContain('identical to an earlier tool result');
+    const id = /id="([0-9a-f]{16})"/.exec(folded)?.[1];
+    expect(store!.getRetrieval(id!)?.originalText).toBe(big);
+  });
+
   it('measures potential (aggressive dry-run) without changing the body when compression is off', async () => {
     // capture is on by default; compression off → measurement-only.
     await start({ compressionEnabled: false });
