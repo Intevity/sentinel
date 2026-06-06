@@ -163,6 +163,48 @@ describe('server-migration (user + local scopes, ~/.claude.json)', () => {
     ]);
   });
 
+  it('findNativeServerEntries includes project-scope .mcp.json entries (the only config some servers have)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sentinel-mcpjson-find-'));
+    try {
+      writeFileSync(
+        join(dir, '.mcp.json'),
+        JSON.stringify({ mcpServers: { 'team-memory': STDIO_ENTRY } }),
+      );
+      // The project is known to ~/.claude.json but carries no local-scope
+      // entry for the server — exactly the team-memory shape.
+      writeFileSync(jsonPath, JSON.stringify({ projects: { [dir]: { mcpServers: {} } } }));
+      expect(findNativeServerEntries('team-memory')).toEqual([
+        { scope: 'project', directory: dir, entry: STDIO_ENTRY },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('findNativeServerEntries orders user, then local, then .mcp.json project entries', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sentinel-mcpjson-order-'));
+    try {
+      writeFileSync(
+        join(dir, '.mcp.json'),
+        JSON.stringify({ mcpServers: { multi: { type: 'http', url: 'project' } } }),
+      );
+      writeFileSync(
+        jsonPath,
+        JSON.stringify({
+          mcpServers: { multi: { type: 'http', url: 'global' } },
+          projects: { [dir]: { mcpServers: { multi: { type: 'http', url: 'local' } } } },
+        }),
+      );
+      expect(findNativeServerEntries('multi')).toEqual([
+        { scope: 'user', directory: null, entry: { type: 'http', url: 'global' } },
+        { scope: 'local', directory: dir, entry: { type: 'http', url: 'local' } },
+        { scope: 'project', directory: dir, entry: { type: 'http', url: 'project' } },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('refuses to act on a malformed ~/.claude.json (throws, file untouched)', () => {
     // readClaudeState propagates the parse error — the right call here:
     // treating a corrupt file as empty and then writing would clobber the

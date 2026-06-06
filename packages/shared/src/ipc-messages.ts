@@ -1172,11 +1172,21 @@ export interface McpContextInsight {
   /** Every `~/.claude.json:projects` key the server is configured under.
    *  Empty for servers configured only at the top level (user scope). */
   projects: string[];
+  /** Project directories whose `<dir>/.mcp.json` configures the server
+   *  (Claude Code's `project` scope). Actions on these entries must use
+   *  scope `project`, not `local`. */
+  mcpJsonProjects: string[];
   /** True when at least one config entry for this server is enabled. */
   enabled: boolean;
   /** True when the server is configured at the top level (user scope),
    *  i.e. loads in every project. */
   global: boolean;
+  /** True when Sentinel can locate a config entry it can act on (in
+   *  `~/.claude.json`, a project `.mcp.json`, a disable stash, or an
+   *  existing bridge). False for measured-only servers configured
+   *  elsewhere (Claude Code plugins, remote connectors): those can't be
+   *  bridged or disabled, so the UI offers no actions. */
+  managed: boolean;
   definition: {
     /** Max observed serialized bytes of this server's tool definitions
      *  in a single request over the window. */

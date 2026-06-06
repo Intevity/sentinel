@@ -25,6 +25,8 @@ use tauri::{
 use tokio::sync::Mutex;
 
 use crate::ipc;
+#[cfg(target_os = "windows")]
+use crate::tray_icon_render::digits;
 use crate::tray_icon_render::{tinted, TintColor};
 
 pub type SharedTrayState = Arc<Mutex<TrayState>>;
@@ -390,12 +392,30 @@ impl TrayState {
     fn apply(&self) {
         let pct = compute_display(self);
         let color = tint_for(pct);
-        let buf = tinted(color);
-        let img = tauri::image::Image::new(&buf.bytes, buf.width, buf.height);
-        let _ = self.icon.set_icon(Some(img));
 
-        let title = pct.map(|p| format!("{p}%"));
-        let _ = self.icon.set_title(title.as_deref());
+        // Windows has no tray title API (`set_title` is a no-op there), so
+        // the percentage IS the icon: threshold-colored digits, with the
+        // logo only while no data has arrived. The hover tooltip carries
+        // the full status text the macOS title would have shown.
+        #[cfg(target_os = "windows")]
+        {
+            let buf = match pct {
+                Some(p) => digits(p, color),
+                None => tinted(color),
+            };
+            let img = tauri::image::Image::new(&buf.bytes, buf.width, buf.height);
+            let _ = self.icon.set_icon(Some(img));
+            let _ = self.icon.set_tooltip(Some(format_tooltip(self, pct)));
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let buf = tinted(color);
+            let img = tauri::image::Image::new(&buf.bytes, buf.width, buf.height);
+            let _ = self.icon.set_icon(Some(img));
+            let title = pct.map(|p| format!("{p}%"));
+            let _ = self.icon.set_title(title.as_deref());
+        }
 
         let _ = self.status_mi.set_text(format_status_text(self, pct));
     }
@@ -441,6 +461,20 @@ fn tint_for(pct: Option<u8>) -> TintColor {
         Some(p) if p >= 90 => TintColor::Red,
         Some(p) if p >= 70 => TintColor::Orange,
         Some(_) => TintColor::Blue,
+    }
+}
+
+/// Windows hover tooltip: the app name plus the same status line the
+/// macOS menu-bar title and the tray menu show, single-sourced through
+/// `format_status_text`. Colon separator on purpose: UI copy avoids em
+/// dashes project-wide.
+#[cfg(target_os = "windows")]
+fn format_tooltip(state: &TrayState, pct: Option<u8>) -> String {
+    let status = format_status_text(state, pct);
+    if status == "Claude Sentinel" {
+        status
+    } else {
+        format!("Claude Sentinel: {status}")
     }
 }
 

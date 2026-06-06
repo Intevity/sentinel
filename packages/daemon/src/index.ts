@@ -2809,6 +2809,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
             db,
             contextStore: contextCostStore,
             migrations: currentSettings.codeModeMigrations,
+            disabledStashes: currentSettings.mcpDisabledStashes,
             unavailableServers: codeModeUnavailable,
             window: windowFromMessage(msg.window),
           }),
@@ -2914,7 +2915,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
               error:
                 recorded.size > 0
                   ? `Every configured entry for '${msg.server}' is already bridged.`
-                  : `MCP server '${msg.server}' not found in ~/.claude.json.`,
+                  : `MCP server '${msg.server}' not found in ~/.claude.json or any known project's .mcp.json.`,
             });
             return;
           }

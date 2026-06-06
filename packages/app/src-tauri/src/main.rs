@@ -10,6 +10,8 @@ mod settings_patch;
 mod sound;
 mod tray;
 mod tray_icon_render;
+#[cfg(target_os = "windows")]
+mod tray_pin;
 mod updater;
 
 use tauri::{AppHandle, Emitter, LogicalSize, Manager};
@@ -172,6 +174,17 @@ fn main() {
     }
 
     tauri::Builder::default()
+        // Must be the FIRST plugin: a second launch (double-click on an
+        // already-running Sentinel, autostart racing a manual open) is
+        // rejected before any other plugin initializes. The callback runs
+        // in the surviving instance; the duplicate process exits on its
+        // own. The daemon sidecar needs no extra guard — the rejected
+        // instance never reaches .setup, so it never spawns one.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                crate::activation::show_and_activate(&window);
+            }
+        }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_autostart::init(
@@ -231,6 +244,12 @@ fn main() {
 
             // Build the tray icon and menu
             tray::setup_tray(app)?;
+
+            // Best-effort: pin the tray icon out of the overflow flyout on
+            // Windows 11 (own retry thread; silent if the shell hasn't
+            // created the registry entry yet).
+            #[cfg(target_os = "windows")]
+            tray_pin::promote_tray_icon();
 
             // Spawn the bundled daemon sidecar (idempotent — exits if already running)
             daemon::spawn(app.handle());

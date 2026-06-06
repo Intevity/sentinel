@@ -79,16 +79,19 @@ function dirBasename(p: string): string {
 }
 
 /** Pick the scope + directory a row action applies to. Global entries act at
- *  user scope; single-project entries at local scope; multi-project entries
- *  use the project the user picked in the row's selector. */
+ *  user scope; single-project entries at the scope that configures them
+ *  (`local` for ~/.claude.json project entries, `project` for .mcp.json
+ *  entries); multi-project entries use the project the user picked in the
+ *  row's selector. */
 function actionTarget(
   insight: McpContextInsight,
   pickedProject: string | undefined,
 ): { scope: McpInstallScope; directory?: string } | null {
   if (insight.global) return { scope: 'user' };
-  const project = pickedProject ?? insight.projects[0];
+  const project = pickedProject ?? insight.projects[0] ?? insight.mcpJsonProjects[0];
   if (!project) return null;
-  return { scope: 'local', directory: project };
+  const scope = insight.projects.includes(project) ? 'local' : 'project';
+  return { scope, directory: project };
 }
 
 export default function ContextPanel({
@@ -345,6 +348,8 @@ function ServerRow({
         ? { label: 'bridge unavailable', cls: 'bg-red-500/10 text-red-700 dark:text-red-300' }
         : null;
   const disabledOnly = insight.recommendations.some((b) => b.kind === 'disabled');
+  /** Every directory whose config carries this server, whichever scope. */
+  const allProjects = [...new Set([...insight.projects, ...insight.mcpJsonProjects])];
   return (
     <li className="rounded-md border border-border-subtle/10 px-3 py-2">
       <div className="flex items-center gap-2">
@@ -392,7 +397,7 @@ function ServerRow({
             ~{formatUsd(insight.cacheWriteEstUsd)} cache writes
           </span>
         )}
-        {insight.projects.length === 1 && <span>{dirBasename(insight.projects[0]!)}</span>}
+        {allProjects.length === 1 && <span>{dirBasename(allProjects[0]!)}</span>}
       </div>
 
       {/* Recommendation badges: their own row, never inline with the metadata
@@ -427,10 +432,10 @@ function ServerRow({
           global entry leaves the project ones loading definitions natively).
           Surface that honestly instead of letting the bridged pill imply the
           definitions are fully gone. */}
-      {bridged && insight.enabled && insight.projects.length > 0 && (
+      {bridged && insight.enabled && allProjects.length > 0 && (
         <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-300">
-          Native entries are still configured in {insight.projects.length} project
-          {insight.projects.length === 1 ? '' : 's'}; those projects keep loading this server's
+          Native entries are still configured in {allProjects.length} project
+          {allProjects.length === 1 ? '' : 's'}; those projects keep loading this server's
           definitions natively.
         </p>
       )}
@@ -440,7 +445,7 @@ function ServerRow({
           those is clicked). Switch to code execution always bridges every
           entry, and Switch back restores every recorded one, so the picker
           is hidden while bridged. */}
-      {!insight.global && !bridged && insight.projects.length > 1 && (
+      {!insight.global && !bridged && allProjects.length > 1 && (
         <div
           className="mt-1.5 text-[11px] text-foreground/60"
           title="This server is configured in more than one project. Disable and Enable act on the selected project's entry; Switch to code execution always bridges every entry."
@@ -450,11 +455,11 @@ function ServerRow({
           </label>
           <select
             id={`ctx-project-${insight.server}`}
-            value={pickedProject ?? insight.projects[0]}
+            value={pickedProject ?? allProjects[0]}
             onChange={(e) => onPickProject(e.target.value)}
             className="rounded border border-border-subtle/15 bg-transparent px-1 py-0.5 text-foreground"
           >
-            {insight.projects.map((p) => (
+            {allProjects.map((p) => (
               <option key={p} value={p}>
                 {dirBasename(p)}
               </option>
@@ -463,54 +468,67 @@ function ServerRow({
         </div>
       )}
 
-      <div className="mt-2 flex flex-wrap gap-2">
-        {bridged ? (
-          <>
-            {insight.enabled && insight.projects.length > 0 && (
+      {/* Measured-only servers (Claude Code plugins, remote connectors)
+          have no config entry Sentinel can disable: bridging one would
+          leave the native definitions loading alongside the bridge. No
+          actions, just the honest explanation. */}
+      {!insight.managed && (
+        <p className="mt-1.5 text-[11px] text-foreground/55">
+          Configured outside Claude Code's local config (plugin or remote connector); Sentinel can't
+          bridge or disable it.
+        </p>
+      )}
+
+      {insight.managed && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {bridged ? (
+            <>
+              {insight.enabled && allProjects.length > 0 && (
+                <ActionButton
+                  label="Bridge remaining native entries"
+                  primary
+                  spinning={busyAction === 'migrate'}
+                  disabled={actionsDisabled}
+                  onClick={() => onAct('migrate')}
+                  title="Some projects still have their own enabled entry for this server (project entries shadow the global one in Claude Code). Bridge those too so the definitions stop loading everywhere."
+                />
+              )}
               <ActionButton
-                label="Bridge remaining native entries"
+                label="Switch back to native MCP"
+                spinning={busyAction === 'revert'}
+                disabled={actionsDisabled}
+                onClick={() => onAct('revert')}
+                title="Restores every entry this migration disabled, byte-identically."
+              />
+            </>
+          ) : disabledOnly ? (
+            <ActionButton
+              label="Enable"
+              spinning={busyAction === 'enable'}
+              disabled={actionsDisabled}
+              onClick={() => onAct('enable')}
+            />
+          ) : (
+            <>
+              <ActionButton
+                label="Switch to code execution"
                 primary
                 spinning={busyAction === 'migrate'}
                 disabled={actionsDisabled}
                 onClick={() => onAct('migrate')}
-                title="Some projects still have their own enabled entry for this server (project entries shadow the global one in Claude Code). Bridge those too so the definitions stop loading everywhere."
+                title="Sentinel connects to this server itself and generates on-demand tool docs plus a skill; the native entry is disabled so its definitions stop loading. Reversible."
               />
-            )}
-            <ActionButton
-              label="Switch back to native MCP"
-              spinning={busyAction === 'revert'}
-              disabled={actionsDisabled}
-              onClick={() => onAct('revert')}
-              title="Restores every entry this migration disabled, byte-identically."
-            />
-          </>
-        ) : disabledOnly ? (
-          <ActionButton
-            label="Enable"
-            spinning={busyAction === 'enable'}
-            disabled={actionsDisabled}
-            onClick={() => onAct('enable')}
-          />
-        ) : (
-          <>
-            <ActionButton
-              label="Switch to code execution"
-              primary
-              spinning={busyAction === 'migrate'}
-              disabled={actionsDisabled}
-              onClick={() => onAct('migrate')}
-              title="Sentinel connects to this server itself and generates on-demand tool docs plus a skill; the native entry is disabled so its definitions stop loading. Reversible."
-            />
-            <ActionButton
-              label="Disable"
-              spinning={busyAction === 'disable'}
-              disabled={actionsDisabled}
-              onClick={() => onAct('disable')}
-              title="Remove the server from Claude Code's config (stashed in Sentinel for one-click re-enable)."
-            />
-          </>
-        )}
-      </div>
+              <ActionButton
+                label="Disable"
+                spinning={busyAction === 'disable'}
+                disabled={actionsDisabled}
+                onClick={() => onAct('disable')}
+                title="Remove the server from Claude Code's config (stashed in Sentinel for one-click re-enable)."
+              />
+            </>
+          )}
+        </div>
+      )}
     </li>
   );
 }
@@ -518,7 +536,9 @@ function ServerRow({
 /** Row action button with instant in-flight feedback: the clicked button
  *  swaps in a spinner and every action button dims + disables until the
  *  daemon answers (migrate verifies connectivity and generates files, which
- *  can take a few seconds). */
+ *  can take a few seconds). The spinner slot is always reserved and labels
+ *  never re-wrap, so entering the busy state shifts no layout; no opacity
+ *  transition either (it blurs text mid-fade on Windows WebView2). */
 function ActionButton({
   label,
   spinning,
@@ -541,13 +561,15 @@ function ActionButton({
       aria-busy={spinning}
       onClick={onClick}
       title={title}
-      className={`flex items-center gap-1.5 rounded px-2 py-1 text-xs transition-opacity disabled:cursor-not-allowed disabled:opacity-50 ${
+      className={`flex items-center gap-1.5 whitespace-nowrap rounded px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50 ${
         primary
           ? 'bg-surface-overlay/15 text-foreground hover:bg-surface-overlay/25'
           : 'border border-border-subtle/15 text-foreground/70 hover:bg-surface-overlay/5'
       }`}
     >
-      {spinning && <Loader2 size={12} className="animate-spin" />}
+      <span className="h-3 w-3 shrink-0" aria-hidden>
+        {spinning && <Loader2 size={12} className="animate-spin" />}
+      </span>
       {label}
     </button>
   );
