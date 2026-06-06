@@ -3,12 +3,13 @@ import { writeFileSync, unlinkSync, existsSync, rmSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type Database from 'better-sqlite3';
-import { estimateTokensFromBytes } from '@claude-sentinel/shared';
+import { estimateTokensFromBytes, type CodeModeMigration } from '@claude-sentinel/shared';
 import { getDb, closeDb, insertToolCall } from '../db.js';
 import { ContextCostStore } from './context-cost-db.js';
 import {
   buildMcpContextInsights,
   sanitizeServerName,
+  backfillMigrationBaselines,
   CODE_MODE_MIN_DEF_TOKENS,
   CODE_MODE_MAX_CALLS_7D,
 } from './mcp-insights.js';
@@ -301,7 +302,17 @@ describe('buildMcpContextInsights', () => {
     store.flush();
 
     const out = build([
-      { server: 'github', scope: 'user', directory: null, originalEntry: {}, migratedAt },
+      {
+        server: 'github',
+        scope: 'user',
+        directory: null,
+        originalEntry: {},
+        migratedAt,
+        // Baseline snapshot at migration: the one pre-migration request had
+        // already been observed for both native and github.
+        baselineNativeRequests: 1,
+        baselineServerRequests: 1,
+      },
     ]);
     const defTokens = estimateTokensFromBytes(35_000);
     expect(out.savings.realized.estTokens).toBe(defTokens * 3);
@@ -338,7 +349,16 @@ describe('buildMcpContextInsights', () => {
     }
     store.flush();
     const out = build([
-      { server: 'github', scope: 'user', directory: null, originalEntry: {}, migratedAt },
+      {
+        server: 'github',
+        scope: 'user',
+        directory: null,
+        originalEntry: {},
+        migratedAt,
+        // No traffic preceded the migration, so the baseline is zero.
+        baselineNativeRequests: 0,
+        baselineServerRequests: 0,
+      },
     ]);
     // 4 native requests since migration, 1 still carried defs → 3 saved.
     expect(out.savings.byServer[0]?.requests).toBe(3);
@@ -487,5 +507,221 @@ describe('buildMcpContextInsights', () => {
     const gh = out.insights.find((i) => i.server === 'github');
     expect(gh?.bridgeStatus).toBe('bridged');
     expect(gh?.managed).toBe(true);
+  });
+
+  it('counts zero realized requests right after a same-day mid-day bridge', () => {
+    // Regression: bridging mid-day must not credit the whole day's bucket of
+    // pre-migration native traffic (the bogus "~1200 requests" the user saw).
+    writeClaudeJson({ mcpServers: {} });
+    const now = Date.now();
+    // One earlier-today request carried github defs (sets defBytesMax) ...
+    store.enqueue({
+      ts: now,
+      accountId: 'a1',
+      perServer: [{ server: 'github', defBytes: 35_000, toolCount: 5, toolNames: [] }],
+      nativeBytes: 9_000,
+      nativeToolCount: 12,
+    });
+    // ... plus heavy native-only traffic earlier today, before bridging.
+    for (let i = 0; i < 4; i++) {
+      store.enqueue({
+        ts: now,
+        accountId: 'a1',
+        perServer: [],
+        nativeBytes: 9_000,
+        nativeToolCount: 12,
+      });
+    }
+    store.flush();
+    // Bridge NOW: baseline = the counts just observed (native 5, github 1).
+    const migration: CodeModeMigration = {
+      server: 'github',
+      scope: 'user',
+      directory: null,
+      originalEntry: {},
+      migratedAt: now,
+      baselineNativeRequests: 5,
+      baselineServerRequests: 1,
+    };
+    const out = build([migration]);
+    expect(out.savings.byServer[0]?.requests).toBe(0);
+    expect(out.savings.realized.estTokens).toBe(0);
+
+    // A genuine post-migration request increments the count by exactly one.
+    store.enqueue({
+      ts: now + 1000,
+      accountId: 'a1',
+      perServer: [],
+      nativeBytes: 9_000,
+      nativeToolCount: 12,
+    });
+    store.flush();
+    expect(build([migration]).savings.byServer[0]?.requests).toBe(1);
+  });
+
+  it('defaults a baseline-less legacy migration to zero, never an inflated count', () => {
+    writeClaudeJson({ mcpServers: {} });
+    const now = Date.now();
+    store.enqueue({
+      ts: now,
+      accountId: 'a1',
+      perServer: [{ server: 'github', defBytes: 35_000, toolCount: 5, toolNames: [] }],
+      nativeBytes: 9_000,
+      nativeToolCount: 12,
+    });
+    for (let i = 0; i < 3; i++) {
+      store.enqueue({
+        ts: now,
+        accountId: 'a1',
+        perServer: [],
+        nativeBytes: 9_000,
+        nativeToolCount: 12,
+      });
+    }
+    store.flush();
+    // No baseline fields → defaults to the current counts → zero saved so far.
+    const out = build([
+      { server: 'github', scope: 'user', directory: null, originalEntry: {}, migratedAt: now },
+    ]);
+    expect(out.savings.byServer[0]?.requests).toBe(0);
+  });
+
+  it('uses the day-bucketed window count when the window starts after the migration', () => {
+    writeClaudeJson({ mcpServers: {} });
+    const DAY = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    // Bridged 10 days ago; an old request set defBytesMax.
+    store.enqueue({
+      ts: now - 10 * DAY,
+      accountId: 'a1',
+      perServer: [{ server: 'github', defBytes: 35_000, toolCount: 5, toolNames: [] }],
+      nativeBytes: 9_000,
+      nativeToolCount: 12,
+    });
+    // In-window traffic (2 days ago): 1 still carried github + 3 native-only.
+    store.enqueue({
+      ts: now - 2 * DAY,
+      accountId: 'a1',
+      perServer: [{ server: 'github', defBytes: 35_000, toolCount: 5, toolNames: [] }],
+      nativeBytes: 9_000,
+      nativeToolCount: 12,
+    });
+    for (let i = 0; i < 3; i++) {
+      store.enqueue({
+        ts: now - 2 * DAY,
+        accountId: 'a1',
+        perServer: [],
+        nativeBytes: 9_000,
+        nativeToolCount: 12,
+      });
+    }
+    store.flush();
+    // Window opens 3 days ago, after the migration → day-bucketed path. The
+    // baseline is present but deliberately ignored on this branch.
+    const out = buildMcpContextInsights({
+      db,
+      contextStore: store,
+      migrations: [
+        {
+          server: 'github',
+          scope: 'user',
+          directory: null,
+          originalEntry: {},
+          migratedAt: now - 10 * DAY,
+          baselineNativeRequests: 0,
+          baselineServerRequests: 0,
+        },
+      ],
+      window: { sinceMs: now - 3 * DAY },
+    });
+    // In window: 4 native, 1 still carried → 3 saved.
+    expect(out.savings.byServer[0]?.requests).toBe(3);
+  });
+
+  it('honors an explicit window end (untilMs) when counting from the baseline', () => {
+    writeClaudeJson({ mcpServers: {} });
+    const DAY = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    // Migrated a day ago, baseline native 1 / github 1 captured then.
+    store.enqueue({
+      ts: now - DAY,
+      accountId: 'a1',
+      perServer: [{ server: 'github', defBytes: 35_000, toolCount: 5, toolNames: [] }],
+      nativeBytes: 9_000,
+      nativeToolCount: 12,
+    });
+    for (let i = 0; i < 3; i++) {
+      store.enqueue({
+        ts: now - DAY + 1000 + i,
+        accountId: 'a1',
+        perServer: [],
+        nativeBytes: 9_000,
+        nativeToolCount: 12,
+      });
+    }
+    store.flush();
+    const out = buildMcpContextInsights({
+      db,
+      contextStore: store,
+      migrations: [
+        {
+          server: 'github',
+          scope: 'user',
+          directory: null,
+          originalEntry: {},
+          migratedAt: now - DAY,
+          baselineNativeRequests: 1,
+          baselineServerRequests: 1,
+        },
+      ],
+      window: { sinceMs: now - 5 * DAY, untilMs: now + 5 * DAY },
+    });
+    expect(out.savings.byServer[0]?.requests).toBe(3);
+  });
+
+  it('backfillMigrationBaselines fills missing baselines from current counts, idempotently', () => {
+    const now = Date.now();
+    for (let i = 0; i < 2; i++) {
+      store.enqueue({
+        ts: now,
+        accountId: 'a1',
+        perServer: [{ server: 'github', defBytes: 35_000, toolCount: 5, toolNames: [] }],
+        nativeBytes: 9_000,
+        nativeToolCount: 12,
+      });
+    }
+    for (let i = 0; i < 5; i++) {
+      store.enqueue({
+        ts: now,
+        accountId: 'a1',
+        perServer: [],
+        nativeBytes: 9_000,
+        nativeToolCount: 12,
+      });
+    }
+    store.flush();
+    // Now: native requestCount = 7, github = 2.
+    const migrations: CodeModeMigration[] = [
+      { server: 'github', scope: 'user', directory: null, originalEntry: {}, migratedAt: 1 },
+      {
+        server: 'other',
+        scope: 'user',
+        directory: null,
+        originalEntry: {},
+        migratedAt: 1,
+        baselineNativeRequests: 99,
+        baselineServerRequests: 3,
+      },
+    ];
+    const r = backfillMigrationBaselines(migrations, store);
+    expect(r.changed).toBe(true);
+    expect(r.migrations[0]?.baselineNativeRequests).toBe(7);
+    expect(r.migrations[0]?.baselineServerRequests).toBe(2);
+    // An existing baseline is preserved untouched.
+    expect(r.migrations[1]?.baselineNativeRequests).toBe(99);
+    // Idempotent: a second pass changes nothing and returns the same array.
+    const r2 = backfillMigrationBaselines(r.migrations, store);
+    expect(r2.changed).toBe(false);
+    expect(r2.migrations).toBe(r.migrations);
   });
 });

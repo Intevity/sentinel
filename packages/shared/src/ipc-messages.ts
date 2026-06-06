@@ -598,6 +598,10 @@ export interface GetUsageSummaryMessage {
 export interface GetMetricsSummaryMessage {
   type: 'get_metrics_summary';
   days: number;
+  /** Absolute time window for the rollup. When present, overrides the legacy
+   *  rolling `days` lookback (midnight-anchored presets, custom start/end, or
+   *  `{}` for all-time). `untilMs` is exclusive. */
+  window?: MetricsWindow;
   /** View-scope account key. When omitted the handler falls back to the
    *  currently active account so existing callers keep working; the UI's
    *  per-tab picker passes an explicit id to inspect non-active accounts. */

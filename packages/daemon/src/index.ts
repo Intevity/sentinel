@@ -150,8 +150,16 @@ import {
   getCompressionStatsStore,
   closeCompressionStatsStore,
 } from './optimize/compress/compression-stats-db.js';
-import { getContextCostStore, closeContextCostStore } from './context-bloat/context-cost-db.js';
-import { buildMcpContextInsights, sanitizeServerName } from './context-bloat/mcp-insights.js';
+import {
+  getContextCostStore,
+  closeContextCostStore,
+  NATIVE_SERVER_KEY,
+} from './context-bloat/context-cost-db.js';
+import {
+  buildMcpContextInsights,
+  sanitizeServerName,
+  backfillMigrationBaselines,
+} from './context-bloat/mcp-insights.js';
 import { createMcpClientManager } from './optimize/code-mode/mcp-client-manager.js';
 import { createCodeModeHandler } from './optimize/code-mode/code-mode-server.js';
 import { getOrCreateCodeModeToken } from './optimize/code-mode/code-mode-token.js';
@@ -1305,29 +1313,37 @@ export async function startDaemon(): Promise<DaemonHandle> {
         }
         const days = msg.days ?? 7;
         // Bundle every dashboard slice in one round-trip. Query helpers all
-        // accept (accountIds, days) and do their own windowing, so ordering
-        // here is just for readability.
-        const byDayModel = getTokensByDayModel(db, keys, days);
-        const cacheHitRate = getCacheHitRate(db, keys, days);
-        const errors = getApiErrorsByDay(db, keys, days);
-        const tools = getToolStats(db, keys, days);
-        const perDayCounters = getActivityCounters(db, keys, days, [
-          'session',
-          'commit',
-          'pull_request',
-          'lines_added',
-          'lines_removed',
-          'active_user_seconds',
-          'active_cli_seconds',
-        ]);
-        const editAcceptRate = getEditAcceptRate(db, keys, days);
-        const toolDecisions = getToolDecisionBreakdown(db, keys, days);
-        const prompts = getUserPromptStats(db, keys, days);
-        const skills = getTopSkills(db, keys, days, 10);
+        // accept (accountIds, days, …, win) and do their own windowing, so
+        // ordering here is just for readability. When `msg.window` is present
+        // it overrides the rolling `days` lookback inside each helper.
+        const win = msg.window;
+        const byDayModel = getTokensByDayModel(db, keys, days, win);
+        const cacheHitRate = getCacheHitRate(db, keys, days, win);
+        const errors = getApiErrorsByDay(db, keys, days, win);
+        const tools = getToolStats(db, keys, days, 20, win);
+        const perDayCounters = getActivityCounters(
+          db,
+          keys,
+          days,
+          [
+            'session',
+            'commit',
+            'pull_request',
+            'lines_added',
+            'lines_removed',
+            'active_user_seconds',
+            'active_cli_seconds',
+          ],
+          win,
+        );
+        const editAcceptRate = getEditAcceptRate(db, keys, days, win);
+        const toolDecisions = getToolDecisionBreakdown(db, keys, days, win);
+        const prompts = getUserPromptStats(db, keys, days, win);
+        const skills = getTopSkills(db, keys, days, 10, win);
         const plugins = getRecentPlugins(db, keys, 10);
         const cacheTtl = {
-          byDayModel: getCacheTtlByDayModel(db, keys, days),
-          bySession: getCacheTtlBySession(db, keys, days),
+          byDayModel: getCacheTtlByDayModel(db, keys, days, win),
+          bySession: getCacheTtlBySession(db, keys, days, 50, win),
         };
 
         // Reshape per-day counters into the flat per-kind records the UI wants.
@@ -2937,6 +2953,15 @@ export async function startDaemon(): Promise<DaemonHandle> {
             });
             await writeCodeModeTokenFile(getOrCreateCodeModeToken());
             const migratedAt = Date.now();
+            // Snapshot the all-time request counts now so realized savings count
+            // requests since *this* moment, not from the start of today's day
+            // bucket (see realizedRequests in mcp-insights).
+            const baselineAggs = contextCostStore.getServerDefinitionCosts({});
+            const baselineNativeRequests =
+              baselineAggs.find((a) => a.server === NATIVE_SERVER_KEY)?.requestCount ?? 0;
+            const baselineServerRequests =
+              baselineAggs.find((a) => a.server === sanitizeServerName(msg.server))?.requestCount ??
+              0;
             const newRecords = entries.map((e) => {
               const { originalEntry } = disableNativeServer({
                 server: msg.server,
@@ -2949,6 +2974,8 @@ export async function startDaemon(): Promise<DaemonHandle> {
                 directory: e.directory,
                 originalEntry,
                 migratedAt,
+                baselineNativeRequests,
+                baselineServerRequests,
               };
             });
             const migrations = [...currentSettings.codeModeMigrations, ...newRecords];
@@ -3305,6 +3332,19 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // the compression store so get_mcp_context_costs always answers; purge
   // reuses the same retention window and cadence.
   const contextCostStore = getContextCostStore({ ipcServer });
+  // Backfill realized-savings baselines for any migration recorded before the
+  // baseline fields existed, so legacy bridges count requests from upgrade time
+  // instead of reporting the day-bucket inflated figure. One-time and idempotent.
+  {
+    const backfill = backfillMigrationBaselines(
+      currentSettings.codeModeMigrations,
+      contextCostStore,
+    );
+    if (backfill.changed) {
+      currentSettings = writeSettings({ codeModeMigrations: backfill.migrations });
+      console.log('[ContextCost] Backfilled code-mode savings baselines');
+    }
+  }
   // Bridged servers the code-mode client manager failed to connect to since
   // startup. Surfaced as bridgeStatus 'unavailable' on the Context tab so a
   // broken bridge is visible rather than silently dropping tool access.

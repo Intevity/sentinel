@@ -536,9 +536,10 @@ function ServerRow({
 /** Row action button with instant in-flight feedback: the clicked button
  *  swaps in a spinner and every action button dims + disables until the
  *  daemon answers (migrate verifies connectivity and generates files, which
- *  can take a few seconds). The spinner slot is always reserved and labels
- *  never re-wrap, so entering the busy state shifts no layout; no opacity
- *  transition either (it blurs text mid-fade on Windows WebView2). */
+ *  can take a few seconds). The spinner is rendered only while busy so an idle
+ *  button has no leading gap; when it appears the flex row grows to fit it.
+ *  Labels never re-wrap (whitespace-nowrap) and there is no opacity transition
+ *  (it blurs text mid-fade on Windows WebView2). */
 function ActionButton({
   label,
   spinning,
@@ -567,9 +568,7 @@ function ActionButton({
           : 'border border-border-subtle/15 text-foreground/70 hover:bg-surface-overlay/5'
       }`}
     >
-      <span className="h-3 w-3 shrink-0" aria-hidden>
-        {spinning && <Loader2 size={12} className="animate-spin" />}
-      </span>
+      {spinning && <Loader2 size={12} className="shrink-0 animate-spin" aria-hidden />}
       {label}
     </button>
   );

@@ -968,6 +968,53 @@ describe('settings', () => {
       ]);
     });
 
+    it('preserves finite realized-savings baselines and drops malformed ones', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          codeModeMigrations: [
+            {
+              server: 'github',
+              scope: 'user',
+              directory: null,
+              originalEntry: {},
+              migratedAt: 100,
+              baselineNativeRequests: 42,
+              baselineServerRequests: 7,
+            },
+            {
+              server: 'mongo',
+              scope: 'user',
+              directory: null,
+              originalEntry: {},
+              migratedAt: 200,
+              // A non-number baseline is omitted entirely, never coerced to 0
+              // (the savings calc treats "absent" as count-from-now).
+              baselineNativeRequests: 'lots',
+            },
+          ],
+        }),
+      );
+      const migrations = loadSettings(path).codeModeMigrations;
+      expect(migrations[0]).toEqual({
+        server: 'github',
+        scope: 'user',
+        directory: null,
+        originalEntry: {},
+        migratedAt: 100,
+        baselineNativeRequests: 42,
+        baselineServerRequests: 7,
+      });
+      expect(migrations[1]).toEqual({
+        server: 'mongo',
+        scope: 'user',
+        directory: null,
+        originalEntry: {},
+        migratedAt: 200,
+      });
+      expect('baselineNativeRequests' in migrations[1]!).toBe(false);
+    });
+
     it('normalizes a user-scope migration to a null directory and preserves originalEntry verbatim', () => {
       const entry = { type: 'http', url: 'https://api.example/mcp', headers: { 'X-K': 'v' } };
       writeRawWithSig(
@@ -1058,6 +1105,28 @@ describe('settings', () => {
       expect(loadSettings(path).optimizeRange).toBe('all');
       writeRawWithSig(path, JSON.stringify({ optimizeRange: 42 }));
       expect(loadSettings(path).optimizeRange).toBe('all');
+    });
+  });
+
+  describe('metricsRange', () => {
+    it("defaults to '1w' (the old 7-day period) when the file is missing", () => {
+      expect(loadSettings(path).metricsRange).toBe('1w');
+    });
+
+    it('round-trips every valid preset independently of optimizeRange', () => {
+      for (const r of ['1d', '1w', '1m', '3m', '6m', '1y', 'all', 'custom'] as const) {
+        writeRawWithSig(path, JSON.stringify({ metricsRange: r, optimizeRange: 'all' }));
+        const s = loadSettings(path);
+        expect(s.metricsRange).toBe(r);
+        expect(s.optimizeRange).toBe('all');
+      }
+    });
+
+    it('falls back to the default when the value is invalid', () => {
+      writeRawWithSig(path, JSON.stringify({ metricsRange: 'bogus' }));
+      expect(loadSettings(path).metricsRange).toBe('1w');
+      writeRawWithSig(path, JSON.stringify({ metricsRange: 42 }));
+      expect(loadSettings(path).metricsRange).toBe('1w');
     });
   });
 });

@@ -92,6 +92,7 @@ function benchSettings(): Settings {
     telemetryRetentionDays: 30,
     dataRetentionDays: 365,
     optimizeRange: 'all',
+    metricsRange: '1w',
     securityScanEnabled: true,
     securityEnforcementMode: 'observe',
     securityScanSecrets: true,

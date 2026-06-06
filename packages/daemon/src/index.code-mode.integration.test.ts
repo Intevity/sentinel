@@ -97,6 +97,10 @@ describe('code-mode IPC end-to-end', () => {
       scope: 'user',
       directory: null,
       originalEntry: entry,
+      // Realized-savings baseline is snapshotted at migration time so the
+      // request count starts from zero rather than the day bucket.
+      baselineNativeRequests: expect.any(Number),
+      baselineServerRequests: expect.any(Number),
     });
 
     // Status: one un-drifted migration.

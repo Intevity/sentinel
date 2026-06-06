@@ -1638,6 +1638,132 @@ describe('Metrics tab DB helpers', () => {
     expect(out[day]!['m']).toEqual({ costUsd: 0.5, tokens: 150 });
   });
 
+  it('getTokensByDayModel: explicit window overrides days and applies exclusive untilMs', async () => {
+    const { getTokensByDayModel, insertUsageEvent } = await import('./db.js');
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const tenDaysAgo = now - 10 * DAY_MS;
+    const twoDaysAgo = now - 2 * DAY_MS;
+    const seed = (ts: number, sessionId: string, inputTokens: number) =>
+      insertUsageEvent(db, {
+        ts,
+        accountId: acct,
+        sessionId,
+        model: 'm',
+        costUsd: 0,
+        inputTokens,
+        outputTokens: 0,
+        cacheRead: 0,
+        cacheCreate: 0,
+        durationMs: 0,
+      });
+    seed(tenDaysAgo, 's-old', 111);
+    seed(twoDaysAgo, 's-mid', 222);
+    seed(now, 's-now', 333);
+
+    // Window [5 days ago, 1 day ago) overrides days=1; only the 2-days-ago row
+    // falls inside it (10-days-ago is below sinceMs, now is at/after untilMs).
+    const windowed = getTokensByDayModel(db, [acct], 1, {
+      sinceMs: now - 5 * DAY_MS,
+      untilMs: now - 1 * DAY_MS,
+    });
+    const windowedDays = Object.keys(windowed);
+    expect(windowedDays).toHaveLength(1);
+    expect(windowed[windowedDays[0]!]!['m']!.inputTokens).toBe(222);
+
+    // untilMs is exclusive: a window ending exactly at the mid row's ts must
+    // exclude it, leaving the older row as the only in-range match.
+    const exclusiveUpper = getTokensByDayModel(db, [acct], 1, {
+      sinceMs: tenDaysAgo,
+      untilMs: twoDaysAgo,
+    });
+    const exclusiveTotal = Object.values(exclusiveUpper).reduce(
+      (sum, byModel) => sum + (byModel['m']?.inputTokens ?? 0),
+      0,
+    );
+    expect(exclusiveTotal).toBe(111);
+
+    // All-time `{}` returns every row regardless of days.
+    const allTime = getTokensByDayModel(db, [acct], 1, {});
+    const allTimeTotal = Object.values(allTime).reduce(
+      (sum, byModel) => sum + (byModel['m']?.inputTokens ?? 0),
+      0,
+    );
+    expect(allTimeTotal).toBe(111 + 222 + 333);
+  });
+
+  it('getToolStats: window excludes out-of-range rows in totals and percentiles', async () => {
+    const { getToolStats, insertToolEvent } = await import('./db.js');
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const seed = (ts: number, durationMs: number, success: boolean, error: string | null) =>
+      insertToolEvent(db, {
+        ts,
+        accountId: acct,
+        sessionId: 's',
+        toolName: 'Bash',
+        success,
+        durationMs,
+        error,
+        decisionSource: null,
+        decisionType: null,
+        mcpServerScope: null,
+        toolResultSizeBytes: null,
+      });
+    // Out-of-window rows: one before sinceMs, one at/after untilMs. Both have
+    // extreme durations + failures that would skew the result if leaked in.
+    seed(now - 10 * DAY_MS, 9000, false, 'leaked-before');
+    seed(now, 9999, false, 'leaked-after');
+    // In-window rows (around 2 days ago): 3 successes, no failures.
+    for (const d of [100, 200, 300]) {
+      seed(now - 2 * DAY_MS, d, true, null);
+    }
+
+    const windowed = getToolStats(db, [acct], 1, 20, {
+      sinceMs: now - 5 * DAY_MS,
+      untilMs: now - 1 * DAY_MS,
+    });
+    const bash = windowed.find((s) => s.toolName === 'Bash')!;
+    // Totals reflect only the 3 in-window rows.
+    expect(bash.calls).toBe(3);
+    // Success rate is 1: the two failures are out of window.
+    expect(bash.successRate).toBe(1);
+    // Percentiles come from [100,200,300] only — the 9000/9999 outliers are gone.
+    expect(bash.p50Ms).toBe(200);
+    expect(bash.p95Ms).toBe(300);
+    // The out-of-window failure's error never surfaces.
+    expect(bash.topError).toBeNull();
+  });
+
+  it('getToolStats: legacy days-only lookback still filters the rolling window', async () => {
+    const { getToolStats, insertToolEvent } = await import('./db.js');
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const seed = (ts: number) =>
+      insertToolEvent(db, {
+        ts,
+        accountId: acct,
+        sessionId: 's',
+        toolName: 'Bash',
+        success: true,
+        durationMs: 50,
+        error: null,
+        decisionSource: null,
+        decisionType: null,
+        mcpServerScope: null,
+        toolResultSizeBytes: null,
+      });
+    seed(now); // inside a 7-day lookback
+    seed(now - 30 * DAY_MS); // outside it
+
+    // No window arg: rolling 7-day lookback excludes the 30-days-ago row.
+    const recent = getToolStats(db, [acct], 7).find((s) => s.toolName === 'Bash')!;
+    expect(recent.calls).toBe(1);
+    // A 60-day lookback includes both rows — proves the bound is the day count.
+    const wide = getToolStats(db, [acct], 60).find((s) => s.toolName === 'Bash')!;
+    expect(wide.calls).toBe(2);
+  });
+
   it("acknowledgeAllNotifications with accountId ack's scoped + null-scoped rows", async () => {
     const { acknowledgeAllNotifications, insertNotification, listNotifications } =
       await import('./db.js');
