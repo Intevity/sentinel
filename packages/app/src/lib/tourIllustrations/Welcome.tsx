@@ -1,5 +1,6 @@
 import React from 'react';
 import { motion } from 'motion/react';
+import sentinelMascot from '../../assets/sentinelMascot.png';
 
 export default function WelcomeIllustration({
   className,
@@ -8,42 +9,39 @@ export default function WelcomeIllustration({
 }): React.ReactElement {
   return (
     <svg viewBox="0 0 200 80" xmlns="http://www.w3.org/2000/svg" className={className} aria-hidden>
-      <defs>
-        <linearGradient id="welcome-shield" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="currentColor" stopOpacity="0.95" />
-          <stop offset="100%" stopColor="currentColor" stopOpacity="0.55" />
-        </linearGradient>
-      </defs>
+      {/* Orbiting sparkles behind the mascot, kept from the original welcome
+          art for continuity. */}
       <motion.g
-        initial={{ scale: 0.85, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
-      >
-        {/* Shield body */}
-        <path
-          d="M100 18 L120 24 V42 C120 52 110 60 100 64 C90 60 80 52 80 42 V24 Z"
-          fill="url(#welcome-shield)"
-        />
-        {/* Inner check */}
-        <path
-          d="M91 41 L98 48 L110 35"
-          fill="none"
-          stroke="white"
-          strokeWidth="2.6"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </motion.g>
-      {/* Orbiting sparkles */}
-      <motion.g
-        style={{ originX: '100px', originY: '42px' }}
+        style={{ originX: '100px', originY: '40px' }}
         animate={{ rotate: 360 }}
         transition={{ duration: 16, ease: 'linear', repeat: Infinity }}
       >
-        <Sparkle x={148} y={28} size={6} />
-        <Sparkle x={56} y={52} size={4} />
-        <Sparkle x={140} y={62} size={5} />
-        <Sparkle x={64} y={20} size={5} />
+        <Sparkle x={150} y={24} size={6} />
+        <Sparkle x={50} y={28} size={5} />
+        <Sparkle x={58} y={62} size={4} />
+        <Sparkle x={146} y={60} size={4} />
+      </motion.g>
+      {/* Mascot: scales in on open (outer group), then gently bobs forever
+          (inner group translates so it never fights the scale transform). */}
+      <motion.g
+        initial={{ opacity: 0, scale: 0.6 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+        style={{ originX: '100px', originY: '40px' }}
+      >
+        <motion.g
+          animate={{ y: [0, -3, 0] }}
+          transition={{ duration: 3, ease: 'easeInOut', repeat: Infinity }}
+        >
+          <image
+            href={sentinelMascot}
+            x={66}
+            y={9}
+            width={68}
+            height={62}
+            preserveAspectRatio="xMidYMid meet"
+          />
+        </motion.g>
       </motion.g>
     </svg>
   );

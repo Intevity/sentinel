@@ -386,11 +386,9 @@ export default function Tour({
   );
 }
 
-/** Row of dots showing progress through the tour. Core dots and power
- *  dots are rendered in two visually-separated groups so users can see
- *  at a glance that the "extras" are an opt-in deep dive. In first-run
- *  mode the power dots render as faint placeholders; clicking one
- *  expands the tour and jumps to it. */
+/** Row of dots showing progress through the tour, rendered flush with no
+ *  gaps. In first-run mode the power dots still render as faint placeholders;
+ *  clicking one expands the tour and jumps to it. */
 function ProgressDots({
   current,
   expanded,
@@ -404,7 +402,7 @@ function ProgressDots({
 }): React.ReactElement {
   const total = TOUR_STEPS.length;
   return (
-    <div className="flex items-center gap-1 flex-1 min-w-0 overflow-hidden">
+    <div className="flex items-center flex-1 min-w-0 overflow-hidden">
       {Array.from({ length: total }, (_, i) => {
         const isCurrent = i === current;
         const isCompleted = i < current;
@@ -430,22 +428,20 @@ function ProgressDots({
           opacity = 0.25;
         }
         return (
-          <React.Fragment key={i}>
-            {i === CORE_STEP_COUNT && <span className="w-1.5" aria-hidden />}
-            <button
-              type="button"
-              onClick={() => onJump(i)}
-              aria-label={`Jump to step ${i + 1}`}
-              className="rounded-full transition-all"
-              style={{
-                width: isCurrent ? 16 : 6,
-                height: 6,
-                background: bg,
-                border: `1px solid ${border}`,
-                opacity,
-              }}
-            />
-          </React.Fragment>
+          <button
+            key={i}
+            type="button"
+            onClick={() => onJump(i)}
+            aria-label={`Jump to step ${i + 1}`}
+            className="rounded-full transition-all"
+            style={{
+              width: isCurrent ? 16 : 6,
+              height: 6,
+              background: bg,
+              border: `1px solid ${border}`,
+              opacity,
+            }}
+          />
         );
       })}
     </div>
