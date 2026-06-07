@@ -20,6 +20,7 @@
     "alerts:test": "node scripts/alerts-test.mjs",
     "mock:budget": "node scripts/mock-budget.mjs",
     "mock:budget:update": "node scripts/mock-budget.mjs --update",
+    "icons:render": "node scripts/generate-icons.mjs",
     "icons:generate": "node scripts/generate-ico.mjs",
     "icons:verify": "node scripts/generate-ico.mjs --verify",
     "bench:compression": "SENTINEL_BENCH_TABLE=1 vitest run packages/daemon/bench/compression-bench.test.ts --reporter=basic"
