@@ -2,9 +2,10 @@
 ///
 /// The tray icon is dynamic:
 ///   - The Sentinel logo is re-tinted by utilization threshold
-///     (<70% blue, 70–89% orange, ≥90% red, unknown gray).
+///     (<70% blue, 70–89% orange, ≥90% red, unknown gray) on every platform.
 ///   - A "NN%" title sits to the right of the icon on macOS
-///     (via `TrayIcon::set_title` — no-op on other platforms).
+///     (via `TrayIcon::set_title` — no-op on other platforms); Windows has
+///     no tray-title API, so the hover tooltip carries the same status text.
 ///   - The disabled status menu item carries contextual text
 ///     ("jeff@… · 42%" or "Round-robin pool · 42%").
 ///
@@ -25,8 +26,6 @@ use tauri::{
 use tokio::sync::Mutex;
 
 use crate::ipc;
-#[cfg(target_os = "windows")]
-use crate::tray_icon_render::digits;
 use crate::tray_icon_render::{tinted, TintColor};
 
 pub type SharedTrayState = Arc<Mutex<TrayState>>;
@@ -393,26 +392,20 @@ impl TrayState {
         let pct = compute_display(self);
         let color = tint_for(pct);
 
+        let buf = tinted(color);
+        let img = tauri::image::Image::new(&buf.bytes, buf.width, buf.height);
+        let _ = self.icon.set_icon(Some(img));
+
         // Windows has no tray title API (`set_title` is a no-op there), so
-        // the percentage IS the icon: threshold-colored digits, with the
-        // logo only while no data has arrived. The hover tooltip carries
-        // the full status text the macOS title would have shown.
+        // the hover tooltip carries the same "NN%" status text the macOS
+        // title shows beside the icon.
         #[cfg(target_os = "windows")]
         {
-            let buf = match pct {
-                Some(p) => digits(p, color),
-                None => tinted(color),
-            };
-            let img = tauri::image::Image::new(&buf.bytes, buf.width, buf.height);
-            let _ = self.icon.set_icon(Some(img));
             let _ = self.icon.set_tooltip(Some(format_tooltip(self, pct)));
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            let buf = tinted(color);
-            let img = tauri::image::Image::new(&buf.bytes, buf.width, buf.height);
-            let _ = self.icon.set_icon(Some(img));
             let title = pct.map(|p| format!("{p}%"));
             let _ = self.icon.set_title(title.as_deref());
         }

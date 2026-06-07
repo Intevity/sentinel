@@ -1,0 +1,165 @@
+# Manual, unsigned test builds for VM testing.
+#
+# Dispatch with a platform choice (windows / macos / linux / all) and get a
+# DRAFT release tagged `test-<run>-<sha>` carrying the unsigned installers.
+# Purpose: quick "does it work on the other OS" checks inside VMs without
+# installing local toolchains — NOT for distribution:
+#
+#   - Builds use src-tauri/tauri.dev.conf.json (createUpdaterArtifacts: false),
+#     so no updater signing key is required and no updater artifacts ship.
+#   - No Apple secrets are passed: the sidecar build skips codesigning
+#     (build-sidecar.mjs leaves it unsigned without APPLE_SIGNING_IDENTITY)
+#     and the .app/.dmg stay unsigned — right-click → Open in a macOS VM.
+#   - No Windows signing: NSIS/MSI installers trip SmartScreen; that's fine
+#     for a VM.
+#   - The `test-` tag prefix can't trigger release.yml (`v*`), and GitHub
+#     never creates a git tag for a DRAFT release, so deleting the draft
+#     leaves zero residue. notarize-poll ignores these drafts too (it only
+#     acts on drafts carrying notary-*.json assets, which we never upload).
+#
+# Versions are NOT stamped — artifacts carry the committed version; the run's
+# commit SHA is in the release body for identification.
+name: Test Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform(s) to build'
+        type: choice
+        default: all
+        options:
+          - windows
+          - macos
+          - linux
+          - all
+
+permissions:
+  contents: write
+
+jobs:
+  # Resolve the platform choice into a build matrix and mint the draft tag.
+  # One tag per dispatch: every selected leg uploads into the same draft.
+  plan:
+    name: Plan matrix + tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - name: Compute matrix and tag
+        id: plan
+        run: |
+          set -euo pipefail
+          windows='{"os":"windows-latest","platform":"windows-x64","args":""}'
+          macos='{"os":"macos-latest","platform":"macos-arm64","args":"--target aarch64-apple-darwin"}'
+          linux='{"os":"ubuntu-22.04","platform":"linux-x64","args":""}'
+          case "${{ inputs.platform }}" in
+            windows) matrix="[$windows]" ;;
+            macos)   matrix="[$macos]" ;;
+            linux)   matrix="[$linux]" ;;
+            all)     matrix="[$windows,$macos,$linux]" ;;
+            *) echo "::error::Unknown platform '${{ inputs.platform }}'"; exit 1 ;;
+          esac
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "tag=test-${{ github.run_number }}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "Building: $matrix → tag test-${{ github.run_number }}-${GITHUB_SHA::7}"
+
+  build:
+    name: Build unsigned (${{ matrix.platform }})
+    needs: [plan]
+    runs-on: ${{ matrix.os }}
+    # Unsigned builds skip notarization entirely; 40 min covers a cold-cache
+    # Windows leg with room to spare.
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Must match the pnpm version that produced pnpm-lock.yaml (see release.yml).
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-arm64' && 'aarch64-apple-darwin' || '' }}
+
+      # Same cache namespace as release.yml so test builds restore the
+      # release legs' compiled deps (and vice versa) — the dependency set is
+      # identical, only our own crate differs.
+      - name: Cache Cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/app/src-tauri -> target
+          key: ${{ matrix.platform }}
+          shared-key: tauri-release
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build better-sqlite3 native module
+        run: |
+          cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3
+          npm run build-release
+        shell: bash
+
+      # beforeBuildCommand (tauri.conf.json) compiles shared + test-harness +
+      # daemon, produces the sidecar binary, and builds the frontend — same
+      # path as release.yml. The dev conf overlay only disables updater
+      # artifacts; signing is skipped because no signing env is provided.
+      - name: Build Tauri app (unsigned)
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: packages/app
+          tagName: ${{ needs.plan.outputs.tag }}
+          releaseName: 'Test build ${{ needs.plan.outputs.tag }} (unsigned)'
+          releaseBody: |
+            Unsigned test build for VM testing — **not for distribution**.
+
+            - Commit: ${{ github.sha }}
+            - Branch: ${{ github.ref_name }}
+            - Platforms: ${{ inputs.platform }}
+            - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            macOS: unsigned (right-click → Open). Windows: unsigned (expect a
+            SmartScreen warning). No auto-update artifacts are included.
+          releaseDraft: true
+          prerelease: true
+          releaseCommitish: ${{ github.sha }}
+          args: --config src-tauri/tauri.dev.conf.json ${{ matrix.args }}
+
+      - name: Link the draft release in the run summary
+        shell: bash
+        run: |
+          {
+            echo "### Test build (${{ matrix.platform }})"
+            echo ""
+            echo "Draft release: ${{ steps.tauri.outputs.releaseHtmlUrl }}"
+          } >> "$GITHUB_STEP_SUMMARY"

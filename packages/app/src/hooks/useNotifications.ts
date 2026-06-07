@@ -9,11 +9,7 @@ import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import { shouldFireSecurityOsNotification } from '../lib/security-threshold.js';
 
 const DEFAULT_PAGE_SIZE = 50;
-import {
-  isPermissionGranted,
-  requestPermission,
-  sendNotification,
-} from '@tauri-apps/plugin-notification';
+import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification';
 import { useSettings } from './useSettings.js';
 
 interface UseNotificationsParams {
@@ -319,11 +315,16 @@ export function useNotifications(params: UseNotificationsParams = {}): UseNotifi
 /**
  * Native notification for usage/overage/alert events.
  *
- * Uses the Tauri notification plugin (UNUserNotificationCenter on
- * macOS). Suppressed when Sentinel is frontmost — that's fine for
- * this category because the user is usually away from the app when a
- * 5-hour window hits 95% or an account exhausts overage. Keeping this
- * path preserves the sound integration the plugin already handles.
+ * Routed through the `display_alert_notification` Tauri command so
+ * delivery uses the notification plugin's Rust API and failures land
+ * in ~/.claude-sentinel/app.log. The previous `sendNotification` JS
+ * path fired through the plugin's injected window.Notification shim,
+ * whose constructor cannot propagate errors: a Windows toast failure
+ * (e.g. unregistered AUMID) was invisible. Same plugin backend as
+ * before, so macOS behavior (including the sound and the suppressed-
+ * when-frontmost rule) is unchanged — fine for this category because
+ * the user is usually away from the app when a 5-hour window hits 95%
+ * or an account exhausts overage.
  */
 async function fireNativeStandard(
   title: string,
@@ -333,9 +334,9 @@ async function fireNativeStandard(
   try {
     const granted = await isPermissionGranted();
     if (!granted) return;
-    sendNotification(sound ? { title, body, sound } : { title, body });
+    await invoke('display_alert_notification', { title, body, sound });
   } catch {
-    /* ignore — OS may have denied or plugin is unavailable */
+    /* ignore — OS denied, or the failure is already logged Rust-side */
   }
 }
 
@@ -348,11 +349,13 @@ async function fireNativeStandard(
  * to the matching row. For pending blocks we omit `eventId` because
  * the row isn't persisted until resolve, and the LiveSecurityRow at
  * the top of the Security tab carries the Approve / Deny controls.
- * Fires via the native NSUserNotification bridge so the
+ * Fires via the native NSUserNotification bridge on macOS so the
  * banner carries our app icon + bundle attribution — unlike the old
- * osascript path which showed as "Script Editor". Sound plays through
- * `play_system_sound` (afplay-backed) for the same reason security
- * events bypass the Tauri plugin path historically.
+ * osascript path which showed as "Script Editor"; on Windows/Linux the
+ * same command delivers through the notification plugin (winrt toast /
+ * XDG). Sound plays through `play_system_sound` (afplay-backed, no-op
+ * off macOS) for the same reason security events bypass the Tauri
+ * plugin path historically.
  */
 async function fireNativeSecurity(
   title: string,
@@ -369,7 +372,7 @@ async function fireNativeSecurity(
     if (eventId !== undefined) args.eventId = eventId;
     await invoke('display_os_notification', args);
   } catch {
-    /* bridge unavailable (non-macOS or denied) — silent. */
+    /* denied or delivery failed — failure logged Rust-side. */
   }
   if (sound) {
     try {

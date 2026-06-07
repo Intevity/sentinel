@@ -4,9 +4,18 @@
 // the deprecation noise at the module boundary.
 #![allow(deprecated)]
 
-// Native macOS notification bridge for security events.
+// Native OS notification bridge for security events.
 //
-// Three iterations shipped; here's why the current one looks like it does:
+// Windows / Linux: security events deliver through
+// `tauri-plugin-notification` (winrt toast / XDG). On Windows the
+// AUMID is additionally registered under HKCU so toasts survive a
+// missing Start Menu shortcut — see `init_notification_bundle`.
+// Click-routing reuses the same app-activation side channel as
+// macOS: the `Focused(true)` handler in `main.rs` consumes the
+// stashed row id.
+//
+// macOS: three iterations shipped; here's why the current one looks
+// like it does:
 //
 //   1. `mac-notification-sys` 0.6 — crashed on click in `objc_release`
 //      inside the crate's internal delegate (notify.m:145 even admits
@@ -70,6 +79,10 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, Runtime, Wry};
+use tauri_plugin_notification::NotificationExt;
+
+#[cfg(target_os = "windows")]
+use windows_registry::CURRENT_USER;
 
 #[cfg(target_os = "macos")]
 use std::ptr::NonNull;
@@ -163,8 +176,82 @@ pub fn display_os_notification<R: Runtime>(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, title, body, event_id);
-        Ok(())
+        // Windows / Linux: deliver through the notification plugin
+        // (winrt toast / XDG). Click-routing still works via the same
+        // app-activation side channel macOS uses: stash the row id and
+        // let the `Focused(true)` handler in `main.rs` consume it if
+        // the user activates the app inside the routing window.
+        if let Some(id) = event_id {
+            if let Ok(mut slot) = LAST_NOTIF_EVENT.lock() {
+                *slot = Some((id, Instant::now()));
+            }
+        }
+        match app
+            .notification()
+            .builder()
+            .title(&title)
+            .body(&body)
+            .show()
+        {
+            Ok(()) => {
+                diag_log(&format!(
+                    "delivered (plugin) title={title:?} event_id={event_id:?}"
+                ));
+                Ok(())
+            }
+            Err(e) => {
+                diag_log(&format!("plugin notification failed: {e}"));
+                Err(e.to_string())
+            }
+        }
+    }
+}
+
+/// Usage / overage alert notification, cross-platform via the
+/// notification plugin (NSUserNotification-backed on macOS, winrt
+/// toast on Windows, XDG on Linux). Separate from
+/// `display_os_notification`: alerts carry an optional sound and no
+/// click-routing payload. Failures land in `app.log` — the previous
+/// frontend path (`sendNotification` from the plugin's JS guest)
+/// fired through the injected `window.Notification` shim, whose
+/// constructor cannot propagate errors, so a Windows toast failure
+/// was invisible.
+#[tauri::command]
+pub fn display_alert_notification<R: Runtime>(
+    app: AppHandle<R>,
+    title: String,
+    body: String,
+    sound: Option<String>,
+) -> Result<(), String> {
+    // Settings carry one sound list per platform (ALERT_SOUNDS /
+    // ALERT_SOUNDS_WINDOWS), but a stored name can predate the split —
+    // e.g. the macOS-default "Glass" persisted on a Windows install.
+    // winrt parses unknown names to *silence* (a toast without audio
+    // renders silent, not the default chime), so map them to "Default"
+    // instead. `None` stays silent on purpose — that's the user's
+    // explicit 'None' choice.
+    #[cfg(target_os = "windows")]
+    let sound = sound.map(|s| {
+        use std::str::FromStr;
+        if tauri_winrt_notification::Sound::from_str(&s).is_ok() {
+            s
+        } else {
+            "Default".to_string()
+        }
+    });
+    let mut builder = app.notification().builder().title(&title).body(&body);
+    if let Some(s) = sound.as_deref() {
+        builder = builder.sound(s);
+    }
+    match builder.show() {
+        Ok(()) => {
+            diag_log(&format!("delivered alert title={title:?} sound={sound:?}"));
+            Ok(())
+        }
+        Err(e) => {
+            diag_log(&format!("alert notification failed: {e}"));
+            Err(e.to_string())
+        }
     }
 }
 
@@ -245,9 +332,32 @@ pub fn route_recent_event() {
     let _ = app.emit(DETAILS_EVENT, payload);
 }
 
+/// Register the app's AppUserModelID under
+/// `HKCU\Software\Classes\AppUserModelId` so winrt toasts deliver even
+/// when no Start Menu shortcut carries the AUMID. Both Tauri
+/// installers stamp the AUMID onto the Start Menu shortcut, but an
+/// NSIS↔MSI overlap can leave that shortcut missing (each installer
+/// replaces the other's), and Windows silently drops toasts for
+/// unregistered AUMIDs. The registry entry is the documented
+/// unpackaged-app registration and is independent of shortcut state.
+/// Best-effort: failure is logged, never fatal.
+#[cfg(target_os = "windows")]
+pub fn init_notification_bundle(bundle_id: &str) {
+    let path = format!("Software\\Classes\\AppUserModelId\\{bundle_id}");
+    match CURRENT_USER.create(&path) {
+        Ok(key) => match key.set_string("DisplayName", "Claude Sentinel") {
+            Ok(()) => diag_log(&format!("AUMID registered at HKCU\\{path}")),
+            Err(e) => diag_log(&format!("AUMID DisplayName write failed: {e}")),
+        },
+        Err(e) => diag_log(&format!("AUMID key create failed: {e}")),
+    }
+}
+
 /// Historical shim so call sites don't have to change when the
 /// underlying notification backend shuffles. No-op: NSUserNotification
-/// attributes to the hosting bundle without any private-API swizzle.
+/// attributes to the hosting bundle without any private-API swizzle
+/// (macOS), and XDG needs no registration (Linux).
+#[cfg(not(target_os = "windows"))]
 #[allow(unused_variables)]
 pub fn init_notification_bundle(bundle_id: &str) {}
 
@@ -348,6 +458,12 @@ fn diag_log(msg: &str) {
 }
 
 fn sentinel_dir() -> Option<PathBuf> {
+    // `HOME` doesn't exist on Windows — mirror `app_log::home_dir` so
+    // the diag lines land in the same `~/.claude-sentinel` the daemon
+    // (Node `os.homedir()`) writes to on every platform.
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE")?;
+    #[cfg(not(windows))]
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".claude-sentinel"))
 }
