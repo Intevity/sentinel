@@ -25,6 +25,7 @@ import ContextInventoryPanel from './optimize/ContextInventoryPanel.js';
 import CompressionPanel from './optimize/CompressionPanel.js';
 import ContextPanel from './optimize/ContextPanel.js';
 import { MetricTile } from './optimize/MetricTile.js';
+import InfoModal from './InfoModal.js';
 import { RangeSelector } from './RangeSelector.js';
 import { RANGE_LABELS, windowForRange } from '../lib/dateRange.js';
 import {
@@ -790,22 +791,70 @@ function StickySavingsBar({
         >
           {open ? (
             <div className="flex items-start justify-between gap-4">
-              <button
-                type="button"
-                onClick={() => setOpen(false)}
-                aria-expanded={true}
-                className="min-w-0 text-left"
-                title="Collapse to the thin bar"
-              >
-                <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
-                  <Zap className="h-4 w-4" /> Optimize
-                  <ChevronDown className="h-3.5 w-3.5 text-foreground/55" />
-                </h2>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setOpen(false)}
+                    aria-expanded={true}
+                    className="flex min-w-0 items-center gap-1.5 text-left"
+                    title="Collapse to the thin bar"
+                  >
+                    <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
+                      <Zap className="h-4 w-4" /> Optimize
+                      <ChevronDown className="h-3.5 w-3.5 text-foreground/55" />
+                    </h2>
+                  </button>
+                  {/* Sits outside the collapse button (no nested buttons) so it
+                      explains the numbers without toggling the pane. */}
+                  <InfoModal
+                    title="How savings are measured"
+                    ariaLabel="How are Optimize savings measured?"
+                    size={15}
+                  >
+                    <p>
+                      <strong className="font-semibold text-black dark:text-white">
+                        What this shows.
+                      </strong>{' '}
+                      Sentinel estimates the tokens it keeps out of your requests three ways:
+                      routing routine work to cheaper subagents, compressing tool output in flight,
+                      and moving MCP tool definitions out of context.
+                    </p>
+                    <p>
+                      <strong className="font-semibold text-black dark:text-white">
+                        &ldquo;Saved X of Y.&rdquo;
+                      </strong>{' '}
+                      Y is the original size of the content Sentinel optimized (mostly tool output);
+                      X is how much smaller it made that content. It is a reduction ratio for that
+                      content, not the total tokens you used.
+                    </p>
+                    <p>
+                      <strong className="font-semibold text-black dark:text-white">
+                        Why it looks larger than Metrics.
+                      </strong>{' '}
+                      Claude resends your whole conversation every turn, so anything it has already
+                      seen comes back as cache reads, not new input. The Metrics &ldquo;input&rdquo;
+                      number counts only the new tokens each turn (small); cache reads are the large
+                      part. Optimize counts the optimized content on every turn it is resent, so its
+                      totals sit at the cache-read scale. Both are right; they just count different
+                      things. To compare them on one basis, the footnote under the tiles shows
+                      savings as a share of all input including cached context.
+                    </p>
+                    <p>
+                      <strong className="font-semibold text-black dark:text-white">
+                        Tokens vs cost.
+                      </strong>{' '}
+                      Most saved tokens are cached tokens, billed at a fraction of full price. The
+                      token view adds them at face value; the dollar view already adjusts for the
+                      cache rate, so use it for real money saved.
+                    </p>
+                  </InfoModal>
+                </div>
                 <p className="mt-0.5 text-xs text-foreground/60">
                   Cut token costs by routing routine work to cheaper-model subagents, compressing
                   tool output in flight, and moving MCP tool definitions out of context.
                 </p>
-              </button>
+              </div>
               <UnitsToggle units={units} onChange={onToggleUnits} />
             </div>
           ) : (
