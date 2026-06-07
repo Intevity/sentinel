@@ -237,6 +237,11 @@ export class OtelReceiver {
       const payload = JSON.parse(body.toString('utf-8')) as OtelMetricsBody;
       this.wroteInBatch = false;
       this.processMetrics(payload);
+      // [OTEL-DIAG] temporary; remove before merging to main.
+      console.log(
+        `[OTEL-DIAG] /v1/metrics ${body.length}B ct=${contentType} ` +
+          `wrote=${this.wroteInBatch} active=${this.activeAccountId?.value ?? '-'}`,
+      );
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('{}');
       if (this.wroteInBatch) {
@@ -266,6 +271,11 @@ export class OtelReceiver {
       const payload = JSON.parse(body.toString('utf-8')) as OtelLogsBody;
       this.wroteInBatch = false;
       this.processLogs(payload);
+      // [OTEL-DIAG] temporary; remove before merging to main.
+      console.log(
+        `[OTEL-DIAG] /v1/logs ${body.length}B ct=${contentType} ` +
+          `wrote=${this.wroteInBatch} active=${this.activeAccountId?.value ?? '-'}`,
+      );
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('{}');
       if (this.wroteInBatch) {
@@ -281,12 +291,14 @@ export class OtelReceiver {
   }
 
   private processMetrics(payload: OtelMetricsBody): void {
+    const diagNames: string[] = []; // [OTEL-DIAG]
     /* v8 ignore next 1 */
     for (const rm of payload.resourceMetrics ?? []) {
       /* v8 ignore next 1 */
       for (const sm of rm.scopeMetrics ?? []) {
         /* v8 ignore next 1 */
         for (const metric of sm.metrics ?? []) {
+          diagNames.push(metric.name); // [OTEL-DIAG]
           /* v8 ignore next 1 */
           const dataPoints = metric.sum?.dataPoints ?? metric.gauge?.dataPoints ?? [];
           for (const dp of dataPoints) {
@@ -300,6 +312,10 @@ export class OtelReceiver {
           }
         }
       }
+    }
+    // [OTEL-DIAG] temporary; remove before merging to main.
+    if (diagNames.length) {
+      console.log(`[OTEL-DIAG] metric names=${JSON.stringify(diagNames)}`);
     }
   }
 
@@ -387,6 +403,7 @@ export class OtelReceiver {
   }
 
   private processLogs(payload: OtelLogsBody): void {
+    const diagEvents: string[] = []; // [OTEL-DIAG]
     /* v8 ignore next 3 */
     for (const rl of payload.resourceLogs ?? []) {
       for (const sl of rl.scopeLogs ?? []) {
@@ -397,9 +414,14 @@ export class OtelReceiver {
           // match whichever wire format Claude Code happens to use.
           const rawName = lr.eventName ?? (attrs['event.name'] as string | undefined);
           const eventName = normalizeEventName(rawName);
+          diagEvents.push(rawName ?? '(none)'); // [OTEL-DIAG]
           this.handleLogRecord(eventName, lr, attrs);
         }
       }
+    }
+    // [OTEL-DIAG] temporary; remove before merging to main.
+    if (diagEvents.length) {
+      console.log(`[OTEL-DIAG] log events=${JSON.stringify(diagEvents)}`);
     }
   }
 

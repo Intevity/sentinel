@@ -10,6 +10,7 @@ import {
   getDb,
   closeDb,
   insertToolCall,
+  insertOptimizationEvent,
   upsertSubagentInstall,
   getOptimizationMetrics,
   listRecentOptimizationEvents,
@@ -1193,5 +1194,118 @@ describe('analyzer diagnostic logging', () => {
     expect(cross.length).toBe(1);
     expect(cross[0]?.curatedId).toBe('file-explorer');
     expect(cross[0]?.sessionId).toBeNull();
+  });
+});
+
+describe('getOptimizationMetrics — beneficial gate keeps headline tiles non-negative', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB;
+    db = getDb(TMP_DB);
+    db.exec(
+      'DELETE FROM tool_calls; DELETE FROM optimization_events; DELETE FROM subagent_installs',
+    );
+  });
+  afterEach(() => {
+    closeDb();
+    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    try {
+      unlinkSync(TMP_DB);
+    } catch {
+      /* ignore */
+    }
+  });
+
+  /** Measured-row fixture; only the fields under test vary. */
+  const row = (over: {
+    ts: number;
+    curatedId?: string;
+    savingsUsd: number;
+    hypotheticalTotalTokens: number | null;
+  }): Parameters<typeof insertOptimizationEvent>[1] => ({
+    ts: over.ts,
+    accountId: 'a1',
+    sessionId: 's1',
+    curatedId: over.curatedId ?? 'file-explorer',
+    kind: 'measured',
+    pattern: 'short_turn_after_large_read',
+    savingsUsd: over.savingsUsd,
+    actualInputTokens: 10_000,
+    actualCachedTokens: 0,
+    actualCostUsd: 1.0,
+    hypotheticalCostUsd: 1.0 - over.savingsUsd,
+    hypotheticalTotalTokens: over.hypotheticalTotalTokens,
+    sourceToolCallIds: [],
+  });
+
+  it('excludes a row that is non-positive in both units from every bucket and the opportunity count', () => {
+    const t = Date.now();
+    // file-explorer digest=500 ⇒ tokens = 800 − 2×500 = −200; usd −0.02.
+    insertOptimizationEvent(db, row({ ts: t, savingsUsd: -0.02, hypotheticalTotalTokens: 800 }));
+    const m = getOptimizationMetrics(db);
+    expect(m.totals.opportunities).toBe(0);
+    expect(m.totals.tokensPotential).toBe(0);
+    expect(m.totals.savingsUsdPotential).toBe(0);
+    expect(m.daily).toEqual([]); // gated rows never create chart buckets
+    expect(m.bySubagent).toEqual([]);
+    expect(m.byPattern).toEqual([]);
+  });
+
+  it('counts a token-positive row with noise-band negative dollars: tokens kept, dollars floored at $0', () => {
+    const t = Date.now();
+    // tokens = 8000 − 2×500 = +7000; usd −0.004 (cache-read-dominated noise).
+    insertOptimizationEvent(db, row({ ts: t, savingsUsd: -0.004, hypotheticalTotalTokens: 8000 }));
+    const m = getOptimizationMetrics(db);
+    expect(m.totals.opportunities).toBe(1);
+    expect(m.totals.tokensPotential).toBe(7000);
+    expect(m.totals.savingsUsdPotential).toBe(0);
+    const fe = m.bySubagent.find((s) => s.curatedId === 'file-explorer');
+    expect(fe?.tokensPotential).toBe(7000);
+    expect(fe?.savingsPotential).toBe(0);
+    expect(fe?.opportunities).toBe(1);
+  });
+
+  it('counts a realized dollar-positive but token-negative row on dollars alone, keeping it out of the % denominator', () => {
+    const t = Date.now();
+    upsertSubagentInstall(db, {
+      name: 'file-explorer',
+      source: 'curated',
+      curatedId: 'file-explorer',
+      gapFingerprint: null,
+      mdPath: '/tmp/fe.md',
+      mdHash: 'h',
+      installedAt: t - 60_000,
+    });
+    // tokens = 600 − 2×500 = −400 (clamped to 0); usd +0.05 keeps the row.
+    insertOptimizationEvent(db, row({ ts: t, savingsUsd: 0.05, hypotheticalTotalTokens: 600 }));
+    const m = getOptimizationMetrics(db);
+    expect(m.totals.opportunities).toBe(1);
+    expect(m.totals.savingsUsdRealized).toBeCloseTo(0.05, 10);
+    expect(m.totals.tokensRealized).toBe(0);
+    expect(m.totals.hypotheticalInputTokens).toBe(0); // no tokens in the numerator ⇒ none in the denominator
+  });
+
+  it('counts a legacy NULL-token row on dollars alone', () => {
+    const t = Date.now();
+    insertOptimizationEvent(db, row({ ts: t, savingsUsd: 0.25, hypotheticalTotalTokens: null }));
+    const m = getOptimizationMetrics(db);
+    expect(m.totals.opportunities).toBe(1);
+    expect(m.totals.savingsUsdPotential).toBeCloseTo(0.25, 10);
+    expect(m.totals.tokensPotential).toBe(0);
+    expect(m.totals.hypotheticalInputTokens).toBe(0);
+  });
+
+  it('never reports negative totals when misfit rows dominate the window (the -352k tile bug)', () => {
+    const t = Date.now();
+    insertOptimizationEvent(db, row({ ts: t, savingsUsd: 0.1, hypotheticalTotalTokens: 8000 }));
+    insertOptimizationEvent(db, row({ ts: t, savingsUsd: -0.5, hypotheticalTotalTokens: 600 }));
+    insertOptimizationEvent(db, row({ ts: t, savingsUsd: -0.5, hypotheticalTotalTokens: 700 }));
+    const m = getOptimizationMetrics(db);
+    expect(m.totals.tokensPotential).toBe(7000); // only the beneficial row
+    expect(m.totals.savingsUsdPotential).toBeCloseTo(0.1, 10);
+    expect(m.totals.opportunities).toBe(1);
+    expect(m.totals.tokensPotential).toBeGreaterThanOrEqual(0);
+    expect(m.totals.savingsUsdPotential).toBeGreaterThanOrEqual(0);
   });
 });

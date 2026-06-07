@@ -24,7 +24,16 @@ export function readClaudeState(filePath: string = getClaudeJsonPath()): ClaudeS
     return {};
   }
   const raw = readFileSync(filePath, 'utf-8');
-  return JSON.parse(raw) as ClaudeState;
+  try {
+    return JSON.parse(raw) as ClaudeState;
+  } catch (err) {
+    // A corrupt ~/.claude.json must not take down callers: before this guard,
+    // the parse error propagated into the IPC dispatch, was swallowed there,
+    // and the UI saw only a request timeout ("refresh failed") with no account
+    // list. Degrade to empty state and leave a diagnosable trail instead.
+    console.warn(`[ClaudeState] ${filePath} is not valid JSON; treating as empty:`, err);
+    return {};
+  }
 }
 
 /**

@@ -9,7 +9,15 @@
  * change values here, mirror them there too.
  */
 
-export const SENTINEL_BASE_URL = 'http://localhost:47284';
+// Literal IPv4 loopback, NOT `localhost`. Claude Code's OTLP-HTTP exporter
+// uses Node's raw `http.request`, which has no Happy-Eyeballs fallback: on
+// Windows `localhost` frequently resolves to `::1` first, and the daemon binds
+// IPv4-only (`127.0.0.1`, see index.ts), so an exporter aimed at `localhost`
+// hits `[::1]:47284` → ECONNREFUSED and metrics silently never arrive. The
+// proxy survives the same URL because the Anthropic SDK uses fetch/undici,
+// which does try both families. Pinning the address removes the DNS step for
+// both signals on every platform.
+export const SENTINEL_BASE_URL = 'http://127.0.0.1:47284';
 
 /** Eight managed env keys with the exact values Sentinel writes. Order
  *  is preserved so the on-disk file is stable across runs (helps with
@@ -54,6 +62,27 @@ export function isUrlSafeForForwarder(url: string): boolean {
     const u = new URL(url);
     const host = u.hostname.toLowerCase();
     return u.protocol === 'https:' || (u.protocol === 'http:' && LOOPBACK_HOSTS.has(host));
+  } catch {
+    return false;
+  }
+}
+
+/** True when `url` points at Sentinel's own local OTLP receiver — i.e. any
+ *  loopback host form (localhost / 127.0.0.1 / ::1) on our port over http.
+ *  Drift detection uses this instead of an exact `=== SENTINEL_BASE_URL`
+ *  match so a settings file still carrying the older `http://localhost:47284`
+ *  value is recognized as ours (not a foreign endpoint) after SENTINEL_BASE_URL
+ *  moved to the literal IPv4 address. Re-activation then normalizes the
+ *  on-disk value to 127.0.0.1. */
+export function isSentinelEndpoint(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    return (
+      u.protocol === 'http:' &&
+      LOOPBACK_HOSTS.has(u.hostname.toLowerCase()) &&
+      u.port === new URL(SENTINEL_BASE_URL).port
+    );
   } catch {
     return false;
   }

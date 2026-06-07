@@ -92,21 +92,39 @@ export function captureCurrentCredentials(accountKey: string): ClaudeCodeCredent
       // CC's keychain slot doesn't include subscriptionType / rateLimitTier.
       // Preserve those fields from Sentinel's existing entry so a refresh call
       // doesn't clobber the plan information stored by the OAuth flow.
-      if (!creds.subscriptionType || !creds.rateLimitTier) {
-        const existing = readSentinelCredentials(accountKey);
-        if (existing?.subscriptionType && !creds.subscriptionType) {
-          creds.subscriptionType = existing.subscriptionType;
-        }
-        if (existing?.rateLimitTier && !creds.rateLimitTier) {
-          creds.rateLimitTier = existing.rateLimitTier;
-        }
+      const existing = readSentinelCredentials(accountKey);
+      if (existing?.subscriptionType && !creds.subscriptionType) {
+        creds.subscriptionType = existing.subscriptionType;
       }
-      writeSentinelCredentials(accountKey, creds);
+      if (existing?.rateLimitTier && !creds.rateLimitTier) {
+        creds.rateLimitTier = existing.rateLimitTier;
+      }
+      // Skip the store write when nothing changed. On Windows every write
+      // costs two synchronous PowerShell/DPAPI spawns (re-decrypt + encrypt)
+      // that block the daemon's event loop — refresh_accounts runs this on
+      // every UI refresh, and on a cold VM the spawns alone could push the
+      // IPC response past the app's request timeout.
+      if (!existing || !sameCredentials(existing, creds)) {
+        writeSentinelCredentials(accountKey, creds);
+      }
     }
     return creds;
   } catch {
     return null;
   }
+}
+
+/** Top-level-key-order-insensitive equality for credential blobs. `existing`
+ *  round-trips through the on-disk store while `creds` is freshly parsed from
+ *  CC's slot, so key order can differ even when content is identical. */
+function sameCredentials(a: ClaudeCodeCredentials, b: ClaudeCodeCredentials): boolean {
+  const ar = a as unknown as Record<string, unknown>;
+  const br = b as unknown as Record<string, unknown>;
+  const keys = new Set([...Object.keys(ar), ...Object.keys(br)]);
+  for (const k of keys) {
+    if (JSON.stringify(ar[k]) !== JSON.stringify(br[k])) return false;
+  }
+  return true;
 }
 
 /**
@@ -363,11 +381,18 @@ function runPowerShell(scriptUtf16leB64: string, inputB64: string): string {
 
 function dpapiProtect(plaintext: string): string {
   const b64 = Buffer.from(plaintext, 'utf-8').toString('base64');
-  return runPowerShell(DPAPI_PROTECT_B64, b64).trim();
+  const startedAt = Date.now();
+  const out = runPowerShell(DPAPI_PROTECT_B64, b64).trim();
+  // Spawn timing is the key Windows diagnostic: each call synchronously
+  // blocks the daemon's event loop for the full PowerShell startup cost.
+  console.log(`[Keychain] dpapi protect (${Date.now() - startedAt}ms)`);
+  return out;
 }
 
 function dpapiUnprotect(cipherB64: string): string {
+  const startedAt = Date.now();
   const b64 = runPowerShell(DPAPI_UNPROTECT_B64, cipherB64).trim();
+  console.log(`[Keychain] dpapi unprotect (${Date.now() - startedAt}ms)`);
   return Buffer.from(b64, 'base64').toString('utf-8');
 }
 

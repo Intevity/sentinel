@@ -69,7 +69,7 @@ import {
   loadSettingsWithTamper,
   updateSettings as writeSettings,
 } from './settings.js';
-import { IpcServer } from './ipc.js';
+import { IpcServer, IPC_PATH } from './ipc.js';
 import { OtelReceiver } from './otel-receiver.js';
 import { OtelForwarder } from './otel-forwarder.js';
 import { OtelEmitter } from './otel-emitter.js';
@@ -108,7 +108,7 @@ import {
   parseOtlpHeaders,
   pickAuthHeader,
 } from './otel-settings-drift.js';
-import { isUrlSafeForForwarder } from './claude-otel-config.js';
+import { isUrlSafeForForwarder, SENTINEL_BASE_URL } from './claude-otel-config.js';
 import { createAgentsSyncEngine } from './optimize/agents-sync.js';
 import { getCuratedLibrary, getCuratedSubagent } from './optimize/curated-library.js';
 import { createOptimizationAnalyzer } from './optimize/optimization-analyzer.js';
@@ -375,6 +375,11 @@ const DAEMON_STARTED_AT = Date.now();
 export interface DaemonHandle {
   httpServer: Server;
   ipcServer: IpcServer;
+  /** Resolves when the deferred startup credential reconciliation (org-drift
+   *  verify + heal, both network-bound) has finished. Runs in the background
+   *  after the IPC server starts; exposed so tests can await it
+   *  deterministically. Never rejects — failures are logged and swallowed. */
+  startupReconciliation: Promise<void>;
   /** Close everything started by startDaemon(). Idempotent; safe to call
    *  multiple times. Does NOT call process.exit — the caller decides. */
   shutdown: () => Promise<void>;
@@ -403,6 +408,14 @@ export async function startDaemon(): Promise<DaemonHandle> {
   log.installConsolePatch();
 
   console.log('[Sentinel] Starting daemon v0.1.0...');
+  // Environment banner: first line of every session in daemon.log so a log
+  // captured from any OS/VM immediately identifies the platform, runtime,
+  // and resolved paths without back-and-forth.
+  console.log(
+    `[Sentinel] env platform=${process.platform} arch=${process.arch} ` +
+      `node=${process.versions.node} pid=${process.pid} home=${homedir()} ` +
+      `ipc=${process.env.CLAUDE_SENTINEL_TEST_IPC_SOCKET ?? IPC_PATH}`,
+  );
 
   // Shared across this startup closure: set to true once shutdown() begins so
   // async background callbacks (usage poll → subscriber → DB read, claude-sync
@@ -444,30 +457,15 @@ export async function startDaemon(): Promise<DaemonHandle> {
     : null;
   let startupCreds = startupKey ? captureCurrentCredentials(startupKey) : null;
 
-  // Verify the captured credential actually matches the org ~/.claude.json
-  // claims. Claude Code refreshes its keychain token silently (potentially
-  // re-binding the token to a different "active" org) without always updating
-  // ~/.claude.json in lockstep. When the two drift, blindly seeding a row
-  // keyed by the JSON's orgUuid creates a phantom row whose stored token is
-  // scoped to a DIFFERENT org — the root cause of Sentinel showing duplicate
-  // "Max" accounts with identical usage numbers. See credential-verifier.ts.
-  const drift = await verifyStartupActiveAccount(activeAccount, startupCreds, {
-    readCredentials: readSentinelCredentials,
-  });
-  // Drift-realign path fires only when the token's profile org_uuid doesn't
-  // match ~/.claude.json's claim. The fake always returns the default profile
-  // UUIDs, and seeding a mismatching ~/.claude.json would require a custom
-  // profile per test. credential-verifier.test.ts owns full drift-path
-  // coverage; this branch is the wiring glue.
-  /* v8 ignore start */
-  if (drift?.drifted) {
-    activeAccount = drift.activeAccount;
-    startupKey = drift.startupKey;
-    // Re-capture under the corrected key so the credential is accessible
-    // under the new row id.
-    startupCreds = captureCurrentCredentials(startupKey);
-  }
-  /* v8 ignore stop */
+  // NOTE: verifying the captured credential against the token's actual org
+  // (verifyStartupActiveAccount) and healing org-drifted rows happen in the
+  // deferred reconciliation AFTER ipcServer.start() — see
+  // "Startup credential reconciliation" below. Both call fetchProfile (real
+  // outbound HTTPS); when they ran here, a slow first connection on a cold VM
+  // delayed creation of the IPC pipe past the app's request timeout, so the
+  // UI's first refresh_accounts died with "Refresh failed" and an empty
+  // account list (observed on Windows). The optimistic seed below is local
+  // and fast; drift is rare and self-corrects via broadcast moments later.
 
   if (activeAccount && startupKey) {
     // Preserve planType from the existing DB entry rather than re-deriving it from
@@ -547,15 +545,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     }
   }
 
-  // Self-heal rows whose stored credentials no longer match their row's
-  // orgUuid. Regression fix for the duplicate-Max scenario — see
-  // credential-verifier.ts#healDriftedRows for the full rationale.
-  {
-    const drifted = await healDriftedRows(db, { readCredentials: readSentinelCredentials });
-    if (drifted > 0) {
-      console.log(`[Startup] Soft-removed ${drifted} row(s) with org-drifted credentials`);
-    }
-  }
+  // (healDriftedRows also moved into the deferred reconciliation below.)
 
   // Shared token reference — mutated on account switch, read by the proxy
   const activeToken: ActiveToken = { value: null };
@@ -564,6 +554,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
 
   // Seed the active token from keychain on startup
   if (startupCreds) activeToken.value = startupCreds.accessToken;
+  console.log(
+    `[Startup] local account seed complete (key=${startupKey ?? 'none'}, creds=${
+      startupCreds ? 'present' : 'absent'
+    })`,
+  );
 
   const ipcServer = new IpcServer();
 
@@ -1353,6 +1348,17 @@ export async function startDaemon(): Promise<DaemonHandle> {
           byDayModel: getCacheTtlByDayModel(db, keys, days, win),
           bySession: getCacheTtlBySession(db, keys, days, 50, win),
         };
+
+        // [OTEL-DIAG] Temporary: compare the query's account filter + window to
+        // what the receiver stored — settles "written but not shown" (attribution
+        // or day-window mismatch). Remove before merging to main.
+        console.log(
+          `[OTEL-DIAG] get_metrics_summary keys=${JSON.stringify(keys)} days=${days} ` +
+            `win=${win ? JSON.stringify(win) : '-'} ` +
+            `byDayModelDays=${Object.keys(byDayModel).length} ` +
+            `errorDays=${Object.keys(errors.byDay).length} tools=${tools.length} ` +
+            `activityDays=${Object.keys(perDayCounters).length}`,
+        );
 
         // Reshape per-day counters into the flat per-kind records the UI wants.
         const sessionsPerDay: Record<string, number> = {};
@@ -3471,8 +3477,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // engine alive to detect orphans, hand-edits, and to support
   // uninstall. The engine is lightweight when AGENTS_DIR is empty.
   const agentsSyncEngine = createAgentsSyncEngine({ db, ipcServer });
+  const agentsSyncStartedAt = Date.now();
   try {
     await agentsSyncEngine.start();
+    console.log(`[Startup] agents-sync engine started (${Date.now() - agentsSyncStartedAt}ms)`);
   } catch (err) {
     /* v8 ignore next 2 */
     console.error('[AgentsSync] initial start failed:', err);
@@ -3499,6 +3507,76 @@ export async function startDaemon(): Promise<DaemonHandle> {
   } else {
     console.log('[Sentinel] IPC server started (UNAUTHENTICATED — dev mode)');
   }
+
+  // Startup credential reconciliation — deliberately deferred to AFTER the
+  // IPC server is listening. verifyStartupActiveAccount and healDriftedRows
+  // both call fetchProfile (real outbound HTTPS, bounded but still seconds
+  // when slow); when they gated startup, the IPC pipe didn't exist yet when
+  // the UI mounted and its first refresh_accounts timed out ("Refresh
+  // failed", empty account list — observed on Windows VMs). The optimistic
+  // local seed already populated the DB; these only correct rare org-drift
+  // after the fact and broadcast so the UI refetches.
+  const startupReconciliation = (async () => {
+    try {
+      console.log('[Startup] background credential reconciliation starting');
+      const reconStartedAt = Date.now();
+      const drift = await verifyStartupActiveAccount(activeAccount, startupCreds, {
+        readCredentials: readSentinelCredentials,
+      });
+      /* v8 ignore next 1 -- shutdown race guard; exercised only when a test tears down mid-reconcile */
+      if (shuttingDown) return;
+      // Drift realign: same correction the old pre-seed inline branch made,
+      // plus cleanup of the stale optimistic row that now already exists
+      // (keyed by the JSON file's wrong org). credential-verifier.test.ts
+      // owns full drift-path coverage; this branch is wiring glue.
+      /* v8 ignore start */
+      if (drift?.drifted && startupKey) {
+        const staleKey = startupKey;
+        activeAccount = drift.activeAccount;
+        startupKey = drift.startupKey;
+        // Re-capture under the corrected key so the credential is accessible
+        // under the new row id.
+        startupCreds = captureCurrentCredentials(startupKey);
+        if (startupCreds) activeToken.value = startupCreds.accessToken;
+        activeAccountId.value = startupKey;
+        const existingAcct = listAccounts(db).find((a) => a.id === startupKey);
+        upsertAccount(db, {
+          id: startupKey,
+          accountUuid: activeAccount.accountUuid,
+          email: activeAccount.emailAddress,
+          displayName: activeAccount.displayName ?? '',
+          orgUuid: activeAccount.organizationUuid ?? '',
+          orgName: activeAccount.organizationName ?? '',
+          planType: existingAcct?.planType ?? inferPlanType(activeAccount, startupCreds),
+          isActive: true,
+          createdAt: Date.now(),
+          color: existingAcct?.color ?? null,
+        });
+        if (staleKey !== startupKey) deleteAccount(db, staleKey);
+        if (startupKey !== activeAccount.accountUuid) deleteAccount(db, activeAccount.accountUuid);
+        ipcServer.broadcast({ type: 'account_switched', to: activeAccount });
+      }
+      /* v8 ignore stop */
+
+      // Self-heal rows whose stored credentials no longer match their row's
+      // orgUuid. Regression fix for the duplicate-Max scenario — see
+      // credential-verifier.ts#healDriftedRows for the full rationale.
+      const drifted = await healDriftedRows(db, { readCredentials: readSentinelCredentials });
+      /* v8 ignore next 1 -- shutdown race guard; exercised only when a test tears down mid-reconcile */
+      if (shuttingDown) return;
+      if (drifted > 0) {
+        console.log(`[Startup] Soft-removed ${drifted} row(s) with org-drifted credentials`);
+        /* v8 ignore next 1 -- broadcast nudge; UI refetch is covered by hook tests */
+        if (activeAccount) ipcServer.broadcast({ type: 'account_switched', to: activeAccount });
+      }
+      console.log(
+        `[Startup] background credential reconciliation done (${Date.now() - reconStartedAt}ms)`,
+      );
+    } catch (err) {
+      /* v8 ignore next 2 */
+      console.error('[Startup] credential reconciliation failed:', err);
+    }
+  })();
 
   // Start the OTEL drift watcher after the IPC server is up. Placed
   // here so it doesn't shift the event-loop scheduling between the
@@ -3625,6 +3703,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
     },
     (req, res) => {
       const url = req.url ?? '/';
+      // [OTEL-DIAG] Temporary: log every OTLP request reaching the receiver so
+      // we can tell on Windows whether Claude Code's exporter connects at all
+      // (settles "never arrived" vs "arrived but wrote nothing"). Remove before
+      // merging to main.
+      console.log(
+        `[OTEL-DIAG] OTLP ${req.method ?? '?'} ${url} ` +
+          `ct=${req.headers['content-type'] ?? '-'} ` +
+          `ce=${req.headers['content-encoding'] ?? '-'} ` +
+          `len=${req.headers['content-length'] ?? '-'}`,
+      );
       if (url.startsWith('/v1/metrics')) {
         return otelReceiver.handleMetrics(req, res);
       }
@@ -3664,6 +3752,13 @@ export async function startDaemon(): Promise<DaemonHandle> {
       /* v8 ignore next -- prod leaves the env var unset, making this a no-op */
       if (inTestMode) process.env.CLAUDE_SENTINEL_TEST_DAEMON_PORT = String(boundPort);
       console.log(`[Sentinel] HTTP proxy listening on http://127.0.0.1:${boundPort}`);
+      // [OTEL-DIAG] Temporary: confirm the platform-resolved paths + bound
+      // address the receiver writes to / reads from. Remove before merging.
+      console.log(
+        `[OTEL-DIAG] startup platform=${process.platform} homedir=${homedir()} ` +
+          `db=${join(homedir(), '.claude-sentinel', 'sentinel.db')} ` +
+          `listen=127.0.0.1:${boundPort} endpoint=${SENTINEL_BASE_URL}`,
+      );
       // Probe for fresh rate-limit headers through the proxy now that it is ready.
       // The proxy injects the active OAuth token, so this works even for accounts
       // whose tokens cannot be used to call api.anthropic.com directly.
@@ -3813,5 +3908,5 @@ export async function startDaemon(): Promise<DaemonHandle> {
     closeContextCostStore();
   };
 
-  return { httpServer, ipcServer, shutdown };
+  return { httpServer, ipcServer, startupReconciliation, shutdown };
 }

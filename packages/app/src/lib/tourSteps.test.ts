@@ -20,8 +20,8 @@ describe('TOUR_STEPS', () => {
     expect(TOUR_STEPS[0]?.title.toLowerCase()).toMatch(/welcome/);
   });
 
-  it('declares a 5-step core track ahead of the power-user track', () => {
-    expect(CORE_STEP_COUNT).toBe(5);
+  it('declares a 6-step core track ahead of the power-user track', () => {
+    expect(CORE_STEP_COUNT).toBe(6);
     for (let i = 0; i < CORE_STEP_COUNT; i++) {
       expect(TOUR_STEPS[i]?.track).toBe('core');
     }
@@ -30,28 +30,37 @@ describe('TOUR_STEPS', () => {
     }
   });
 
-  it('covers the core feature pillars: accounts, round-robin, security, alerts', () => {
+  it('covers the core feature pillars: accounts, round-robin, optimize, security, alerts', () => {
     const coreIds = TOUR_STEPS.slice(0, CORE_STEP_COUNT).map((s) => s.targetId);
     expect(coreIds).toContain('add-account');
     expect(coreIds).toContain('switching-mode');
+    expect(coreIds).toContain('tab-optimize');
     expect(coreIds).toContain('tab-security');
     expect(coreIds).toContain('tab-notifications');
   });
 
-  it('includes power-user steps for optimize, permissions, budget, metrics, and replay', () => {
+  it('promotes Optimize to a core step, placed right before Security, covering subagents, compression, and context', () => {
+    const opt = TOUR_STEPS.find((s) => s.targetId === 'tab-optimize');
+    expect(opt?.track).toBe('core');
+    const body = opt?.body.toLowerCase() ?? '';
+    expect(body).toMatch(/subagent/);
+    expect(body).toMatch(/compress/);
+    expect(body).toMatch(/context/);
+    const ids = TOUR_STEPS.map((s) => s.targetId);
+    expect(ids.indexOf('tab-optimize')).toBe(ids.indexOf('tab-security') - 1);
+  });
+
+  it('includes power-user steps for budget, metrics, and replay', () => {
     const powerSteps = TOUR_STEPS.filter((s) => s.track === 'power');
-    expect(powerSteps.length).toBe(5);
+    expect(powerSteps.length).toBe(3);
     const powerTitles = powerSteps.map((s) => s.title.toLowerCase()).join(' | ');
-    expect(powerTitles).toMatch(/subagent|optimize|cost/);
-    expect(powerTitles).toMatch(/permission/);
     expect(powerTitles).toMatch(/budget/);
     expect(powerTitles).toMatch(/metric/);
     expect(powerTitles).toMatch(/replay/);
   });
 
-  it('targets the header shield for permissions and the metrics tab for telemetry', () => {
+  it('targets the metrics tab for telemetry', () => {
     const ids = TOUR_STEPS.map((s) => s.targetId);
-    expect(ids).toContain('tour-permissions');
     expect(ids).toContain('tab-metrics');
   });
 
@@ -88,20 +97,19 @@ describe('TOUR_STEPS', () => {
     }
   });
 
-  it('describes the unified security vocabulary (Mute, Always allow, pinned approval row)', () => {
+  it('folds the permission-rules vocabulary into the merged Security step (Mute, Always allow, Approve, held approval)', () => {
     const securityStep = TOUR_STEPS.find((s) => s.targetId === 'tab-security');
     expect(securityStep).toBeDefined();
-    // The Security tab step should mention the action vocabulary so
-    // first-run users learn the difference between Mute (observe-only
-    // findings) and Always allow (blocks they want to bypass).
+    // Security and permission rules are now one step, so its body must carry
+    // both vocabularies: Mute (observe-only findings) and Always allow
+    // (blocks to bypass), plus the held-for-approval flow that used to live
+    // in the standalone permissions step.
     expect(securityStep?.body).toMatch(/Mute/);
     expect(securityStep?.body).toMatch(/Always allow/);
+    expect(securityStep?.body).toMatch(/Approve/);
+    expect(securityStep?.body).toMatch(/(once|for session|always)/i);
 
-    const permissionsStep = TOUR_STEPS.find((s) => s.targetId === 'tour-permissions');
-    expect(permissionsStep).toBeDefined();
-    // The permissions step should describe that every block now holds
-    // for approval (no more "block immediately" path).
-    expect(permissionsStep?.body).toMatch(/Approve/);
-    expect(permissionsStep?.body).toMatch(/(once|for session|always)/i);
+    // The standalone permissions step is gone; nothing should target it.
+    expect(TOUR_STEPS.some((s) => s.targetId === 'tour-permissions')).toBe(false);
   });
 });

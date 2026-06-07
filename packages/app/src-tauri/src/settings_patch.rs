@@ -27,7 +27,11 @@ const MANAGED_KEYS: &[&str] = &[
     "OTEL_LOGS_EXPORT_INTERVAL",
 ];
 
-const SENTINEL_BASE_URL: &str = "http://localhost:47284";
+// Literal IPv4 loopback, NOT `localhost` — must match SENTINEL_BASE_URL in
+// packages/daemon/src/claude-otel-config.ts. Claude Code's OTLP-HTTP exporter
+// (raw http.request, no Happy-Eyeballs) resolves `localhost` to `::1` first on
+// Windows and never reaches the IPv4-only daemon; pinning the address fixes it.
+const SENTINEL_BASE_URL: &str = "http://127.0.0.1:47284";
 
 /// Resolve the user's home directory OS-correctly. Windows exposes it as
 /// `USERPROFILE` (`HOME` is normally unset there); Unix uses `HOME`. Kept a

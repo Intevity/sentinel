@@ -45,6 +45,7 @@ import { usePendingSecurityBlocks } from './hooks/usePendingSecurityBlocks.js';
 import UpdateModal from './components/UpdateModal.js';
 import AuditTamperBanner from './components/AuditTamperBanner.js';
 import Footer from './components/Footer.js';
+import sentinelMascot from './assets/sentinelMascot.png';
 import { useAutoResizeWindow } from './hooks/useAutoResizeWindow.js';
 import { useDaemon } from './hooks/useDaemon.js';
 import { useDaemonErrors } from './hooks/useDaemonErrors.js';
@@ -336,16 +337,15 @@ export default function App(): React.ReactElement {
           hover tooltip with the full address. */}
         <header className="flex items-center gap-3 px-4 pt-3 pb-2">
           <div className="flex items-center gap-2 flex-shrink-0">
-            <span className="relative flex h-2 w-2">
-              {connected && (
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-ios-green opacity-50" />
-              )}
-              <span
-                className={`relative inline-flex rounded-full h-2 w-2 ${
-                  connected ? 'bg-ios-green' : 'bg-muted/40'
-                }`}
-              />
-            </span>
+            {/* Mascot doubles as the daemon-connection indicator the old
+                status dot carried: full color while connected, dimmed
+                grayscale when the daemon is unreachable. */}
+            <img
+              src={sentinelMascot}
+              alt=""
+              className={`h-6 w-auto flex-shrink-0 ${connected ? '' : 'opacity-40 grayscale'}`}
+              title={connected ? undefined : 'Daemon disconnected'}
+            />
             <span className="text-[15px] font-semibold text-black dark:text-white tracking-tight">
               Sentinel
             </span>

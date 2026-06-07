@@ -68,10 +68,22 @@ async fn connect_stream() -> std::io::Result<DaemonStream> {
 /// Retries with back-off if the daemon is not yet running.
 pub async fn connect_daemon(app: AppHandle) {
     let mut backoff_ms = 500u64;
+    let mut failed_attempts = 0u32;
 
     loop {
         match connect_stream().await {
             Ok(stream) => {
+                // Connection-state transitions land in app.log so a captured
+                // log shows exactly when (and after how many retries) the
+                // app first reached the daemon's pipe/socket.
+                if failed_attempts > 0 {
+                    crate::app_log::app_log(&format!(
+                        "ipc connected after {failed_attempts} failed attempt(s)"
+                    ));
+                } else {
+                    crate::app_log::app_log("ipc connected on first attempt");
+                }
+                failed_attempts = 0;
                 backoff_ms = 500;
                 let (reader, mut writer) = tokio::io::split(stream);
 
@@ -165,9 +177,21 @@ pub async fn connect_daemon(app: AppHandle) {
                     pending.clear();
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                failed_attempts += 1;
+                // First failure and every 10th land in app.log — enough to
+                // see the retry cadence without flooding the file when the
+                // daemon never comes up.
+                if failed_attempts == 1 || failed_attempts % 10 == 0 {
+                    crate::app_log::app_log(&format!(
+                        "ipc connect attempt {failed_attempts} failed ({e}); retrying in {backoff_ms}ms"
+                    ));
+                }
                 tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
-                backoff_ms = (backoff_ms * 2).min(10_000);
+                // Cap at 2s (was 10s): the pipe usually appears a beat after
+                // app launch, and a long backoff stranded the UI's first
+                // requests against a daemon that was already listening.
+                backoff_ms = (backoff_ms * 2).min(2_000);
             }
         }
     }
@@ -248,16 +272,20 @@ pub async fn send_internal(message: serde_json::Value) -> Result<IpcResponse, St
         return Err(e);
     }
 
-    // Wait for the daemon's response. Default 5s is comfortable for every
-    // routine IPC; `run_scan_benchmark` runs a real CPU-bound benchmark
-    // (5 sizes × up to 2000ms cap apiece) that legitimately exceeds the
-    // 5s budget on M-series chips under thermal load or cold caches, so
-    // it gets a 30s window. New long-running handlers should be added
-    // here explicitly rather than raising the default for everyone.
+    // Wait for the daemon's response. Default 10s: routine IPC answers in
+    // milliseconds, but the first refresh_accounts on a cold Windows VM
+    // legitimately pays for synchronous DPAPI/PowerShell spawns in the
+    // daemon (1-3s each on a cold start), and the previous 5s budget turned
+    // a slow-but-successful call into a spurious "Refresh failed".
+    // `run_scan_benchmark` runs a real CPU-bound benchmark (5 sizes × up to
+    // 2000ms cap apiece) that legitimately exceeds even that on M-series
+    // chips under thermal load, so it gets a 30s window. New long-running
+    // handlers should be added here explicitly rather than raising the
+    // default for everyone.
     let timeout_secs = if request_type == "run_scan_benchmark" {
         30
     } else {
-        5
+        10
     };
     match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), rx).await {
         Ok(Ok(value)) => serde_json::from_value::<IpcResponse>(value).map_err(|e| e.to_string()),

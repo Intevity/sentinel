@@ -185,30 +185,58 @@ describe('accounts', () => {
     it('reads CC slot, writes to sentinel store, and returns creds', () => {
       Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
       const ccBlob = JSON.stringify({ claudeAiOauth: sampleCreds });
-      // sampleCreds has subscriptionType + rateLimitTier, so no sentinel read needed
-      // Call 1: CC read, Call 2: sentinel write
+      // Call 1: CC read, Call 2: sentinel read (always — feeds the
+      // skip-identical-write comparison), Call 3: sentinel write (existing
+      // entry missing → must write)
       mockExecSync
         .mockReturnValueOnce(ccBlob) // CC read
+        .mockReturnValueOnce('') // sentinel read (miss)
         .mockReturnValueOnce(''); // sentinel write
 
       const result = captureCurrentCredentials('test@example.com');
       expect(result?.accessToken).toBe('at-test');
-      expect(mockExecSync).toHaveBeenCalledTimes(2);
-      // Second call should write to sentinel
-      const writeCmd = mockExecSync.mock.calls[1]?.[0] ?? '';
+      expect(mockExecSync).toHaveBeenCalledTimes(3);
+      // Third call should write to sentinel
+      const writeCmd = mockExecSync.mock.calls[2]?.[0] ?? '';
       expect(writeCmd).toContain('Claude Sentinel-credentials');
     });
 
-    it('preserves subscriptionType from existing sentinel entry when CC creds lack it', () => {
+    it('preserves subscriptionType and SKIPS the write when nothing changed', () => {
       Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
       const ccCredsNoSub = { accessToken: 'at-new', refreshToken: 'rt-new', expiresAt: 9999 };
       const ccBlob = JSON.stringify({ claudeAiOauth: ccCredsNoSub });
+      // Existing entry is exactly the merged result (CC creds + preserved
+      // fields) — the store write must be skipped: on Windows every write
+      // costs two synchronous DPAPI/PowerShell spawns that block the daemon.
       const sentinelBlob = JSON.stringify({
         ...ccCredsNoSub,
         subscriptionType: 'max',
         rateLimitTier: 'premium',
       });
-      // Call 1: CC read, Call 2: sentinel read (for preservation), Call 3: sentinel write
+      mockExecSync
+        .mockReturnValueOnce(ccBlob) // CC slot read
+        .mockReturnValueOnce(sentinelBlob); // sentinel read (existing entry)
+
+      const result = captureCurrentCredentials('account-uuid');
+      expect(result?.subscriptionType).toBe('max');
+      expect(result?.rateLimitTier).toBe('premium');
+      expect(result?.accessToken).toBe('at-new');
+      // Only 2 calls: CC read + sentinel read. No third (write) call.
+      expect(mockExecSync).toHaveBeenCalledTimes(2);
+    });
+
+    it('writes (with preserved fields) when the captured creds differ from the stored entry', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      const ccCredsNoSub = { accessToken: 'at-new', refreshToken: 'rt-new', expiresAt: 9999 };
+      const ccBlob = JSON.stringify({ claudeAiOauth: ccCredsNoSub });
+      // Existing entry holds an OLD access token → merged creds differ → write.
+      const sentinelBlob = JSON.stringify({
+        accessToken: 'at-old',
+        refreshToken: 'rt-old',
+        expiresAt: 1111,
+        subscriptionType: 'max',
+        rateLimitTier: 'premium',
+      });
       mockExecSync
         .mockReturnValueOnce(ccBlob) // CC slot read
         .mockReturnValueOnce(sentinelBlob) // sentinel read (existing entry)
@@ -216,26 +244,29 @@ describe('accounts', () => {
 
       const result = captureCurrentCredentials('account-uuid');
       expect(result?.subscriptionType).toBe('max');
-      expect(result?.rateLimitTier).toBe('premium');
       expect(result?.accessToken).toBe('at-new');
-      // Written blob should include the preserved fields
+      expect(mockExecSync).toHaveBeenCalledTimes(3);
+      // Written blob carries the fresh token AND the preserved plan fields.
       const writeCmd = mockExecSync.mock.calls[2]?.[0] ?? '';
       expect(writeCmd).toContain('max');
+      expect(writeCmd).toContain('at-new');
     });
 
     it('does not override subscriptionType already present in CC creds', () => {
       Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
       const ccCreds = { ...sampleCreds, subscriptionType: 'team', rateLimitTier: 'standard' };
       const ccBlob = JSON.stringify({ claudeAiOauth: ccCreds });
-      // CC has both fields — no sentinel read should happen
+      // CC has both fields; the sentinel read still happens (it feeds the
+      // skip-identical-write comparison) but must not override them.
       mockExecSync
         .mockReturnValueOnce(ccBlob) // CC read
+        .mockReturnValueOnce('') // sentinel read (miss)
         .mockReturnValueOnce(''); // sentinel write
 
       const result = captureCurrentCredentials('account-uuid');
       expect(result?.subscriptionType).toBe('team');
-      // Only 2 calls: CC read + sentinel write (no sentinel read needed)
-      expect(mockExecSync).toHaveBeenCalledTimes(2);
+      // 3 calls: CC read + sentinel read + sentinel write
+      expect(mockExecSync).toHaveBeenCalledTimes(3);
     });
 
     it('handles sentinel read failure gracefully during preservation', () => {

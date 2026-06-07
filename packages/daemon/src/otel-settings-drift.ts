@@ -13,9 +13,9 @@ import { promises as fs } from 'fs';
 import { createHash } from 'crypto';
 import type { OtelDriftDetails, OtelDriftState } from '@claude-sentinel/shared';
 import {
-  SENTINEL_BASE_URL,
   OTEL_HEADERS_KEY,
   isUrlSafeForForwarder,
+  isSentinelEndpoint,
 } from './claude-otel-config.js';
 
 const METRICS_ENDPOINT_KEY = 'OTEL_EXPORTER_OTLP_METRICS_ENDPOINT';
@@ -73,10 +73,10 @@ export function classifyDrift(env: ObservedOtelEnv): Exclude<OtelDriftState, 'no
   // Signal-specific endpoints OVERRIDE the base. If either is non-null
   // and points elsewhere, Claude Code's OTEL SDK routes that signal
   // away from Sentinel even when the base endpoint still points at us.
-  if (env.metricsEndpoint && env.metricsEndpoint !== SENTINEL_BASE_URL) return 'foreign-endpoint';
-  if (env.logsEndpoint && env.logsEndpoint !== SENTINEL_BASE_URL) return 'foreign-endpoint';
+  if (env.metricsEndpoint && !isSentinelEndpoint(env.metricsEndpoint)) return 'foreign-endpoint';
+  if (env.logsEndpoint && !isSentinelEndpoint(env.logsEndpoint)) return 'foreign-endpoint';
   if (env.endpoint === null) return 'foreign-endpoint';
-  if (env.endpoint !== SENTINEL_BASE_URL) return 'foreign-endpoint';
+  if (!isSentinelEndpoint(env.endpoint)) return 'foreign-endpoint';
   return 'ok';
 }
 

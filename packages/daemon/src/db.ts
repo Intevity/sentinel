@@ -4633,6 +4633,16 @@ function rowToOptimizationEvent(row: DbOptimizationEventRow): OptimizationEventR
  *
  * `win` narrows the measured rows to a time range (by `oe.ts`); default `{}`
  * is all-time. Only the row set narrows — every returned shape is identical.
+ *
+ * Headline buckets count BENEFICIAL rows only: a measured row whose
+ * estimated savings is non-positive in both units (tokens and dollars) is
+ * a misfit — routing through the subagent would have cost more than the
+ * inline read — and contributes to no bucket, no opportunity count, and no
+ * denominator. Counted rows accumulate per-unit clamped at zero, so the
+ * dashboard's Saved/Potential tiles can never read negative in either unit
+ * view. Misfit rows stay queryable in the drill-down list
+ * (`listOptimizationEventsWithSources`, the regressions filter), which is
+ * the deliberate surface for "this install backfires" signals.
  */
 export function getOptimizationMetrics(
   db: Database.Database,
@@ -4685,9 +4695,12 @@ export function getOptimizationMetrics(
    *  `hypoInputTokens − digestTokens`, where hypoInputTokens is what
    *  the subagent reads cold and digestTokens is what the parent
    *  re-injects. Always positive when the file is bigger than the
-   *  digest, which matches the user-mental model of "context saved."
+   *  digest, which matches the user-mental model of "context saved" —
+   *  and NEGATIVE when the digest exceeds the absorbed read (a misfit;
+   *  the beneficial gate below keeps such rows out of the headline).
    *  Pre-migration rows whose hypothetical_total_tokens is NULL
-   *  contribute 0. */
+   *  contribute 0 — deliberately conflated with "zero token benefit" so
+   *  the gate judges them on dollars alone. */
   const tokenSavings = (r: {
     hypothetical_total_tokens: number | null;
     curated_id: string;
@@ -4728,6 +4741,10 @@ export function getOptimizationMetrics(
   // Realized-only so it pairs with `tokensRealized` (the realized savings the
   // header's percentage divides). Distinct from the net savings totals above.
   let totalHypoInput = 0;
+  // Rows that pass the beneficial gate; replaces `rows.length` as the
+  // headline opportunity count so misfit rows aren't advertised as
+  // opportunities.
+  let totalOpportunities = 0;
   for (const r of rows) {
     const dailySlot = daily.get(r.day) ?? emptyBucket();
     const subSlot = bySubagent.get(r.curated_id) ?? { ...emptyBucket(), opportunities: 0 };
@@ -4743,34 +4760,48 @@ export function getOptimizationMetrics(
     const patternKey = r.pattern ?? '__none__';
     const patSlot = byPattern.get(patternKey) ?? { ...emptyBucket(), opportunities: 0 };
     const tokens = tokenSavings(r);
+    // Beneficial gate (see the function doc): a row that helps the user in
+    // NEITHER unit is a misfit, visible only in the drill-down list. NULL
+    // token rows have tokens === 0, so they pass purely on dollars.
+    if (tokens <= 0 && r.savings_usd <= 0) continue;
+    // Per-unit clamp: a token-positive row whose dollar estimate is noise
+    // (cache-read-dominated turns price near zero) counts its tokens but
+    // contributes $0, and vice versa — neither unit view can go negative.
+    const tokensContrib = Math.max(0, tokens);
+    const usdContrib = Math.max(0, r.savings_usd);
     // Gross hypothetical input = net savings + the digest re-injected into the
-    // parent (tokens = hypoInput − digest). NULL rows contribute 0.
+    // parent (tokens = hypoInput − digest). NULL rows contribute 0, and a
+    // row whose tokens were clamped out of the numerator must stay out of
+    // the "% of optimized content" denominator too.
     const grossHypoInput =
-      r.hypothetical_total_tokens === null ? 0 : tokens + getDigestTokens(r.curated_id);
+      r.hypothetical_total_tokens === null || tokensContrib === 0
+        ? 0
+        : tokens + getDigestTokens(r.curated_id);
     if (r.is_realized === 1) {
-      dailySlot.realized += r.savings_usd;
-      dailySlot.tokensRealized += tokens;
-      subSlot.realized += r.savings_usd;
-      subSlot.tokensRealized += tokens;
-      dbsSlot.realized += r.savings_usd;
-      dbsSlot.tokensRealized += tokens;
-      patSlot.realized += r.savings_usd;
-      patSlot.tokensRealized += tokens;
-      totalRealized += r.savings_usd;
-      totalTokensRealized += tokens;
+      dailySlot.realized += usdContrib;
+      dailySlot.tokensRealized += tokensContrib;
+      subSlot.realized += usdContrib;
+      subSlot.tokensRealized += tokensContrib;
+      dbsSlot.realized += usdContrib;
+      dbsSlot.tokensRealized += tokensContrib;
+      patSlot.realized += usdContrib;
+      patSlot.tokensRealized += tokensContrib;
+      totalRealized += usdContrib;
+      totalTokensRealized += tokensContrib;
       totalHypoInput += grossHypoInput;
     } else {
-      dailySlot.potential += r.savings_usd;
-      dailySlot.tokensPotential += tokens;
-      subSlot.potential += r.savings_usd;
-      subSlot.tokensPotential += tokens;
-      dbsSlot.potential += r.savings_usd;
-      dbsSlot.tokensPotential += tokens;
-      patSlot.potential += r.savings_usd;
-      patSlot.tokensPotential += tokens;
-      totalPotential += r.savings_usd;
-      totalTokensPotential += tokens;
+      dailySlot.potential += usdContrib;
+      dailySlot.tokensPotential += tokensContrib;
+      subSlot.potential += usdContrib;
+      subSlot.tokensPotential += tokensContrib;
+      dbsSlot.potential += usdContrib;
+      dbsSlot.tokensPotential += tokensContrib;
+      patSlot.potential += usdContrib;
+      patSlot.tokensPotential += tokensContrib;
+      totalPotential += usdContrib;
+      totalTokensPotential += tokensContrib;
     }
+    totalOpportunities += 1;
     subSlot.opportunities += 1;
     patSlot.opportunities += 1;
     daily.set(r.day, dailySlot);
@@ -4836,7 +4867,7 @@ export function getOptimizationMetrics(
       tokensRealized: totalTokensRealized,
       tokensPotential: totalTokensPotential,
       hypotheticalInputTokens: totalHypoInput,
-      opportunities: rows.length,
+      opportunities: totalOpportunities,
       installs: installsRow.n,
     },
     daily: [...daily.entries()]
