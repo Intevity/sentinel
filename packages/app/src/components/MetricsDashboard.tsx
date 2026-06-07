@@ -203,6 +203,7 @@ function MetricsContent({
         <Tile
           label="Tokens"
           sub={`cache-read ${compact(totalCacheRead)} · cache-create ${compact(totalCacheCreate)}`}
+          title="Reported by Claude Code telemetry for the selected accounts. Sessions running without telemetry are not counted; the Optimize page measures at the proxy across all accounts, so its totals can read higher."
         >
           <span className="text-[22px] font-bold tracking-tight text-black dark:text-white">
             {compact(totalTokens)}
@@ -334,14 +335,17 @@ function MetricsContent({
 function Tile({
   label,
   sub,
+  title,
   children,
 }: {
   label: string;
   sub?: string;
+  /** Optional hover tooltip, e.g. the data-source note on the Tokens tile. */
+  title?: string;
   children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <div className="glass-card px-4 py-3">
+    <div className="glass-card px-4 py-3" title={title}>
       <p className="text-[11px] text-muted font-medium">{label}</p>
       <p className="mt-0.5">{children}</p>
       {sub && <p className="text-[10px] text-muted mt-0.5 truncate">{sub}</p>}

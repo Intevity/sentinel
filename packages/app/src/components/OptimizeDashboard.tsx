@@ -901,7 +901,7 @@ function StickySavingsBar({
               <p className="mt-2 text-[11px] text-foreground/45">
                 {totalInput > 0 && (
                   <>
-                    <span title="Saved as a share of ALL input tokens forwarded over the window, including cached context (cache reads) that Sentinel does not compress. Much smaller than the compression ratio because compressible tool output is only a slice of total input.">
+                    <span title="Saved as a share of ALL input tokens forwarded over the window, including cached context (cache reads) that Sentinel does not compress. Much smaller than the compression ratio because compressible tool output is only a slice of total input. Measured at the proxy across all accounts; this can read higher than the Metrics tab, which shows Claude Code-reported telemetry for the selected accounts.">
                       ≈{pctStr(totalInputPct)} of total input incl. cached context
                     </span>
                     {' · '}
@@ -1063,8 +1063,9 @@ function UnitsToggle({
  *
  * Render rules:
  *   - Installed and `opportunities > 0`: "Saved $X.XX" — color follows
- *     `colorClass()` so a misfit subagent (negative realized) reads in red.
- *     That's the honest signal; hiding it would mask a bad install.
+ *     `colorClass()`. The daemon's beneficial gate keeps realized sums
+ *     non-negative now; misfit installs surface through the drill-down
+ *     list's regressions filter instead of a red badge here.
  *   - Not installed and `savingsPotential > 0`: "Could save $X.XX" — only
  *     positive, since negative potential is nonsensical to advertise as
  *     a reason to install.
