@@ -304,6 +304,7 @@ fn main() {
             toggle_devtools,
             sound::play_system_sound,
             notify::display_os_notification,
+            notify::display_alert_notification,
             updater::check_for_updates,
             updater::install_update,
         ])

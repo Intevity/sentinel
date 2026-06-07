@@ -36,6 +36,10 @@ hex = "0.4"
 # First-party Microsoft crate; its windows-* transitive deps are already
 # in the tree via tauri, so the compile cost is near zero.
 windows-registry = "0.5"
+# The same crate notify-rust drives winrt toasts with (already in the tree
+# via tauri-plugin-notification); used directly only to validate alert
+# sound names before delivery — see display_alert_notification.
+tauri-winrt-notification = "0.7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
