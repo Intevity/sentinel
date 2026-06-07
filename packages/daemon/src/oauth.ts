@@ -338,6 +338,13 @@ interface TokenResponse {
   token_type: string;
 }
 
+/** Bounded network budgets for the daemon's own outbound Anthropic calls.
+ *  fetchProfile previously used a bare `await fetch` with no timeout; on a
+ *  cold VM a hung first HTTPS connection (DNS/TLS/proxy) stalled every
+ *  awaiting caller — including daemon startup — indefinitely. */
+const PROFILE_FETCH_TIMEOUT_MS = 10_000;
+const TOKEN_FETCH_TIMEOUT_MS = 30_000;
+
 async function exchangeCode(
   code: string,
   verifier: string,
@@ -355,11 +362,14 @@ async function exchangeCode(
 
   const tokenUrl = getOAuthTokenUrl();
   console.log(`[OAuth] Token exchange → POST ${tokenUrl}`);
+  const startedAt = Date.now();
   const res = await fetch(tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(TOKEN_FETCH_TIMEOUT_MS),
   });
+  console.log(`[OAuth] Token exchange ← ${res.status} (${Date.now() - startedAt}ms)`);
 
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
@@ -386,11 +396,14 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRes
 
   const tokenUrl = getOAuthTokenUrl();
   console.log(`[OAuth] Token refresh → POST ${tokenUrl}`);
+  const startedAt = Date.now();
   const res = await fetch(tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(TOKEN_FETCH_TIMEOUT_MS),
   });
+  console.log(`[OAuth] Token refresh ← ${res.status} (${Date.now() - startedAt}ms)`);
 
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
@@ -453,13 +466,16 @@ export async function fetchProfile(accessToken: string): Promise<ProfileResult> 
     hasExtraUsageEnabled: false,
   };
 
+  const startedAt = Date.now();
   try {
     const res = await fetch(`${getAnthropicOrigin()}/api/oauth/profile`, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
+      signal: AbortSignal.timeout(PROFILE_FETCH_TIMEOUT_MS),
     });
+    console.log(`[OAuth] GET /api/oauth/profile ← ${res.status} (${Date.now() - startedAt}ms)`);
     if (!res.ok) return empty;
     const data = (await res.json()) as OAuthProfile;
 
@@ -490,7 +506,13 @@ export async function fetchProfile(accessToken: string): Promise<ProfileResult> 
       // reliably identify whether THIS specific user has a Max seat.
       hasExtraUsageEnabled: data.account?.has_claude_max ?? false,
     };
-  } catch {
+  } catch (err) {
+    // AbortError (timeout) lands here too — callers treat `empty` as
+    // "unverifiable right now" and fall through to optimistic local state.
+    console.warn(
+      `[OAuth] GET /api/oauth/profile failed after ${Date.now() - startedAt}ms:`,
+      err instanceof Error ? err.message : err,
+    );
     return empty;
   }
 }

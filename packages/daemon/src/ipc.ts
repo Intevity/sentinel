@@ -135,16 +135,47 @@ export class IpcServer {
             this.authenticated.add(socket);
           }
 
+          let msg: AppToDaemonMessage;
           try {
-            const msg = JSON.parse(line) as AppToDaemonMessage;
-            const respond = (response: IpcResponse) => {
-              if (!socket.destroyed) {
-                socket.write(JSON.stringify(response) + '\n');
-              }
-            };
-            this.messageHandlers.forEach((h) => h(msg, respond));
+            msg = JSON.parse(line) as AppToDaemonMessage;
           } catch {
-            // ignore malformed messages
+            // Not JSON at all — there is no requestType to answer to. Log it;
+            // silently dropping these previously hid real faults.
+            console.warn('[IPC] Dropped malformed (non-JSON) message line');
+            continue;
+          }
+
+          const msgType = typeof msg?.type === 'string' ? msg.type : 'unknown';
+          const startedAt = Date.now();
+          console.log(`[IPC] → ${msgType}`);
+          let responded = false;
+          const respond = (response: IpcResponse) => {
+            responded = true;
+            if (!socket.destroyed) {
+              socket.write(JSON.stringify(response) + '\n');
+            }
+            console.log(
+              `[IPC] ← ${msgType} ${
+                response.success ? 'ok' : `err(${String(response.error ?? '').slice(0, 200)})`
+              } (${Date.now() - startedAt}ms)`,
+            );
+          };
+
+          try {
+            this.messageHandlers.forEach((h) => h(msg, respond));
+          } catch (err) {
+            // A synchronous handler throw used to be swallowed here, leaving
+            // the request unanswered — the app saw only its own timeout
+            // ("Refresh failed") with no daemon-side trace. Answer with a real
+            // error so failures are visible immediately on both sides.
+            console.error(`[IPC] handler for '${msgType}' threw:`, err);
+            if (!responded) {
+              respond({
+                requestType: msgType,
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+              } as IpcResponse);
+            }
           }
         }
       });
