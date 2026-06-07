@@ -10,7 +10,7 @@ import type {
   ThemePreference,
   CompressionLevel,
 } from '@claude-sentinel/shared';
-import { ALERT_SOUNDS } from '@claude-sentinel/shared';
+import { ALERT_SOUNDS, ALERT_SOUNDS_WINDOWS } from '@claude-sentinel/shared';
 import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel } from '../lib/ipc.js';
 import { useSettings } from '../hooks/useSettings.js';
@@ -28,6 +28,23 @@ import { planLabel } from '../lib/plan.js';
 import AccountColorDot from './AccountColorDot.js';
 import OverlayPanel from './OverlayPanel.js';
 import { Section, ToggleRow, RadioRow, SettingsCard } from './settings/primitives.js';
+
+/** WebView2's user agent carries "Windows NT"; WKWebView (macOS) and
+ *  WebKitGTK (Linux) don't. Picks which alert-sound list the Settings
+ *  dropdown offers — the names are OS sounds, not bundled assets, so each
+ *  platform must show its own. */
+const IS_WINDOWS = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
+const SOUND_OPTIONS = IS_WINDOWS ? ALERT_SOUNDS_WINDOWS : ALERT_SOUNDS;
+
+/** The stored sound can predate the per-platform lists (e.g. the macOS
+ *  default 'Glass' persisted on a Windows install). Delivery maps unknown
+ *  names to the default toast chime on Windows (notify.rs); mirror that in
+ *  the picker instead of rendering a blank selection. */
+function displayedSound(stored: string | null): string {
+  if (stored === null) return '';
+  if (SOUND_OPTIONS.some((s) => s.value === stored)) return stored;
+  return IS_WINDOWS ? 'Default' : stored;
+}
 
 /**
  * Which of the 4 Settings tabs a given deep-link anchor lives in. Used by
@@ -351,13 +368,24 @@ export default function SettingsPanel({
   };
 
   const previewSound = async (name: string | null): Promise<void> => {
-    // macOS silences NSSound-backed notification audio for the frontmost app,
-    // so the old sendNotification({ sound }) path produced a banner but no
-    // audible preview. Shell out to `afplay` via a native Tauri command to
-    // play the sound directly, bypassing the notification system entirely.
-    // The live alert path (useNotifications.ts) still uses sendNotification
-    // because by then the user is typically elsewhere and macOS plays sound.
     if (!name) return; // 'None' means silent alerts — nothing to preview
+    if (IS_WINDOWS) {
+      // No afplay equivalent on Windows: preview by firing a real toast
+      // carrying the selected winrt sound — exactly what a live alert does.
+      await invoke('display_alert_notification', {
+        title: 'Claude Sentinel',
+        body: 'Alert sound preview',
+        sound: name,
+      }).catch(() => undefined);
+      return;
+    }
+    // macOS silences NSSound-backed notification audio for the frontmost app,
+    // so a notification-with-sound here produced a banner but no audible
+    // preview. Shell out to `afplay` via a native Tauri command to play the
+    // sound directly, bypassing the notification system entirely. The live
+    // alert path (useNotifications.ts) still sends the sound with the
+    // notification because by then the user is typically elsewhere and
+    // macOS plays it.
     await invoke('play_system_sound', { name }).catch(() => undefined);
   };
 
@@ -1028,8 +1056,8 @@ export default function SettingsPanel({
                         Alert sound
                       </p>
                       <p className="text-[11px] text-muted leading-snug mt-0.5">
-                        Played when a usage alert or exhaustion notification fires. Uses macOS
-                        system sounds.
+                        Played when a usage alert or exhaustion notification fires. Uses
+                        {IS_WINDOWS ? ' Windows notification' : ' macOS system'} sounds.
                       </p>
                     </div>
                     <button
@@ -1042,11 +1070,11 @@ export default function SettingsPanel({
                     </button>
                   </div>
                   <select
-                    value={settings.alertSoundName ?? ''}
+                    value={displayedSound(settings.alertSoundName)}
                     onChange={(e) => setAlertSound(e.target.value === '' ? null : e.target.value)}
                     className="mt-2 w-full text-[12px] px-2 py-1.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] text-black dark:text-white border-none focus:outline-none focus:ring-1 focus:ring-ios-blue"
                   >
-                    {ALERT_SOUNDS.map((s) => (
+                    {SOUND_OPTIONS.map((s) => (
                       <option key={s.label} value={s.value ?? ''}>
                         {s.label}
                       </option>

@@ -311,7 +311,10 @@ export interface Settings {
   switchingMode: SwitchingMode;
   /** OS system sound name played alongside alert notifications.
    *  `null` means silent. On macOS the name must match a file in
-   *  /System/Library/Sounds (e.g. 'Glass', 'Ping'). See ALERT_SOUNDS. */
+   *  /System/Library/Sounds (e.g. 'Glass', 'Ping'); on Windows a winrt
+   *  toast sound name (e.g. 'Default', 'Mail'), with unknown names
+   *  mapped to 'Default' at delivery. See ALERT_SOUNDS /
+   *  ALERT_SOUNDS_WINDOWS. */
   alertSoundName: string | null;
   /** When true, fire a native OS notification on overage `entered` and
    *  `disabled` transitions. `exited` is never surfaced as a banner — the
@@ -1428,8 +1431,10 @@ export interface AutoModeStatus {
   sessions: ActiveClaudeSession[];
 }
 
-/** Sound choices exposed in Settings. Values map to macOS system sounds;
- *  `null` means no sound. Other platforms will ignore unknown names silently. */
+/** Sound choices exposed in Settings on macOS. Values map to macOS system
+ *  sounds (files under /System/Library/Sounds); `null` means no sound. These
+ *  are OS sounds, not bundled with Sentinel — Windows shows
+ *  ALERT_SOUNDS_WINDOWS instead. */
 export const ALERT_SOUNDS: ReadonlyArray<{ label: string; value: string | null }> = [
   { label: 'None', value: null },
   { label: 'Basso', value: 'Basso' },
@@ -1446,6 +1451,22 @@ export const ALERT_SOUNDS: ReadonlyArray<{ label: string; value: string | null }
   { label: 'Sosumi', value: 'Sosumi' },
   { label: 'Submarine', value: 'Submarine' },
   { label: 'Tink', value: 'Tink' },
+];
+
+/** Sound choices exposed in Settings on Windows. Values are the winrt toast
+ *  audio event names tauri-winrt-notification accepts; the looping Alarm and
+ *  Call variants are deliberately omitted because they repeat until the toast
+ *  is dismissed, which is wrong for a usage alert. `null` means no sound (a
+ *  winrt toast without audio renders silent). Unknown names — e.g. a stored
+ *  macOS name like 'Glass' from before this split — fall back to 'Default'
+ *  at delivery (see display_alert_notification in notify.rs). */
+export const ALERT_SOUNDS_WINDOWS: ReadonlyArray<{ label: string; value: string | null }> = [
+  { label: 'None', value: null },
+  { label: 'Default', value: 'Default' },
+  { label: 'IM', value: 'IM' },
+  { label: 'Mail', value: 'Mail' },
+  { label: 'Reminder', value: 'Reminder' },
+  { label: 'SMS', value: 'SMS' },
 ];
 
 /**
