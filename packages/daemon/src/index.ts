@@ -108,7 +108,7 @@ import {
   parseOtlpHeaders,
   pickAuthHeader,
 } from './otel-settings-drift.js';
-import { isUrlSafeForForwarder } from './claude-otel-config.js';
+import { isUrlSafeForForwarder, SENTINEL_BASE_URL } from './claude-otel-config.js';
 import { createAgentsSyncEngine } from './optimize/agents-sync.js';
 import { getCuratedLibrary, getCuratedSubagent } from './optimize/curated-library.js';
 import { createOptimizationAnalyzer } from './optimize/optimization-analyzer.js';
@@ -1353,6 +1353,17 @@ export async function startDaemon(): Promise<DaemonHandle> {
           byDayModel: getCacheTtlByDayModel(db, keys, days, win),
           bySession: getCacheTtlBySession(db, keys, days, 50, win),
         };
+
+        // [OTEL-DIAG] Temporary: compare the query's account filter + window to
+        // what the receiver stored — settles "written but not shown" (attribution
+        // or day-window mismatch). Remove before merging to main.
+        console.log(
+          `[OTEL-DIAG] get_metrics_summary keys=${JSON.stringify(keys)} days=${days} ` +
+            `win=${win ? JSON.stringify(win) : '-'} ` +
+            `byDayModelDays=${Object.keys(byDayModel).length} ` +
+            `errorDays=${Object.keys(errors.byDay).length} tools=${tools.length} ` +
+            `activityDays=${Object.keys(perDayCounters).length}`,
+        );
 
         // Reshape per-day counters into the flat per-kind records the UI wants.
         const sessionsPerDay: Record<string, number> = {};
@@ -3625,6 +3636,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
     },
     (req, res) => {
       const url = req.url ?? '/';
+      // [OTEL-DIAG] Temporary: log every OTLP request reaching the receiver so
+      // we can tell on Windows whether Claude Code's exporter connects at all
+      // (settles "never arrived" vs "arrived but wrote nothing"). Remove before
+      // merging to main.
+      console.log(
+        `[OTEL-DIAG] OTLP ${req.method ?? '?'} ${url} ` +
+          `ct=${req.headers['content-type'] ?? '-'} ` +
+          `ce=${req.headers['content-encoding'] ?? '-'} ` +
+          `len=${req.headers['content-length'] ?? '-'}`,
+      );
       if (url.startsWith('/v1/metrics')) {
         return otelReceiver.handleMetrics(req, res);
       }
@@ -3664,6 +3685,13 @@ export async function startDaemon(): Promise<DaemonHandle> {
       /* v8 ignore next -- prod leaves the env var unset, making this a no-op */
       if (inTestMode) process.env.CLAUDE_SENTINEL_TEST_DAEMON_PORT = String(boundPort);
       console.log(`[Sentinel] HTTP proxy listening on http://127.0.0.1:${boundPort}`);
+      // [OTEL-DIAG] Temporary: confirm the platform-resolved paths + bound
+      // address the receiver writes to / reads from. Remove before merging.
+      console.log(
+        `[OTEL-DIAG] startup platform=${process.platform} homedir=${homedir()} ` +
+          `db=${join(homedir(), '.claude-sentinel', 'sentinel.db')} ` +
+          `listen=127.0.0.1:${boundPort} endpoint=${SENTINEL_BASE_URL}`,
+      );
       // Probe for fresh rate-limit headers through the proxy now that it is ready.
       // The proxy injects the active OAuth token, so this works even for accounts
       // whose tokens cannot be used to call api.anthropic.com directly.
