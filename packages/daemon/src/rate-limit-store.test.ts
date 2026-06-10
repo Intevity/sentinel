@@ -443,6 +443,50 @@ describe('RateLimitStore', () => {
       expect(store.getAll('acc-1').find((w) => w.name === 'unified-5h')?.utilization).toBe(0.5);
     });
 
+    it('keeps a header-derived reset when the synced value drifts by seconds (same window)', () => {
+      // claude.ai reports resets_at as an ISO timestamp that can disagree
+      // with the API header epoch by seconds for the SAME window. Letting
+      // that through gave the earliest-reset rotator a phantom ordering
+      // change on every sync — the sticky tie broke and traffic flipped
+      // to the other pool account.
+      const store = new RateLimitStore();
+      store.update('acc-1', {
+        'anthropic-ratelimit-unified-5h-status': 'allowed',
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-5h-reset': '1781135400',
+      });
+      const headerAt = store.getAll('acc-1').find((w) => w.name === 'unified-5h')!.lastUpdated!;
+      const synced = store.syncFromClaudeAiSnapshot('acc-1', {
+        ...baseSnapshot(),
+        fiveHourUtilization: 0.52,
+        // 47 seconds later than the header epoch — source jitter, not a rollover.
+        fiveHourResetsAt: new Date((1781135400 + 47) * 1000).toISOString(),
+        fetchedAt: headerAt + 10_000,
+      });
+      expect(synced).toBe(3);
+      const fiveHour = store.getAll('acc-1').find((w) => w.name === 'unified-5h')!;
+      expect(fiveHour.utilization).toBeCloseTo(0.52); // sync data applied…
+      expect(fiveHour.reset).toBe(1781135400); // …but the window boundary held
+    });
+
+    it('adopts the synced reset when it names a different window (rollover)', () => {
+      const store = new RateLimitStore();
+      store.update('acc-1', {
+        'anthropic-ratelimit-unified-5h-status': 'allowed',
+        'anthropic-ratelimit-unified-5h-utilization': '0.9',
+        'anthropic-ratelimit-unified-5h-reset': '1781135400',
+      });
+      const headerAt = store.getAll('acc-1').find((w) => w.name === 'unified-5h')!.lastUpdated!;
+      const nextWindow = 1781135400 + 5 * 3600;
+      store.syncFromClaudeAiSnapshot('acc-1', {
+        ...baseSnapshot(),
+        fiveHourUtilization: 0.01,
+        fiveHourResetsAt: new Date(nextWindow * 1000).toISOString(),
+        fetchedAt: headerAt + 10_000,
+      });
+      expect(store.getAll('acc-1').find((w) => w.name === 'unified-5h')!.reset).toBe(nextWindow);
+    });
+
     it('overwrites existing windows when the snapshot is newer', () => {
       const store = new RateLimitStore();
       // Older header-sourced data.

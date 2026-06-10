@@ -18,6 +18,12 @@ import type { RateLimitWindow, ClaudeAiUsageSnapshot } from '@claude-sentinel/sh
  * drew from the overage budget:
  *   anthropic-ratelimit-unified-overage-in-use: "true"
  */
+/** A claude.ai-synced reset within this many seconds of the stored
+ *  header-derived reset is the same window reported with source jitter,
+ *  not a rollover — the stored value wins so downstream consumers (alert
+ *  dedup, the earliest-reset rotator) see one stable boundary per window. */
+const SYNC_RESET_DRIFT_TOLERANCE_SEC = 120;
+
 export class RateLimitStore {
   private readonly data = new Map<string, Map<string, RateLimitWindow>>();
   private readonly updateCallbacks: Array<(accountId: string, windows: RateLimitWindow[]) => void> =
@@ -199,11 +205,22 @@ export class RateLimitStore {
       // this guard, a sync would null-out a reset Anthropic's header just
       // set, causing alert dedup (which keys on resetTs) to break and
       // re-fire the alert every time the header and sync alternate.
+      //
+      // When both sources have a reset for the SAME window, keep the
+      // existing (header-derived, epoch-exact) value: claude.ai's ISO
+      // timestamp can disagree by seconds, and letting it through made
+      // the token rotator's earliest-reset comparison see a phantom
+      // ordering change and re-target traffic. Only adopt the synced
+      // value when it names a genuinely different window (rollover).
+      const sameWindow =
+        w.reset != null &&
+        existing?.reset != null &&
+        Math.abs(w.reset - existing.reset) <= SYNC_RESET_DRIFT_TOLERANCE_SEC;
       const merged: RateLimitWindow = existing
         ? {
             ...existing,
             ...w,
-            reset: w.reset ?? existing.reset ?? null,
+            reset: sameWindow ? existing.reset : (w.reset ?? existing.reset ?? null),
             inUse: w.inUse ?? existing.inUse ?? null,
           }
         : w;

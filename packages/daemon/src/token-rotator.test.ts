@@ -403,6 +403,32 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     });
   }
 
+  /** Rotator pinned to earliest-reset with a frozen clock. `nowSec`
+   *  defaults to 0 so the hand-seeded epoch resets in these tests
+   *  (500, 1_000, …) stay in the future — the production wall-clock
+   *  default would normalize them all to "expired window". */
+  function makeRotator(
+    db: ReturnType<typeof getDb>,
+    store: RateLimitStore,
+    opts: {
+      active?: string;
+      nowSec?: () => number;
+      strategy?: () => 'balance' | 'earliest-reset';
+    } = {},
+  ): TokenRotator {
+    return new TokenRotator(
+      db,
+      store,
+      { value: opts.active ?? 'a' },
+      () => new Set(),
+      opts.strategy ?? (() => 'earliest-reset'),
+      () => new Set(),
+      () => new Set(),
+      () => 10,
+      opts.nowSec ?? (() => 0),
+    );
+  }
+
   it('picks the account whose window resets soonest, ignoring utilization', () => {
     const db = getDb(dbPath);
     seed(db, 'a', 'a@x');
@@ -413,13 +439,7 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     // eligible — this test covers strategy, not the buffer gate.
     setResetAndUtil(store, 'a', 1_000_000, 0.1);
     setResetAndUtil(store, 'b', 500_000, 0.7);
-    const rotator = new TokenRotator(
-      db,
-      store,
-      { value: 'a' },
-      () => new Set(),
-      () => 'earliest-reset',
-    );
+    const rotator = makeRotator(db, store);
     expect(rotator.pick()?.accountId).toBe('b');
   });
 
@@ -432,13 +452,7 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     setResetAndUtil(store, 'a', 3_000);
     setResetAndUtil(store, 'b', 1_000); // soonest
     setResetAndUtil(store, 'c', 2_000);
-    const rotator = new TokenRotator(
-      db,
-      store,
-      { value: 'a' },
-      () => new Set(),
-      () => 'earliest-reset',
-    );
+    const rotator = makeRotator(db, store);
     expect(rotator.pick()?.accountId).toBe('b');
     expect(rotator.pick()?.accountId).toBe('b');
     expect(rotator.pick()?.accountId).toBe('b');
@@ -453,13 +467,7 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     // Keep util under the default buffer threshold so `known` isn't
     // removed by the at-threshold skip — this test is about no-reset data.
     setResetAndUtil(store, 'known', 10_000, 0.5);
-    const rotator = new TokenRotator(
-      db,
-      store,
-      { value: 'known' },
-      () => new Set(),
-      () => 'earliest-reset',
-    );
+    const rotator = makeRotator(db, store, { active: 'known' });
     expect(rotator.pick()?.accountId).toBe('known');
   });
 
@@ -475,13 +483,7 @@ describe('TokenRotator (earliest-reset strategy)', () => {
       'anthropic-ratelimit-unified-5h-reset': '100',
     });
     setResetAndUtil(store, 'ok', 9_999);
-    const rotator = new TokenRotator(
-      db,
-      store,
-      { value: 'ok' },
-      () => new Set(),
-      () => 'earliest-reset',
-    );
+    const rotator = makeRotator(db, store, { active: 'ok' });
     expect(rotator.pick()?.accountId).toBe('ok');
   });
 
@@ -492,13 +494,7 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     const store = new RateLimitStore();
     setResetAndUtil(store, 'hot', 500, 0.99);
     setResetAndUtil(store, 'cold', 500, 0.1);
-    const rotator = new TokenRotator(
-      db,
-      store,
-      { value: 'hot' },
-      () => new Set(),
-      () => 'earliest-reset',
-    );
+    const rotator = makeRotator(db, store, { active: 'hot' });
     expect(rotator.pick()?.accountId).toBe('cold');
   });
 
@@ -513,13 +509,7 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     const store = new RateLimitStore();
     setResetAndUtil(store, 'a', 1_000, 0.1);
     setResetAndUtil(store, 'b', 1_000, 0.11);
-    const rotator = new TokenRotator(
-      db,
-      store,
-      { value: 'a' },
-      () => new Set(),
-      () => 'earliest-reset',
-    );
+    const rotator = makeRotator(db, store);
     expect(rotator.pick()?.accountId).toBe('a');
 
     // `a` is now hotter than `b`. Old behavior would flip to `b`.
@@ -539,13 +529,7 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     const store = new RateLimitStore();
     setResetAndUtil(store, 'a', 1_000, 0.1);
     setResetAndUtil(store, 'b', 1_000, 0.11);
-    const rotator = new TokenRotator(
-      db,
-      store,
-      { value: 'a' },
-      () => new Set(),
-      () => 'earliest-reset',
-    );
+    const rotator = makeRotator(db, store);
     expect(rotator.pick()?.accountId).toBe('a');
 
     store.update('a', {
@@ -563,13 +547,7 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     const store = new RateLimitStore();
     setResetAndUtil(store, 'a', 1_000, 0.1);
     setResetAndUtil(store, 'b', 1_000, 0.11);
-    const rotator = new TokenRotator(
-      db,
-      store,
-      { value: 'a' },
-      () => new Set(),
-      () => 'earliest-reset',
-    );
+    const rotator = makeRotator(db, store);
     expect(rotator.pick()?.accountId).toBe('a');
 
     // `b` now resets earlier than `a` — no longer a tie. Sticky's
@@ -590,13 +568,7 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     const store = new RateLimitStore();
     setResetAndUtil(store, 'a', 1_000, 0.1);
     setResetAndUtil(store, 'b', 1_000, 0.11);
-    const rotator = new TokenRotator(
-      db,
-      store,
-      { value: 'a' },
-      () => new Set(),
-      () => 'earliest-reset',
-    );
+    const rotator = makeRotator(db, store);
     expect(rotator.pick()?.accountId).toBe('a');
 
     store.update('a', {
@@ -626,13 +598,7 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     setResetAndUtil(store, 'soon', 1_000, 0.8);
 
     let strategy: 'balance' | 'earliest-reset' = 'balance';
-    const rotator = new TokenRotator(
-      db,
-      store,
-      { value: 'fresh' },
-      () => new Set(),
-      () => strategy,
-    );
+    const rotator = makeRotator(db, store, { active: 'fresh', strategy: () => strategy });
     expect(rotator.pick()?.accountId).toBe('fresh');
     strategy = 'earliest-reset';
     expect(rotator.pick()?.accountId).toBe('soon');
@@ -653,14 +619,142 @@ describe('TokenRotator (earliest-reset strategy)', () => {
       'anthropic-ratelimit-unified-5h-status': 'blocked',
       'anthropic-ratelimit-unified-5h-reset': '200',
     });
-    const rotator = new TokenRotator(
-      db,
-      store,
-      { value: 'a' },
-      () => new Set(),
-      () => 'earliest-reset',
-    );
+    const rotator = makeRotator(db, store);
     expect(rotator.pick()).toBeNull();
+  });
+
+  it('holds the target when the stored reset jitters by seconds between picks', () => {
+    // Regression for the second round of the alternation bug: the store
+    // has two writers for unified-5h.reset (API response headers and the
+    // claude.ai usage sync) that can disagree at second granularity for
+    // the same window. The previous strict tie check treated a ±3s
+    // wobble as "no longer earliest" and re-targeted, flipping traffic
+    // between tied accounts every time the sync landed during a lull.
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setResetAndUtil(store, 'a', 10_000, 0.3);
+    setResetAndUtil(store, 'b', 10_000, 0.31);
+    const rotator = makeRotator(db, store);
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    // A sync rewrites a's reset 3 seconds later than the header value.
+    setResetAndUtil(store, 'a', 10_003, 0.35);
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    // Header write restores a; b's value now drifts 2 seconds earlier.
+    setResetAndUtil(store, 'a', 10_000, 0.4);
+    setResetAndUtil(store, 'b', 9_998, 0.31);
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+
+  it('re-targets only when another account resets more than the tolerance earlier', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setResetAndUtil(store, 'a', 10_000, 0.3);
+    setResetAndUtil(store, 'b', 10_000, 0.31);
+    const rotator = makeRotator(db, store);
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    // 50s earlier: inside the tolerance band, same window boundary.
+    setResetAndUtil(store, 'b', 9_950, 0.31);
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    // 20 minutes earlier: a genuinely sooner window. Re-target.
+    setResetAndUtil(store, 'b', 8_800, 0.31);
+    expect(rotator.pick()?.accountId).toBe('b');
+  });
+
+  it('does not let a stale already-passed reset steal the pick from an active window', () => {
+    // An idle account whose stored 5h window has expired used to rank
+    // as "earliest" (its reset is the smallest number in the pool),
+    // pulling traffic onto it; its first response then opened a fresh
+    // window ~5h out and the pick bounced straight back — a periodic
+    // request leak onto the idle account.
+    const db = getDb(dbPath);
+    seed(db, 'active', 'a@x');
+    seed(db, 'idle', 'i@x');
+    const store = new RateLimitStore();
+    setResetAndUtil(store, 'active', 8_000, 0.5);
+    setResetAndUtil(store, 'idle', 4_000, 0.2); // already behind the pinned clock
+    const rotator = makeRotator(db, store, { active: 'active', nowSec: () => 5_000 });
+    expect(rotator.pick()?.accountId).toBe('active');
+    expect(rotator.pick()?.accountId).toBe('active');
+  });
+
+  it('holds the target while its 5h window data is temporarily absent', () => {
+    // A store writer can briefly leave the serving account without a
+    // unified-5h row (clearAccount on switch, a sync race). Unknown
+    // reset on the CURRENT target is a writer blink, not evidence that
+    // the other account resets sooner — the old strict check re-targeted
+    // here and never came back.
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setResetAndUtil(store, 'a', 10_000, 0.3);
+    setResetAndUtil(store, 'b', 10_000, 0.31);
+    const rotator = makeRotator(db, store);
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    store.clearAccount('a');
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    // Data returns with the next response headers: still no re-target.
+    setResetAndUtil(store, 'a', 10_000, 0.32);
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+
+  it('keeps the non-Sonnet target while Sonnet requests detour around its saturated Sonnet window', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setResetAndUtil(store, 'a', 10_000, 0.3);
+    setResetAndUtil(store, 'b', 10_000, 0.31);
+    store.update('a', {
+      'anthropic-ratelimit-unified-7d_sonnet-status': 'allowed',
+      'anthropic-ratelimit-unified-7d_sonnet-utilization': '1.0',
+      'anthropic-ratelimit-unified-7d_sonnet-reset': '99000',
+    });
+    const rotator = makeRotator(db, store);
+    expect(rotator.pick()?.accountId).toBe('a');
+    // Sonnet requests detour to b (a's Sonnet 7d is saturated, no overage
+    // opt-in) WITHOUT moving the target…
+    expect(rotator.pick({ isSonnet: true })?.accountId).toBe('b');
+    // …so non-Sonnet traffic keeps draining a instead of following the detour.
+    expect(rotator.pick()?.accountId).toBe('a');
+    expect(rotator.pick({ isSonnet: true })?.accountId).toBe('b');
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+
+  it('keeps the target across a refresh() pool rebuild', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setResetAndUtil(store, 'a', 10_000, 0.3);
+    setResetAndUtil(store, 'b', 10_000, 0.31);
+    const rotator = makeRotator(db, store);
+    expect(rotator.pick()?.accountId).toBe('a');
+    rotator.refresh();
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+
+  it('falls back to utilization order when no account reports a usable reset', () => {
+    const db = getDb(dbPath);
+    seed(db, 'cold', 'c@x');
+    seed(db, 'warm', 'w@x');
+    const store = new RateLimitStore();
+    store.update('cold', { 'anthropic-ratelimit-unified-5h-utilization': '0.1' });
+    store.update('warm', { 'anthropic-ratelimit-unified-5h-utilization': '0.5' });
+    const rotator = makeRotator(db, store, { active: 'cold' });
+    expect(rotator.pick()?.accountId).toBe('cold');
+    // Unknown resets tie at +Infinity; the target holds across picks.
+    expect(rotator.pick()?.accountId).toBe('cold');
   });
 });
 
@@ -717,6 +811,9 @@ describe('TokenRotator overage gate', () => {
       () => new Set(),
       () => 'earliest-reset',
       () => new Set(['hot']), // opted in — but shouldn't matter when fresh exists
+      () => new Set(),
+      () => 10,
+      () => 0, // pin the clock so the hand-seeded resets stay in the future
     );
     // `hot` resets earlier (500 vs 9000) but would draw overage — must skip.
     expect(rotator.pick()?.accountId).toBe('fresh');
