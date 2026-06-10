@@ -227,6 +227,14 @@ interface ProxyOptions {
    *  Optional — when unset, the analyzer relies solely on its periodic
    *  scan loop. */
   onToolCallsFlushed?: () => void;
+  /** Invoked once per real (non-probe) POST /v1/messages the proxy
+   *  handles — i.e. genuine Claude Code traffic, with count_tokens and
+   *  Sentinel's own background usage probes excluded. Wired in index.ts to
+   *  the capture-health tracker so the daemon can tell whether Claude Code
+   *  is actually routing API calls through the proxy (the Optimize tab's
+   *  ingestion path) versus bypassing it via an overridden ANTHROPIC_BASE_URL.
+   *  Fire-and-forget; never mutates the request. */
+  onRealMessagesRequest?: () => void;
   /** Sprint 9 health probe. Returns the per-component status of the
    *  daemon's critical subsystems (DB, scanner, enforcer). Used by
    *  `/health` to respond 503 when any component is degraded and by
@@ -420,6 +428,7 @@ export function createProxyServer(
     requestAccountMap,
     onUpstreamAuthFailure,
     onToolCallsFlushed,
+    onRealMessagesRequest,
   } = opts;
   const getPausedAccountIds = opts.getPausedAccountIds ?? (() => new Set<string>());
   const getPauseReason = opts.getPauseReason ?? (() => null);
@@ -545,6 +554,15 @@ export function createProxyServer(
    * re-read downstream.
    */
   const handleMessagesPost = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // Capture-health: a real Claude Code message request reached the proxy.
+    // Fire before any pause / saturation short-circuit — a 503'd request
+    // still proves traffic is routing through Sentinel (the bypass we detect
+    // is traffic NOT reaching the proxy at all). Probes and count_tokens are
+    // excluded so they can't mask a true bypass, matching `isMessagesPost`.
+    const isProbeRequest = String(req.headers['user-agent'] ?? '').includes('sentinel-probe');
+    const isCountTokens = req.url?.includes('count_tokens') ?? false;
+    if (!isProbeRequest && !isCountTokens) onRealMessagesRequest?.();
+
     const body = await readBody(req);
     const model = extractRequestModel(body);
     const isSonnet = isSonnetModel(model);

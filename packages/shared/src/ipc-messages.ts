@@ -29,6 +29,8 @@ import type {
   OtelForwarderStatus,
   OtelExporterTestResult,
   OtelDriftDetails,
+  CaptureHealth,
+  CaptureHealthState,
   McpInstallScope,
   McpInstallRecord,
   CodeModeMigration,
@@ -183,6 +185,15 @@ export interface OtelForwarderStatusBroadcastMessage {
 export interface OtelDriftStateMessage {
   type: 'otel_drift_state';
   details: OtelDriftDetails;
+}
+
+/** Broadcast when the proxy-ingestion health that feeds the Optimize tab
+ *  changes state (e.g. transitions into or out of `proxy-bypassed`). Fires
+ *  only on real transitions, not on every request. The Optimize tab swaps
+ *  its empty-state for an explainer when `health.state === 'proxy-bypassed'`. */
+export interface CaptureHealthChangedMessage {
+  type: 'capture_health_changed';
+  health: CaptureHealth;
 }
 
 /** Broadcast when a user-configured usage alert crosses its threshold. The
@@ -575,7 +586,8 @@ export type DaemonToAppMessage =
   | SettingsTamperDetectedMessage
   | AuditLogTamperedMessage
   | OtelForwarderStatusBroadcastMessage
-  | OtelDriftStateMessage;
+  | OtelDriftStateMessage
+  | CaptureHealthChangedMessage;
 
 // ─── App → Daemon messages ────────────────────────────────────────────────────
 
@@ -1944,6 +1956,15 @@ export interface GetOtelDriftStateMessage {
   type: 'get_otel_drift_state';
 }
 
+/** Snapshot the proxy-ingestion health that feeds the Optimize tab:
+ *  compares Claude Code's OTEL `api_request` events against real
+ *  (non-probe) `/v1/messages` traffic through the proxy, and reports the
+ *  `ANTHROPIC_BASE_URL` currently in `~/.claude/settings.json`. Response
+ *  payload is `CaptureHealth`. */
+export interface GetCaptureHealthMessage {
+  type: 'get_capture_health';
+}
+
 /** Re-patch `~/.claude/settings.json` so Sentinel's eight managed env
  *  keys are restored to their default values. Used when a foreign tool
  *  has overwritten the endpoint, or when telemetry was disabled. Strips
@@ -2062,6 +2083,7 @@ export type AppToDaemonMessage =
   | GetOtelExporterStatusMessage
   | TestOtelExporterMessage
   | GetOtelDriftStateMessage
+  | GetCaptureHealthMessage
   | RepatchOtelSettingsMessage
   | PromoteForeignOtelEndpointMessage
   | GetProxyActivityMessage;
@@ -2091,6 +2113,8 @@ export type {
   OtelForwarderStatus,
   OtelExporterTestResult,
   OtelDriftDetails,
+  CaptureHealth,
+  CaptureHealthState,
 };
 
 // ─── All IPC messages ─────────────────────────────────────────────────────────

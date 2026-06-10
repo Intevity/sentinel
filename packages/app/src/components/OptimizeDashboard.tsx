@@ -26,6 +26,7 @@ import CompressionPanel from './optimize/CompressionPanel.js';
 import ContextPanel from './optimize/ContextPanel.js';
 import { MetricTile } from './optimize/MetricTile.js';
 import InfoModal from './InfoModal.js';
+import CaptureHealthBanner from './CaptureHealthBanner.js';
 import { RangeSelector } from './RangeSelector.js';
 import { RANGE_LABELS, windowForRange } from '../lib/dateRange.js';
 import {
@@ -358,6 +359,8 @@ export default function OptimizeDashboard(): React.ReactElement {
       />
 
       <OptimizeSubTabs value={subTab} onChange={(t) => void onChangeSubTab(t)} />
+
+      <CaptureHealthBanner />
 
       {error !== null && (
         <div className="glass-card px-4 py-3 text-sm text-red-700 dark:text-red-300">{error}</div>

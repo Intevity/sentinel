@@ -21,6 +21,7 @@ const baseObserved = (overrides: Partial<ObservedOtelEnv> = {}): ObservedOtelEnv
   telemetryEnabled: true,
   protocol: 'http/json',
   headers: null,
+  baseUrl: SENTINEL_BASE_URL,
   ...overrides,
 });
 
@@ -318,6 +319,38 @@ describe('inspectClaudeOtelConfig', () => {
     const result = await inspectClaudeOtelConfig(settingsPath);
     expect(result.state).toBe('ok');
     expect(result.canPromote).toBe(false);
+  });
+
+  it('surfaces ANTHROPIC_BASE_URL in actual.baseUrl without affecting the drift state', async () => {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: SENTINEL_BASE_URL,
+          CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+          OTEL_EXPORTER_OTLP_ENDPOINT: SENTINEL_BASE_URL,
+        },
+      }),
+    );
+    const result = await inspectClaudeOtelConfig(settingsPath);
+    // OTEL drift classification stays scoped to OTEL keys ...
+    expect(result.state).toBe('ok');
+    // ... but the base URL is reported for the capture-health check to read.
+    expect(result.actual.baseUrl).toBe(SENTINEL_BASE_URL);
+  });
+
+  it('reports actual.baseUrl as null when ANTHROPIC_BASE_URL is absent', async () => {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        env: {
+          CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+          OTEL_EXPORTER_OTLP_ENDPOINT: SENTINEL_BASE_URL,
+        },
+      }),
+    );
+    const result = await inspectClaudeOtelConfig(settingsPath);
+    expect(result.actual.baseUrl).toBeNull();
   });
 
   it('returns foreign-endpoint with a populated promote preview for HTTPS foreign endpoints', async () => {

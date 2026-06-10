@@ -113,6 +113,11 @@ import {
   pickAuthHeader,
 } from './otel-settings-drift.js';
 import { isUrlSafeForForwarder, SENTINEL_BASE_URL } from './claude-otel-config.js';
+import {
+  CaptureHealthTracker,
+  composeCaptureHealth,
+  type CaptureHealthSnapshot,
+} from './capture-health.js';
 import { createAgentsSyncEngine } from './optimize/agents-sync.js';
 import { getCuratedLibrary, getCuratedSubagent } from './optimize/curated-library.js';
 import { createOptimizationAnalyzer } from './optimize/optimization-analyzer.js';
@@ -146,6 +151,7 @@ import type {
   ClaudeCodeCredentials,
   MetricsSummary,
   AlertScope,
+  CaptureHealthState,
 } from '@sentinel/shared';
 import { request as httpRequest, type Server } from 'http';
 import { log } from './logger.js';
@@ -699,13 +705,50 @@ export async function startDaemon(): Promise<DaemonHandle> {
   otelForwarder.onStatusChange((status) => {
     ipcServer.broadcast({ type: 'otel_forwarder_status', status });
   });
+  // Capture-health: compares real Claude Code activity seen via OTEL
+  // (`api_request` events) against real /v1/messages traffic through the
+  // proxy. When OTEL shows activity but the proxy sees none, API calls are
+  // bypassing Sentinel (overridden ANTHROPIC_BASE_URL) and the Optimize tab
+  // would otherwise show empty zeros with no explanation.
+  const captureHealthTracker = new CaptureHealthTracker();
+  let lastCaptureHealthState: CaptureHealthState | null = null;
+  // Compose the full CaptureHealth from a counter snapshot plus the
+  // ANTHROPIC_BASE_URL read out of ~/.claude/settings.json. Never rejects —
+  // an unreadable settings file degrades to a null base URL (the bypass
+  // verdict itself comes from the counters, not the file).
+  const buildCaptureHealth = async (snap: CaptureHealthSnapshot) => {
+    try {
+      const drift = await inspectClaudeOtelConfig(
+        claudeSettingsPath,
+        currentSettings.otelExporterEndpoint,
+      );
+      return composeCaptureHealth(snap, drift.actual.baseUrl);
+      /* v8 ignore next 3 — defensive: settings.json read failing mid-flight
+         (non-ENOENT fs error); the same shape as get_otel_drift_state's catch. */
+    } catch {
+      return composeCaptureHealth(snap, null);
+    }
+  };
   const otelReceiver = new OtelReceiver(
     db,
     activeAccountId,
     ipcServer,
     requestAccountMap,
     otelForwarder,
+    () => captureHealthTracker.recordOtelApiRequest(),
   );
+  // Re-evaluate on every OTEL batch that wrote rows (the api_request events
+  // that drive a bypass are exactly those batches). Broadcast only on a real
+  // state transition so the Optimize tab can swap its empty-state live
+  // without polling. The settings-file read happens only on a transition.
+  otelReceiver.onBatchWritten(() => {
+    const snap = captureHealthTracker.snapshot();
+    if (snap.state === lastCaptureHealthState) return;
+    lastCaptureHealthState = snap.state;
+    void buildCaptureHealth(snap).then((health) => {
+      ipcServer.broadcast({ type: 'capture_health_changed', health });
+    });
+  });
   const otelEmitter = new OtelEmitter({
     forwarder: otelForwarder,
     getSettings,
@@ -1299,6 +1342,17 @@ export async function startDaemon(): Promise<DaemonHandle> {
             const message = err instanceof Error ? err.message : String(err);
             respond({ requestType: 'get_otel_drift_state', success: false, error: message });
           });
+        break;
+      }
+
+      case 'get_capture_health': {
+        // Compares OTEL `api_request` activity against real proxy traffic and
+        // reports the settings-file ANTHROPIC_BASE_URL. Used by the Optimize
+        // tab to explain an empty state caused by API traffic bypassing the
+        // proxy (overridden base URL) rather than silently showing zeros.
+        void buildCaptureHealth(captureHealthTracker.snapshot()).then((data) => {
+          respond({ requestType: 'get_capture_health', success: true, data });
+        });
         break;
       }
 
@@ -3823,6 +3877,13 @@ export async function startDaemon(): Promise<DaemonHandle> {
         });
       },
       /* v8 ignore stop */
+      // Capture-health: feed the tracker one tick per real /v1/messages
+      // request. Only reachable through live proxy flow (the proxy-side
+      // unit test exercises the callback contract directly via
+      // startProxyWithFake), so this one-line wiring rides an ignore block
+      // like the sibling proxy callbacks above.
+      /* v8 ignore next 1 */
+      onRealMessagesRequest: () => captureHealthTracker.recordRealProxyRequest(),
       // Sprint 9 health probe. Each component check is sub-millisecond
       // and runs inline on `/health` requests + on the fail-mode gate.
       // SELECT 1 catches a closed/locked DB; the scanner/enforcer truthy

@@ -5,8 +5,29 @@
  * alerts) live in the lifecycle + alerts sibling files.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import type { OAuthAccount } from '@sentinel/shared';
+import type { OAuthAccount, CaptureHealth, CaptureHealthChangedMessage } from '@sentinel/shared';
 import { makeCreds, startTestDaemon, type TestDaemon } from './index.test-helpers.js';
+import { SENTINEL_BASE_URL } from './claude-otel-config.js';
+
+/** POST `count` Claude Code `api_request` OTEL log events to the daemon's
+ *  receiver — stand-in for real Claude Code activity arriving via telemetry. */
+async function postApiRequestLogs(daemonPort: number, count: number): Promise<void> {
+  const logRecords = Array.from({ length: count }, () => ({
+    attributes: [
+      { key: 'event.name', value: { stringValue: 'api_request' } },
+      { key: 'user.account_uuid', value: { stringValue: '00000000-0000-0000-0000-000000000001' } },
+      { key: 'model', value: { stringValue: 'claude-opus-4' } },
+      { key: 'input_tokens', value: { intValue: 10 } },
+      { key: 'output_tokens', value: { intValue: 5 } },
+    ],
+  }));
+  const res = await fetch(`http://127.0.0.1:${daemonPort}/v1/logs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ resourceLogs: [{ scopeLogs: [{ logRecords }] }] }),
+  });
+  if (res.status !== 200) throw new Error(`OTEL /v1/logs returned ${res.status}`);
+}
 
 let ctx: TestDaemon | null = null;
 
@@ -1140,4 +1161,80 @@ describe('IPC — scan benchmark', () => {
     expect(r.success).toBe(true);
     expect(typeof r.data?.recommendedMb).toBe('number');
   }, 30_000);
+});
+
+// ─── Capture health (Optimize tab proxy-bypass detection) ────────────────────
+
+describe('IPC — capture health', () => {
+  it('reports proxy-bypassed when OTEL shows activity but no proxy traffic, even with a correct settings.json base URL', async () => {
+    // Reproduces the field report exactly: Claude Code's ANTHROPIC_BASE_URL in
+    // ~/.claude/settings.json points at Sentinel, yet API traffic bypasses the
+    // proxy (an override at higher precedence). OTEL still flows, so Metrics
+    // populate while Optimize stays empty.
+    const account = defaultAccount();
+    ctx = await startTestDaemon({
+      claudeState: { oauthAccount: account },
+      sentinelCredentials: {
+        [account.organizationUuid]: makeCreds({
+          accessToken: 'active-token',
+          subscriptionType: 'max',
+        }),
+      },
+      registerTokens: ['active-token'],
+      claudeSettings: {
+        env: {
+          ANTHROPIC_BASE_URL: SENTINEL_BASE_URL,
+          CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+          OTEL_EXPORTER_OTLP_ENDPOINT: SENTINEL_BASE_URL,
+        },
+      },
+    });
+
+    await postApiRequestLogs(ctx.daemonPort, 3);
+
+    const bypass = await ctx.waitForBroadcast<CaptureHealthChangedMessage>(
+      (m) => m.type === 'capture_health_changed' && m.health.state === 'proxy-bypassed',
+    );
+    expect(bypass.health.realProxyRequests).toBe(0);
+
+    const health = await ctx.request<CaptureHealth>({ type: 'get_capture_health' });
+    expect(health.success).toBe(true);
+    expect(health.data?.state).toBe('proxy-bypassed');
+    expect(health.data?.otelApiRequests).toBeGreaterThanOrEqual(3);
+    expect(health.data?.realProxyRequests).toBe(0);
+    // The settings file is correct, so the UI tells the user the override is elsewhere.
+    expect(health.data?.settingsBaseUrl).toBe(SENTINEL_BASE_URL);
+    expect(health.data?.settingsBaseUrlRoutesToSentinel).toBe(true);
+  });
+
+  it('recovers to ok once real /v1/messages traffic flows through the proxy', async () => {
+    ctx = await startWithActiveAccount();
+
+    await postApiRequestLogs(ctx.daemonPort, 3);
+    await ctx.waitForBroadcast(
+      (m) => m.type === 'capture_health_changed' && m.health.state === 'proxy-bypassed',
+    );
+
+    // Drive one real request through the proxy, then re-evaluate via another
+    // OTEL batch: the proxy now shows traffic, so the state clears to ok.
+    await fetch(`http://127.0.0.1:${ctx.daemonPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer active-token' },
+      body: JSON.stringify({
+        model: 'claude-opus-4-7',
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    });
+    await postApiRequestLogs(ctx.daemonPort, 1);
+
+    const recovered = await ctx.waitForBroadcast<CaptureHealthChangedMessage>(
+      (m) => m.type === 'capture_health_changed' && m.health.state === 'ok',
+    );
+    expect(recovered.health.realProxyRequests).toBeGreaterThanOrEqual(1);
+
+    const health = await ctx.request<CaptureHealth>({ type: 'get_capture_health' });
+    expect(health.data?.state).toBe('ok');
+    expect(health.data?.realProxyRequests).toBeGreaterThanOrEqual(1);
+  });
 });

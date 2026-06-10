@@ -974,6 +974,11 @@ export interface OtelDriftDetails {
     telemetryEnabled: boolean;
     protocol: string | null;
     headers: string | null;
+    /** `ANTHROPIC_BASE_URL` from the same env block. Surfaced for the
+     *  capture-health check (the proxy / Optimize path), not the OTEL
+     *  metrics drift classification — `classifyDrift` deliberately ignores
+     *  it so the Metrics-tab banner stays scoped to metrics flow. */
+    baseUrl: string | null;
   };
   /** True when state === 'foreign-endpoint' and the endpoint URL passes
    *  the same HTTPS-or-loopback check used by the forwarder's URL
@@ -981,6 +986,44 @@ export interface OtelDriftDetails {
   canPromote: boolean;
   /** Populated when canPromote is true. Drives the confirmation modal. */
   promotePreview: OtelDriftPromotePreview | null;
+}
+
+/** Health of the proxy ingestion path that feeds the Optimize tab.
+ *
+ *  Optimize data comes exclusively from tool calls the reverse proxy
+ *  extracts out of `/v1/messages` bodies, whereas the Metrics tab is fed
+ *  by Claude Code's independent OTEL export. The two can diverge: if
+ *  `ANTHROPIC_BASE_URL` is overridden (an OS env var, or a project /
+ *  enterprise settings file that outranks `~/.claude/settings.json`),
+ *  Claude Code's API traffic bypasses the proxy while its OTEL telemetry
+ *  still reaches the daemon. The result is a populated Metrics tab and an
+ *  empty Optimize tab with no explanation. This snapshot lets the Optimize
+ *  tab explain that state instead of silently showing zeros.
+ *
+ *  - `proxy-bypassed` — the daemon saw real Claude Code activity via OTEL
+ *    (`api_request` events) but no real `/v1/messages` traffic through the
+ *    proxy in the same window: API calls are bypassing Sentinel.
+ *  - `ok` — real proxy traffic is flowing, or there isn't yet enough OTEL
+ *    signal to conclude a bypass (no false alarm on a quiet/new install). */
+export type CaptureHealthState = 'ok' | 'proxy-bypassed';
+
+export interface CaptureHealth {
+  state: CaptureHealthState;
+  /** Rolling window (ms) both counts are measured over. */
+  windowMs: number;
+  /** Claude Code `api_request` OTEL log events ingested in the window. */
+  otelApiRequests: number;
+  /** Real (non-probe) POST /v1/messages requests the proxy handled in the
+   *  window. Sentinel's own 5-minute background usage probes are excluded. */
+  realProxyRequests: number;
+  /** `ANTHROPIC_BASE_URL` found in `~/.claude/settings.json`'s env block,
+   *  or null if absent. */
+  settingsBaseUrl: string | null;
+  /** True when `settingsBaseUrl` points at Sentinel's loopback proxy. Lets
+   *  the UI distinguish "settings.json's base URL is wrong/missing" from
+   *  "settings.json is correct but something at higher precedence (an OS
+   *  env var or another settings file) is overriding it". */
+  settingsBaseUrlRoutesToSentinel: boolean;
 }
 
 /** Structured log entry emitted by the daemon logger and streamed to the
