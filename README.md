@@ -1,16 +1,16 @@
 # Claude Sentinel
 
-**Combine every Claude account you own into one. Rotate tokens automatically, see every rate limit Claude Code hides, cap overage spend before it runs away, and get notified the moment you cross a threshold.**
+An open-source Claude Code companion: a tray app and bundled local daemon for in-flight security scanning, multi-account routing, usage metrics, and overage alerts.
 
-An open-source Claude Code companion: tray app + bundled daemon for in-flight security scanning, multi-account routing, real-time overage alerts, honest usage metrics, and threshold-based notifications.
+**Website:** https://intevity.github.io/claude-sentinel (feature tour, demos, and downloads)
 
 [![CI](https://github.com/Intevity/claude-sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/Intevity/claude-sentinel/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/Intevity/claude-sentinel?include_prereleases)](https://github.com/Intevity/claude-sentinel/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/Intevity/claude-sentinel/total)](https://github.com/Intevity/claude-sentinel/releases)
 [![License: MIT](https://img.shields.io/github/license/Intevity/claude-sentinel)](./LICENSE)
-[![No telemetry](https://img.shields.io/badge/telemetry-none-brightgreen)](#your-data-never-leaves-your-machine)
-[![Network: localhost only](https://img.shields.io/badge/network-localhost%20only-blue)](#your-data-never-leaves-your-machine)
-[![Credentials: OS keychain](https://img.shields.io/badge/credentials-OS%20keychain-blue)](#your-data-never-leaves-your-machine)
+[![No telemetry](https://img.shields.io/badge/telemetry-none-brightgreen)](#security)
+[![Network: localhost only](https://img.shields.io/badge/network-localhost%20only-blue)](#security)
+[![Credentials: OS keychain](https://img.shields.io/badge/credentials-OS%20keychain-blue)](#security)
 [![Coverage ≥95%](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)](./vitest.config.ts)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#download)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
@@ -19,130 +19,7 @@ An open-source Claude Code companion: tray app + bundled daemon for in-flight se
 
 ---
 
-## 🛡️ Catch secrets, injections, and risky tool calls before they hit Anthropic
-
-Sentinel scans every prompt and response in flight. API keys, tokens, private keys, PII, prompt-injection payloads, and risky tool calls (Bash / Write / WebFetch) are flagged the moment they appear — you decide whether to observe, block HIGH severity, or block MEDIUM and HIGH. The Security tab gives you the full audit trail; expand any alert to see severity, category, match mask, source, and provenance.
-
-- **Real-time detectors** for secrets, PII, prompt injection, and dangerous tool use — runs before the request leaves your machine
-- **Three enforcement modes** — observe (log only), block HIGH, or block MEDIUM+HIGH, with an optional approve/deny hold banner
-- **Per-tool permission rules** with sub-command pattern matching — allow `git status`, deny `git push --force`, or require approval (`ask`) before `rm -rf` runs. Allow/deny rules sync into Claude Code's `settings.json` (it enforces them silently); `ask` rules are Sentinel-only and surface an approve/deny pending block in the tray UI — one place for prompts, ready for future remote-approval integrations (Slack, phone notifications)
-- **Auto-mode aware** — optionally defer to Claude Code's own classifier when auto-mode is active so you don't get double-prompted
-- **Redacted event history** — only fingerprints (never the original secret text) are persisted; allowlist known-safe matches to silence repeats
-- **Guided setup wizard** with sensible defaults; tune every category, threshold, and mute from Settings → Security
-
-<table>
-<tr>
-<th align="center">Security tab with event list</th>
-<th align="center">Expanded alert — severity, category, provenance</th>
-</tr>
-<tr>
-<td align="center"><img src="assets/security1.png" alt="Security tab with event list" /></td>
-<td align="center"><img src="assets/security2.png" alt="Expanded security alert showing severity, category, and provenance" /></td>
-</tr>
-</table>
-
-#### Your data never leaves your machine
-
-- ✅ **No telemetry.** No analytics. No crash reporting. Verified — zero third-party tracking SDKs (Sentry / PostHog / Mixpanel / Datadog / Segment) anywhere in the dependency tree.
-- ✅ **Daemon binds only to `127.0.0.1:47284`** ([`packages/daemon/src/index.ts`](./packages/daemon/src/index.ts)). Never exposed to the network.
-- ✅ **Credentials live in your OS keychain** — Keychain on macOS, Credential Manager on Windows, libsecret on Linux. Never in plaintext files, never in logs.
-- ✅ **MIT-licensed and fully open source.** Every line — daemon, frontend, Rust backend — is auditable, and CI enforces ≥95% test coverage on the daemon.
-
-## 🔀 Combine every account into one
-
-Flip round-robin on and Sentinel rotates the OAuth token on every API request — your Max, Pro, and Team plans drain evenly, staying within ~1% of each other. Flip it off and you're back to one-click switching, with live 5-hour usage on every card so you always know which account has headroom.
-
-<table>
-<tr>
-<th align="center">Round-robin <b>on</b> — combined pool</th>
-<th align="center">Round-robin <b>off</b> — manual switching</th>
-</tr>
-<tr>
-<td align="center"><img src="assets/accounts1.png" alt="Accounts tab with round-robin enabled" /></td>
-<td align="center"><img src="assets/accounts2.png" alt="Accounts tab with manual switching" /></td>
-</tr>
-</table>
-
-## 📊 See every limit. Cap every spend.
-
-Claude Code shows you nothing about your rate-limit state, and on a Team or Enterprise plan without admin access your individual overage budget is invisible to you in claude.ai too. Sentinel surfaces the full picture right next to where you're working: 5-hour window, weekly all-models, weekly Sonnet, and per-user overage budget — color-coded by urgency with reset countdowns. Set a per-account or global spend cap and Sentinel pauses that account the moment it crosses, so round-robin skips past and no further overage accrues. In round-robin mode the Usage tab aggregates every account into a single **pool** bar so you know at a glance how close the _whole fleet_ is to the wall.
-
-<table>
-<tr>
-<th align="center">Pool view (round-robin)</th>
-<th align="center">Per-account view</th>
-</tr>
-<tr>
-<td align="center"><img src="assets/usage1.png" alt="Usage pool aggregate view" /></td>
-<td align="center"><img src="assets/usage2.png" alt="Usage per-account view" /></td>
-</tr>
-</table>
-
-## 💸 Real cost. Real tokens. Real cache hit rate.
-
-`~/.claude/stats-cache.json` reports `$0.00` for every subscription user. Sentinel captures Claude Code's OTEL telemetry directly and gives you the truth: per-model spend, input vs. cache-read token breakdown, cache hit rate, API error rates, and top-tool latency (p50/p95) — all over rolling 7/14/30-day windows.
-
-Sentinel also splits prompt-cache activity by TTL, a breakdown OTEL does not expose. The proxy reads each response's `usage.cache_creation` object to separate 5-minute from 1-hour ephemeral cache writes, applies the published multipliers (5m writes 1.25x base input, 1h writes 2.0x, reads 0.1x), and renders a daily stacked chart with a Tokens/Cost toggle plus a per-session table so you can see exactly which Claude Code sessions are driving the 1-hour premium — and whether it's paying off.
-
-<table>
-<tr>
-<th align="center">Cost & token breakdown</th>
-<th align="center">Models, cache & errors</th>
-</tr>
-<tr>
-<td align="center"><img src="assets/metrics1.png" alt="Metrics dashboard — cost and tokens" /></td>
-<td align="center"><img src="assets/metrics2.png" alt="Metrics dashboard — models and errors" /></td>
-</tr>
-</table>
-
-## 🗜️ Up to 99% fewer tokens on the output that bloats your context
-
-Sentinel's in-flight compressor rewrites tool results — and only tool results — on their way to Anthropic. Ten content-aware rules cover the payloads that actually eat your window: JSON API arrays are sampled with statistical summaries (errors and outliers always kept), grep/Glob results are capped per file, unified diffs lose their lockfile noise and excess hunks, build and incident logs fold to their errors, and HTML reduces to its text.
-
-Measured on the checked-in benchmark suite (`pnpm bench:compression`, reversible mode on, aggressive tier):
-
-| Workload          | Tokens in | Tokens out | Saved |
-| ----------------- | --------- | ---------- | ----- |
-| SRE incident log  | 68,105    | 305        | 99.6% |
-| Build log (cargo) | 20,287    | 413        | 98.0% |
-| HTML page         | 19,849    | 403        | 98.0% |
-| JSON API array    | 42,575    | 919        | 97.8% |
-| Code search (rg)  | 54,313    | 3,451      | 93.6% |
-| Unified diff      | 13,145    | 869        | 93.4% |
-
-Three honest caveats you won't find on other tools' landing pages. First, these are per-payload best cases on ideal workloads — across a whole mixed conversation the realized average is necessarily lower (for every tool in this category: one popular competitor advertises "up to 95%" while its own docs report a 4.8% median on production traffic). Sentinel's Optimize tab shows your real number. Second, every rule is deterministic and byte-stable, so Anthropic prompt caching keeps working — compression that busts your cache prefix costs more than it saves. Third, nothing is silently lost: with reversible retrieval on, every elision carries a content-addressed id and Claude can fetch the original bytes back through the `mcp__sentinel__retrieve` tool the moment it needs them. The benchmark suite enforces all three properties in CI — savings floors per content type, error-line survival ("same FATAL found"), and idempotency.
-
-See [documentation/COMPRESSION.md](documentation/COMPRESSION.md) for the full rule reference, tier table, and design contract.
-
-## 🔔 Know before you hit the wall
-
-Set a threshold on the 5-hour window — 50%, 80%, 95%, whatever keeps you sane — and Sentinel fires a native OS notification the moment you cross it. In round-robin mode you can alert on pool-wide mean usage too. Pick your own notification sound per alert type. Per-window deduped (one alert per rolling cycle, no spam), with a unified Notification Center that captures every usage threshold, overage transition, account switch, and security finding in one scrollable timeline.
-
-<p align="center"><img src="assets/alerts1.png" alt="Alerts tab with threshold editor and history" width="720" /></p>
-
-## ⚙️ One panel. Four tabs. Zero surprises.
-
-Every setting Sentinel exposes lives in one tabbed panel, grouped by concern. Nothing ships on by default — you opt into each behavior, and every change persists the instant you make it. No Save button.
-
-- **General** — launch at login, switching mode (off / round-robin), round-robin strategy (balance / earliest-reset), alert sounds, background probe interval, auto-update.
-- **Accounts** — refresh an account's token, soft-remove (preserve history) or purge (delete all data), toggle round-robin pool inclusion per account.
-- **Security** — enable/disable each detector category, choose enforcement mode, configure oversized-request handling, manage tool permission rules, set the OS notification threshold, tune event retention, and mute specific scanner telemetry events.
-- **Data** — request/response logging toggle, per-feature data retention for the Optimize and Metrics pages (3 months to 3 years; each page's date-range presets adapt to its window), max body size, auth-header redaction, OTEL metrics retention, one-click clear buttons.
-
-<table>
-<tr>
-<th align="center">General tab</th>
-<th align="center">Security tab</th>
-</tr>
-<tr>
-<td align="center"><img src="assets/configuration1.png" alt="Settings panel — General tab" /></td>
-<td align="center"><img src="assets/configuration2.png" alt="Settings panel — Security tab" /></td>
-</tr>
-</table>
-
----
-
-## ⬇️ Download
+## Download
 
 Grab the latest installer from the **[Releases page](https://github.com/Intevity/claude-sentinel/releases/latest)**, or pick your platform directly:
 
@@ -489,6 +366,24 @@ pnpm --filter @claude-sentinel/app run tauri:dev
 ```
 
 In dev mode the app will log a warning if the sidecar binary hasn't been built yet and skip spawning it — that's expected. The IPC module retries the socket connection automatically once the daemon is running.
+
+### Run the marketing site locally
+
+The website lives in its own workspace, `packages/site` (Astro + React, static build). It is independent of the app and daemon.
+
+```sh
+pnpm install                                   # once, from the repo root
+pnpm --filter @claude-sentinel/site dev        # dev server with hot reload
+pnpm --filter @claude-sentinel/site build      # static build to packages/site/dist
+pnpm --filter @claude-sentinel/site preview     # serve the production build locally
+pnpm --filter @claude-sentinel/site typecheck   # astro check
+```
+
+The dev server serves the site under the `/claude-sentinel` base path (matching the GitHub Pages URL), so open the localhost URL Astro prints rather than bare `/`.
+
+**Demo videos:** the feature carousel ships branded placeholder posters. To add real recordings, follow `packages/site/public/videos/README.md` (filenames, shot list) and flip `hasVideo: true` for that feature in `packages/site/src/data/features.ts`.
+
+**Deploying:** `.github/workflows/deploy-site.yml` publishes the site to GitHub Pages on pushes that touch `packages/site/**`, but only when the repository variable `SITE_DEPLOY_ENABLED` is set to `true` (and Pages source is set to "GitHub Actions"). It stays off until then, so nothing publishes before the repo is public.
 
 ### Testing the security feature
 
