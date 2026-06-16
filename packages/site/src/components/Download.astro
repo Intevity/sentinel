@@ -1,0 +1,52 @@
+---
+import Icon from './Icon.astro';
+
+const repo = 'https://github.com/Intevity/claude-sentinel';
+const releases = `${repo}/releases/latest`;
+
+const platforms = [
+  { os: 'macOS', detail: 'Apple Silicon (M1 through M5)', format: '.dmg' },
+  { os: 'Windows', detail: 'x64 installer', format: '-setup.exe / .msi' },
+  { os: 'Linux', detail: 'x64', format: '.AppImage / .deb / .rpm' },
+];
+---
+
+<section id="download" class="section">
+  <div class="mb-10 text-center">
+    <p class="section-label">Get Sentinel</p>
+    <h2 class="mt-3 text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
+      Download for your platform
+    </h2>
+    <p class="mx-auto mt-4 max-w-2xl text-foreground/60">
+      Grab the latest signed installer from the releases page. Sentinel auto-updates once it is
+      installed.
+    </p>
+  </div>
+
+  <div class="grid gap-4 sm:grid-cols-3">
+    {
+      platforms.map((p) => (
+        <a
+          href={releases}
+          rel="noopener"
+          target="_blank"
+          class="glass-card group flex flex-col gap-2 p-6 transition-all hover:-translate-y-0.5 hover:shadow-card-md"
+        >
+          <span class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-ios-blue/10 text-ios-blue">
+            <Icon name="download" size={22} />
+          </span>
+          <h3 class="mt-1 text-lg font-semibold text-foreground">{p.os}</h3>
+          <p class="text-sm text-foreground/60">{p.detail}</p>
+          <p class="mt-auto pt-3 text-xs font-medium text-ios-blue">{p.format}</p>
+        </a>
+      ))
+    }
+  </div>
+
+  <div class="mt-10 text-center">
+    <a href={releases} class="btn-primary cta-glow" rel="noopener" target="_blank">
+      <Icon name="download" size={18} />
+      View all releases
+    </a>
+  </div>
+</section>

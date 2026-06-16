@@ -4,5 +4,6 @@ dist/
 packages/app/src-tauri/
 packages/app/test-results/
 packages/test-harness/src/fixtures/
+packages/site/.astro/
 *.lock
 pnpm-lock.yaml

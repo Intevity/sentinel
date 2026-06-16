@@ -21,6 +21,12 @@ export default defineConfig({
       exclude: [
         'node_modules/**',
         '**/dist/**',
+        // Marketing website (Astro/React). It ships no unit tests and is not part
+        // of the coverage-gated daemon/app product surface; without this, v8's
+        // `all` sweep over packages/*/src/**/*.ts would report every site .ts at
+        // 0% and sink the global thresholds. Excluding an unrelated static site is
+        // not the same as excluding daemon/app code to hit a number.
+        'packages/site/**',
         '**/*.d.ts',
         '**/*.test.ts',
         '**/*.spec.ts',
