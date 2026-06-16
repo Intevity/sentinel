@@ -392,7 +392,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow builds the Tauri app (with daemon sidecar embedded) for all four platforms in parallel and **signs + notarizes the macOS bundle**. Notarization is **decoupled** from the expensive macOS runner so Apple's notary queue can't burn 10x CI minutes: the macOS build legs sign and submit to Apple _without waiting_, then exit. A short `notarize-wait` job (ubuntu, 1x) catches the common fast case; if Apple's queue is slow, the release **defers without holding a runner** and the scheduled `notarize-poll` workflow finalizes it whenever Apple completes (even hours later, at the cost of a few seconds of polling per check — not a held runner). Finalizing staples the ticket into the `.dmg` + updater tarball (re-signing the tarball), promotes the GitHub release, and — when the auto-update channel is configured — mirrors the updater artifacts for **every platform** to S3: the stapled macOS tarballs, plus the Linux (`.AppImage`/`.deb`/`.rpm`) and Windows (`-setup.exe`/`.msi`) bundles exactly as built. Windows/Linux publication is deliberately gated on the macOS staple so one `latest.json` goes live atomically with the same version everywhere. The Windows bundles carry no Authenticode signature yet (Azure Trusted Signing is planned); every platform's download is still minisign-verified by the updater.
+The workflow builds the Tauri app (with daemon sidecar embedded) for all four platforms in parallel and **signs + notarizes the macOS bundle**. Notarization is **decoupled** from the expensive macOS runner so Apple's notary queue can't burn 10x CI minutes: the macOS build legs sign and submit to Apple _without waiting_, then exit. A short `notarize-wait` job (ubuntu, 1x) catches the common fast case; if Apple's queue is slow, the release **defers without holding a runner** and the scheduled `notarize-poll` workflow finalizes it whenever Apple completes (even hours later, at the cost of a few seconds of polling per check — not a held runner). Finalizing staples the ticket into the `.dmg` + updater tarball (re-signing the tarball), promotes the GitHub release, and — when the auto-update channel is configured — mirrors the updater artifacts for **every platform** to S3: the stapled macOS tarballs, plus the Linux (`.AppImage`/`.deb`/`.rpm`) and Windows (`-setup.exe`/`.msi`) bundles exactly as built. Windows/Linux publication is deliberately gated on the macOS staple so one `latest.json` goes live atomically with the same version everywhere. When the Azure signing variables are set (see [Windows code signing](#windows-code-signing) below), the Windows app, NSIS `-setup.exe`, MSI, and the embedded daemon sidecar are Authenticode-signed via Azure Trusted/Artifact Signing; leave them unset and the Windows leg builds unsigned. Every platform's download is additionally minisign-verified by the updater.
 
 The macOS legs **fail fast** if any Apple secret is missing, so a release can never ship unsigned (an unsigned macOS bundle can't be auto-updated). Set all of these before tagging:
 
@@ -419,6 +419,21 @@ The S3 auto-update channel uses **GitHub OIDC**, so there are **no AWS secrets**
 | `AWS_REGION`          | Bucket region                                                                                                                                                                                                  |
 | `AWS_ROLE_ARN`        | IAM role CI assumes via OIDC to publish (output by the Terraform module)                                                                                                                                       |
 | `UPDATER_PUBLIC_BASE` | Public HTTPS base mapping to the bucket root, e.g. `https://<bucket>.s3.<region>.amazonaws.com` or a CloudFront/custom domain. The updater endpoint baked into the binary becomes `<base>/stable/latest.json`. |
+
+#### Windows code signing
+
+Optional, and **OIDC end to end** — like the updater channel, no client secret is stored. When these variables are set, the release pipeline Authenticode-signs the Windows app exe, NSIS `-setup.exe`, MSI, and the embedded daemon sidecar with **Azure Trusted/Artifact Signing** (via Microsoft's `sign` tool); leave any unset and the Windows leg builds **unsigned** (exactly how a fork behaves). The build job runs in a `release` GitHub Environment whose name the Azure federated credential is scoped to.
+
+Provision the GitHub→Azure identity, federated credential, and signer RBAC with the standalone **`azure-terraform`** module (kept as a sibling directory **outside** this repo, since it provisions a different cloud); it reads your existing signing account and outputs all six values plus a copy-paste `gh variable set` block. The certificate profile (`AZURE_TS_PROFILE`) is created by hand in the portal **after** identity validation completes, so set it last.
+
+| Variable                | Purpose                                                                                            |
+| ----------------------- | -------------------------------------------------------------------------------------------------- |
+| `AZURE_CLIENT_ID`       | Entra app registration the release job authenticates as via OIDC (no secret)                       |
+| `AZURE_TENANT_ID`       | Entra tenant id                                                                                    |
+| `AZURE_SUBSCRIPTION_ID` | Subscription that holds the signing account                                                        |
+| `AZURE_TS_ENDPOINT`     | Signing account URI, e.g. `https://eus.codesigning.azure.net/` (region-specific)                   |
+| `AZURE_TS_ACCOUNT`      | Trusted/Artifact Signing account name                                                              |
+| `AZURE_TS_PROFILE`      | Public Trust certificate profile name (set **last**, after portal identity validation is Complete) |
 
 #### How auto-update works (private source, public binaries)
 

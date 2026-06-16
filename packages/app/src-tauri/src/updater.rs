@@ -40,9 +40,12 @@
 //! installs on unsigned builds will fail at the Gatekeeper check. That's why
 //! the user-facing setting defaults to `false`. On Windows and Linux the
 //! plugin runs the matching installer (NSIS/MSI in `passive` mode, AppImage
-//! in-place swap, deb/rpm via the package manager); the bundles carry no OS
-//! code signature yet (Trusted Signing is planned), but every download is
-//! still minisign-verified against the pubkey in tauri.conf.json.
+//! in-place swap, deb/rpm via the package manager). On Windows the installers
+//! and the embedded daemon sidecar are Authenticode-signed via Azure
+//! Trusted/Artifact Signing when the release pipeline's AZURE_* repo variables
+//! are configured (unset — e.g. forks — builds unsigned); Linux bundles carry
+//! no OS code signature. Regardless, every download is still minisign-verified
+//! against the pubkey in tauri.conf.json.
 
 use std::sync::Mutex;
 use std::time::Duration;
