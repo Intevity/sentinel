@@ -1,0 +1,45 @@
+---
+import Icon from './Icon.astro';
+
+const points = [
+  {
+    icon: 'globe',
+    title: 'Localhost only',
+    body: 'The proxy listens on 127.0.0.1 and is never exposed to the network. Requests go straight to Anthropic and back.',
+  },
+  {
+    icon: 'key',
+    title: 'OS keychain',
+    body: 'Account credentials live in the system keychain (Keychain, Credential Manager, or libsecret), never in plaintext.',
+  },
+  {
+    icon: 'lock',
+    title: 'No telemetry',
+    body: 'Nothing is phoned home. Only redacted fingerprints are stored locally, never the original secret text.',
+  },
+];
+---
+
+<section class="section">
+  <div class="glass-card overflow-hidden p-8 sm:p-12">
+    <div class="mb-10 text-center">
+      <p class="section-label">Privacy by design</p>
+      <h2 class="mt-3 text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
+        Your data never leaves your machine
+      </h2>
+    </div>
+    <div class="grid gap-6 sm:grid-cols-3">
+      {
+        points.map((p) => (
+          <div class="flex flex-col items-center gap-3 text-center">
+            <span class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-ios-green/10 text-ios-green">
+              <Icon name={p.icon} size={24} />
+            </span>
+            <h3 class="text-base font-semibold text-foreground">{p.title}</h3>
+            <p class="text-sm leading-relaxed text-foreground/60">{p.body}</p>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>

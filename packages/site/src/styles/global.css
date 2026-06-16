@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    color-scheme: light;
+
+    /* Semantic theme tokens — space-separated RGB triplets so Tailwind's
+       <alpha-value> substitution works on classes like `text-foreground/60`.
+       Ported verbatim from the app (packages/app/src/index.css). */
+    --foreground: 0 0 0;
+    --muted: 99 99 102;
+    --border-subtle: 0 0 0;
+    --surface-overlay: 0 0 0;
+  }
+
+  :root.dark {
+    color-scheme: dark;
+    --foreground: 255 255 255;
+    --muted: 142 142 147;
+    --border-subtle: 255 255 255;
+    --surface-overlay: 255 255 255;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    margin: 0;
+    background: #f2f2f7;
+    color: rgb(var(--foreground));
+  }
+
+  :root.dark body {
+    /* The marketing site is dark by default (see Base.astro adds `.dark`). */
+    background: #111111;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.12);
+    border-radius: 99px;
+  }
+  :root.dark ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+}
+
+@layer components {
+  /* Glass card — light: white shadow card, dark: elevated dark surface. */
+  .glass-card {
+    @apply rounded-2xl bg-white shadow-card dark:bg-[#1E1E1E];
+  }
+
+  /* Section label — Apple "GROUPED SECTION HEADER" style. */
+  .section-label {
+    @apply text-[11px] font-semibold uppercase tracking-widest text-ios-gray;
+  }
+
+  /* Primary button — iOS blue pill, scaled up for landing-page CTAs. */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-ios-blue px-6 py-3
+           text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95
+           disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  /* Ghost / secondary button. */
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-full border border-border-subtle/15
+           px-6 py-3 text-sm font-semibold text-foreground/80 transition-all
+           hover:bg-foreground/5 active:scale-95;
+  }
+
+  /* Page section vertical rhythm. */
+  .section {
+    @apply mx-auto w-full max-w-6xl px-6 py-20 sm:py-28;
+  }
+}
+
+/* Hero radial gradient wash — restrained, trpc-style. iOS blue + indigo glow
+   bleeding from the top of the page over the #111 background. */
+.hero-gradient {
+  background:
+    radial-gradient(60% 50% at 50% 0%, rgba(0, 122, 255, 0.18) 0%, rgba(0, 122, 255, 0) 70%),
+    radial-gradient(40% 40% at 80% 10%, rgba(94, 92, 230, 0.14) 0%, rgba(94, 92, 230, 0) 70%);
+}
+
+/* Soft blue glow on the primary CTA when hovered (respects reduced motion). */
+.cta-glow {
+  box-shadow: 0 0 0 0 rgba(0, 122, 255, 0);
+  transition: box-shadow 0.3s ease;
+}
+.cta-glow:hover {
+  box-shadow:
+    0 0 0 3px rgba(0, 122, 255, 0.25),
+    0 0 28px 4px rgba(0, 122, 255, 0.28);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cta-glow,
+  .cta-glow:hover {
+    box-shadow: none;
+    transition: none;
+  }
+}

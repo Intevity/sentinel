@@ -33,6 +33,7 @@
     "eslint": "^9.0.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "prettier": "^3.0.0",
+    "prettier-plugin-astro": "^0.14.1",
     "sharp": "^0.33.0",
     "typescript": "^5.5.0",
     "typescript-eslint": "^8.0.0",

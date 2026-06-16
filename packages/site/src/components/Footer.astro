@@ -1,0 +1,48 @@
+---
+import Icon from './Icon.astro';
+
+const base = import.meta.env.BASE_URL;
+const asset = (p: string) => `${base.replace(/\/$/, '')}/${p.replace(/^\//, '')}`;
+const repo = 'https://github.com/Intevity/claude-sentinel';
+
+const links = [
+  { label: 'GitHub', href: repo },
+  { label: 'Releases', href: `${repo}/releases` },
+  { label: 'License', href: `${repo}/blob/main/LICENSE` },
+  { label: 'Report an issue', href: `${repo}/issues` },
+];
+---
+
+<footer class="border-t border-border-subtle/10">
+  <div
+    class="mx-auto flex w-full max-w-6xl flex-col items-center gap-6 px-6 py-12 sm:flex-row sm:justify-between"
+  >
+    <div class="flex items-center gap-2.5">
+      <img src={asset('sentinel-mascot.png')} alt="" width="24" height="24" class="rounded-md" />
+      <span class="text-sm font-semibold text-foreground">Claude Sentinel</span>
+    </div>
+
+    <nav class="flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
+      {
+        links.map((l) => (
+          <a
+            href={l.href}
+            rel="noopener"
+            target="_blank"
+            class="text-sm text-foreground/60 transition hover:text-foreground"
+          >
+            {l.label}
+          </a>
+        ))
+      }
+    </nav>
+
+    <div class="flex items-center gap-2 text-sm text-foreground/50">
+      <a href={repo} rel="noopener" target="_blank" class="transition hover:text-foreground">
+        <Icon name="github" size={18} />
+      </a>
+      <span>MIT &copy; Jeff Wooden</span>
+      <img src={asset('intevity-logo.png')} alt="Intevity" width="18" height="18" class="ml-1" />
+    </div>
+  </div>
+</footer>

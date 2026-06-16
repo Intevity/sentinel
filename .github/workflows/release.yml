@@ -52,6 +52,12 @@ jobs:
     name: Build Tauri app (${{ matrix.platform }})
     needs: [prepare-notes]
     runs-on: ${{ matrix.os }}
+    # Run in the `release` GitHub Environment so the Windows leg's Azure OIDC token carries
+    # the subject `repo:<owner>/<repo>:environment:release` — the federated credential in
+    # the azure-terraform module is scoped to exactly that. Harmless for the macOS/Linux
+    # legs: the environment has no protection rules and repo-level secrets/variables stay
+    # accessible. (Create it once with: gh api -X PUT repos/<owner>/<repo>/environments/release)
+    environment: release
     # macOS notarization is NO LONGER awaited here: this leg signs the bundle and submits
     # to Apple's notary WITHOUT waiting (see the "Submit to notary" step), then exits. The
     # queue wait is paid on the 1x ubuntu `notarize-wait` job and stapling happens on the
@@ -248,6 +254,98 @@ jobs:
           # holds its base64. Written under RUNNER_TEMP, never the workspace.
           mkdir -p "$RUNNER_TEMP/private_keys"
           echo "$APPLE_API_KEY_CONTENT" | base64 --decode > "$RUNNER_TEMP/private_keys/AuthKey.p8"
+
+      # ── Windows Authenticode signing (Azure Trusted/Artifact Signing, OIDC) ──────────
+      # Mirrors the macOS prep above and, like it, runs BEFORE the build: build-sidecar.mjs
+      # (in beforeBuildCommand) signs the daemon sidecar, which Tauri's signCommand never
+      # touches (externalBin is not signed — tauri-apps/tauri#11992). Authentication is pure
+      # OIDC — azure/login leaves an `az` session that the `sign` tool's DefaultAzureCredential
+      # consumes, so there is NO client secret anywhere. Entirely gated on the AZURE_* repo
+      # variables (set them from the azure-terraform module's outputs); when any is unset,
+      # both steps skip and the Windows leg builds UNSIGNED (forks/dev degrade gracefully).
+      - name: Azure login (OIDC) for code signing
+        if: runner.os == 'Windows' && vars.AZURE_CLIENT_ID != '' && vars.AZURE_TS_ENDPOINT != '' && vars.AZURE_TS_ACCOUNT != '' && vars.AZURE_TS_PROFILE != ''
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          # The signer holds only a resource-scoped role on the signing account (no
+          # subscription-level RBAC), and the signing token is acquired against that
+          # resource — so don't let `az account set` hard-fail the login on a principal
+          # with no subscription visibility.
+          allow-no-subscriptions: true
+
+      - name: Prepare Windows signing (Trusted/Artifact Signing)
+        if: runner.os == 'Windows' && vars.AZURE_CLIENT_ID != '' && vars.AZURE_TS_ENDPOINT != '' && vars.AZURE_TS_ACCOUNT != '' && vars.AZURE_TS_PROFILE != ''
+        shell: bash
+        env:
+          AZURE_TS_ENDPOINT: ${{ vars.AZURE_TS_ENDPOINT }}
+          AZURE_TS_ACCOUNT: ${{ vars.AZURE_TS_ACCOUNT }}
+          AZURE_TS_PROFILE: ${{ vars.AZURE_TS_PROFILE }}
+        run: |
+          set -euo pipefail
+          # Microsoft's `sign` tool (dotnet/sign): a per-file Authenticode signer that signs
+          # via Azure Trusted/Artifact Signing using DefaultAzureCredential — which picks up
+          # the az session left by azure/login above, so no client secret is needed.
+          dotnet tool install --global --prerelease sign
+          if [[ ! -f "$HOME/.dotnet/tools/sign.exe" ]]; then
+            echo "::error::sign tool not found at $HOME/.dotnet/tools/sign.exe after install" >&2
+            exit 1
+          fi
+          # Tauri runs signCommand as a raw process (no shell), so cmd must be an absolute
+          # path with forward slashes (Windows accepts them; backslashes break parsing).
+          SIGN_EXE="$(cygpath -m "$HOME/.dotnet/tools/sign.exe")"
+          echo "sign tool: $SIGN_EXE"
+
+          # The trusted->artifact rename is mid-flight across Microsoft's tooling; the `sign`
+          # subcommand and its long flags track it (`code artifact-signing --artifact-signing-*`
+          # vs `code trusted-signing --trusted-signing-*`). Detect which the installed build
+          # exposes so the pipeline survives the rename with no edit (cf. signer_role_name in
+          # the azure-terraform module).
+          help="$("$SIGN_EXE" code --help 2>&1 || true)"
+          if printf '%s' "$help" | grep -q 'artifact-signing'; then
+            sub='artifact-signing'
+          else
+            sub='trusted-signing'
+          fi
+          echo "sign subcommand: $sub"
+
+          # Inject bundle.windows.signCommand (OBJECT form: each arg is passed verbatim to the
+          # process, so `%1` as its OWN element substitutes correctly and the spaced
+          # description needs no quoting — the failure mode in tauri-apps/tauri#11754 was
+          # embedding %1 inside a combined arg). Injected only here in CI; the committed
+          # tauri.conf.json stays clean so local `pnpm build:app` builds unsigned.
+          SIGN_EXE="$SIGN_EXE" SUB="$sub" node -e '
+            const fs = require("fs");
+            const p = "packages/app/src-tauri/tauri.conf.json";
+            const j = JSON.parse(fs.readFileSync(p, "utf8"));
+            const sub = process.env.SUB;
+            j.bundle.windows = j.bundle.windows || {};
+            j.bundle.windows.signCommand = {
+              cmd: process.env.SIGN_EXE,
+              args: [
+                "code", sub,
+                "--" + sub + "-endpoint", process.env.AZURE_TS_ENDPOINT,
+                "--" + sub + "-account", process.env.AZURE_TS_ACCOUNT,
+                "--" + sub + "-certificate-profile", process.env.AZURE_TS_PROFILE,
+                "-d", "Claude Sentinel",
+                "%1",
+              ],
+            };
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+            console.log("Patched signCommand:", JSON.stringify(j.bundle.windows.signCommand));
+          '
+
+          # Hand the same resolved signer + account to build-sidecar.mjs (beforeBuildCommand)
+          # so it signs the daemon sidecar with the same tool + OIDC credential.
+          {
+            echo "AZURE_TS_ENDPOINT=$AZURE_TS_ENDPOINT"
+            echo "AZURE_TS_ACCOUNT=$AZURE_TS_ACCOUNT"
+            echo "AZURE_TS_PROFILE=$AZURE_TS_PROFILE"
+            echo "SIGN_TOOL_PATH=$SIGN_EXE"
+            echo "SIGN_SUBCOMMAND=$sub"
+          } >> "$GITHUB_ENV"
 
       # Signing mechanisms here:
       #   1. The Developer ID identity imported above signs the .app and the

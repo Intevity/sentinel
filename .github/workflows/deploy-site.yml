@@ -1,0 +1,82 @@
+name: Deploy site
+
+# Publishes packages/site (the Astro marketing site) to GitHub Pages.
+#
+# ── ON/OFF SWITCH ────────────────────────────────────────────────────────────
+# Every job is gated on the repository variable `SITE_DEPLOY_ENABLED`. While it
+# is unset or anything other than the string "true", both jobs are skipped, so
+# the site never publishes (intended until the repo is made public). To turn it
+# on once you are ready:
+#   1. Settings → Pages → Build and deployment → Source: "GitHub Actions".
+#   2. gh variable set SITE_DEPLOY_ENABLED --body true
+#      (or Settings → Secrets and variables → Actions → Variables → New variable)
+# To turn it back off: set it to false, or delete the variable.
+#
+# Triggers are path-filtered to the site workspace, so unrelated commits never
+# queue a Pages run even when the switch is on.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/site/**'
+      - '.github/workflows/deploy-site.yml'
+  workflow_dispatch:
+
+# Allow the GITHUB_TOKEN to deploy to Pages via OIDC.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One in-flight Pages deployment at a time; don't cancel a running publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Astro site
+    if: vars.SITE_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keep pnpm/node in sync with ci.yml and release.yml.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build site
+        run: pnpm --filter @claude-sentinel/site run build
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: packages/site/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: vars.SITE_DEPLOY_ENABLED == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

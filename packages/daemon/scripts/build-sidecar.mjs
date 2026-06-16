@@ -17,7 +17,7 @@
  *
  * Output: packages/app/src-tauri/binaries/claude-sentinel-daemon-<triple>[.exe]
  */
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { mkdirSync, writeFileSync, copyFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -175,6 +175,63 @@ if (process.platform === 'darwin' && triple.includes('apple-darwin') && signingI
   console.log(
     '[build-sidecar] APPLE_SIGNING_IDENTITY unset — sidecar left unsigned (local/ad-hoc dev build).',
   );
+}
+
+// ── Step 3 (Windows release only): Authenticode-sign the sidecar with Azure
+// Trusted/Artifact Signing BEFORE `tauri build` packs it into the NSIS/MSI installers.
+//
+// Same rationale as the macOS branch above: Tauri's bundler does NOT sign externalBin
+// sidecars (tauri-apps/tauri#11992), and bundle.windows.signCommand only reaches the app
+// exe + installers — so without this the daemon .exe would ship UNSIGNED inside a signed
+// installer. The release workflow's "Prepare Windows signing" step installs Microsoft's
+// `sign` tool (dotnet/sign), resolves SIGN_TOOL_PATH + SIGN_SUBCOMMAND, and leaves an
+// OIDC `az` session that the tool's DefaultAzureCredential consumes — so there is no
+// client secret anywhere. We sign via a spawnSync argv array (no shell) so the spaced
+// description and the file path need no quoting.
+//
+// Skipped when the AZURE_TS_* env is absent (local/dev Windows builds keep the unsigned
+// behavior), exactly like the macOS branch skips without APPLE_SIGNING_IDENTITY.
+if (process.platform === 'win32' && triple.includes('windows')) {
+  const endpoint = process.env.AZURE_TS_ENDPOINT;
+  const account = process.env.AZURE_TS_ACCOUNT;
+  const profile = process.env.AZURE_TS_PROFILE;
+  const signTool = process.env.SIGN_TOOL_PATH || 'sign';
+  // The trusted->artifact rename is mid-flight; the workflow detects the installed
+  // subcommand and the long flags track its name (--<sub>-endpoint, etc.).
+  const subcommand = process.env.SIGN_SUBCOMMAND || 'trusted-signing';
+  if (endpoint && account && profile) {
+    console.log(`[build-sidecar] Authenticode-signing sidecar via Azure ${subcommand}…`);
+    const res = spawnSync(
+      signTool,
+      [
+        'code',
+        subcommand,
+        `--${subcommand}-endpoint`,
+        endpoint,
+        `--${subcommand}-account`,
+        account,
+        `--${subcommand}-certificate-profile`,
+        profile,
+        '-d',
+        'Claude Sentinel',
+        output,
+      ],
+      { stdio: 'inherit' },
+    );
+    // Fail loudly: a silent miss only surfaces as a SmartScreen/AV warning on a shipped
+    // installer, long after this (expensive) release build.
+    if (res.status !== 0) {
+      console.error(
+        `[build-sidecar] Authenticode signing of the sidecar failed (exit ${res.status ?? res.signal}).`,
+      );
+      process.exit(1);
+    }
+    console.log('[build-sidecar] Sidecar Authenticode-signed.');
+  } else {
+    console.log(
+      '[build-sidecar] AZURE_TS_* unset — Windows sidecar left unsigned (local/dev build).',
+    );
+  }
 }
 
 console.log('[build-sidecar] Done.');
