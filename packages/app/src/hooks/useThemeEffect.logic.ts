@@ -1,4 +1,4 @@
-import type { ThemePreference } from '@claude-sentinel/shared';
+import type { ThemePreference } from '@sentinel/shared';
 
 /** localStorage key the FOWT script in index.html reads on cold launch to
  *  pre-apply `.dark` to `<html>` before React mounts. Kept here as the

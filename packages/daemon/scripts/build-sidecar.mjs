@@ -15,7 +15,7 @@
  * The target triple is derived from `rustc -vV` so it always matches whatever
  * `tauri build` will compile for, regardless of Node.js architecture.
  *
- * Output: packages/app/src-tauri/binaries/claude-sentinel-daemon-<triple>[.exe]
+ * Output: packages/app/src-tauri/binaries/sentinel-daemon-<triple>[.exe]
  */
 import { execSync, spawnSync } from 'child_process';
 import { mkdirSync, writeFileSync, copyFileSync } from 'fs';
@@ -74,7 +74,7 @@ mkdirSync(BINARIES_DIR, { recursive: true });
 mkdirSync(DIST_DIR, { recursive: true });
 
 const ext = triple.includes('windows') ? '.exe' : '';
-const output = join(BINARIES_DIR, `claude-sentinel-daemon-${triple}${ext}`);
+const output = join(BINARIES_DIR, `sentinel-daemon-${triple}${ext}`);
 
 console.log(`[build-sidecar] Rust triple : ${triple}`);
 console.log(`[build-sidecar] pkg target  : ${pkgTarget}`);
@@ -213,7 +213,7 @@ if (process.platform === 'win32' && triple.includes('windows')) {
         `--${subcommand}-certificate-profile`,
         profile,
         '-d',
-        'Claude Sentinel',
+        'Sentinel',
         output,
       ],
       { stdio: 'inherit' },

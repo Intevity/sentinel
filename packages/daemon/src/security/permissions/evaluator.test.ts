@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { PermissionRule } from '@claude-sentinel/shared';
+import type { PermissionRule } from '@sentinel/shared';
 import {
   compileRules,
   evaluateToolCall,

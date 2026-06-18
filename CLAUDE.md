@@ -1,4 +1,4 @@
-# Claude Sentinel – Development Guide
+# Sentinel – Development Guide
 
 ## Fast iteration loop (daemon changes only)
 
@@ -12,27 +12,27 @@ The safe way to deploy new daemon code:
 
 ```sh
 # 1. Build
-pnpm --filter @claude-sentinel/daemon run build          # tsc
-pnpm --filter @claude-sentinel/daemon run build:sidecar  # pkg → binary
+pnpm --filter @sentinel/daemon run build          # tsc
+pnpm --filter @sentinel/daemon run build:sidecar  # pkg → binary
 
 # 2. Replace the binary in the installed app bundle (safe while the daemon is running —
 #    the running process keeps its inode; the new binary takes effect on next launch)
-cp "packages/app/src-tauri/binaries/claude-sentinel-daemon-aarch64-apple-darwin" \
-   "/Applications/Claude Sentinel.app/Contents/MacOS/claude-sentinel-daemon"
-echo "Binary replaced — ask the user to restart Claude Sentinel."
+cp "packages/app/src-tauri/binaries/sentinel-daemon-aarch64-apple-darwin" \
+   "/Applications/Sentinel.app/Contents/MacOS/sentinel-daemon"
+echo "Binary replaced — ask the user to restart Sentinel."
 
 # 3. Tail logs after the user restarts
-tail -f ~/.claude-sentinel/daemon.log
+tail -f ~/.sentinel/daemon.log
 ```
 
 ## Test cycle checklist
 
 Before declaring a fix complete, always:
 
-1. Build daemon (if changed): `pnpm --filter @claude-sentinel/daemon run build && pnpm --filter @claude-sentinel/daemon run build:sidecar`
-2. Build full app (if frontend/Rust changed): `pnpm --filter @claude-sentinel/app run tauri:build`
-3. Ask the user to quit Claude Sentinel, then install + open
-4. **Monitor logs throughout**: `tail -f ~/.claude-sentinel/daemon.log`
+1. Build daemon (if changed): `pnpm --filter @sentinel/daemon run build && pnpm --filter @sentinel/daemon run build:sidecar`
+2. Build full app (if frontend/Rust changed): `pnpm --filter @sentinel/app run tauri:build`
+3. Ask the user to quit Sentinel, then install + open
+4. **Monitor logs throughout**: `tail -f ~/.sentinel/daemon.log`
 5. Confirm expected log lines appear (daemon start, IPC responses, OAuth flow, broadcasts)
 
 ## Testing without disturbing the live daemon
@@ -64,7 +64,7 @@ curl -s http://localhost:47284/health
 Test the profile API directly with an existing access token:
 
 ```sh
-AT=$(security find-generic-password -s "Claude Sentinel-credentials" -a "<key>" -w 2>/dev/null \
+AT=$(security find-generic-password -s "Sentinel-credentials" -a "<key>" -w 2>/dev/null \
      | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8').trim()).accessToken||'')")
 node -e "
 (async () => {
@@ -100,7 +100,7 @@ password). CI does this via tauri-action; you rarely need it locally. Do
 NOT use `build:app:release` for the dev loop — it blocks on the key prompt.
 
 On macOS the dispatcher delegates to `scripts/install-app.sh`, which builds
-the unsigned `.app`, replaces `/Applications/Claude Sentinel.app` cleanly
+the unsigned `.app`, replaces `/Applications/Sentinel.app` cleanly
 (`rm -rf` first to avoid the `cp -R` merge-not-replace footgun), re-signs
 ad-hoc, verifies, and launches. It aborts if Sentinel is still running —
 quit it from the tray first.
@@ -150,10 +150,10 @@ HTTP, OAuth, keychain, and DB paths run against real listeners via the fake-Anth
 
 - **HTTP to Anthropic**: `startFakeAnthropic()` + `ANTHROPIC_UPSTREAM_URL`. Reuse `startProxyWithFake()` (`proxy.test-helpers.ts`) or `startTestDaemon()` (`index.test-helpers.ts`).
 - **OAuth endpoints**: `OAUTH_TOKEN_URL`, `OAUTH_AUTH_URL` pointed at the fake; `openAuthUrl` option for callback synthesis.
-- **Keychain**: `CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE` + `writeSentinelCredentials` / `writeClaudeCodeCredentials`.
-- **Settings**: `CLAUDE_SENTINEL_TEST_SETTINGS_FILE`.
-- **SQLite**: `CLAUDE_SENTINEL_TEST_DB_FILE`, `CLAUDE_SENTINEL_TEST_REQUEST_LOG_DB_FILE`.
-- **IPC / port**: `CLAUDE_SENTINEL_TEST_IPC_SOCKET`, `CLAUDE_SENTINEL_TEST_DAEMON_PORT`.
+- **Keychain**: `SENTINEL_TEST_KEYCHAIN_FILE` + `writeSentinelCredentials` / `writeClaudeCodeCredentials`.
+- **Settings**: `SENTINEL_TEST_SETTINGS_FILE`.
+- **SQLite**: `SENTINEL_TEST_DB_FILE`, `SENTINEL_TEST_REQUEST_LOG_DB_FILE`.
+- **IPC / port**: `SENTINEL_TEST_IPC_SOCKET`, `SENTINEL_TEST_DAEMON_PORT`.
 
 Production defaults are unchanged when these env vars are unset.
 
@@ -216,12 +216,12 @@ source of truth).
 
 ```sh
 # Stream in real time
-tail -f ~/.claude-sentinel/daemon.log
+tail -f ~/.sentinel/daemon.log
 
 # Filter to a subsystem
-grep '\[OAuth\]'    ~/.claude-sentinel/daemon.log
-grep '\[Switch\]'   ~/.claude-sentinel/daemon.log
-grep 'ERROR'        ~/.claude-sentinel/daemon.log
+grep '\[OAuth\]'    ~/.sentinel/daemon.log
+grep '\[Switch\]'   ~/.sentinel/daemon.log
+grep 'ERROR'        ~/.sentinel/daemon.log
 ```
 
 ## DevTools for frontend / webview diagnosis
@@ -307,7 +307,7 @@ packages/daemon/src/
                       per-request token selection via tokenProvider option
   oauth.ts          — PKCE login flow (browser + token exchange)
   ipc.ts            — Unix socket IPC server/client
-  settings.ts       — ~/.claude-sentinel/settings.json load/save
+  settings.ts       — ~/.sentinel/settings.json load/save
   token-rotator.ts  — round-robin {accountId, token} selector
                       (strategy: balance | earliest-reset)
   alerts.ts         — user-configured usage-alert evaluator

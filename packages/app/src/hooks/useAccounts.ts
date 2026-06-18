@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import type { AccountInfo } from '@claude-sentinel/shared';
+import type { AccountInfo } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 interface UseAccountsResult {

@@ -2,13 +2,13 @@ import React, { useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
 import { Bug } from 'lucide-react';
-import type { LogEntry, LogRequestSummary } from '@claude-sentinel/shared';
+import type { LogEntry, LogRequestSummary } from '@sentinel/shared';
 import intevityLogo from '../assets/intevityLogoIcon.png';
 import { openBugReport } from '../lib/bugReport.js';
 import { sendToSentinel } from '../lib/ipc.js';
 
 const INTEVITY_URL =
-  'https://www.intevity.com/?utm_source=claude-sentinel&utm_medium=app&utm_campaign=built-by-footer';
+  'https://www.intevity.com/?utm_source=sentinel&utm_medium=app&utm_campaign=built-by-footer';
 
 interface FooterProps {
   daemonErrors?: LogEntry[];
@@ -125,7 +125,7 @@ export default function Footer({
               {displayVersion}
             </button>
           ) : (
-            <span className="font-mono tabular-nums" title={`Claude Sentinel ${displayVersion}`}>
+            <span className="font-mono tabular-nums" title={`Sentinel ${displayVersion}`}>
               {displayVersion}
             </span>
           )}

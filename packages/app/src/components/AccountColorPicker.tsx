@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { HexColorPicker, HexColorInput } from 'react-colorful';
 import { X, RotateCcw } from 'lucide-react';
-import type { AccountInfo } from '@claude-sentinel/shared';
+import type { AccountInfo } from '@sentinel/shared';
 import { sendToSentinel } from '../lib/ipc.js';
 import { accountColor, PRESET_SWATCHES } from '../lib/accountColor.js';
 

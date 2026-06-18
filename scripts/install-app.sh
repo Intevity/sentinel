@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build, install, re-sign, and launch /Applications/Claude Sentinel.app — the
+# Build, install, re-sign, and launch /Applications/Sentinel.app — the
 # macOS implementation behind `pnpm build:app` (the cross-platform dispatcher
 # scripts/build-app.mjs calls this on Darwin). Also runnable directly. This is
 # the ONLY supported way to push a locally-built bundle into /Applications; do
@@ -51,23 +51,23 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_PATH="/Applications/Claude Sentinel.app"
-BUNDLE_PATH="$REPO_ROOT/packages/app/src-tauri/target/release/bundle/macos/Claude Sentinel.app"
+APP_PATH="/Applications/Sentinel.app"
+BUNDLE_PATH="$REPO_ROOT/packages/app/src-tauri/target/release/bundle/macos/Sentinel.app"
 
 cd "$REPO_ROOT"
 
 # The running app holds its files open and macOS App Management will block the
 # rm -rf below. Quit it first so the swap is clean.
-if pgrep -f "Claude Sentinel.app/Contents/MacOS/Claude Sentinel" >/dev/null 2>&1; then
-  echo "✗ Claude Sentinel is still running." >&2
-  echo "  Quit it from the tray (or run: osascript -e 'quit app \"Claude Sentinel\"')" >&2
+if pgrep -f "Sentinel.app/Contents/MacOS/Sentinel" >/dev/null 2>&1; then
+  echo "✗ Sentinel is still running." >&2
+  echo "  Quit it from the tray (or run: osascript -e 'quit app \"Sentinel\"')" >&2
   echo "  then re-run this script." >&2
   exit 1
 fi
 
 echo "→ Building app bundle, unsigned (this is the long step)..."
 # Only the `.app`, updater artifacts disabled → no `~/.tauri/*.key` prompt.
-pnpm --filter @claude-sentinel/app exec tauri build \
+pnpm --filter @sentinel/app exec tauri build \
   --bundles app --config src-tauri/tauri.dev.conf.json
 
 if [[ ! -d "$BUNDLE_PATH" ]]; then
@@ -82,7 +82,7 @@ if [[ -d "$APP_PATH" ]]; then
   if ! rm -rf "$APP_PATH" 2>/dev/null; then
     echo "✗ Could not remove $APP_PATH (Operation not permitted)." >&2
     echo "  macOS is protecting the installed app. Either:" >&2
-    echo "    - Confirm Claude Sentinel is fully quit (tray + Activity Monitor), or" >&2
+    echo "    - Confirm Sentinel is fully quit (tray + Activity Monitor), or" >&2
     echo "    - Grant your terminal 'App Management' under System Settings →" >&2
     echo "      Privacy & Security → App Management, then re-run." >&2
     exit 1
@@ -103,4 +103,4 @@ open "$APP_PATH"
 
 echo
 echo "✓ Installed and launched (unsigned local build)."
-echo "  Tail logs with: tail -f ~/.claude-sentinel/daemon.log"
+echo "  Tail logs with: tail -f ~/.sentinel/daemon.log"

@@ -54,14 +54,14 @@ static PENDING: LazyLock<Mutex<HashMap<String, VecDeque<oneshot::Sender<serde_js
 async fn connect_stream() -> std::io::Result<DaemonStream> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let path = std::path::PathBuf::from(home)
-        .join(".claude-sentinel")
+        .join(".sentinel")
         .join("daemon.sock");
     UnixStream::connect(&path).await
 }
 
 #[cfg(windows)]
 async fn connect_stream() -> std::io::Result<DaemonStream> {
-    ClientOptions::new().open(r"\\.\pipe\claude-sentinel")
+    ClientOptions::new().open(r"\\.\pipe\sentinel")
 }
 
 /// Connect to the daemon socket and forward incoming messages to the frontend.

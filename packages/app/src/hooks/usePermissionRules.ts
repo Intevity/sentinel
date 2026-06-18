@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { PermissionRule, PermissionRuleInput } from '@claude-sentinel/shared';
+import type { PermissionRule, PermissionRuleInput } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 interface UsePermissionRulesResult {

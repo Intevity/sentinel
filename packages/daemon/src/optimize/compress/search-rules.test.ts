@@ -183,7 +183,7 @@ describe('extractSearchMatches - guards & identity', () => {
   it('returns marker-bearing input unchanged (leading guard)', () => {
     const lines: string[] = [];
     for (let i = 0; i < 70; i++) lines.push(`src/a.ts:${i + 1}:hit`);
-    lines.push('... [5 more paths elided by Claude Sentinel] ...');
+    lines.push('... [5 more paths elided by Sentinel] ...');
     const input = lines.join('\n');
     expect(extractSearchMatches(input, MODERATE, undefined)).toBe(input);
   });
@@ -240,7 +240,7 @@ describe('extractSearchMatches - MODE A per-file cap', () => {
     const middle = big.slice(10, 40); // ceil(20/2)=10 head, floor=10 tail
     const id = hashOriginal(middle.join('\n'));
     expect(outLines[10]).toBe(
-      `src/big.ts: ... [30 more matches elided by Claude Sentinel; retrieve the full output with the sentinel retrieve tool, id="${id}"] ...`,
+      `src/big.ts: ... [30 more matches elided by Sentinel; retrieve the full output with the sentinel retrieve tool, id="${id}"] ...`,
     );
     // Last 10 of big follow.
     expect(outLines.slice(11, 21)).toEqual(big.slice(40, 50));
@@ -265,8 +265,8 @@ describe('extractSearchMatches - MODE A per-file cap', () => {
     // Moderate: maxPerFile 20 -> 65 > 20 fires, keeps 10+10, elides 45.
     // Aggressive: 6 -> keeps 3+3, elides 59. Aggressive output is shorter.
     expect(agg.split('\n').length).toBeLessThan(mod.split('\n').length);
-    expect(agg).toContain('59 more matches elided by Claude Sentinel');
-    expect(mod).toContain('45 more matches elided by Claude Sentinel');
+    expect(agg).toContain('59 more matches elided by Sentinel');
+    expect(mod).toContain('45 more matches elided by Sentinel');
   });
 });
 
@@ -297,14 +297,14 @@ describe('extractSearchMatches - MODE A file cap', () => {
     // a is dropped (run of 1 file, 2 matches) -> first line is its marker.
     const idA = hashOriginal(a.join('\n'));
     expect(outLines[0]).toBe(
-      `... [1 more files with 2 matches elided by Claude Sentinel; retrieve the full output with the sentinel retrieve tool, id="${idA}"] ...`,
+      `... [1 more files with 2 matches elided by Sentinel; retrieve the full output with the sentinel retrieve tool, id="${idA}"] ...`,
     );
     // Then b verbatim (5 lines).
     expect(outLines.slice(1, 6)).toEqual(b);
     // Then c dropped (run of 1 file, 1 match) -> marker.
     const idC = hashOriginal(c.join('\n'));
     expect(outLines[6]).toBe(
-      `... [1 more files with 1 matches elided by Claude Sentinel; retrieve the full output with the sentinel retrieve tool, id="${idC}"] ...`,
+      `... [1 more files with 1 matches elided by Sentinel; retrieve the full output with the sentinel retrieve tool, id="${idC}"] ...`,
     );
     // Then d verbatim (4 lines).
     expect(outLines.slice(7, 11)).toEqual(d);
@@ -333,7 +333,7 @@ describe('extractSearchMatches - MODE A file cap', () => {
     const outLines = out.split('\n');
     // a and b kept verbatim (6 lines), then c+d are ONE contiguous dropped run.
     expect(outLines.slice(0, 6)).toEqual([...a, ...b]);
-    expect(outLines[6]).toContain('2 more files with 4 matches elided by Claude Sentinel');
+    expect(outLines[6]).toContain('2 more files with 4 matches elided by Sentinel');
     expect(outLines).toHaveLength(7);
   });
 
@@ -358,7 +358,7 @@ describe('extractSearchMatches - MODE A file cap', () => {
     const elided = [...x, ...y].join('\n');
     const id = hashOriginal(elided);
     expect(outLines[6]).toBe(
-      `... [2 more files with 5 matches elided by Claude Sentinel; retrieve the full output with the sentinel retrieve tool, id="${id}"] ...`,
+      `... [2 more files with 5 matches elided by Sentinel; retrieve the full output with the sentinel retrieve tool, id="${id}"] ...`,
     );
     expect(outLines).toHaveLength(7);
     expect(captures).toHaveLength(1);
@@ -435,7 +435,7 @@ describe('extractSearchMatches - MODE A grouping behavior', () => {
     expect(outLines[0]).toBe('Searching 1,234 files...');
     // keep.ts (3 lines) heaviest? drop.ts has 6 -> drop.ts is heaviest, kept.
     // So keep.ts (lighter) is dropped. Marker then drop.ts verbatim.
-    expect(outLines[1]).toContain('1 more files with 3 matches elided by Claude Sentinel');
+    expect(outLines[1]).toContain('1 more files with 3 matches elided by Sentinel');
     expect(outLines.slice(2)).toEqual([
       'src/drop.ts:1:x',
       'src/drop.ts:2:y',
@@ -461,7 +461,7 @@ describe('extractSearchMatches - MODE B bare paths', () => {
     const middle = paths.slice(40, 90);
     const id = hashOriginal(middle.join('\n'));
     expect(outLines[40]).toBe(
-      `... [50 more paths elided by Claude Sentinel; retrieve the full output with the sentinel retrieve tool, id="${id}"] ...`,
+      `... [50 more paths elided by Sentinel; retrieve the full output with the sentinel retrieve tool, id="${id}"] ...`,
     );
     expect(outLines.slice(41)).toEqual(paths.slice(90));
     expect(captures).toHaveLength(1);
@@ -477,7 +477,7 @@ describe('extractSearchMatches - MODE B bare paths', () => {
     // head 20 + marker + tail 5 = 26.
     expect(aggLines).toHaveLength(26);
     expect(aggLines.slice(0, 20)).toEqual(paths.slice(0, 20));
-    expect(aggLines[20]).toContain('75 more paths elided by Claude Sentinel');
+    expect(aggLines[20]).toContain('75 more paths elided by Sentinel');
     expect(aggLines.slice(21)).toEqual(paths.slice(95));
   });
 });
@@ -537,7 +537,7 @@ describe('extractSearchMatches - thresholds, determinism, idempotency', () => {
     const paths: string[] = [];
     for (let i = 0; i < 80; i++) paths.push(`src/q${i}.ts`);
     const out = extractSearchMatches(paths.join('\n'), MODERATE, undefined);
-    expect(out).toContain('more paths elided by Claude Sentinel] ...');
+    expect(out).toContain('more paths elided by Sentinel] ...');
     // No retrieval hint when onElide is undefined.
     expect(out).not.toContain('retrieve the full output');
   });

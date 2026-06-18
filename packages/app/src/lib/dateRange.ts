@@ -1,4 +1,4 @@
-import type { MetricsWindow, OptimizeRangePreset } from '@claude-sentinel/shared';
+import type { MetricsWindow, OptimizeRangePreset } from '@sentinel/shared';
 
 /**
  * Date-range presets shared by the Optimize and Metrics pages: the mapping

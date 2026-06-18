@@ -27,11 +27,7 @@
 
 import Database from 'better-sqlite3';
 import { platform as osPlatform, arch as osArch } from 'os';
-import type {
-  Settings,
-  SecurityBenchmarkResult,
-  ScanBenchmarkSample,
-} from '@claude-sentinel/shared';
+import type { Settings, SecurityBenchmarkResult, ScanBenchmarkSample } from '@sentinel/shared';
 import { SCHEMA } from '../db.js';
 import { createSecurityScanner } from './scanner.js';
 

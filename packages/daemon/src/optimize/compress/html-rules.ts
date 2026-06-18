@@ -11,7 +11,7 @@
  * determinism is what keeps Anthropic prompt-cache prefixes byte-stable.
  *
  * Idempotency argument: the transform always appends an elision marker whose
- * text contains the literal phrase "elided by Claude Sentinel". The leading
+ * text contains the literal phrase "elided by Sentinel". The leading
  * guard short-circuits any input that already carries that phrase, so a second
  * pass over our own output returns it unchanged BEFORE `isHtml` is ever
  * consulted. That is why decoded entities are safe: an extracted body might
@@ -179,14 +179,14 @@ function cleanWhitespace(text: string): string {
  *   9. whitespace cleanup.
  *
  * The marker is the final line: `... [<N> bytes of HTML markup elided by
- * Claude Sentinel<hint>] ...` where N is the original byte length minus the
+ * Sentinel<hint>] ...` where N is the original byte length minus the
  * extracted-text byte length. A net-gain guard returns the original instance
  * when the marker would make the output as large or larger than the input
  * (tiny snippets), and in that case `onElide` is never invoked, so no capture
  * leaks for an unchanged result.
  */
 export function extractHtmlText(text: string, onElide?: OnElide): string {
-  if (text.includes('elided by Claude Sentinel')) return text;
+  if (text.includes('elided by Sentinel')) return text;
   if (!isHtml(text)) return text;
 
   let body = text;
@@ -216,7 +216,7 @@ export function extractHtmlText(text: string, onElide?: OnElide): string {
   // that captures never leak for an unchanged output. HINT_LEN is the exact
   // byte length retrievalHint() produces; 0 when reversible mode is off.
   const hintLen = onElide ? HINT_BYTES : 0;
-  const markerBase = `... [${removed} bytes of HTML markup elided by Claude Sentinel`;
+  const markerBase = `... [${removed} bytes of HTML markup elided by Sentinel`;
   const markerLen = byteLen(markerBase) + hintLen + byteLen('] ...');
   const sep = extracted.length === 0 ? 0 : 1; // the '\n' joining body and marker
   const predictedLen = (extracted.length === 0 ? 0 : byteLen(extracted)) + sep + markerLen;

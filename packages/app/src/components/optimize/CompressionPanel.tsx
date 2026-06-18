@@ -7,7 +7,7 @@ import type {
   McpInstallRecord,
   MetricsWindow,
   RetrievalMcpStatus,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../../lib/ipc.js';
 import { Switch } from '../settings/primitives.js';
 import InfoModal from '../InfoModal.js';

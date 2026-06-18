@@ -1,6 +1,6 @@
-# Claude Sentinel — Design System & Website Design Guide
+# Sentinel — Design System & Website Design Guide
 
-This document captures the visual language of the **Claude Sentinel** desktop app and
+This document captures the visual language of the **Sentinel** desktop app and
 translates it into a design system for the marketing website (`packages/site`). The app is
 the source of truth; the site should feel like a natural extension of it. Where the site
 needs more "landing-page energy" than a utility tray window, we borrow conventions from
@@ -16,7 +16,7 @@ All values below are taken verbatim from the app:
 
 ## 1. Brand identity
 
-**Name:** Claude Sentinel
+**Name:** Sentinel
 **One-liner:** Combine every Claude account you own into one. Rotate tokens automatically,
 see every rate limit Claude Code hides, cap overage spend before it runs away, and get
 notified the moment you cross a threshold.

@@ -20,7 +20,7 @@ import { getDb, closeDb, upsertAccount } from './db.js';
 import { RateLimitStore } from './rate-limit-store.js';
 import { RequestAccountMap } from './request-account-map.js';
 import type { IpcServer } from './ipc.js';
-import { startFakeAnthropic, type FakeAnthropic } from '@claude-sentinel/test-harness';
+import { startFakeAnthropic, type FakeAnthropic } from '@sentinel/test-harness';
 
 const TEST_TOKEN = 'integration-token';
 

@@ -1,6 +1,6 @@
 import React from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-import type { CompressionMetrics } from '@claude-sentinel/shared';
+import type { CompressionMetrics } from '@sentinel/shared';
 import { formatTokens } from '../../../lib/optimizeUnits.js';
 import {
   AXIS_TICK_STYLE,

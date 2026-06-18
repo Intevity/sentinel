@@ -1,7 +1,7 @@
 /**
  * Migrated from `proxy.test.ts` — overage state-machine transitions and
  * their IPC broadcasts. Uses the scenario-driven overage headers from
- * `@claude-sentinel/test-harness` (scenarios.ts) instead of hand-authored
+ * `@sentinel/test-harness` (scenarios.ts) instead of hand-authored
  * mock response headers. The state machine is the real one; the broadcast
  * capture is the real path through IpcServer.broadcast.
  */

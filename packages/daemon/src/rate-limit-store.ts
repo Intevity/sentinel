@@ -1,4 +1,4 @@
-import type { RateLimitWindow, ClaudeAiUsageSnapshot } from '@claude-sentinel/shared';
+import type { RateLimitWindow, ClaudeAiUsageSnapshot } from '@sentinel/shared';
 
 /**
  * In-memory store for rate limit windows parsed from anthropic-ratelimit-* response headers.

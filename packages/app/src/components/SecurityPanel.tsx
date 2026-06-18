@@ -24,7 +24,7 @@ import type {
   SecuritySeverity,
   SecurityKind,
   AutoModeStatus,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { useSecurityEvents } from '../hooks/useSecurityEvents.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { useAutoModeStatus } from '../hooks/useAutoModeStatus.js';
@@ -421,7 +421,7 @@ export default function SecurityPanel({
     // Map the synthetic kind to its matching Settings flag. The three
     // `scan_*` kinds are exhaustive — any future synthetic would fall
     // through this switch and silently do nothing (safe default).
-    let patch: Partial<import('@claude-sentinel/shared').Settings> | null = null;
+    let patch: Partial<import('@sentinel/shared').Settings> | null = null;
     if (event.kind === 'scan_deferred_oversized') patch = { securityMuteScanDeferred: true };
     else if (event.kind === 'scan_truncated') patch = { securityMuteScanTruncated: true };
     else if (event.kind === 'scan_skipped_encoding') patch = { securityMuteScanSkipped: true };

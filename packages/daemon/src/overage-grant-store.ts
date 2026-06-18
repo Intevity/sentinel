@@ -1,4 +1,4 @@
-import type { OverageCreditGrant } from '@claude-sentinel/shared';
+import type { OverageCreditGrant } from '@sentinel/shared';
 import { readClaudeState } from './claude-state.js';
 
 /**

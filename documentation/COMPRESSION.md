@@ -22,7 +22,7 @@ rule reference and the design contract.
    that id in its elision marker:
 
    ```
-   ... [137 lines elided by Claude Sentinel; retrieve the full output with the sentinel retrieve tool, id="3cc6b9319b440422"] ...
+   ... [137 lines elided by Sentinel; retrieve the full output with the sentinel retrieve tool, id="3cc6b9319b440422"] ...
    ```
 
    With reversible retrieval enabled, the `mcp__sentinel__retrieve` MCP tool

@@ -483,34 +483,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "claude-sentinel"
-version = "0.1.0"
-dependencies = [
- "block2",
- "hex",
- "image",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tauri-plugin-store",
- "tauri-plugin-updater",
- "tauri-winrt-notification",
- "tokio",
- "windows-registry",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3638,6 +3610,34 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 dependencies = [
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "sentinel"
+version = "0.1.0"
+dependencies = [
+ "block2",
+ "hex",
+ "image",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-store",
+ "tauri-plugin-updater",
+ "tauri-winrt-notification",
+ "tokio",
+ "windows-registry",
 ]
 
 [[package]]

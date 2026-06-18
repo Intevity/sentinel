@@ -23,7 +23,7 @@
  */
 import { promises as fs, type FSWatcher, watch } from 'fs';
 import { basename, dirname } from 'path';
-import type { OtelDriftDetails } from '@claude-sentinel/shared';
+import type { OtelDriftDetails } from '@sentinel/shared';
 import type { IpcServer } from './ipc.js';
 import { inspectClaudeOtelConfig, canonHashManagedEnv } from './otel-settings-drift.js';
 

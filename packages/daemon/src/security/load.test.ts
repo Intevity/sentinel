@@ -7,7 +7,7 @@ import { createPermissionsEnforcer } from './permissions/enforcer.js';
 import { compileRules, compileRulesContentHash } from './permissions/evaluator.js';
 import { scanRequestBody } from './detectors.js';
 import { startProxyWithFake, postThroughProxy } from '../proxy.test-helpers.js';
-import type { PermissionRule, Settings } from '@claude-sentinel/shared';
+import type { PermissionRule, Settings } from '@sentinel/shared';
 
 // Sprint 10: performance budgets. The numbers below are deliberately
 // generous so the test isn't flaky on CI runners under load — the goal

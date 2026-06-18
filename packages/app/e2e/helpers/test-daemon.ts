@@ -20,8 +20,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
-import { startFakeAnthropic, type FakeAnthropic } from '@claude-sentinel/test-harness';
-import type { DaemonToAppMessage, OAuthAccount } from '@claude-sentinel/shared';
+import { startFakeAnthropic, type FakeAnthropic } from '@sentinel/test-harness';
+import type { DaemonToAppMessage, OAuthAccount } from '@sentinel/shared';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..');
@@ -88,9 +88,9 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
   const keychainFile = join(workDir, 'keychain.json');
   const settingsFile = join(workDir, 'settings.json');
   const claudeJsonFile = join(workDir, '.claude.json');
-  // Daemon resolves ~/.claude-sentinel via homedir(), which Node reads from HOME.
+  // Daemon resolves ~/.sentinel via homedir(), which Node reads from HOME.
   // Set HOME=workDir so the daemon places its socket and DB under workDir.
-  const sentinelDir = join(workDir, '.claude-sentinel');
+  const sentinelDir = join(workDir, '.sentinel');
   const socketPath = join(sentinelDir, 'daemon.sock');
 
   // Pre-seed: full DEFAULT_SETTINGS shape with tour + wizard flipped off
@@ -152,7 +152,7 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
     2,
   );
 
-  writeFileSync(keychainFile, JSON.stringify({ 'Claude Sentinel-credentials': {} }));
+  writeFileSync(keychainFile, JSON.stringify({ 'Sentinel-credentials': {} }));
 
   const fake = await startFakeAnthropic();
   const seeds = init.seedAccounts ?? [];
@@ -174,8 +174,8 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
       string,
       Record<string, string>
     >;
-    if (!existing['Claude Sentinel-credentials']) existing['Claude Sentinel-credentials'] = {};
-    existing['Claude Sentinel-credentials']![a.id] = JSON.stringify({
+    if (!existing['Sentinel-credentials']) existing['Sentinel-credentials'] = {};
+    existing['Sentinel-credentials']![a.id] = JSON.stringify({
       accessToken: a.token,
       refreshToken: `refresh-${a.id}`,
       expiresAt: Date.now() + 3600_000,
@@ -216,7 +216,7 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
   // signing so getOrCreateSettingsHmacKey writes the key where the daemon
   // subprocess will read it; the cache reset drops any key cached from a
   // previous startTestDaemon call in this worker.
-  process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainFile;
+  process.env.SENTINEL_TEST_KEYCHAIN_FILE = keychainFile;
   const { resetSettingsHmacKeyCache, signSettings } = (await import(
     pathToFileURL(resolve(REPO_ROOT, 'packages/daemon/dist/settings-integrity.js')).href
   )) as {
@@ -240,11 +240,11 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
     ANTHROPIC_UPSTREAM_URL: fake.origin,
     OAUTH_TOKEN_URL: fake.tokenUrl,
     OAUTH_AUTH_URL: fake.authUrl,
-    CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE: keychainFile,
-    CLAUDE_SENTINEL_TEST_SETTINGS_FILE: settingsFile,
-    CLAUDE_SENTINEL_TEST_DAEMON_PORT: String(daemonPort),
+    SENTINEL_TEST_KEYCHAIN_FILE: keychainFile,
+    SENTINEL_TEST_SETTINGS_FILE: settingsFile,
+    SENTINEL_TEST_DAEMON_PORT: String(daemonPort),
     HOME: workDir,
-    ...(init.oauthEcho ? { CLAUDE_SENTINEL_TEST_OAUTH_ECHO: '1' } : {}),
+    ...(init.oauthEcho ? { SENTINEL_TEST_OAUTH_ECHO: '1' } : {}),
   };
 
   const daemon = spawn('node', [daemonBin], {

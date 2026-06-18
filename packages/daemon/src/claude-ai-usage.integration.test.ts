@@ -1,7 +1,7 @@
 /**
  * Integration tests for `fetchOrgUsage` and `ClaudeAiUsageStore` against
  * the fake Anthropic `/api/oauth/usage` endpoint and the real keychain
- * via the test-keychain adapter (`CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE`).
+ * via the test-keychain adapter (`SENTINEL_TEST_KEYCHAIN_FILE`).
  *
  * Supersedes the fetchOrgUsage + ClaudeAiUsageStore describe blocks in
  * `claude-ai-usage.test.ts` (which mocked `./accounts.js`, mocked
@@ -30,8 +30,8 @@ import type {
   ClaudeAiUsageSnapshot,
   ClaudeCodeCredentials,
   DaemonToAppMessage,
-} from '@claude-sentinel/shared';
-import { startFakeAnthropic, type FakeAnthropic } from '@claude-sentinel/test-harness';
+} from '@sentinel/shared';
+import { startFakeAnthropic, type FakeAnthropic } from '@sentinel/test-harness';
 
 import {
   fetchOrgUsage,
@@ -157,7 +157,7 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
 
     beforeEach(() => {
       keychainFile = join(tmpdir(), `sentinel-usage-${randomUUID()}.json`);
-      process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainFile;
+      process.env.SENTINEL_TEST_KEYCHAIN_FILE = keychainFile;
       writeFileSync(keychainFile, '{}');
       broadcasts = [];
       ipcServer = {
@@ -167,7 +167,7 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
 
     afterEach(() => {
       if (existsSync(keychainFile)) unlinkSync(keychainFile);
-      delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+      delete process.env.SENTINEL_TEST_KEYCHAIN_FILE;
       vi.restoreAllMocks();
       vi.useRealTimers();
     });

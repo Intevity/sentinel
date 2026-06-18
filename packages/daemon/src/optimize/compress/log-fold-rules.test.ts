@@ -86,7 +86,7 @@ describe('foldNearDuplicateLines', () => {
     expect(outLines[0]).toBe(lines[0]);
     const expectedElided = lines.slice(1).join('\n');
     expect(outLines[1]).toBe(
-      `... [7 similar lines elided by Claude Sentinel; retrieve the full output with the sentinel retrieve tool, id="${hashOriginal(expectedElided)}"] ...`,
+      `... [7 similar lines elided by Sentinel; retrieve the full output with the sentinel retrieve tool, id="${hashOriginal(expectedElided)}"] ...`,
     );
     expect(calls).toEqual([{ ruleId: 'log_near_dup_fold', elided: expectedElided }]);
   });
@@ -101,7 +101,7 @@ describe('foldNearDuplicateLines', () => {
     const input = infoLines(5).join('\n');
     const out = foldNearDuplicateLines(input, MODERATE);
     expect(out.split('\n')).toHaveLength(2);
-    expect(out).toContain('[4 similar lines elided by Claude Sentinel] ...');
+    expect(out).toContain('[4 similar lines elided by Sentinel] ...');
   });
 
   it('moderate and aggressive thresholds diverge on a 3-line run', () => {
@@ -187,7 +187,7 @@ describe('foldNearDuplicateLines', () => {
   it('returns the same instance for marker-bearing input (leading guard)', () => {
     const input = [
       ...infoLines(6),
-      '... [3 lines elided by Claude Sentinel] ...',
+      '... [3 lines elided by Sentinel] ...',
       ...infoLines(6, 60),
     ].join('\n');
     expect(foldNearDuplicateLines(input, MODERATE)).toBe(input);
@@ -200,7 +200,7 @@ describe('foldNearDuplicateLines', () => {
 
   it('omits the retrieval hint when no OnElide is provided', () => {
     const out = foldNearDuplicateLines(infoLines(6).join('\n'), MODERATE);
-    expect(out).toContain('... [5 similar lines elided by Claude Sentinel] ...');
+    expect(out).toContain('... [5 similar lines elided by Sentinel] ...');
     expect(out).not.toContain('id="');
   });
 });

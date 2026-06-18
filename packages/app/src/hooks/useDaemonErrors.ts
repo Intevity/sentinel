@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { LogEntry } from '@claude-sentinel/shared';
+import type { LogEntry } from '@sentinel/shared';
 import { onDaemonMessage, sendToSentinel } from '../lib/ipc.js';
 
 const STORAGE_KEY = 'sentinel.lastSeenErrorSeq';

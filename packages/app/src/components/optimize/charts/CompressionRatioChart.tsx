@@ -1,6 +1,6 @@
 import React from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-import type { CompressionMetrics } from '@claude-sentinel/shared';
+import type { CompressionMetrics } from '@sentinel/shared';
 import {
   AXIS_TICK_STYLE,
   ChartEmptyState,

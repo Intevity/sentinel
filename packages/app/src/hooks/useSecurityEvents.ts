@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { SecurityEvent, SecurityKind, SecuritySeverity } from '@claude-sentinel/shared';
+import type { SecurityEvent, SecurityKind, SecuritySeverity } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 const DEFAULT_PAGE_SIZE = 50;

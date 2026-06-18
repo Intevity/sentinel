@@ -11,7 +11,7 @@
  * Like every rule in this package the function is PURE, DETERMINISTIC, and
  * IDEMPOTENT: no clock, randomness, locale, or I/O, and `rule(rule(x))` is a
  * no-op. Idempotency is guaranteed two ways: (1) any change inserts a marker
- * line containing the literal phrase "elided by Claude Sentinel", so a second
+ * line containing the literal phrase "elided by Sentinel", so a second
  * pass short-circuits on the leading guard; (2) even without the guard, the
  * post-trim structure has all counts under the caps, so the cap-based passes
  * would not fire again. When nothing is dropped the EXACT input string
@@ -239,7 +239,7 @@ function renderHunk(h: Hunk): string[] {
  */
 export function trimUnifiedDiff(text: string, opts: DiffTrimOpts, onElide?: OnElide): string {
   // Leading guard: already-compressed text carries the marker phrase.
-  if (text.includes('elided by Claude Sentinel')) return text;
+  if (text.includes('elided by Sentinel')) return text;
   if (!isUnifiedDiff(text)) return text;
 
   const parsed = parseDiff(text);
@@ -254,7 +254,7 @@ export function trimUnifiedDiff(text: string, opts: DiffTrimOpts, onElide?: OnEl
       for (const h of f.hunks) droppedLines.push(...renderHunk(h));
       const elided = droppedLines.join('\n');
       const hint = retrievalHint(onElide, RULE_ID, elided);
-      const marker = `... [${f.hunks.length} hunks elided by Claude Sentinel${hint}] ...`;
+      const marker = `... [${f.hunks.length} hunks elided by Sentinel${hint}] ...`;
       f.hunks = [{ header: marker, body: [] }];
       // Mark this synthetic "hunk" so later passes skip it: a marker header
       // does not start with '@@', so the hunk cap/context passes ignore it.
@@ -266,7 +266,7 @@ export function trimUnifiedDiff(text: string, opts: DiffTrimOpts, onElide?: OnEl
       if (isWhitespaceOnlyHunk(h)) {
         const elided = renderHunk(h).join('\n');
         const hint = retrievalHint(onElide, RULE_ID, elided);
-        const marker = `... [1 whitespace-only hunks elided by Claude Sentinel${hint}] ...`;
+        const marker = `... [1 whitespace-only hunks elided by Sentinel${hint}] ...`;
         keptHunks.push({ header: marker, body: [] });
         changed = true;
       } else {
@@ -310,7 +310,7 @@ export function trimUnifiedDiff(text: string, opts: DiffTrimOpts, onElide?: OnEl
       }
       const elided = droppedLines.join('\n');
       const hint = retrievalHint(onElide, RULE_ID, elided);
-      const marker = `... [${j - i} files (${hunkCount} hunks) elided by Claude Sentinel${hint}] ...`;
+      const marker = `... [${j - i} files (${hunkCount} hunks) elided by Sentinel${hint}] ...`;
       newFiles.push({ header: [marker], hunks: [] });
       changed = true;
       i = j;
@@ -357,7 +357,7 @@ export function trimUnifiedDiff(text: string, opts: DiffTrimOpts, onElide?: OnEl
       }
       const elided = droppedLines.join('\n');
       const hint = retrievalHint(onElide, RULE_ID, elided);
-      const marker = `... [${j - i} hunks elided by Claude Sentinel${hint}] ...`;
+      const marker = `... [${j - i} hunks elided by Sentinel${hint}] ...`;
       newHunks.push({ header: marker, body: [] });
       changed = true;
       i = j;
@@ -426,7 +426,7 @@ function trimHunkContext(h: Hunk, contextLines: number, onElide?: OnElide): stri
   if (leadLen > contextLines && leadDrop >= 4) {
     const elided = body.slice(0, leadDrop).join('\n');
     const hint = retrievalHint(onElide, RULE_ID, elided);
-    out.push(`... [${leadDrop} context lines elided by Claude Sentinel${hint}] ...`);
+    out.push(`... [${leadDrop} context lines elided by Sentinel${hint}] ...`);
     out.push(...body.slice(leadDrop, leadEnd));
     changed = true;
   } else {
@@ -443,7 +443,7 @@ function trimHunkContext(h: Hunk, contextLines: number, onElide?: OnElide): stri
     out.push(...body.slice(trailStart, trailStart + contextLines));
     const elided = body.slice(trailStart + contextLines).join('\n');
     const hint = retrievalHint(onElide, RULE_ID, elided);
-    out.push(`... [${trailDrop} context lines elided by Claude Sentinel${hint}] ...`);
+    out.push(`... [${trailDrop} context lines elided by Sentinel${hint}] ...`);
     changed = true;
   } else {
     out.push(...body.slice(trailStart));
@@ -454,4 +454,4 @@ function trimHunkContext(h: Hunk, contextLines: number, onElide?: OnElide): stri
 
 /** Exported only so the benchmark suite can size markers; not part of the
  *  compression contract. Kept here to avoid duplicating the constant. */
-export const APPROX_MARKER_BYTES = byteLen('... [99 context lines elided by Claude Sentinel] ...');
+export const APPROX_MARKER_BYTES = byteLen('... [99 context lines elided by Sentinel] ...');

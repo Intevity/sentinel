@@ -27,24 +27,24 @@ import type {
   McpInstallRecord,
   CodeModeMigration,
   OptimizeSubTab,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import {
   SECURITY_CONTEXT_WINDOW_CHARS,
   VALID_DETECTOR_TIERS,
   snapRangeToLadder,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { signSettings, verifySettings } from './settings-integrity.js';
 
 /** Default settings-file path. Tests can override via
- *  `CLAUDE_SENTINEL_TEST_SETTINGS_FILE` so they don't pick up the running
+ *  `SENTINEL_TEST_SETTINGS_FILE` so they don't pick up the running
  *  user's real settings (mirrors the keychain and upstream-URL overrides
  *  delivered in Sprint 0). Resolved per-call via `currentSettingsPath()`
  *  so the env can be set after module import. Production ignores the env
- *  var; default remains `~/.claude-sentinel/settings.json`. */
-export const SETTINGS_PATH = join(homedir(), '.claude-sentinel', 'settings.json');
+ *  var; default remains `~/.sentinel/settings.json`. */
+export const SETTINGS_PATH = join(homedir(), '.sentinel', 'settings.json');
 
 function currentSettingsPath(): string {
-  return process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE ?? SETTINGS_PATH;
+  return process.env.SENTINEL_TEST_SETTINGS_FILE ?? SETTINGS_PATH;
 }
 
 export const DEFAULT_SETTINGS: Settings = {

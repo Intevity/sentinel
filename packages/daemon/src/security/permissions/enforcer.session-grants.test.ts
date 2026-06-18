@@ -5,7 +5,7 @@ import { existsSync, unlinkSync } from 'fs';
 import { ServerResponse } from 'http';
 import { Socket } from 'net';
 import type { Database } from 'better-sqlite3';
-import type { Settings } from '@claude-sentinel/shared';
+import type { Settings } from '@sentinel/shared';
 import {
   getDb,
   closeDb,

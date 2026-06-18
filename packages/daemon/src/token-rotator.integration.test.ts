@@ -4,7 +4,7 @@
  * scenarios.
  *
  * Asserts the overage-gate invariant from
- * ~/.claude/projects/-Users-jeff-github-claude-sentinel/memory/feedback_overage_gate.md:
+ * ~/.claude/projects/-Users-jeff-github-sentinel/memory/feedback_overage_gate.md:
  * the rotator must drain all fresh 5h quota before spilling any account
  * into overage.
  *
@@ -14,7 +14,7 @@
  * fails; the unit version wouldn't.
  *
  * Credential resolution flows through the REAL keychain code via the
- * test-keychain adapter (`CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE`). No spies
+ * test-keychain adapter (`SENTINEL_TEST_KEYCHAIN_FILE`). No spies
  * on `accounts.*`. IPC broadcasts land in a real capturing IPC stub
  * (`makeCapturingIpc`) — no `vi.fn()` sites.
  */
@@ -31,8 +31,8 @@ import { RateLimitStore } from './rate-limit-store.js';
 import { TokenRotator } from './token-rotator.js';
 import { writeSentinelCredentials } from './accounts.js';
 import { makeCapturingIpc } from './proxy.test-helpers.js';
-import { startFakeAnthropic, type FakeAnthropic, SCENARIOS } from '@claude-sentinel/test-harness';
-import type { ScenarioName } from '@claude-sentinel/test-harness';
+import { startFakeAnthropic, type FakeAnthropic, SCENARIOS } from '@sentinel/test-harness';
+import type { ScenarioName } from '@sentinel/test-harness';
 
 const SEED: Array<{ id: string; scenario: ScenarioName }> = [
   { id: 'acct-fresh', scenario: 'healthy-account' },
@@ -68,7 +68,7 @@ describe('TokenRotator integration (real headers → store → rotator)', () => 
     // rotator's real `readSentinelCredentials` picks them up via the
     // adapter at accounts.ts:115.
     keychainFile = join(tmpdir(), `sentinel-rotator-int-kc-${randomUUID()}.json`);
-    process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainFile;
+    process.env.SENTINEL_TEST_KEYCHAIN_FILE = keychainFile;
     for (const s of SEED) {
       writeSentinelCredentials(s.id, {
         accessToken: `tok-${s.id}`,
@@ -141,7 +141,7 @@ describe('TokenRotator integration (real headers → store → rotator)', () => 
     if (existsSync(dbPath)) unlinkSync(dbPath);
     if (existsSync(keychainFile)) unlinkSync(keychainFile);
     delete process.env.ANTHROPIC_UPSTREAM_URL;
-    delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+    delete process.env.SENTINEL_TEST_KEYCHAIN_FILE;
   });
 
   it('populates RateLimitStore with scenario-driven state for all seeded accounts', () => {

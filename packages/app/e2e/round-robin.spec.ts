@@ -9,7 +9,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-import type { Settings } from '@claude-sentinel/shared';
+import type { Settings } from '@sentinel/shared';
 import {
   startAppHarness,
   startTestDaemon,

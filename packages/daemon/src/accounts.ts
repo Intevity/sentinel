@@ -2,7 +2,7 @@ import { execFileSync, execSync } from 'child_process';
 import { homedir, userInfo as osUserInfo } from 'os';
 import { dirname, join } from 'path';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
-import type { ClaudeCodeCredentials } from '@claude-sentinel/shared';
+import type { ClaudeCodeCredentials } from '@sentinel/shared';
 
 /** Claude Code's keychain service name (single shared slot, keyed by OS username). */
 const CC_SERVICE = 'Claude Code-credentials';
@@ -10,7 +10,7 @@ const CC_SERVICE = 'Claude Code-credentials';
 /** When set, credential reads/writes use a JSON file instead of the OS
  *  keychain. Used by E2E tests and Playwright so the test harness never
  *  touches the user's real keychain. Production always leaves this unset. */
-const TEST_KEYCHAIN_ENV = 'CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE';
+const TEST_KEYCHAIN_ENV = 'SENTINEL_TEST_KEYCHAIN_FILE';
 
 function testKeychainPath(): string | null {
   return process.env[TEST_KEYCHAIN_ENV] ?? null;
@@ -37,7 +37,22 @@ function writeTestKeychain(data: Record<string, Record<string, string>>): void {
  * Whenever we see an account become active we snapshot its token here so we
  * can restore it later even after Claude Code has overwritten its single slot.
  */
-const SENTINEL_SERVICE = 'Claude Sentinel-credentials';
+const SENTINEL_SERVICE = 'Sentinel-credentials';
+
+/**
+ * New keychain service name → its pre-rename "Claude Sentinel-*" name. Drives
+ * the lazy migrate-on-read fallback (`readCredentialBlobMigrating`) so users
+ * upgrading across the "Claude Sentinel" → "Sentinel" rename keep their stored
+ * secrets without re-authenticating. Covers all five Sentinel-owned services;
+ * the singletons live in sibling modules but key off these exact string values.
+ */
+const LEGACY_SERVICE: Record<string, string> = {
+  'Sentinel-credentials': 'Claude Sentinel-credentials',
+  'Sentinel-settings-hmac': 'Claude Sentinel-settings-hmac',
+  'Sentinel-otel-exporter': 'Claude Sentinel-otel-exporter',
+  'Sentinel-mcp-auth': 'Claude Sentinel-mcp-auth',
+  'Sentinel-code-mode-auth': 'Claude Sentinel-code-mode-auth',
+};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -133,7 +148,7 @@ function sameCredentials(a: ClaudeCodeCredentials, b: ClaudeCodeCredentials): bo
  */
 export function readSentinelCredentials(key: string): ClaudeCodeCredentials | null {
   try {
-    const blob = readCredentialBlob(SENTINEL_SERVICE, key);
+    const blob = readCredentialBlobMigrating(SENTINEL_SERVICE, key);
     if (!blob) return null;
     return JSON.parse(blob) as ClaudeCodeCredentials;
   } catch {
@@ -173,9 +188,9 @@ export function writeClaudeCodeCredentials(creds: ClaudeCodeCredentials): void {
 //
 // `readCredentialBlob` / `writeCredentialBlob` / `deleteCredentialBlob` are
 // exported so other daemon modules can reuse the same OS-keychain plumbing
-// (and the same `CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE` test seam) for storing
+// (and the same `SENTINEL_TEST_KEYCHAIN_FILE` test seam) for storing
 // non-credential secrets keyed by their own service name. Sprint 2 uses
-// this for `Claude Sentinel-settings-hmac` (settings-integrity.ts).
+// this for `Sentinel-settings-hmac` (settings-integrity.ts).
 
 export function readCredentialBlob(service: string, account: string): string | null {
   if (testKeychainPath()) {
@@ -193,6 +208,38 @@ export function readCredentialBlob(service: string, account: string): string | n
   } catch {
     return null;
   }
+}
+
+/**
+ * Read a credential blob, transparently migrating it from the pre-rename
+ * "Claude Sentinel-*" keychain service when it only exists under the legacy
+ * name. Reads the new service first; on a miss, falls back to the legacy
+ * service and copies the value forward so subsequent reads hit the new name.
+ *
+ * This is how users upgrading across the "Claude Sentinel" → "Sentinel" rename
+ * keep every Sentinel-owned secret — per-account OAuth credentials, the settings
+ * HMAC key (so the signed settings file still verifies instead of tripping a
+ * false tamper warning), and the otel/mcp/code-mode bearer tokens — without
+ * re-authenticating. The legacy entry is left in place (invisible and
+ * regenerable); deleting a token on a copy-forward that might silently fail is
+ * not worth the risk. Self-healing and enumeration-free, so it also covers the
+ * per-account credentials service whose keys we cannot list on macOS/Linux.
+ */
+export function readCredentialBlobMigrating(service: string, account: string): string | null {
+  const current = readCredentialBlob(service, account);
+  if (current !== null) return current;
+  const legacy = LEGACY_SERVICE[service];
+  if (legacy === undefined) return null;
+  const old = readCredentialBlob(legacy, account);
+  if (old !== null) {
+    try {
+      writeCredentialBlob(service, account, old);
+    } catch {
+      // Best-effort copy-forward; returning the legacy value still works and
+      // the next read retries the copy.
+    }
+  }
+  return old;
 }
 
 export function writeCredentialBlob(service: string, account: string, blob: string): void {
@@ -280,7 +327,7 @@ function deleteDarwin(service: string, account: string): void {
 // Windows Credential Manager has no usable in-box CLI: `cmdkey` cannot read
 // secrets back (and mangles JSON blobs passed on the command line), and
 // PowerShell's Get-StoredCredential needs a third-party module. Instead we
-// keep one DPAPI-protected file — ~/.claude-sentinel/credentials.dat —
+// keep one DPAPI-protected file — ~/.sentinel/credentials.dat —
 // holding the same { [service]: { [account]: blob } } map shape as the test
 // keychain. DPAPI with CurrentUser scope is the same per-user protection
 // Credential Manager itself relies on. The PowerShell scripts travel via
@@ -355,7 +402,7 @@ const DPAPI_UNPROTECT_B64 = Buffer.from(DPAPI_UNPROTECT_SCRIPT, 'utf16le').toStr
 // macOS/Linux machines that run the test suite. The pure map layer above
 // carries the unit coverage for everything that doesn't shell out.
 /* v8 ignore start */
-const winStoreDir = () => join(homedir(), '.claude-sentinel');
+const winStoreDir = () => join(homedir(), '.sentinel');
 const winStorePath = () => join(winStoreDir(), 'credentials.dat');
 
 /** Decrypted-store cache so reads don't spawn PowerShell repeatedly (the

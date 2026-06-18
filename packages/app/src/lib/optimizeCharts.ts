@@ -8,8 +8,8 @@
  * 'cost' the value is USD rounded to 2 decimals; when 'tokens' it's
  * the integer parent-context-token savings.
  */
-import type { OptimizationMetrics } from '@claude-sentinel/shared';
-import { DIGEST_TOKENS_BY_CURATED_ID } from '@claude-sentinel/shared';
+import type { OptimizationMetrics } from '@sentinel/shared';
+import { DIGEST_TOKENS_BY_CURATED_ID } from '@sentinel/shared';
 import type { SavingsUnits } from './optimizeUnits.js';
 
 /** Pick the value of a (savingsUsd, tokens) pair according to `units`.

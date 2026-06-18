@@ -19,7 +19,7 @@
  * `parseRawWithDecision` for that variant.
  */
 
-import type { PermissionDecision } from '@claude-sentinel/shared';
+import type { PermissionDecision } from '@sentinel/shared';
 
 export interface ParsedRule {
   tool: string;

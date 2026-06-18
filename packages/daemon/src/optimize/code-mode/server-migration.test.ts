@@ -35,8 +35,8 @@ describe('server-migration (user + local scopes, ~/.claude.json)', () => {
 
   beforeEach(() => {
     jsonPath = join(tmpdir(), `sentinel-claude-${randomUUID()}.json`);
-    prev = process.env.CLAUDE_SENTINEL_TEST_CLAUDE_JSON;
-    process.env.CLAUDE_SENTINEL_TEST_CLAUDE_JSON = jsonPath;
+    prev = process.env.SENTINEL_TEST_CLAUDE_JSON;
+    process.env.SENTINEL_TEST_CLAUDE_JSON = jsonPath;
     writeFileSync(
       jsonPath,
       JSON.stringify({
@@ -54,8 +54,8 @@ describe('server-migration (user + local scopes, ~/.claude.json)', () => {
   });
 
   afterEach(() => {
-    if (prev === undefined) delete process.env.CLAUDE_SENTINEL_TEST_CLAUDE_JSON;
-    else process.env.CLAUDE_SENTINEL_TEST_CLAUDE_JSON = prev;
+    if (prev === undefined) delete process.env.SENTINEL_TEST_CLAUDE_JSON;
+    else process.env.SENTINEL_TEST_CLAUDE_JSON = prev;
     if (existsSync(jsonPath)) rmSync(jsonPath);
   });
 

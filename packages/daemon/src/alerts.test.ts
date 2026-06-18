@@ -24,7 +24,7 @@ import {
   primeNewAlertAgainstCurrentWindow,
 } from './alerts.js';
 import { DEFAULT_SETTINGS } from './settings.js';
-import type { Settings } from '@claude-sentinel/shared';
+import type { Settings } from '@sentinel/shared';
 
 const TEST_DB = () =>
   join(tmpdir(), `sentinel-alerts-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);

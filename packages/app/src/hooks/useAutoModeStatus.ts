@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { AutoModeStatus } from '@claude-sentinel/shared';
+import type { AutoModeStatus } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 const IDLE_STATUS: AutoModeStatus = {

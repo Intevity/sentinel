@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { homedir } from 'os';
-import type { PermissionRule } from '@claude-sentinel/shared';
+import type { PermissionRule } from '@sentinel/shared';
 import {
   compileRules,
   evaluateToolCall,

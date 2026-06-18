@@ -3,7 +3,7 @@ import Icon from './Icon.astro';
 
 const base = import.meta.env.BASE_URL;
 const asset = (p: string) => `${base.replace(/\/$/, '')}/${p.replace(/^\//, '')}`;
-const repo = 'https://github.com/Intevity/claude-sentinel';
+const repo = 'https://github.com/Intevity/sentinel';
 const releases = `${repo}/releases/latest`;
 ---
 
@@ -18,7 +18,7 @@ const releases = `${repo}/releases/latest`;
 
     <img
       src={asset('sentinel-mascot.png')}
-      alt="Claude Sentinel mascot"
+      alt="Sentinel mascot"
       width="96"
       height="96"
       class="mb-6 h-24 w-24 drop-shadow-[0_8px_30px_rgba(0,122,255,0.35)]"
@@ -29,9 +29,9 @@ const releases = `${repo}/releases/latest`;
     </h1>
 
     <p class="mt-6 max-w-2xl text-lg leading-relaxed text-foreground/70 sm:text-xl">
-      Claude Sentinel combines the accounts you own, rotates tokens automatically, scans every
-      request for secrets and risky tool calls, shows the rate limits Claude Code hides, and caps
-      overage spend before it runs away.
+      Sentinel combines the accounts you own, rotates tokens automatically, scans every request for
+      secrets and risky tool calls, shows the rate limits Claude Code hides, and caps overage spend
+      before it runs away.
     </p>
 
     <div class="mt-9 flex flex-col items-center gap-3 sm:flex-row">

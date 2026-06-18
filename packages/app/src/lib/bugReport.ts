@@ -1,7 +1,7 @@
 import { openUrl } from '@tauri-apps/plugin-opener';
-import type { LogEntry, LogRequestSummary } from '@claude-sentinel/shared';
+import type { LogEntry, LogRequestSummary } from '@sentinel/shared';
 
-const REPO = 'Intevity/claude-sentinel';
+const REPO = 'Intevity/sentinel';
 const ISSUE_URL = `https://github.com/${REPO}/issues/new`;
 
 // GitHub URLs hold up to ~8KB before browsers / servers start complaining.
@@ -83,11 +83,9 @@ interface BodySection {
 }
 
 function envSection(env: EnvInfo): string {
-  return [
-    '## Environment',
-    `- Claude Sentinel: ${env.appVersion}`,
-    `- User agent: ${env.userAgent}`,
-  ].join('\n');
+  return ['## Environment', `- Sentinel: ${env.appVersion}`, `- User agent: ${env.userAgent}`].join(
+    '\n',
+  );
 }
 
 function logsSection(entries: LogEntry[]): string {

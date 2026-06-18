@@ -1,7 +1,7 @@
 /**
  * Shared infrastructure for proxy integration tests. Replaces the
  * `vi.mock('https')` pattern by wiring a real `createProxyServer` to the
- * fake Anthropic listener from `@claude-sentinel/test-harness`.
+ * fake Anthropic listener from `@sentinel/test-harness`.
  *
  * The helpers intentionally stop short of being a single do-everything
  * factory: tests vary in how much of the dep graph they need. Instead,
@@ -19,7 +19,7 @@
  *      above and returns a handle suitable for most request-path tests.
  *
  * All of these functions default `process.env.ANTHROPIC_UPSTREAM_URL` to
- * the fake's origin and set `CLAUDE_SENTINEL_TEST_SETTINGS_FILE` to an
+ * the fake's origin and set `SENTINEL_TEST_SETTINGS_FILE` to an
  * isolated tmp file so tests don't read the running user's real settings.
  */
 
@@ -33,13 +33,9 @@ import type {
   Settings,
   AppToDaemonMessage,
   IpcResponse,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import type { Database } from 'better-sqlite3';
-import {
-  startFakeAnthropic,
-  type FakeAnthropic,
-  type ScenarioName,
-} from '@claude-sentinel/test-harness';
+import { startFakeAnthropic, type FakeAnthropic, type ScenarioName } from '@sentinel/test-harness';
 import {
   createProxyServer,
   type ActiveAccountId,
@@ -62,7 +58,7 @@ import type { McpHttpHandler } from './optimize/compress/mcp-retrieve-server.js'
 import type { CodeModeHttpHandler } from './optimize/code-mode/code-mode-server.js';
 import type { IpcServer } from './ipc.js';
 import { OverageStateMachine } from './overage.js';
-import type { PauseReason } from '@claude-sentinel/shared';
+import type { PauseReason } from '@sentinel/shared';
 
 /** Per-test capture of every `ipcServer.broadcast()` call. */
 export interface CapturingIpcServer extends IpcServer {
@@ -151,30 +147,30 @@ export function seedTestSettings(overrides: Partial<Settings> = {}): {
   cleanup: () => void;
 } {
   const settingsPath = join(tmpdir(), `sentinel-settings-${randomUUID()}.json`);
-  const previousSettings = process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE;
-  process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE = settingsPath;
+  const previousSettings = process.env.SENTINEL_TEST_SETTINGS_FILE;
+  process.env.SENTINEL_TEST_SETTINGS_FILE = settingsPath;
 
   // Set up keychain seam if not already set so HMAC key generation
   // doesn't hit the real OS keychain. Don't overwrite an existing
   // keychain seam — the parent harness (e.g. startTestDaemon) may have
   // already configured one with seeded credentials.
-  const previousKeychain = process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+  const previousKeychain = process.env.SENTINEL_TEST_KEYCHAIN_FILE;
   let keychainPath: string | null = null;
   if (!previousKeychain) {
     keychainPath = join(tmpdir(), `sentinel-keychain-${randomUUID()}.json`);
-    process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
+    process.env.SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
   }
 
   saveSettings({ ...DEFAULT_SETTINGS, ...overrides }, settingsPath);
   return {
     settingsPath,
     cleanup: () => {
-      if (previousSettings === undefined) delete process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE;
-      else process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE = previousSettings;
+      if (previousSettings === undefined) delete process.env.SENTINEL_TEST_SETTINGS_FILE;
+      else process.env.SENTINEL_TEST_SETTINGS_FILE = previousSettings;
       if (existsSync(settingsPath)) unlinkSync(settingsPath);
       if (existsSync(`${settingsPath}.sig`)) unlinkSync(`${settingsPath}.sig`);
       if (keychainPath !== null) {
-        delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+        delete process.env.SENTINEL_TEST_KEYCHAIN_FILE;
         if (existsSync(keychainPath)) unlinkSync(keychainPath);
       }
     },
@@ -184,7 +180,7 @@ export function seedTestSettings(overrides: Partial<Settings> = {}): {
 /** Write the given settings to the active test settings file. Useful for
  *  toggling mid-test when `seedTestSettings` is already set up. */
 export function patchTestSettings(overrides: Partial<Settings>): void {
-  const path = process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE;
+  const path = process.env.SENTINEL_TEST_SETTINGS_FILE;
   if (!path) throw new Error('patchTestSettings called before seedTestSettings');
   saveSettings({ ...DEFAULT_SETTINGS, ...overrides }, path);
 }
@@ -330,7 +326,7 @@ export async function startProxyWithFake(opts: StartProxyOpts = {}): Promise<Sta
   const activeAccountId: ActiveAccountId = { value: firstAcct.id };
 
   // Read fresh each call so `patchTestSettings` takes effect without
-  // rebuilding the scanner. loadSettings honors CLAUDE_SENTINEL_TEST_SETTINGS_FILE.
+  // rebuilding the scanner. loadSettings honors SENTINEL_TEST_SETTINGS_FILE.
   const getSettings = (): Settings => loadSettings();
 
   const securityScanner: SecurityScanner | undefined = opts.enableSecurityScanner

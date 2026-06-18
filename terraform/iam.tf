@@ -59,7 +59,7 @@ data "aws_iam_policy_document" "ci_assume" {
 
 resource "aws_iam_role" "ci_publish" {
   name               = "claude-sentinel-updates-publisher"
-  description        = "GitHub Actions role to publish Claude Sentinel auto-update artifacts to S3"
+  description        = "GitHub Actions role to publish Sentinel auto-update artifacts to S3"
   assume_role_policy = data.aws_iam_policy_document.ci_assume.json
 }
 

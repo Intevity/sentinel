@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import type { CompressionMetrics, MetricsWindow } from '@claude-sentinel/shared';
+import type { CompressionMetrics, MetricsWindow } from '@sentinel/shared';
 import { SENTINEL_DIR } from '../../db.js';
 import type { IpcServer } from '../../ipc.js';
 import { getBaseInputPricePerMillion } from '../../cache-ttl/pricing.js';
@@ -122,9 +122,7 @@ export class CompressionStatsStore {
 
   constructor(opts?: { dbPath?: string; ipcServer?: IpcServer }) {
     const dbPath =
-      opts?.dbPath ??
-      process.env.CLAUDE_SENTINEL_TEST_COMPRESSION_DB_FILE ??
-      COMPRESSION_STATS_DB_PATH;
+      opts?.dbPath ?? process.env.SENTINEL_TEST_COMPRESSION_DB_FILE ?? COMPRESSION_STATS_DB_PATH;
     this.ipcServer = opts?.ipcServer ?? null;
 
     const dir = dirname(dbPath);

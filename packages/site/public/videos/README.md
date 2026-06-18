@@ -9,7 +9,7 @@ folder and shows a "Demo video coming soon" badge.
 1. Record the clip (see the shot list below) and export it as an **MP4 (H.264)**.
 2. Drop it in this folder using the exact filename from the table.
 3. In `packages/site/src/data/features.ts`, set `hasVideo: true` for that feature.
-4. Rebuild (`pnpm --filter @claude-sentinel/site build`). The carousel now plays the video
+4. Rebuild (`pnpm --filter @sentinel/site build`). The carousel now plays the video
    (muted, looping) with the poster as its loading frame.
 
 Optionally replace the poster SVG with a real frame grab of the same name (`<slug>.svg` →

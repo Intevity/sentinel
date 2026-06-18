@@ -1,9 +1,9 @@
 /**
  * Integration tests for the background token refresher. Exercises the
  * real refresh path end-to-end against the fake Anthropic token endpoint
- * (`@claude-sentinel/test-harness`), with real keychain I/O going to a
+ * (`@sentinel/test-harness`), with real keychain I/O going to a
  * tmp JSON file via the test-keychain adapter
- * (`CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE`).
+ * (`SENTINEL_TEST_KEYCHAIN_FILE`).
  *
  * Supersedes `token-refresher.test.ts`, which mocked `./oauth.js`,
  * `./accounts.js`, and `./db.js` at the module boundary — all three
@@ -21,9 +21,9 @@ import { existsSync, unlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ClaudeCodeCredentials, DaemonToAppMessage } from '@claude-sentinel/shared';
+import type { ClaudeCodeCredentials, DaemonToAppMessage } from '@sentinel/shared';
 import type { Database } from 'better-sqlite3';
-import { startFakeAnthropic, type FakeAnthropic } from '@claude-sentinel/test-harness';
+import { startFakeAnthropic, type FakeAnthropic } from '@sentinel/test-harness';
 
 import {
   refreshIfNeeded,
@@ -99,7 +99,7 @@ describe('token-refresher integration (real refresh path)', () => {
 
   function setup(): Harness {
     keychainFile = join(tmpdir(), `sentinel-keychain-${randomUUID()}.json`);
-    process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainFile;
+    process.env.SENTINEL_TEST_KEYCHAIN_FILE = keychainFile;
     writeFileSync(keychainFile, '{}');
 
     dbPath = join(tmpdir(), `sentinel-refresher-${randomUUID()}.db`);
@@ -127,7 +127,7 @@ describe('token-refresher integration (real refresh path)', () => {
     closeDb();
     if (existsSync(dbPath)) unlinkSync(dbPath);
     if (existsSync(keychainFile)) unlinkSync(keychainFile);
-    delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+    delete process.env.SENTINEL_TEST_KEYCHAIN_FILE;
   }
 
   beforeEach(() => {

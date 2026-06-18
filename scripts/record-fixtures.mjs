@@ -5,9 +5,9 @@
  *
  * Usage:
  *   node scripts/record-fixtures.mjs --from-db
- *   node scripts/record-fixtures.mjs --from-db --db ~/.claude-sentinel/request-logs.db
+ *   node scripts/record-fixtures.mjs --from-db --db ~/.sentinel/request-logs.db
  *
- * The daemon captures request/response pairs in ~/.claude-sentinel/request-logs.db
+ * The daemon captures request/response pairs in ~/.sentinel/request-logs.db
  * when request logging is enabled. This script picks the most recent successful
  * response for each fixture endpoint and overwrites the hand-authored references.
  *
@@ -46,7 +46,7 @@ if (!args.has('from-db')) {
   process.exit(1);
 }
 
-const dbPath = args.get('db') ?? join(homedir(), '.claude-sentinel', 'request-logs.db');
+const dbPath = args.get('db') ?? join(homedir(), '.sentinel', 'request-logs.db');
 if (!existsSync(dbPath)) {
   console.error(`request-logs.db not found at ${dbPath}`);
   console.error('Run the daemon with request logging enabled to populate it, then retry.');
@@ -60,7 +60,7 @@ try {
 } catch (err) {
   console.error('better-sqlite3 not installed in root; run from packages/daemon:');
   console.error(
-    '  pnpm --filter @claude-sentinel/daemon exec node ../../scripts/record-fixtures.mjs --from-db',
+    '  pnpm --filter @sentinel/daemon exec node ../../scripts/record-fixtures.mjs --from-db',
   );
   process.exit(1);
 }

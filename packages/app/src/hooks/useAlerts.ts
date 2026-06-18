@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { Alert, AlertScope, BudgetAlertScope } from '@claude-sentinel/shared';
+import type { Alert, AlertScope, BudgetAlertScope } from '@sentinel/shared';
 import { sendToSentinel } from '../lib/ipc.js';
 
 interface UseAlertsResult {

@@ -11,7 +11,7 @@ import {
   writeFakeMcpStdioScript,
   FAKE_MCP_TOOLS,
   type FakeMcpHttpServer,
-} from '@claude-sentinel/test-harness';
+} from '@sentinel/test-harness';
 import { createMcpClientManager, type McpClientManager } from './mcp-client-manager.js';
 
 describe('mcp-client-manager (HTTP transport)', () => {
@@ -127,9 +127,7 @@ describe('mcp-client-manager (HTTP transport)', () => {
     expect(result.truncated).toBe(true);
     expect(result.bytes).toBeGreaterThan(10_000);
     const parsed = JSON.parse(result.contentJson) as Array<{ type: string; text: string }>;
-    expect(parsed[0]?.text).toMatch(
-      /truncated by Claude Sentinel: \d+ bytes exceeded the 1024-byte/,
-    );
+    expect(parsed[0]?.text).toMatch(/truncated by Sentinel: \d+ bytes exceeded the 1024-byte/);
   });
 
   it('surfaces isError results without throwing', async () => {

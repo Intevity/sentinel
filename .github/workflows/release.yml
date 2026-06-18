@@ -264,7 +264,7 @@ jobs:
       # variables (set them from the azure-terraform module's outputs); when any is unset,
       # both steps skip and the Windows leg builds UNSIGNED (forks/dev degrade gracefully).
       - name: Azure login (OIDC) for code signing
-        if: runner.os == 'Windows' && vars.AZURE_CLIENT_ID != '' && vars.AZURE_TS_ENDPOINT != '' && vars.AZURE_TS_ACCOUNT != '' && vars.AZURE_TS_PROFILE != ''
+        if: runner.os == 'Windows' && vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '' && vars.AZURE_TS_ENDPOINT != '' && vars.AZURE_TS_ACCOUNT != '' && vars.AZURE_TS_PROFILE != ''
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -277,7 +277,7 @@ jobs:
           allow-no-subscriptions: true
 
       - name: Prepare Windows signing (Trusted/Artifact Signing)
-        if: runner.os == 'Windows' && vars.AZURE_CLIENT_ID != '' && vars.AZURE_TS_ENDPOINT != '' && vars.AZURE_TS_ACCOUNT != '' && vars.AZURE_TS_PROFILE != ''
+        if: runner.os == 'Windows' && vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '' && vars.AZURE_TS_ENDPOINT != '' && vars.AZURE_TS_ACCOUNT != '' && vars.AZURE_TS_PROFILE != ''
         shell: bash
         env:
           AZURE_TS_ENDPOINT: ${{ vars.AZURE_TS_ENDPOINT }}
@@ -329,7 +329,7 @@ jobs:
                 "--" + sub + "-endpoint", process.env.AZURE_TS_ENDPOINT,
                 "--" + sub + "-account", process.env.AZURE_TS_ACCOUNT,
                 "--" + sub + "-certificate-profile", process.env.AZURE_TS_PROFILE,
-                "-d", "Claude Sentinel",
+                "-d", "Sentinel",
                 "%1",
               ],
             };
@@ -367,11 +367,46 @@ jobs:
         with:
           projectPath: packages/app
           tagName: ${{ github.ref_name }}
-          releaseName: Claude Sentinel ${{ github.ref_name }}
+          releaseName: Sentinel ${{ github.ref_name }}
           releaseBody: ${{ needs.prepare-notes.outputs.notes }}
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      # Verify the Windows artifacts actually carry an Authenticode signature. Tauri's
+      # signCommand (app exe + installers) and build-sidecar.mjs (daemon .exe) both sign
+      # INSIDE the build; a misconfiguration can leave an artifact unsigned while the build
+      # still succeeds, surfacing only as a SmartScreen/AV warning on users' machines. This
+      # mirrors the macOS `codesign --verify` guard: fail loudly on a clearly-unsigned
+      # artifact, and surface the status of anything the runner can't fully chain-verify
+      # (e.g. transient revocation-check hiccups) without false-failing the release.
+      - name: Verify Windows Authenticode signatures
+        if: runner.os == 'Windows' && vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '' && vars.AZURE_TS_ENDPOINT != '' && vars.AZURE_TS_ACCOUNT != '' && vars.AZURE_TS_PROFILE != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = "packages/app/src-tauri/target/release/bundle"
+          $targets = @()
+          $targets += Get-ChildItem -Path "$bundle/nsis" -Filter '*-setup.exe' -ErrorAction SilentlyContinue
+          $targets += Get-ChildItem -Path "$bundle/msi"  -Filter '*.msi'        -ErrorAction SilentlyContinue
+          $targets += Get-ChildItem -Path "packages/app/src-tauri/binaries" -Filter 'sentinel-daemon-*.exe' -ErrorAction SilentlyContinue
+          if ($targets.Count -eq 0) {
+            Write-Error "No Windows artifacts (nsis *-setup.exe, msi *.msi, sidecar .exe) found to verify."
+          }
+          $unsigned = @()
+          foreach ($f in $targets) {
+            $sig = Get-AuthenticodeSignature -FilePath $f.FullName
+            Write-Host ("{0,-12} {1}" -f $sig.Status, $f.Name)
+            if ($sig.Status -eq 'NotSigned') {
+              $unsigned += $f.Name
+            } elseif ($sig.Status -ne 'Valid') {
+              Write-Warning ("{0}: Authenticode status '{1}' - {2}" -f $f.Name, $sig.Status, $sig.StatusMessage)
+            }
+          }
+          if ($unsigned.Count -gt 0) {
+            Write-Error ("Unsigned Windows artifact(s): {0}. Expected Azure Trusted Signing Authenticode signatures." -f ($unsigned -join ', '))
+          }
+          Write-Host "Windows Authenticode verification passed (no unsigned artifacts)."
 
       # Submit the signed .dmg to Apple's notary service WITHOUT waiting, then hand the
       # submission id to the notarize-wait job. tauri-action above signed the bundle but

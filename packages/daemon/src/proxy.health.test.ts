@@ -122,6 +122,12 @@ describe('Sprint 9 — daemonHealthFailMode gate', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
+      // No upstream is wired, so the forward can hang on some platforms (seen on
+      // CI) rather than failing fast. Bound it: a hang becomes a quick abort
+      // (res = null, handled below) instead of blowing the vitest timeout. The
+      // gate decision is still observable — a 503 short-circuit returns
+      // immediately, well inside this window.
+      signal: AbortSignal.timeout(2000),
     }).catch(() => null);
     if (res) {
       const text = await res.text().catch(() => '');
@@ -135,6 +141,12 @@ describe('Sprint 9 — daemonHealthFailMode gate', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
+      // No upstream is wired, so the forward can hang on some platforms (seen on
+      // CI) rather than failing fast. Bound it: a hang becomes a quick abort
+      // (res = null, handled below) instead of blowing the vitest timeout. The
+      // gate decision is still observable — a 503 short-circuit returns
+      // immediately, well inside this window.
+      signal: AbortSignal.timeout(2000),
     }).catch(() => null);
     if (res) {
       const text = await res.text().catch(() => '');

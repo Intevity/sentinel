@@ -3,7 +3,7 @@
  *
  * Credential resolution runs through the REAL `readSentinelCredentials` /
  * `readActiveCredentials` code paths via the test-keychain adapter
- * (`CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE`). No spies on `accounts.*` — the
+ * (`SENTINEL_TEST_KEYCHAIN_FILE`). No spies on `accounts.*` — the
  * rotator walks the same `readCredentialBlob` call stack it uses in
  * production and picks up whatever the test wrote to the per-test tmp
  * JSON file. Sprint 4 of TEST_MIGRATION_PLAN.md.
@@ -73,12 +73,12 @@ function seedNoCreds(db: ReturnType<typeof getDb>, id: string, email: string): v
 
 function useTestKeychain(): string {
   const keychainFile = join(tmpdir(), `sentinel-rotator-kc-${randomUUID()}.json`);
-  process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainFile;
+  process.env.SENTINEL_TEST_KEYCHAIN_FILE = keychainFile;
   return keychainFile;
 }
 
 function cleanupKeychain(file: string): void {
-  delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+  delete process.env.SENTINEL_TEST_KEYCHAIN_FILE;
   if (existsSync(file)) unlinkSync(file);
 }
 

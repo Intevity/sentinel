@@ -27,7 +27,7 @@ import type {
   PendingSecurityBlock,
   PermissionRule,
   SecuritySeverity,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import type { IpcServer } from '../../ipc.js';
 import type { PendingOutcome } from '../scanner.js';
 

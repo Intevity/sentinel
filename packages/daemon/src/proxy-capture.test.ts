@@ -7,7 +7,7 @@ import type {
   RequestOptions,
 } from 'http';
 import { DEFAULT_SETTINGS } from './settings.js';
-import type { Settings } from '@claude-sentinel/shared';
+import type { Settings } from '@sentinel/shared';
 
 // Mock the https module so no real network calls escape the test.
 vi.mock('https', () => ({
@@ -15,7 +15,7 @@ vi.mock('https', () => ({
 }));
 
 // Override loadSettings so the capture code path is active for these tests
-// without touching the user's real ~/.claude-sentinel/settings.json.
+// without touching the user's real ~/.sentinel/settings.json.
 let mockedSettings: Settings = { ...DEFAULT_SETTINGS };
 vi.mock('./settings.js', async () => {
   const actual = await vi.importActual<typeof import('./settings.js')>('./settings.js');

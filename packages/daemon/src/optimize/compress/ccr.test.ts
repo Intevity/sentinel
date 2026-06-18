@@ -59,7 +59,7 @@ describe('reversible markers in lossy rules', () => {
   it('without onElide the marker is byte-identical to the non-reversible form', () => {
     const text = Array.from({ length: 500 }, (_, i) => `l${i}`).join('\n');
     const out = truncateLog(text, { triggerLines: 300, headLines: 120, tailLines: 120 });
-    expect(out).toContain('[260 lines elided by Claude Sentinel]');
+    expect(out).toContain('[260 lines elided by Sentinel]');
     expect(out).not.toContain('retrieve the full output');
   });
 });

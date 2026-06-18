@@ -5,7 +5,7 @@ import { join } from 'path';
 import { createOtelSettingsWatcher } from './otel-settings-watcher.js';
 import { canonHashManagedEnv } from './otel-settings-drift.js';
 import { SENTINEL_BASE_URL } from './claude-otel-config.js';
-import type { DaemonToAppMessage } from '@claude-sentinel/shared';
+import type { DaemonToAppMessage } from '@sentinel/shared';
 
 // Minimal IpcServer stub. The watcher only ever calls `broadcast()`,
 // so we record those calls and the rest of the interface can be

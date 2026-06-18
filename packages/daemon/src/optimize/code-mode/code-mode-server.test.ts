@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, rmSync } from 'node:fs';
-import { startFakeMcpHttpServer, type FakeMcpHttpServer } from '@claude-sentinel/test-harness';
+import { startFakeMcpHttpServer, type FakeMcpHttpServer } from '@sentinel/test-harness';
 import { startProxyWithFake, makeTestDbPath, type StartedProxy } from '../../proxy.test-helpers.js';
 import { ContextCostStore } from '../../context-bloat/context-cost-db.js';
 import { createMcpClientManager, type McpClientManager } from './mcp-client-manager.js';

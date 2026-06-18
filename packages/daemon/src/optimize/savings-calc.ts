@@ -23,7 +23,7 @@
  * page so users know to expect approximation, not actuals.
  */
 
-import { getDigestTokens, BYTES_PER_TOKEN } from '@claude-sentinel/shared';
+import { getDigestTokens, BYTES_PER_TOKEN } from '@sentinel/shared';
 import {
   getBaseInputPricePerMillion,
   CACHE_READ_MULTIPLIER,
@@ -35,7 +35,7 @@ import {
 // the single source of truth shared with the compression path and the
 // context-bloat estimators.
 
-// Digest sizes are owned by `@claude-sentinel/shared/optimize-digests`
+// Digest sizes are owned by `@sentinel/shared/optimize-digests`
 // so the analyzer, the back-fill migration, and the dashboard all
 // reference the same values without duplicating the constants.
 

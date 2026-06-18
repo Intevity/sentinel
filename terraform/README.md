@@ -1,4 +1,4 @@
-# Terraform: Claude Sentinel auto-update channel
+# Terraform: Sentinel auto-update channel
 
 Provisions the public S3 bucket that hosts macOS auto-update artifacts (`*.app.tar.gz`,
 `*.sig`, `latest.json`) plus the GitHub Actions **OIDC role** the release workflow assumes

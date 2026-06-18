@@ -111,8 +111,8 @@ if (!scenario) {
 function runIpc() {
   const sockPath =
     process.platform === 'win32'
-      ? '\\\\.\\pipe\\claude-sentinel'
-      : path.join(os.homedir(), '.claude-sentinel', 'daemon.sock');
+      ? '\\\\.\\pipe\\sentinel'
+      : path.join(os.homedir(), '.sentinel', 'daemon.sock');
   const socket = net.connect(sockPath);
   const msg = { type: 'dev_trigger_alert_event', scenario: arg };
   let buf = '';

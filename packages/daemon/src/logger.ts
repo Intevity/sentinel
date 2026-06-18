@@ -9,9 +9,9 @@ import {
   writeFileSync,
   writeSync,
 } from 'fs';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { join } from 'path';
-import type { LogEntry, LogLevel } from '@claude-sentinel/shared';
+import type { LogEntry, LogLevel } from '@sentinel/shared';
 
 const LEVELS: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 
@@ -81,8 +81,28 @@ function formatFileLine(entry: LogEntry): string {
   return `[${new Date(entry.timestamp).toISOString()}] ${levelStr} ${entry.message}\n`;
 }
 
+/**
+ * Where the daemon writes `daemon.log` by default. In production this is
+ * `~/.sentinel`. Under tests it must NEVER be the user's real data dir: the
+ * test daemon runs in-process and the `log` singleton is created at import
+ * time (before any test harness sets its overrides), so a stray daemon.log
+ * would land in the real `~/.sentinel` — and a pre-existing `~/.sentinel` is
+ * exactly what defeats the one-time data-dir migration. `VITEST` is set by the
+ * runner before any module loads, so it's a reliable pre-import signal; under
+ * it, logs go to a per-process temp dir. An explicit `opts.dir` still wins.
+ */
+function defaultLogDir(): string {
+  if (process.env.VITEST) {
+    return (
+      process.env.SENTINEL_TEST_LOG_DIR ?? join(tmpdir(), 'sentinel-test-logs', String(process.pid))
+    );
+  }
+  /* v8 ignore next -- production path; unreachable under the vitest runner */
+  return join(homedir(), '.sentinel');
+}
+
 export function createLogger(opts: LoggerOptions = {}): Logger {
-  const dir = opts.dir ?? join(homedir(), '.claude-sentinel');
+  const dir = opts.dir ?? defaultLogDir();
   const fileName = opts.fileName ?? 'daemon.log';
   const path = join(dir, fileName);
   const maxBytes = opts.maxBytes ?? 10 * 1024 * 1024;

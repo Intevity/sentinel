@@ -1,4 +1,4 @@
-/// System tray icon and menu for Claude Sentinel.
+/// System tray icon and menu for Sentinel.
 ///
 /// The tray icon is dynamic:
 ///   - The Sentinel logo is re-tinted by utilization threshold
@@ -73,7 +73,7 @@ impl SwitchingMode {
 }
 
 pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let quit = MenuItem::with_id(app, "quit", "Quit Claude Sentinel", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Sentinel", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Sentinel...", true, None::<&str>)?;
     let check_updates = MenuItem::with_id(
         app,
@@ -83,7 +83,7 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let status = MenuItem::with_id(app, "status", "Claude Sentinel", false, None::<&str>)?;
+    let status = MenuItem::with_id(app, "status", "Sentinel", false, None::<&str>)?;
 
     let menu = Menu::with_items(
         app,
@@ -108,7 +108,7 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .icon_as_template(false)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Claude Sentinel")
+        .tooltip("Sentinel")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "quit" => {
                 // Match the HeaderMenu "Quit Sentinel" path: ask the daemon to
@@ -464,10 +464,10 @@ fn tint_for(pct: Option<u8>) -> TintColor {
 #[cfg(target_os = "windows")]
 fn format_tooltip(state: &TrayState, pct: Option<u8>) -> String {
     let status = format_status_text(state, pct);
-    if status == "Claude Sentinel" {
+    if status == "Sentinel" {
         status
     } else {
-        format!("Claude Sentinel: {status}")
+        format!("Sentinel: {status}")
     }
 }
 
@@ -480,7 +480,7 @@ fn format_status_text(state: &TrayState, pct: Option<u8>) -> String {
         SwitchingMode::RoundRobin => {
             // Count only rotating members so the "pool" label agrees with
             // the percentage (which is already filtered). An excluded- or
-            // paused-only view shows "Claude Sentinel" rather than a stale
+            // paused-only view shows "Sentinel" rather than a stale
             // pool count.
             let pool_size = state
                 .utilizations
@@ -488,14 +488,14 @@ fn format_status_text(state: &TrayState, pct: Option<u8>) -> String {
                 .filter(|k| !state.pool_excluded_ids.contains(*k) && !state.paused_ids.contains(*k))
                 .count();
             if pool_size == 0 {
-                "Claude Sentinel".to_string()
+                "Sentinel".to_string()
             } else {
                 format!("Round-robin pool · {pct_str}")
             }
         }
         SwitchingMode::Off => match &state.active_email {
             Some(email) => format!("{email} · {pct_str}"),
-            None => "Claude Sentinel".to_string(),
+            None => "Sentinel".to_string(),
         },
     }
 }

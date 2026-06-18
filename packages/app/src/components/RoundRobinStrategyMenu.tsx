@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import type { RoundRobinStrategy } from '@claude-sentinel/shared';
+import type { RoundRobinStrategy } from '@sentinel/shared';
 import { menuPop } from '../lib/motion.js';
 
 interface RoundRobinStrategyMenuProps {

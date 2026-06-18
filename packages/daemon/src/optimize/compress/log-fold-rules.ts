@@ -90,7 +90,7 @@ export function normalizeTemplate(line: string): string {
  *  that the later log_error_extract pass still sees every error verbatim. */
 function isFoldable(line: string): boolean {
   if (line.trim().length === 0) return false;
-  if (line.includes('elided by Claude Sentinel')) return false;
+  if (line.includes('elided by Sentinel')) return false;
   if (LOG_INTERESTING_RE.test(line)) return false;
   return true;
 }
@@ -102,7 +102,7 @@ function isFoldable(line: string): boolean {
  * same template (so they differ only in volatile fields like timestamps or
  * ids). Each maximal run of length >= `opts.minRun` of adjacent foldable lines
  * with one shared template collapses to: the FIRST line verbatim, followed by a
- * single marker line `... [<N-1> similar lines elided by Claude Sentinel<hint>] ...`.
+ * single marker line `... [<N-1> similar lines elided by Sentinel<hint>] ...`.
  * The exact lines 2..N (joined with '\n') are handed to {@link OnElide} so the
  * fold is fully reversible. Shorter runs, interesting lines, and blanks pass
  * through verbatim.
@@ -110,14 +110,14 @@ function isFoldable(line: string): boolean {
  * Deterministic (pure function of the text + opts). Idempotent for two reasons:
  * the leading marker guard returns already-folded text unchanged, AND even
  * absent the guard the result cannot re-fold: the inserted marker line is not
- * foldable (it carries the phrase 'elided by Claude Sentinel') so it breaks
+ * foldable (it carries the phrase 'elided by Sentinel') so it breaks
  * adjacency, and the lone surviving representative line cannot by itself form a
  * run of length >= minRun. Returns the EXACT input instance when nothing folds.
  */
 export function foldNearDuplicateLines(text: string, opts: NearDupOpts, onElide?: OnElide): string {
   // Idempotency + non-interference: never re-process text that already carries
   // an elision marker (ours, or one from an earlier rule in the same pass).
-  if (text.includes('elided by Claude Sentinel')) return text;
+  if (text.includes('elided by Sentinel')) return text;
 
   const lines = text.split('\n');
   const out: string[] = [];
@@ -143,7 +143,7 @@ export function foldNearDuplicateLines(text: string, opts: NearDupOpts, onElide?
       out.push(line); // first line verbatim
       const elided = lines.slice(i + 1, j).join('\n');
       const hint = retrievalHint(onElide, RULE_ID, elided);
-      out.push(`... [${runLen - 1} similar lines elided by Claude Sentinel${hint}] ...`);
+      out.push(`... [${runLen - 1} similar lines elided by Sentinel${hint}] ...`);
       changed = true;
     } else {
       for (let k = i; k < j; k++) out.push(lines[k] ?? '');

@@ -71,14 +71,14 @@ describe('extractFilePath', () => {
 describe('createToolCallExtractor', () => {
   let db: Database.Database;
   beforeEach(() => {
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB_PATH;
+    process.env['SENTINEL_TEST_DB_FILE'] = TMP_DB_PATH;
     db = getDb(TMP_DB_PATH);
     db.exec('DELETE FROM tool_calls');
     _resetSessionSeqsForTest();
   });
   afterEach(() => {
     closeDb();
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
     try {
       unlinkSync(TMP_DB_PATH);
     } catch {
@@ -246,7 +246,7 @@ describe('applyToolResultBackfill', () => {
   let db: Database.Database;
   let logSpy: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB_PATH;
+    process.env['SENTINEL_TEST_DB_FILE'] = TMP_DB_PATH;
     db = getDb(TMP_DB_PATH);
     db.exec('DELETE FROM tool_calls');
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -254,7 +254,7 @@ describe('applyToolResultBackfill', () => {
   afterEach(() => {
     logSpy.mockRestore();
     closeDb();
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
     try {
       unlinkSync(TMP_DB_PATH);
     } catch {

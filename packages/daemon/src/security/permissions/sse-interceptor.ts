@@ -22,7 +22,7 @@
  */
 
 import type { ServerResponse } from 'http';
-import type { PermissionRule } from '@claude-sentinel/shared';
+import type { PermissionRule } from '@sentinel/shared';
 import {
   compileRules,
   evaluateToolCall,
@@ -38,7 +38,7 @@ export const MAX_BLOCK_BUFFER_BYTES = 64 * 1024;
 /** A synthetic text block's substitution text, parameterized by the
  *  matched rule and optional note. Kept as a pure function for testing. */
 export function buildBlockText(rule: PermissionRule): string {
-  const parts = [`[Blocked by Claude Sentinel: ${rule.raw}`];
+  const parts = [`[Blocked by Sentinel: ${rule.raw}`];
   if (rule.note) parts.push(` — ${rule.note}`);
   parts.push(']');
   return parts.join('');

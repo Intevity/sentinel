@@ -23,7 +23,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { getDb } from '../db.js';
 import { createSecurityScanner } from './scanner.js';
-import type { Settings } from '@claude-sentinel/shared';
+import type { Settings } from '@sentinel/shared';
 
 /** Dollar-amount of real detector work to do per run — we pad the
  *  body to the target size with a mix of plausibly-scanned content

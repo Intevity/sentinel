@@ -3,7 +3,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync, rmSync } from 'fs';
 import Database from 'better-sqlite3';
-import { estimateTokensFromBytes } from '@claude-sentinel/shared';
+import { estimateTokensFromBytes } from '@sentinel/shared';
 import {
   CompressionStatsStore,
   getCompressionStatsStore,
@@ -410,10 +410,10 @@ describe('CompressionStatsStore', () => {
 });
 
 describe('compression stats store db path resolution', () => {
-  it('falls back to CLAUDE_SENTINEL_TEST_COMPRESSION_DB_FILE when no dbPath is given', () => {
+  it('falls back to SENTINEL_TEST_COMPRESSION_DB_FILE when no dbPath is given', () => {
     const envPath = tmpPath('compression-env');
-    const prev = process.env.CLAUDE_SENTINEL_TEST_COMPRESSION_DB_FILE;
-    process.env.CLAUDE_SENTINEL_TEST_COMPRESSION_DB_FILE = envPath;
+    const prev = process.env.SENTINEL_TEST_COMPRESSION_DB_FILE;
+    process.env.SENTINEL_TEST_COMPRESSION_DB_FILE = envPath;
     const s = new CompressionStatsStore();
     try {
       s.enqueue(changedRecord());
@@ -421,8 +421,8 @@ describe('compression stats store db path resolution', () => {
       expect(existsSync(envPath)).toBe(true);
     } finally {
       s.close();
-      if (prev === undefined) delete process.env.CLAUDE_SENTINEL_TEST_COMPRESSION_DB_FILE;
-      else process.env.CLAUDE_SENTINEL_TEST_COMPRESSION_DB_FILE = prev;
+      if (prev === undefined) delete process.env.SENTINEL_TEST_COMPRESSION_DB_FILE;
+      else process.env.SENTINEL_TEST_COMPRESSION_DB_FILE = prev;
       rmDb(envPath);
     }
   });

@@ -10,15 +10,15 @@ describe('getOrCreateMcpToken', () => {
   let prev: string | undefined;
 
   beforeEach(() => {
-    prev = process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+    prev = process.env.SENTINEL_TEST_KEYCHAIN_FILE;
     keychainPath = join(tmpdir(), `sentinel-mcp-token-${randomUUID()}.json`);
-    process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
+    process.env.SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
     resetMcpTokenCache();
   });
 
   afterEach(() => {
-    if (prev === undefined) delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
-    else process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = prev;
+    if (prev === undefined) delete process.env.SENTINEL_TEST_KEYCHAIN_FILE;
+    else process.env.SENTINEL_TEST_KEYCHAIN_FILE = prev;
     if (existsSync(keychainPath)) rmSync(keychainPath);
     resetMcpTokenCache();
   });
@@ -40,7 +40,7 @@ describe('getOrCreateMcpToken', () => {
     const a = getOrCreateMcpToken();
     // Point at a fresh keychain.
     const other = join(tmpdir(), `sentinel-mcp-token-${randomUUID()}.json`);
-    process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = other;
+    process.env.SENTINEL_TEST_KEYCHAIN_FILE = other;
     resetMcpTokenCache();
     try {
       const b = getOrCreateMcpToken();

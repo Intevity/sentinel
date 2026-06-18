@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type {
-  DaemonToAppMessage,
-  PendingSecurityBlock,
-  SecuritySeverity,
-} from '@claude-sentinel/shared';
+import type { DaemonToAppMessage, PendingSecurityBlock, SecuritySeverity } from '@sentinel/shared';
 import { buildSecurityBannerPayload } from './useSecurityBanner.logic.js';
 
 function eventMsg(severity: SecuritySeverity, overrides: Partial<DaemonToAppMessage> = {}) {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { unlinkSync } from 'fs';
 import Database from 'better-sqlite3';
-import { estimateTokensFromBytes } from '@claude-sentinel/shared';
+import { estimateTokensFromBytes } from '@sentinel/shared';
 import { getDb, closeDb, insertToolCall } from '../db.js';
 import { estimateMcpCosts } from './mcp-cost-estimator.js';
 
@@ -11,13 +11,13 @@ describe('estimateMcpCosts', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB;
+    process.env['SENTINEL_TEST_DB_FILE'] = TMP_DB;
     db = getDb(TMP_DB);
     db.exec('DELETE FROM tool_calls');
   });
   afterEach(() => {
     closeDb();
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
     try {
       unlinkSync(TMP_DB);
     } catch {

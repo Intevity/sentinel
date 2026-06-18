@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <!-- Claude Sentinel app icon master. Edit + run `pnpm icons:render` to regenerate
+  <!-- Sentinel app icon master. Edit + run `pnpm icons:render` to regenerate
        every committed raster asset; never edit the rasters by hand. -->
   <rect width="512" height="512" rx="102" ry="102" fill="#0593D8"/>
   <g transform="translate(130.77 102.55) scale(0.338)">

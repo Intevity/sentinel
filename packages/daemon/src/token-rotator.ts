@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { listAccounts } from './db.js';
 import { readActiveCredentials, readSentinelCredentials } from './accounts.js';
 import type { RateLimitStore } from './rate-limit-store.js';
-import type { RoundRobinStrategy } from '@claude-sentinel/shared';
+import type { RoundRobinStrategy } from '@sentinel/shared';
 
 /** The 5-hour rolling window is the one users think of as "session limit",
  *  so the rotator evaluates rotation decisions against it exclusively. */

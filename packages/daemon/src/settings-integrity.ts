@@ -1,7 +1,7 @@
 /**
  * Settings-file integrity (Sprint 2 anti-tamper).
  *
- * Sentinel signs `~/.claude-sentinel/settings.json` with HMAC-SHA256 using
+ * Sentinel signs `~/.sentinel/settings.json` with HMAC-SHA256 using
  * a per-installation key stored in the OS keychain. The signature lives in
  * the sidecar `settings.json.sig` (hex string, no JSON wrapping).
  *
@@ -17,14 +17,18 @@
  * the entry triggers an OS-level prompt, not silent access; (b) on Linux
  * libsecret offers similar isolation; (c) the existing accounts.ts
  * pattern already handles the platform fan-out and a test-file fallback
- * via `CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE`, so we get the test seam for
+ * via `SENTINEL_TEST_KEYCHAIN_FILE`, so we get the test seam for
  * free.
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
-import { readCredentialBlob, writeCredentialBlob, deleteCredentialBlob } from './accounts.js';
+import {
+  readCredentialBlobMigrating,
+  writeCredentialBlob,
+  deleteCredentialBlob,
+} from './accounts.js';
 
-const HMAC_SERVICE = 'Claude Sentinel-settings-hmac';
+const HMAC_SERVICE = 'Sentinel-settings-hmac';
 const HMAC_ACCOUNT = 'default';
 const KEY_BYTES = 32;
 
@@ -42,7 +46,7 @@ let cachedKey: Buffer | null = null;
  */
 export function getOrCreateSettingsHmacKey(): Buffer {
   if (cachedKey) return cachedKey;
-  const existing = readCredentialBlob(HMAC_SERVICE, HMAC_ACCOUNT);
+  const existing = readCredentialBlobMigrating(HMAC_SERVICE, HMAC_ACCOUNT);
   if (existing && /^[0-9a-f]+$/i.test(existing) && existing.length === KEY_BYTES * 2) {
     cachedKey = Buffer.from(existing, 'hex');
     return cachedKey;

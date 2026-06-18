@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import type { ClaudeCodeCredentials, OAuthAccount } from '@claude-sentinel/shared';
+import type { ClaudeCodeCredentials, OAuthAccount } from '@sentinel/shared';
 import { fetchProfile } from './oauth.js';
 import type { ProfileResult } from './oauth.js';
 import { listAccounts, markAccountRemoved } from './db.js';

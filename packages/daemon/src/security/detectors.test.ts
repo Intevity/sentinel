@@ -1083,7 +1083,7 @@ describe('risky-write path narrowing', () => {
   });
 
   // Sprint 2 anti-tamper: writes to ~/.claude/settings.json,
-  // ~/.claude/CLAUDE.md, and anywhere under ~/.claude-sentinel/ are
+  // ~/.claude/CLAUDE.md, and anywhere under ~/.sentinel/ are
   // HIGH severity — the agent has no business touching the permission
   // rules, the user-level memory, or Sentinel's state dir.
   it('DOES flag writes to ~/.claude/settings.json (HIGH)', () => {
@@ -1118,14 +1118,14 @@ describe('risky-write path narrowing', () => {
     expect(w!.severity).toBe('high');
   });
 
-  it('DOES flag writes anywhere under ~/.claude-sentinel/ (HIGH)', () => {
+  it('DOES flag writes anywhere under ~/.sentinel/ (HIGH)', () => {
     const findings = scanToolUseBlocks(
       [
         {
           index: 0,
           name: 'Write',
           input: {
-            file_path: '/Users/me/.claude-sentinel/runtime/anything.json',
+            file_path: '/Users/me/.sentinel/runtime/anything.json',
             content: 'x',
           },
         },
@@ -1169,13 +1169,13 @@ describe('config-path-write Bash detector', () => {
     expect(f!.severity).toBe('high');
   });
 
-  it('flags `>> ~/.claude-sentinel/settings.json`', () => {
+  it('flags `>> ~/.sentinel/settings.json`', () => {
     const findings = scanToolUseBlocks(
       [
         {
           index: 0,
           name: 'Bash',
-          input: { command: 'echo evil >> ~/.claude-sentinel/settings.json' },
+          input: { command: 'echo evil >> ~/.sentinel/settings.json' },
         },
       ],
       ALL_OPTS,
@@ -1217,13 +1217,13 @@ describe('config-path-write Bash detector', () => {
     expect(f).toBeDefined();
   });
 
-  it('flags `mv tmp ~/.claude-sentinel/foo`', () => {
+  it('flags `mv tmp ~/.sentinel/foo`', () => {
     const findings = scanToolUseBlocks(
       [
         {
           index: 0,
           name: 'Bash',
-          input: { command: 'mv tmp ~/.claude-sentinel/runtime/foo' },
+          input: { command: 'mv tmp ~/.sentinel/runtime/foo' },
         },
       ],
       ALL_OPTS,

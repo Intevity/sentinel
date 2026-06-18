@@ -1,4 +1,4 @@
-import type { SecurityEvent } from '@claude-sentinel/shared';
+import type { SecurityEvent } from '@sentinel/shared';
 
 export type SecurityStatusVariant =
   | 'diagnostic'

@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import type { LogRequestSummary, RequestDetail } from '@claude-sentinel/shared';
+import type { LogRequestSummary, RequestDetail } from '@sentinel/shared';
 import { SENTINEL_DIR } from './db.js';
 
 export const REQUEST_LOG_DB_PATH = join(SENTINEL_DIR, 'request-logs.db');
@@ -62,7 +62,7 @@ export class RequestLogStore {
   private closed = false;
 
   constructor(
-    dbPath: string = process.env.CLAUDE_SENTINEL_TEST_REQUEST_LOG_DB_FILE ?? REQUEST_LOG_DB_PATH,
+    dbPath: string = process.env.SENTINEL_TEST_REQUEST_LOG_DB_FILE ?? REQUEST_LOG_DB_PATH,
   ) {
     const dir = dirname(dbPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });

@@ -10,7 +10,7 @@ import {
   estimateTokensFromBytes,
   type ContextInventory,
   type ContextInventoryMcpServer,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 
 const EMPTY_INV: ContextInventory = {
   mcpServers: [],

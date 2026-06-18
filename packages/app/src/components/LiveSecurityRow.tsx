@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Shield, ShieldAlert, ShieldX, ShieldCheck, X } from 'lucide-react';
-import type { PendingSecurityBlock, SecuritySeverity } from '@claude-sentinel/shared';
+import type { PendingSecurityBlock, SecuritySeverity } from '@sentinel/shared';
 import { orderedToolInputRows } from '../lib/toolInputFields.js';
 import HighlightedSnippet from './HighlightedSnippet.js';
 

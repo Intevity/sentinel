@@ -42,9 +42,9 @@ describe('PRESETS', () => {
       'Write(~/.claude/CLAUDE.md)',
       'Edit(~/.claude/CLAUDE.md)',
       'MultiEdit(~/.claude/CLAUDE.md)',
-      'Write(~/.claude-sentinel/**)',
-      'Edit(~/.claude-sentinel/**)',
-      'MultiEdit(~/.claude-sentinel/**)',
+      'Write(~/.sentinel/**)',
+      'Edit(~/.sentinel/**)',
+      'MultiEdit(~/.sentinel/**)',
     ];
     for (const profile of ['low', 'medium', 'high'] as const) {
       const byRaw = new Map<string, (typeof PRESETS)[typeof profile]['rules'][number]>(

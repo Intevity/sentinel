@@ -16,7 +16,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { fetchRunBudget } from './claude-ai-run-budget.js';
-import { startFakeAnthropic, type FakeAnthropic } from '@claude-sentinel/test-harness';
+import { startFakeAnthropic, type FakeAnthropic } from '@sentinel/test-harness';
 
 describe('claude-ai-run-budget integration (real fetch, fake endpoint)', () => {
   let fake: FakeAnthropic;

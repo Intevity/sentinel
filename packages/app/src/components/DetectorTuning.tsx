@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import type { DetectorStatsRow, DetectorTier, Settings } from '@claude-sentinel/shared';
+import type { DetectorStatsRow, DetectorTier, Settings } from '@sentinel/shared';
 import { useDetectorStats } from '../hooks/useDetectorStats.js';
 
 interface DetectorTuningProps {

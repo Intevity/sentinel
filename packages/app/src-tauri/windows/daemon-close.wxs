@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Kill the daemon sidecar before MSI validation/file-costing so the install
-  (or uninstall) can replace claude-sentinel-daemon.exe. Windows locks the
+  (or uninstall) can replace sentinel-daemon.exe. Windows locks the
   executable of a running process, and the daemon deliberately outlives the
   UI window; without this, an MSI over a running daemon trips the
   files-in-use path (Tauri #7931 class). Mirrors the NSIS hook in hooks.nsh.
@@ -23,7 +23,7 @@
       <Component Id="DaemonCloseMarker" Guid="CD25F091-F537-4694-892F-0CABF789893B">
         <RegistryValue
           Root="HKCU"
-          Key="Software\Claude Sentinel"
+          Key="Software\Sentinel"
           Name="DaemonCloseHook"
           Type="integer"
           Value="1"
@@ -40,7 +40,7 @@
          uninstall (no Custom condition, on purpose). -->
     <Property
       Id="WixQuietExecCmdLine"
-      Value="&quot;[System64Folder]taskkill.exe&quot; /F /IM claude-sentinel-daemon.exe"
+      Value="&quot;[System64Folder]taskkill.exe&quot; /F /IM sentinel-daemon.exe"
     />
     <CustomAction
       Id="CloseDaemonSidecar"

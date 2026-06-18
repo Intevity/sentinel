@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import type { RateLimitStore } from './rate-limit-store.js';
 import type { IpcServer } from './ipc.js';
-import type { Settings, Alert, PauseReason } from '@claude-sentinel/shared';
+import type { Settings, Alert, PauseReason } from '@sentinel/shared';
 import {
   listAlerts,
   listAccounts,
@@ -77,9 +77,9 @@ export function isoWeekStartMs(now: number = Date.now()): number {
 
 /** Re-export so existing consumers that imported `PauseReason` from this
  *  module continue to work unchanged — the canonical definition now lives
- *  in `@claude-sentinel/shared` so the UI hooks and IPC messages reference
+ *  in `@sentinel/shared` so the UI hooks and IPC messages reference
  *  the same literal union. */
-export type { PauseReason } from '@claude-sentinel/shared';
+export type { PauseReason } from '@sentinel/shared';
 
 export interface SpendTrackerDeps {
   db: Database;

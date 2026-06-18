@@ -1,12 +1,12 @@
 {
-  "name": "claude-sentinel",
+  "name": "sentinel",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "pnpm -r build",
     "build:app": "node scripts/build-app.mjs",
-    "build:app:release": "pnpm --filter @claude-sentinel/app run tauri:build",
+    "build:app:release": "pnpm --filter @sentinel/app run tauri:build",
     "install:app": "node scripts/build-app.mjs",
     "dev": "pnpm -r --parallel dev",
     "test": "vitest run --coverage --reporter=verbose",

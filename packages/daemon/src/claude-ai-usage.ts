@@ -1,5 +1,5 @@
 import type { IpcServer } from './ipc.js';
-import type { ClaudeAiUsageSnapshot } from '@claude-sentinel/shared';
+import type { ClaudeAiUsageSnapshot } from '@sentinel/shared';
 import { readSentinelCredentials } from './accounts.js';
 import { fetchRunBudget } from './claude-ai-run-budget.js';
 

@@ -234,6 +234,14 @@ fn main() {
             }
         })
         .setup(|app| {
+            // One-time migration of the legacy data dir ~/.claude-sentinel ->
+            // ~/.sentinel (the product was renamed "Claude Sentinel" -> "Sentinel").
+            // MUST be the first thing we do: before any app_log write (which
+            // creates ~/.sentinel and would make the migration a no-op, orphaning
+            // the legacy dir) and before the daemon sidecar spawns, so both the
+            // app and the daemon observe the renamed path.
+            app_log::migrate_data_dir();
+
             // Install the persistent NSUserNotificationCenter delegate
             // and stash an AppHandle for it to reach back into Tauri.
             // Must run before any daemon broadcast can trigger a
@@ -309,5 +317,5 @@ fn main() {
             updater::install_update,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Claude Sentinel");
+        .expect("error while running Sentinel");
 }

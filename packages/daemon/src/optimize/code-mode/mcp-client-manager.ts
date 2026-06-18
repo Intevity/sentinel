@@ -170,7 +170,7 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
     if (stopped) throw new Error('MCP client manager is shut down');
     const entry = deps.resolveEntry(server);
     const transport = buildTransport(server, entry);
-    const client = new Client({ name: 'claude-sentinel-code-mode', version: '1.0.0' });
+    const client = new Client({ name: 'sentinel-code-mode', version: '1.0.0' });
     try {
       // Cast bridges the same exactOptionalPropertyTypes mismatch as the
       // retrieve server's transport (SDK concrete classes vs Transport).
@@ -230,7 +230,7 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
           {
             type: 'text',
             text:
-              `[result truncated by Claude Sentinel: ${bytes} bytes exceeded the ` +
+              `[result truncated by Sentinel: ${bytes} bytes exceeded the ` +
               `${maxBytes}-byte code-mode cap; narrow the query or filter server-side] ` +
               contentJson.slice(0, 4096),
           },

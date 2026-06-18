@@ -93,7 +93,7 @@ async function resolveAllPending(ctx: StartedProxy, outcome: 'approve' | 'deny')
 }
 
 describe('proxy permissions e2e: response-side tool_use interception', () => {
-  it('denied tool_use → client receives a synthetic [Blocked by Claude Sentinel] text block', async () => {
+  it('denied tool_use → client receives a synthetic [Blocked by Sentinel] text block', async () => {
     const ctx = trackContext(
       await startProxyWithFake({
         enablePermissionsEnforcer: true,
@@ -122,7 +122,7 @@ describe('proxy permissions e2e: response-side tool_use interception', () => {
     // The synthesized text block carries the rule's raw text in the
     // body so the agent sees a structured "you were blocked" message
     // instead of the original tool_use it asked for.
-    expect(body).toContain('[Blocked by Claude Sentinel: Bash(rm -rf *)]');
+    expect(body).toContain('[Blocked by Sentinel: Bash(rm -rf *)]');
     // The original tool_use frames must NOT have leaked through.
     expect(body).not.toContain('"type":"tool_use"');
     expect(body).not.toContain('input_json_delta');
@@ -149,7 +149,7 @@ describe('proxy permissions e2e: response-side tool_use interception', () => {
     expect(body).toContain('"name":"Read"');
     expect(body).toContain('input_json_delta');
     // No substitution happened.
-    expect(body).not.toContain('Blocked by Claude Sentinel');
+    expect(body).not.toContain('Blocked by Sentinel');
   });
 
   it('multi-block response: denied middle tool_use is substituted; surrounding text blocks pass through unchanged', async () => {
@@ -244,7 +244,7 @@ describe('proxy permissions e2e: response-side tool_use interception', () => {
     // Block 1's tool_use was substituted with a [Blocked …] text block,
     // and the substitution preserved the index so client-side message
     // assembly remains valid.
-    expect(body).toContain('Blocked by Claude Sentinel');
+    expect(body).toContain('Blocked by Sentinel');
     expect(body).toContain('"index":1');
     // The original block-1 tool_use payload did NOT leak through.
     expect(body).not.toContain('rm -rf /');
@@ -276,7 +276,7 @@ describe('proxy permissions e2e: response-side tool_use interception', () => {
     const res = await resPromise;
     expect(res.status).toBe(200);
     const body = await res.text();
-    expect(body).toContain('Blocked by Claude Sentinel');
+    expect(body).toContain('Blocked by Sentinel');
     expect(body).not.toContain('rm -rf /');
   });
 });
@@ -343,7 +343,7 @@ describe('proxy permissions e2e: rule mutation reflects between requests', () =>
     const res1 = await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
     const body1 = await res1.text();
     expect(body1).toContain('"type":"tool_use"');
-    expect(body1).not.toContain('Blocked by Claude Sentinel');
+    expect(body1).not.toContain('Blocked by Sentinel');
 
     // Add the deny rule and invalidate the enforcer's compiled cache.
     upsertPermissionRule(ctx.db, {
@@ -363,7 +363,7 @@ describe('proxy permissions e2e: rule mutation reflects between requests', () =>
     await resolveAllPending(ctx, 'deny');
     const res2 = await res2Promise;
     const body2 = await res2.text();
-    expect(body2).toContain('Blocked by Claude Sentinel');
+    expect(body2).toContain('Blocked by Sentinel');
     expect(body2).not.toContain('rm -rf /');
   });
 });
@@ -455,6 +455,6 @@ describe('proxy permissions e2e: auto-mode bypass', () => {
     // through. The user opted into Claude Code's auto-mode classifier
     // and Sentinel deliberately stays out of the way.
     expect(body).toContain('"type":"tool_use"');
-    expect(body).not.toContain('Blocked by Claude Sentinel');
+    expect(body).not.toContain('Blocked by Sentinel');
   });
 });

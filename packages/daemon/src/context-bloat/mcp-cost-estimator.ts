@@ -11,7 +11,7 @@
  */
 
 import type Database from 'better-sqlite3';
-import { estimateTokensFromBytes } from '@claude-sentinel/shared';
+import { estimateTokensFromBytes } from '@sentinel/shared';
 
 export interface McpServerCost {
   /** Server name (the `<server>` chunk from `mcp__<server>__<tool>`). */

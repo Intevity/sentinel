@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { PendingSecurityBlock } from '@claude-sentinel/shared';
+import type { PendingSecurityBlock } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 interface UsePendingBlocksResult {

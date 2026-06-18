@@ -9,7 +9,7 @@
  * behavior, chosen by `process.platform`:
  *
  *   - macOS (darwin): delegate to scripts/install-app.sh — build the `.app`,
- *     replace /Applications/Claude Sentinel.app, ad-hoc re-sign, and launch.
+ *     replace /Applications/Sentinel.app, ad-hoc re-sign, and launch.
  *     The re-sign is load-bearing: it clears the amfid signature cache that
  *     would otherwise SIGKILL the daemon sidecar on first launch.
  *   - Linux: build an unsigned `.AppImage` and launch it.
@@ -57,7 +57,7 @@ function runShell(cmd) {
 }
 
 /** Run an executable with an argv array (no shell — safe for paths with
- *  spaces, e.g. "Claude Sentinel.app"). Aborts on non-zero exit. */
+ *  spaces, e.g. "Sentinel.app"). Aborts on non-zero exit. */
 function runArgv(cmd, args) {
   if (dryRun) {
     console.log(`  [run] ${cmd} ${args.join(' ')}`);
@@ -90,7 +90,7 @@ function newestMatching(dir, re) {
 
 /** The unsigned dev build invocation for a given bundle target. */
 const tauriBuild = (bundles) =>
-  `pnpm --filter @claude-sentinel/app exec tauri build --bundles ${bundles} --config src-tauri/tauri.dev.conf.json`;
+  `pnpm --filter @sentinel/app exec tauri build --bundles ${bundles} --config src-tauri/tauri.dev.conf.json`;
 
 switch (platform) {
   case 'darwin': {

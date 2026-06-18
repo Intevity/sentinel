@@ -23,7 +23,7 @@ import AccountViewPicker, {
   type PoolOption,
 } from './components/AccountViewPicker.js';
 import type { MetricsScope } from './hooks/useMetricsSummary.js';
-import type { AccountInfo } from '@claude-sentinel/shared';
+import type { AccountInfo } from '@sentinel/shared';
 import { accountColor } from './lib/accountColor.js';
 import UsageView from './components/UsageView.js';
 import MetricsDashboard from './components/MetricsDashboard.js';

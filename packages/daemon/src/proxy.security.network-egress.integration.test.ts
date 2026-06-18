@@ -8,7 +8,7 @@
  * The synthetic deny lives in the evaluator (between user allow tier
  * and default-action fallback), so it fires even when no user rule
  * matches. The proxy's SSE interceptor substitutes the matching
- * tool_use with a `[Blocked by Claude Sentinel: <rule.raw>]` text
+ * tool_use with a `[Blocked by Sentinel: <rule.raw>]` text
  * frame; the agent never sees the original tool_use.
  */
 
@@ -96,7 +96,7 @@ describe('proxy network-egress: synthetic default-deny end-to-end', () => {
 
     // Synthesized text block carries the synthetic rule's raw form.
     expect(body).toContain(
-      `[Blocked by Claude Sentinel: ${SYNTHETIC_NETWORK_EGRESS_DENY_ID}(169.254.169.254)`,
+      `[Blocked by Sentinel: ${SYNTHETIC_NETWORK_EGRESS_DENY_ID}(169.254.169.254)`,
     );
     // Original tool_use frames must NOT have leaked.
     expect(body).not.toContain('"type":"tool_use"');
@@ -134,7 +134,7 @@ describe('proxy network-egress: synthetic default-deny end-to-end', () => {
 
     // The explicit user rule's raw is in the substituted block — and
     // the synthetic id is NOT, since the deny tier matched first.
-    expect(body).toContain('[Blocked by Claude Sentinel: WebFetch(domain:169.254.169.254)');
+    expect(body).toContain('[Blocked by Sentinel: WebFetch(domain:169.254.169.254)');
     expect(body).not.toContain(SYNTHETIC_NETWORK_EGRESS_DENY_ID);
     expect(body).not.toContain('"type":"tool_use"');
   });
@@ -154,9 +154,7 @@ describe('proxy network-egress: synthetic default-deny end-to-end', () => {
     await resolveAllPending(onCtx, 'deny');
     const onRes = await onResPromise;
     const onBody = await onRes.text();
-    expect(onBody).toContain(
-      `[Blocked by Claude Sentinel: ${SYNTHETIC_NETWORK_EGRESS_DENY_ID}(10.1.2.3)`,
-    );
+    expect(onBody).toContain(`[Blocked by Sentinel: ${SYNTHETIC_NETWORK_EGRESS_DENY_ID}(10.1.2.3)`);
     await onCtx.cleanup();
     activeCtx = undefined;
 
@@ -172,7 +170,7 @@ describe('proxy network-egress: synthetic default-deny end-to-end', () => {
     });
     const offRes = await postThroughProxy(offCtx.proxyPort, '/v1/messages', { messages: [] });
     const offBody = await offRes.text();
-    expect(offBody).not.toContain('Blocked by Claude Sentinel');
+    expect(offBody).not.toContain('Blocked by Sentinel');
     expect(offBody).toContain('"type":"tool_use"');
   });
 });

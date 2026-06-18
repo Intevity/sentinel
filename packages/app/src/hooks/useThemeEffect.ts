@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import type { ThemePreference } from '@claude-sentinel/shared';
+import type { ThemePreference } from '@sentinel/shared';
 import { THEME_STORAGE_KEY, resolveEffectiveTheme } from './useThemeEffect.logic.js';
 
 export { THEME_STORAGE_KEY, resolveEffectiveTheme } from './useThemeEffect.logic.js';

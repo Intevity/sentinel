@@ -4,7 +4,7 @@
  * fills the gaps — scope variations, error branches, alternate-input modes.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import type { OAuthAccount } from '@claude-sentinel/shared';
+import type { OAuthAccount } from '@sentinel/shared';
 import { makeCreds, startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 
 let ctx: TestDaemon | null = null;

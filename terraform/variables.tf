@@ -34,7 +34,7 @@ variable "github_owner" {
 variable "github_repo" {
   description = "GitHub repo name allowed to assume the CI role."
   type        = string
-  default     = "claude-sentinel"
+  default     = "sentinel"
 }
 
 variable "github_default_branch" {

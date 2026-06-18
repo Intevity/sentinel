@@ -99,7 +99,7 @@ describe('collapseStackTraces', () => {
     const lines = out.split('\n');
     // header + 8 head + 1 marker + 8 tail + trailing line = 19
     expect(lines[0]).toBe('Error: boom');
-    expect(out).toContain('[24 stack frames elided by Claude Sentinel]');
+    expect(out).toContain('[24 stack frames elided by Sentinel]');
     expect(lines[lines.length - 1]).toBe('after');
     expect(lines).toHaveLength(19);
   });
@@ -131,7 +131,7 @@ describe('truncateLog', () => {
     expect(lines).toHaveLength(120 + 1 + 120);
     expect(lines[0]).toBe('line 0');
     expect(lines[lines.length - 1]).toBe('line 499');
-    expect(out).toContain('[260 lines elided by Claude Sentinel]');
+    expect(out).toContain('[260 lines elided by Sentinel]');
   });
 
   it('leaves output under the trigger untouched', () => {
@@ -170,7 +170,7 @@ describe('extractLogErrors', () => {
 
   it('keeps the error lines and head/tail, eliding long passing runs', () => {
     const out = extractLogErrors(pytestLog(), opts);
-    expect(out).toContain('elided by Claude Sentinel');
+    expect(out).toContain('elided by Sentinel');
     expect(out).toContain('test_boom FAILED');
     expect(out).toContain('AssertionError: expected 1 but got 2');
     expect(out).toContain('test session starts');
@@ -212,7 +212,7 @@ describe('extractLogErrors', () => {
   });
 
   it('does not re-process text that already carries an elision marker', () => {
-    const marked = `=== test session starts ===\n${Array.from({ length: 90 }, () => 'noise').join('\n')}\n... [12 lines elided by Claude Sentinel] ...\ndone`;
+    const marked = `=== test session starts ===\n${Array.from({ length: 90 }, () => 'noise').join('\n')}\n... [12 lines elided by Sentinel] ...\ndone`;
     expect(extractLogErrors(marked, opts)).toBe(marked);
   });
 
@@ -245,7 +245,7 @@ describe('extractLogErrors', () => {
     const out = extractLogErrors(lines.join('\n'), o);
     expect(out).toContain('gap-a');
     expect(out).toContain('gap-b');
-    expect(out).toContain('elided by Claude Sentinel');
+    expect(out).toContain('elided by Sentinel');
     expect(out).not.toContain('noise2');
   });
 
@@ -472,7 +472,7 @@ describe('sampleJsonArray', () => {
     };
     expect(out._sentinelSample.droppedCount).toBe(54);
     expect(out._sentinelSample.kept.map((k) => k.id)).toEqual([0, 1, 2, 57, 58, 59]);
-    expect(out._sentinelSample.note).toContain('54 of 60 items elided by Claude Sentinel');
+    expect(out._sentinelSample.note).toContain('54 of 60 items elided by Sentinel');
   });
 
   it('always keeps error-like items wherever they sit', () => {
@@ -727,7 +727,7 @@ describe('compressToolResultText (tiers)', () => {
       '\n',
     );
     const r = compressToolResultText(log, 'moderate');
-    expect(r.text).toContain('lines elided by Claude Sentinel');
+    expect(r.text).toContain('lines elided by Sentinel');
     expect(r.perRule.log_truncate?.hits).toBe(1);
     expect((r.perRule.log_truncate?.bytesSaved ?? 0) > 0).toBe(true);
   });
@@ -742,7 +742,7 @@ describe('compressToolResultText (tiers)', () => {
     const lines = r.text.split('\n');
     expect(lines).toHaveLength(2);
     expect(lines[0]).toBe('req 0 served in 0ms');
-    expect(lines[1]).toContain('[499 similar lines elided by Claude Sentinel');
+    expect(lines[1]).toContain('[499 similar lines elided by Sentinel');
   });
 
   it('extracts errors from framework logs at moderate/aggressive, not conservative', () => {
@@ -849,7 +849,7 @@ describe('compressToolResultText (tiers)', () => {
     ].join('\n');
     const r = compressToolResultText(diff, 'aggressive');
     expect(r.perRule.diff_trim?.hits).toBe(1);
-    expect(r.text).toContain('hunks elided by Claude Sentinel');
+    expect(r.text).toContain('hunks elided by Sentinel');
     // Routed: none of the generic log rules fired on the diff body.
     expect(r.perRule.log_error_extract).toBeUndefined();
     expect(r.perRule.stack_trace_collapse).toBeUndefined();
@@ -878,7 +878,7 @@ describe('compressToolResultText (tiers)', () => {
     const html = `<!DOCTYPE html>\n<html><head><style>.card{color:red}</style></head><body>\n${cards}\n</body></html>`;
     const r = compressToolResultText(html, 'moderate');
     expect(r.perRule.html_extract?.hits).toBe(1);
-    expect(r.text).toContain('bytes of HTML markup elided by Claude Sentinel');
+    expect(r.text).toContain('bytes of HTML markup elided by Sentinel');
     expect(r.text).toContain('Widget 0 costs $0.99');
     expect(r.text).not.toContain('<div');
     expect(r.text).not.toContain('color:red');

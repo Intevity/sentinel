@@ -1,4 +1,4 @@
-import type { Settings, SecurityEnforcementMode } from '@claude-sentinel/shared';
+import type { Settings, SecurityEnforcementMode } from '@sentinel/shared';
 
 const MODE_LABEL: Record<SecurityEnforcementMode, string> = {
   observe: 'Observe',

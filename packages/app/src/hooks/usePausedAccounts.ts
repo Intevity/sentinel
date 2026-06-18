@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import type { PauseReason } from '@claude-sentinel/shared';
+import type { PauseReason } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 export interface PausedState {

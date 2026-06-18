@@ -8,7 +8,7 @@ import {
   FileText,
   Trash2,
 } from 'lucide-react';
-import type { LogEntry, LogLevel, RequestDetail } from '@claude-sentinel/shared';
+import type { LogEntry, LogLevel, RequestDetail } from '@sentinel/shared';
 import { useDaemonLogs } from '../hooks/useDaemonLogs.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
@@ -285,7 +285,7 @@ export default function LogsViewer(): React.ReactElement {
       ]);
       const date = new Date().toISOString().slice(0, 10);
       const path = await save({
-        defaultPath: `claude-sentinel-logs-${date}.${format}`,
+        defaultPath: `sentinel-logs-${date}.${format}`,
         filters: [
           format === 'json'
             ? { name: 'JSON', extensions: ['json'] }

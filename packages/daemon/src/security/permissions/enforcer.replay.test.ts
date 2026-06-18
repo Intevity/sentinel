@@ -5,7 +5,7 @@ import { existsSync, unlinkSync } from 'fs';
 import { closeDb, getDb, listSecurityEvents, listIncidentReplay } from '../../db.js';
 import { createPermissionsEnforcer } from './enforcer.js';
 import { createIncidentReplayRecorder } from '../incident-replay.js';
-import type { Settings } from '@claude-sentinel/shared';
+import type { Settings } from '@sentinel/shared';
 
 const NEW_DB = () =>
   join(

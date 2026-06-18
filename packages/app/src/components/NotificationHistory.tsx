@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Check, CheckCheck, Shield, ShieldAlert, ShieldX } from 'lucide-react';
-import type { AccountInfo, NotificationRecord, NotificationType } from '@claude-sentinel/shared';
+import type { AccountInfo, NotificationRecord, NotificationType } from '@sentinel/shared';
 import { sendToSentinel } from '../lib/ipc.js';
 import { accountColor } from '../lib/accountColor.js';
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll.js';

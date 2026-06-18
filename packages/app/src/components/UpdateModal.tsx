@@ -78,9 +78,8 @@ export default function UpdateModal({
         </div>
         <div className="space-y-2 text-[12px] leading-relaxed text-muted">
           <p>
-            Claude Sentinel{' '}
-            <span className="font-semibold text-black dark:text-white">v{version}</span> is ready to
-            install. You are on v{currentVersion}.
+            Sentinel <span className="font-semibold text-black dark:text-white">v{version}</span> is
+            ready to install. You are on v{currentVersion}.
           </p>
           <p>Sentinel restarts to finish the update; the proxy is back within seconds.</p>
           {error !== null && <p className="text-red-600 dark:text-red-400">{error}</p>}

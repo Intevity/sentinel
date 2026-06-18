@@ -94,29 +94,29 @@ jobs:
         shell: bash
 
       # Build shared first so its dist/ (types + JS) exists on disk — daemon
-      # imports @claude-sentinel/shared via package.json's `types` / `main`
+      # imports @sentinel/shared via package.json's `types` / `main`
       # which point at ./dist. Using tsc --noEmit on shared would typecheck
       # it but produce no dist, so the daemon typecheck then fails with
-      # TS2307 "Cannot find module '@claude-sentinel/shared'".
+      # TS2307 "Cannot find module '@sentinel/shared'".
       - name: Build shared (emits dist/ for daemon typecheck)
         if: steps.build-cache.outputs.cache-hit != 'true'
-        run: pnpm --filter @claude-sentinel/shared run build
+        run: pnpm --filter @sentinel/shared run build
 
       # Same rule as shared above: test-harness exposes types via dist/
       # (package.json `types` → ./dist/index.d.ts). Daemon's
-      # *.integration.test.ts files import from @claude-sentinel/test-harness,
+      # *.integration.test.ts files import from @sentinel/test-harness,
       # so the daemon build step below will fail with TS2307 unless dist
       # exists on disk.
       - name: Build test-harness (emits dist/ for daemon build)
         if: steps.build-cache.outputs.cache-hit != 'true'
-        run: pnpm --filter @claude-sentinel/test-harness run build
+        run: pnpm --filter @sentinel/test-harness run build
 
       # Daemon build serves dual purpose: typecheck (tsc fails on type
       # errors regardless of --noEmit) AND populates packages/daemon/dist
       # for the downstream e2e job's build-output cache hit.
       - name: Build daemon
         if: steps.build-cache.outputs.cache-hit != 'true'
-        run: pnpm --filter @claude-sentinel/daemon run build
+        run: pnpm --filter @sentinel/daemon run build
 
       - name: Lint
         run: pnpm exec eslint packages/daemon/src packages/shared/src
@@ -195,15 +195,15 @@ jobs:
 
       - name: Build shared
         if: steps.build-cache.outputs.cache-hit != 'true'
-        run: pnpm --filter @claude-sentinel/shared run build
+        run: pnpm --filter @sentinel/shared run build
 
       - name: Build daemon
         if: steps.build-cache.outputs.cache-hit != 'true'
-        run: pnpm --filter @claude-sentinel/daemon run build
+        run: pnpm --filter @sentinel/daemon run build
 
       - name: Build test-harness
         if: steps.build-cache.outputs.cache-hit != 'true'
-        run: pnpm --filter @claude-sentinel/test-harness run build
+        run: pnpm --filter @sentinel/test-harness run build
 
       # No `playwright install` step on purpose. cdn.playwright.dev has
       # repeatedly stalled on GitHub runners (the chromium zip reaches 100%,
@@ -215,7 +215,7 @@ jobs:
       - name: Run Playwright
         env:
           PLAYWRIGHT_CHANNEL: chrome
-        run: pnpm --filter @claude-sentinel/app run e2e
+        run: pnpm --filter @sentinel/app run e2e
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4

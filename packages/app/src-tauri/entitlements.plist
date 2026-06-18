@@ -5,7 +5,7 @@
   <!--
     Hardened-runtime entitlements required for notarization.
 
-    The bundled daemon sidecar (packages/app/src-tauri/binaries/claude-sentinel-daemon)
+    The bundled daemon sidecar (packages/app/src-tauri/binaries/sentinel-daemon)
     is a @yao-pkg/pkg binary embedding a Node.js runtime. Under the hardened runtime
     that notarization mandates, the daemon will be SIGKILL'd on launch without these:
 

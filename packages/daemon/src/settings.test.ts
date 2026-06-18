@@ -55,12 +55,12 @@ describe('settings', () => {
       tmpdir(),
       `sentinel-settings-test-keychain-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
     );
-    process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainTmp;
+    process.env.SENTINEL_TEST_KEYCHAIN_FILE = keychainTmp;
     resetSettingsHmacKeyCache();
   });
 
   afterAll(() => {
-    delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+    delete process.env.SENTINEL_TEST_KEYCHAIN_FILE;
     if (existsSync(keychainTmp)) rmSync(keychainTmp);
     resetSettingsHmacKeyCache();
   });
@@ -697,7 +697,7 @@ describe('settings', () => {
             recommendedMb: 4,
             ranAt: 1_700_000_000,
             platform: 'darwin-arm64',
-          } as unknown as import('@claude-sentinel/shared').Settings['lastScanBenchmark'],
+          } as unknown as import('@sentinel/shared').Settings['lastScanBenchmark'],
         },
         path,
       );
@@ -714,7 +714,7 @@ describe('settings', () => {
             recommendedMb: 999,
             ranAt: 'nope',
             platform: 42,
-          } as unknown as import('@claude-sentinel/shared').Settings['lastScanBenchmark'],
+          } as unknown as import('@sentinel/shared').Settings['lastScanBenchmark'],
         },
         path,
       );

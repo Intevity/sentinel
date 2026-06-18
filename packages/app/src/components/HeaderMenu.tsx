@@ -3,7 +3,7 @@ import { MoreHorizontal, Power, Activity, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel } from '../lib/ipc.js';
-import type { DaemonProcessStatus } from '@claude-sentinel/shared';
+import type { DaemonProcessStatus } from '@sentinel/shared';
 import { menuPop } from '../lib/motion.js';
 
 /**
@@ -98,7 +98,7 @@ export default function HeaderMenu({ measureRef }: HeaderMenuProps): React.React
       }
       // 2. Shut the daemon down so the socket/db are released before file deletion.
       await sendToSentinel({ type: 'shutdown_daemon' }).catch(() => undefined);
-      // 3. Unpatch settings.json (+ optionally wipe ~/.claude-sentinel/).
+      // 3. Unpatch settings.json (+ optionally wipe ~/.sentinel/).
       await invoke('deactivate_sentinel', { deleteData });
       // 4. Exit the app.
       await invoke('quit_app').catch(() => undefined);

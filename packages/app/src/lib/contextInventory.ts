@@ -7,7 +7,7 @@ import {
   estimateTokensFromBytes,
   type ContextInventory,
   type ContextInventoryMcpServer,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 
 /** Human-readable byte formatting. Same algorithm as
  *  `opportunityList.formatBytes` but kept separate for the inventory

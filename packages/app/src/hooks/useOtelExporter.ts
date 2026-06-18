@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { OtelForwarderStatus, OtelExporterTestResult } from '@claude-sentinel/shared';
+import type { OtelForwarderStatus, OtelExporterTestResult } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 interface UseOtelExporterResult {

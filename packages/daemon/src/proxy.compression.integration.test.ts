@@ -184,7 +184,7 @@ describe('proxy tool_result compression (integration)', () => {
     const parsed = JSON.parse(reqs[reqs.length - 1]!.body) as UpstreamBody;
     // Body forwarded untouched (ANSI still present, no truncation marker).
     expect(String(parsed.messages[1]!.content[0]!['content'])).toContain(ESC);
-    expect(reqs[reqs.length - 1]!.body).not.toContain('elided by Claude Sentinel');
+    expect(reqs[reqs.length - 1]!.body).not.toContain('elided by Sentinel');
 
     const m = store!.getCompressionMetrics(0);
     expect(m.totals.requestsCompressed).toBe(0);

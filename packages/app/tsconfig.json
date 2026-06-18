@@ -9,7 +9,7 @@
     "outDir": "dist",
     "baseUrl": ".",
     "paths": {
-      "@claude-sentinel/shared": ["../shared/src/index.ts"]
+      "@sentinel/shared": ["../shared/src/index.ts"]
     },
     "types": ["react", "react-dom"]
   },

@@ -29,7 +29,7 @@ import {
   REFRESH_TOKEN_EXPIRED,
   type OAuthResult,
 } from './oauth.js';
-import { startFakeAnthropic, type FakeAnthropic } from '@claude-sentinel/test-harness';
+import { startFakeAnthropic, type FakeAnthropic } from '@sentinel/test-harness';
 
 describe('oauth integration (real fetch, fake token endpoint)', () => {
   let fake: FakeAnthropic;

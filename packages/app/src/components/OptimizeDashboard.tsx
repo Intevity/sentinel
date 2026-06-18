@@ -12,7 +12,7 @@ import type {
   ProcessedTokens,
   MetricsWindow,
   Settings,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import {
   formatTokens,

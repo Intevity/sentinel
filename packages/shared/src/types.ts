@@ -304,7 +304,7 @@ export interface CodeModeMigration {
 }
 
 /**
- * Persistent user preferences stored at ~/.claude-sentinel/settings.json.
+ * Persistent user preferences stored at ~/.sentinel/settings.json.
  */
 export interface Settings {
   launchAtLogin: boolean;
@@ -726,7 +726,7 @@ export interface Settings {
   /** When true, Sentinel emits its own derived signals (cache TTL
    *  breakdown, per-account 5h usage, rotation events, security
    *  events, proxy traffic counters) on a 30s cadence to the same
-   *  external endpoint. Tagged with `service.name=claude-sentinel` so
+   *  external endpoint. Tagged with `service.name=sentinel` so
    *  dashboards can split them from Claude Code's own metrics
    *  (`service.name=claude-code`). Gated by `otelForwardingEnabled`. */
   otelEmitSentinelMetrics: boolean;
@@ -741,7 +741,7 @@ export interface Settings {
    *  forwarded request. Examples: `signoz-ingestion-key`,
    *  `authorization`, `x-honeycomb-team`. Validated as a valid HTTP
    *  header name (RFC 7230 token). The secret VALUE itself is stored
-   *  in the OS keychain (service `Claude Sentinel-otel-exporter`,
+   *  in the OS keychain (service `Sentinel-otel-exporter`,
    *  account `default`), never in this file. Default
    *  `'signoz-ingestion-key'`. */
   otelExporterHeaderName: string;

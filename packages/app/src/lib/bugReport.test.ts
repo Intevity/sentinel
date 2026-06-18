@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { LogEntry, LogRequestSummary } from '@claude-sentinel/shared';
+import type { LogEntry, LogRequestSummary } from '@sentinel/shared';
 
 vi.mock('@tauri-apps/plugin-opener', () => ({
   openUrl: vi.fn().mockResolvedValue(undefined),
@@ -79,7 +79,7 @@ describe('buildBody', () => {
   it('includes the environment block', () => {
     const body = buildBody({ source: 'manual' });
     expect(body).toContain('## Environment');
-    expect(body).toContain('Claude Sentinel: v-test-1.0.0');
+    expect(body).toContain('Sentinel: v-test-1.0.0');
   });
 
   it('includes the Steps / Expected / Actual scaffolding', () => {
@@ -273,9 +273,9 @@ describe('buildBody', () => {
 });
 
 describe('buildIssueUrl', () => {
-  it('targets the Intevity/claude-sentinel repo', () => {
+  it('targets the Intevity/sentinel repo', () => {
     const url = buildIssueUrl({ source: 'manual' });
-    expect(url.startsWith('https://github.com/Intevity/claude-sentinel/issues/new?')).toBe(true);
+    expect(url.startsWith('https://github.com/Intevity/sentinel/issues/new?')).toBe(true);
   });
 
   it('encodes title, body, and bug label as query params', () => {
@@ -308,6 +308,6 @@ describe('openBugReport', () => {
     await openBugReport({ source: 'manual' });
     expect(openUrl).toHaveBeenCalledTimes(1);
     const arg = vi.mocked(openUrl).mock.calls[0]![0];
-    expect(arg).toContain('github.com/Intevity/claude-sentinel/issues/new');
+    expect(arg).toContain('github.com/Intevity/sentinel/issues/new');
   });
 });

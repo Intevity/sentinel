@@ -1,4 +1,4 @@
-import type { SecurityEvent } from '@claude-sentinel/shared';
+import type { SecurityEvent } from '@sentinel/shared';
 
 /** Reference-only / dedup keys carried in `details_json` that we never
  *  want surfaced in the expanded panel or in copied output. Mirrors
@@ -34,13 +34,13 @@ export function stripSnippetMarkers(text: string): string {
   return text.replace(/«/g, '').replace(/»/g, '');
 }
 
-/** Build a plaintext "Claude Sentinel security event" block suitable
+/** Build a plaintext "Sentinel security event" block suitable
  *  for pasting into a ticket or chat message. Field order matches the
  *  expanded panel; absent fields are skipped. The Details section
  *  iterates the same way DetailsList does so new context keys
  *  (sourceTool, command, …) appear automatically. */
 export function buildEventCopyText(event: SecurityEvent): string {
-  const lines: string[] = ['Claude Sentinel security event'];
+  const lines: string[] = ['Sentinel security event'];
   lines.push(`Time: ${new Date(event.ts).toISOString()}`);
   lines.push(`Severity: ${event.severity}`);
   lines.push(`Kind: ${event.kind} (${event.detectorId})`);

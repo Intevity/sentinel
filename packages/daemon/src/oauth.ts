@@ -14,7 +14,7 @@ import { createHash, randomBytes } from 'crypto';
 import { statSync } from 'fs';
 
 import { exec, execSync } from 'child_process';
-import type { ClaudeCodeCredentials } from '@claude-sentinel/shared';
+import type { ClaudeCodeCredentials } from '@sentinel/shared';
 import { SENTINEL_LOGO_DATA_URL } from './logo.js';
 import { getAnthropicOrigin, getOAuthAuthUrl, getOAuthTokenUrl } from './hosts.js';
 
@@ -159,7 +159,7 @@ async function startCallbackServer(expectedState: string, signal?: AbortSignal):
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Claude Sentinel</title>
+  <title>Sentinel</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
     :root {
@@ -239,14 +239,14 @@ async function startCallbackServer(expectedState: string, signal?: AbortSignal):
 <body>
   <div class="shell">
     <div class="card">
-      <img class="logo" src="${SENTINEL_LOGO_DATA_URL}" alt="Claude Sentinel">
+      <img class="logo" src="${SENTINEL_LOGO_DATA_URL}" alt="Sentinel">
       <div class="check">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M3 8.5l3.5 3.5L13 5"></path>
         </svg>
         Signed in
       </div>
-      <h1>Claude Sentinel is ready</h1>
+      <h1>Sentinel is ready</h1>
       <p>You can close this window and return to Sentinel.</p>
     </div>
   </div>

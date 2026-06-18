@@ -90,7 +90,7 @@ describe('trimUnifiedDiff - identity / no-op', () => {
 
   it('returns marker-bearing input unchanged (leading guard)', () => {
     const input =
-      'diff --git a/x b/x\n@@ -1,1 +1,1 @@\n-a\n... [3 hunks elided by Claude Sentinel] ...\n+b';
+      'diff --git a/x b/x\n@@ -1,1 +1,1 @@\n-a\n... [3 hunks elided by Sentinel] ...\n+b';
     expect(trimUnifiedDiff(input, AGGRESSIVE)).toBe(input);
   });
 
@@ -127,7 +127,7 @@ describe('trimUnifiedDiff - lockfile hunks (rule a)', () => {
       '+++ b/pnpm-lock.yaml',
     ]);
     // One marker replaces both hunks.
-    expect(lines[4]).toContain('[2 hunks elided by Claude Sentinel');
+    expect(lines[4]).toContain('[2 hunks elided by Sentinel');
     expect(lines.length).toBe(5);
     // Capture reconstructs exactly the two dropped hunks.
     const expectedDropped = [
@@ -149,14 +149,14 @@ describe('trimUnifiedDiff - lockfile hunks (rule a)', () => {
       '\n',
     );
     const out = trimUnifiedDiff(d, MODERATE);
-    expect(out).toContain('[1 hunks elided by Claude Sentinel] ...');
+    expect(out).toContain('[1 hunks elided by Sentinel] ...');
     expect(out.split('\n')[0]).toBe('diff --git a/go.sum b/go.sum');
   });
 
   it('detects lockfile via --- / +++ path when no diff --git present', () => {
     const d = ['--- a/yarn.lock', '+++ b/yarn.lock', '@@ -1,1 +1,1 @@', '-a', '+b'].join('\n');
     const out = trimUnifiedDiff(d, MODERATE);
-    expect(out).toContain('[1 hunks elided by Claude Sentinel] ...');
+    expect(out).toContain('[1 hunks elided by Sentinel] ...');
     expect(out.split('\n').slice(0, 2)).toEqual(['--- a/yarn.lock', '+++ b/yarn.lock']);
   });
 });
@@ -178,7 +178,7 @@ describe('trimUnifiedDiff - whitespace-only hunks (rule b)', () => {
     const out = trimUnifiedDiff(d, MODERATE, onElide);
     const lines = out.split('\n');
     expect(lines[0]).toBe('diff --git a/x.ts b/x.ts');
-    expect(lines[1]).toContain('[1 whitespace-only hunks elided by Claude Sentinel');
+    expect(lines[1]).toContain('[1 whitespace-only hunks elided by Sentinel');
     // The real hunk survives byte-identical.
     expect(lines.slice(2)).toEqual([
       '@@ -10,3 +10,3 @@',
@@ -220,7 +220,7 @@ describe('trimUnifiedDiff - file cap (rule c)', () => {
     const out = trimUnifiedDiff(text, AGGRESSIVE, onElide);
     const lines = out.split('\n');
     // First line is the contiguous-drop marker for files 0 and 1.
-    expect(lines[0]).toContain('[2 files (2 hunks) elided by Claude Sentinel');
+    expect(lines[0]).toContain('[2 files (2 hunks) elided by Sentinel');
     // Files 2..9 follow, in original order, with f2 first.
     expect(lines[1]).toBe('diff --git a/f2.ts b/f2.ts');
     expect(out).toContain('diff --git a/f9.ts b/f9.ts');
@@ -243,8 +243,8 @@ describe('trimUnifiedDiff - file cap (rule c)', () => {
     const markers = out.split('\n').filter((l) => l.includes('files (') && l.includes('elided'));
     // Two separate contiguous runs (file 0 alone, file 9 alone) -> two markers.
     expect(markers.length).toBe(2);
-    expect(markers[0]).toContain('[1 files (1 hunks) elided by Claude Sentinel');
-    expect(markers[1]).toContain('[1 files (1 hunks) elided by Claude Sentinel');
+    expect(markers[0]).toContain('[1 files (1 hunks) elided by Sentinel');
+    expect(markers[1]).toContain('[1 files (1 hunks) elided by Sentinel');
     expect(out).not.toContain('diff --git a/g0.ts');
     expect(out).not.toContain('diff --git a/g9.ts');
   });
@@ -290,7 +290,7 @@ describe('trimUnifiedDiff - hunk cap (rule d)', () => {
     expect(out).not.toContain('@@ -21,2 +21,2 @@'); // idx2
     expect(out).not.toContain('@@ -41,2 +41,2 @@'); // idx4
     // Two contiguous-drop markers (idx2 alone, idx4 alone).
-    const markers = out.split('\n').filter((l) => /\[\d+ hunks elided by Claude Sentinel/.test(l));
+    const markers = out.split('\n').filter((l) => /\[\d+ hunks elided by Sentinel/.test(l));
     expect(markers.length).toBe(2);
     expect(calls.length).toBe(2);
     // First marker captures idx2 exactly.
@@ -310,9 +310,9 @@ describe('trimUnifiedDiff - hunk cap (rule d)', () => {
     }
     const text = lines.join('\n');
     const out = trimUnifiedDiff(text, AGGRESSIVE);
-    const markers = out.split('\n').filter((l) => /\[\d+ hunks elided by Claude Sentinel/.test(l));
+    const markers = out.split('\n').filter((l) => /\[\d+ hunks elided by Sentinel/.test(l));
     expect(markers.length).toBe(1);
-    expect(markers[0]).toContain('[2 hunks elided by Claude Sentinel');
+    expect(markers[0]).toContain('[2 hunks elided by Sentinel');
   });
 
   it('ranks middle hunks by TOTAL body-line count, not just +/- churn', () => {
@@ -370,13 +370,13 @@ describe('trimUnifiedDiff - context trim (rule e)', () => {
     // @@ header is NEVER rewritten (stale counts accepted).
     expect(lines[1]).toBe('@@ -1,99 +1,99 @@');
     // Leading: one marker for 5 dropped, then 1 kept context (ctxL5, adjacent).
-    expect(lines[2]).toContain('[5 context lines elided by Claude Sentinel');
+    expect(lines[2]).toContain('[5 context lines elided by Sentinel');
     expect(lines[3]).toBe(' ctxL5');
     expect(lines[4]).toBe('-changed');
     expect(lines[5]).toBe('+changed!');
     // Trailing: 1 kept context (ctxT0), then marker for 5 dropped.
     expect(lines[6]).toBe(' ctxT0');
-    expect(lines[7]).toContain('[5 context lines elided by Claude Sentinel');
+    expect(lines[7]).toContain('[5 context lines elided by Sentinel');
     expect(lines.length).toBe(8);
     // Two capture calls; leading captures ctxL0..ctxL4, trailing ctxT1..ctxT5.
     expect(calls.length).toBe(2);
@@ -464,7 +464,7 @@ describe('trimUnifiedDiff - preamble & special lines', () => {
       '    a commit message',
       '',
     ]);
-    expect(out).toContain('[1 hunks elided by Claude Sentinel');
+    expect(out).toContain('[1 hunks elided by Sentinel');
   });
 
   it('preserves old mode / new mode lines byte-identical (headroom-bug guard)', () => {
@@ -522,7 +522,7 @@ describe('trimUnifiedDiff - parser edge cases', () => {
     ].join('\n');
     const out = trimUnifiedDiff(text, { maxFiles: 1, maxHunks: 10, contextLines: 3 });
     // two.txt (churn 4) is heavier than one.txt (churn 2) -> one.txt dropped.
-    expect(out).toContain('[1 files (1 hunks) elided by Claude Sentinel');
+    expect(out).toContain('[1 files (1 hunks) elided by Sentinel');
     expect(out).toContain('--- a/two.txt');
     expect(out).not.toContain('--- a/one.txt');
   });
@@ -561,7 +561,7 @@ describe('trimUnifiedDiff - parser edge cases', () => {
     // Rename header survives verbatim; lockfile hunk is collapsed.
     expect(out).toContain('rename from old-name.ts');
     expect(out).toContain('rename to new-name.ts');
-    expect(out).toContain('[1 hunks elided by Claude Sentinel');
+    expect(out).toContain('[1 hunks elided by Sentinel');
   });
 
   it('does not elide a hunk header with a non-lockfile path (lockfile false branch)', () => {
@@ -627,7 +627,7 @@ describe('trimUnifiedDiff - determinism, idempotency, reversibility', () => {
     const byId = new Map<string, string>();
     for (const c of calls) byId.set(hashOriginal(c.elided), c.elided);
     // Every id embedded in a marker must resolve to recorded bytes.
-    const markerLines = out.split('\n').filter((l) => l.includes('elided by Claude Sentinel'));
+    const markerLines = out.split('\n').filter((l) => l.includes('elided by Sentinel'));
     expect(markerLines.length).toBeGreaterThan(0);
     for (const ml of markerLines) {
       const id = idOf(ml);
@@ -642,8 +642,8 @@ describe('trimUnifiedDiff - determinism, idempotency, reversibility', () => {
       '\n',
     );
     const out = trimUnifiedDiff(lock, MODERATE);
-    const marker = out.split('\n').find((l) => l.includes('elided by Claude Sentinel'));
-    expect(marker).toBe('... [1 hunks elided by Claude Sentinel] ...');
+    const marker = out.split('\n').find((l) => l.includes('elided by Sentinel'));
+    expect(marker).toBe('... [1 hunks elided by Sentinel] ...');
     expect(marker).not.toContain('id=');
   });
 });

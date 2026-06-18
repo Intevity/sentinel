@@ -367,7 +367,7 @@ export function sampleJsonArray(
   // retrieve tool reconstructs it byte-for-byte — perfect reversibility, and
   // the local capture never rides the wire anyway.
   const hint = retrievalHint(onElide, 'json_sample', jsonText);
-  const note = `${droppedCount} of ${n} items elided by Claude Sentinel${hint}`;
+  const note = `${droppedCount} of ${n} items elided by Sentinel${hint}`;
   const stats = collectDroppedStats(droppedItems);
   // stats LAST in key order; omitted entirely when no numeric fields exist.
   const sample =

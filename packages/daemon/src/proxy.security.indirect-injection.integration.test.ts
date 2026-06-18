@@ -65,7 +65,7 @@ describe('proxy securityScanner — tool_result indirect injection (real detecto
     ctx.scanner!.resolvePending(pendingId, 'deny');
     const res = await resPromise;
     expect(res.status).toBe(403);
-    expect(await res.text()).toContain('Blocked by Claude Sentinel');
+    expect(await res.text()).toContain('Blocked by Sentinel');
     expect(ctx.fake.requests().some((r) => r.url.startsWith('/v1/messages'))).toBe(false);
   });
 
@@ -86,7 +86,7 @@ describe('proxy securityScanner — tool_result indirect injection (real detecto
     ctx.scanner!.resolvePending(pendingId, 'deny');
     const res = await resPromise;
     expect(res.status).toBe(403);
-    expect(await res.text()).toContain('Blocked by Claude Sentinel');
+    expect(await res.text()).toContain('Blocked by Sentinel');
     expect(ctx.fake.requests().some((r) => r.url.startsWith('/v1/messages'))).toBe(false);
   });
 
@@ -169,7 +169,7 @@ describe('proxy securityScanner — tool_result indirect injection (real detecto
     ctx.scanner!.resolvePending(pendingId, 'deny');
     const res = await resPromise;
     expect(res.status).toBe(403);
-    expect(await res.text()).toContain('Blocked by Claude Sentinel');
+    expect(await res.text()).toContain('Blocked by Sentinel');
     expect(ctx.fake.requests().some((r) => r.url.startsWith('/v1/messages'))).toBe(false);
   });
 
@@ -269,7 +269,7 @@ describe('proxy securityScanner — MCP tool description injection (real detecto
     ctx.scanner!.resolvePending(pendingId, 'deny');
     const res = await resPromise;
     expect(res.status).toBe(403);
-    expect(await res.text()).toContain('Blocked by Claude Sentinel');
+    expect(await res.text()).toContain('Blocked by Sentinel');
     expect(ctx.fake.requests().some((r) => r.url.startsWith('/v1/messages'))).toBe(false);
   });
 

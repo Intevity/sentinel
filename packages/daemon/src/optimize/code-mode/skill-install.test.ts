@@ -23,13 +23,13 @@ describe('skill-install', () => {
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'sentinel-skill-home-'));
     workspaceDir = mkdtempSync(join(tmpdir(), 'sentinel-skill-ws-'));
-    prevHome = process.env.CLAUDE_SENTINEL_TEST_HOME;
-    process.env.CLAUDE_SENTINEL_TEST_HOME = home;
+    prevHome = process.env.SENTINEL_TEST_HOME;
+    process.env.SENTINEL_TEST_HOME = home;
   });
 
   afterEach(() => {
-    if (prevHome === undefined) delete process.env.CLAUDE_SENTINEL_TEST_HOME;
-    else process.env.CLAUDE_SENTINEL_TEST_HOME = prevHome;
+    if (prevHome === undefined) delete process.env.SENTINEL_TEST_HOME;
+    else process.env.SENTINEL_TEST_HOME = prevHome;
     rmSync(home, { recursive: true, force: true });
     rmSync(workspaceDir, { recursive: true, force: true });
   });

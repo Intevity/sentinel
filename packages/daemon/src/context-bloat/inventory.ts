@@ -4,9 +4,9 @@
  * `~/.claude/projects/*\/memory/`, and joins MCP usage from
  * `tool_calls` to produce a single snapshot for the UI.
  *
- * Test seam: `CLAUDE_SENTINEL_TEST_CLAUDE_JSON` overrides the
+ * Test seam: `SENTINEL_TEST_CLAUDE_JSON` overrides the
  * claude.json path (already honored by `getClaudeJsonPath`), and
- * `CLAUDE_SENTINEL_TEST_HOME` overrides the home directory used for
+ * `SENTINEL_TEST_HOME` overrides the home directory used for
  * `~/.claude/...` lookups (settings.json, CLAUDE.md, memory dirs).
  */
 
@@ -14,7 +14,7 @@ import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import type Database from 'better-sqlite3';
-import type { ContextInventory } from '@claude-sentinel/shared';
+import type { ContextInventory } from '@sentinel/shared';
 import { getClaudeJsonPath } from '../claude-state.js';
 import { listSubagentInstalls } from '../db.js';
 import { detectMcpServers } from './mcp-detector.js';
@@ -24,7 +24,7 @@ import { detectPlugins } from './plugin-detector.js';
 import { estimateMcpCosts } from './mcp-cost-estimator.js';
 
 function resolveHome(): string {
-  return process.env['CLAUDE_SENTINEL_TEST_HOME'] ?? homedir();
+  return process.env['SENTINEL_TEST_HOME'] ?? homedir();
 }
 
 function safeReadJson(path: string): unknown {
