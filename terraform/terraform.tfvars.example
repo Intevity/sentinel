@@ -3,7 +3,7 @@
 
 # aws_region  = "us-east-1"
 # bucket_name = "intevity-claude-sentinel-updates"   # must be globally unique, no dots
-# s3_prefix   = "stable"
+# s3_prefixes = ["stable", "staging"]
 
 # github_owner = "Intevity"
 # github_repo  = "sentinel"

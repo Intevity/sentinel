@@ -70,7 +70,7 @@ data "aws_iam_policy_document" "ci_publish" {
     sid       = "PutUpdateArtifacts"
     effect    = "Allow"
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.updates.arn}/${var.s3_prefix}/*"]
+    resources = [for p in var.s3_prefixes : "${aws_s3_bucket.updates.arn}/${p}/*"]
   }
 }
 

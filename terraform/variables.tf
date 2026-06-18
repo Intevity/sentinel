@@ -19,10 +19,16 @@ variable "bucket_name" {
   }
 }
 
-variable "s3_prefix" {
-  description = "Key prefix made publicly readable and where CI publishes updater artifacts + latest.json. Must match S3_PREFIX in release.yml (stable)."
-  type        = string
-  default     = "stable"
+variable "s3_prefixes" {
+  description = <<-EOT
+    Channel key prefixes under the bucket that CI may publish to (s3:PutObject) and that
+    are public-read for the in-app updater's anonymous GET. "stable" is the production
+    channel every installed binary polls; "staging" is a throwaway channel used for
+    pre-release dry-runs (see the staging dry-run runbook). Each maps to <prefix>/* in the
+    publisher IAM policy and the public-read bucket policy.
+  EOT
+  type        = list(string)
+  default     = ["stable", "staging"]
 }
 
 variable "github_owner" {

@@ -4,12 +4,30 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual staging dry-run: publish a fully-signed/notarized candidate to the `staging`
+  # channel (S3 `staging/` prefix + a DRAFT release that is never promoted) to validate the
+  # update pipeline without touching `stable`. Tag pushes are unaffected and always publish
+  # `stable`. See the staging dry-run runbook.
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Channel to publish (staging = dry-run, never promoted; stable = real publish)
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - stable
+      version:
+        description: Version tag to build + stamp (e.g. v0.5.1); required for manual runs
+        required: true
+        type: string
 
 # A re-push of the same tag is rare but happens (e.g., draft release re-cut).
 # Deduplicate retries on the same tag, but never cancel a mid-flight macOS
 # notarize — that wastes 10x ubuntu-equivalent minutes.
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ inputs.version || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -64,6 +82,11 @@ jobs:
     # short `notarize-finalize` macOS job, so the 10x build leg never blocks on Apple. 30
     # min comfortably covers build + submit on every platform.
     timeout-minutes: 30
+    # Single source of truth for channel + version across this job's steps. Tag pushes
+    # always publish `stable`; a manual workflow_dispatch can target `staging`.
+    env:
+      RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'stable' }}
+      RELEASE_TAG: ${{ inputs.version || github.ref_name }}
     strategy:
       matrix:
         include:
@@ -88,10 +111,9 @@ jobs:
       # like `Claude.Sentinel_0.3.1_aarch64.dmg`) match the tag instead
       # of whatever stale `0.1.0` the repo carries. Runs in every matrix
       # leg so each platform builds against the same patched manifest.
-      # The workflow trigger filter already guarantees `GITHUB_REF_NAME`
-      # starts with `v`, so the prefix strip is safe; the `set -e` guard
-      # makes a malformed value fail the leg loudly rather than silently
-      # shipping a misnamed bundle.
+      # RELEASE_TAG is the pushed tag, or the workflow_dispatch `version` input on a
+      # manual run; the validation below fails the leg loudly on anything not in
+      # `vX.Y.Z` form rather than silently shipping a misnamed bundle.
       - name: Sync version from tag
         shell: bash
         env:
@@ -106,9 +128,9 @@ jobs:
           UPDATER_PUBLIC_BASE: ${{ vars.UPDATER_PUBLIC_BASE }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          if [[ -z "$VERSION" || "$VERSION" == "$GITHUB_REF_NAME" ]]; then
-            echo "::error::Tag '$GITHUB_REF_NAME' is not in the expected 'vX.Y.Z' form" >&2
+          VERSION="${RELEASE_TAG#v}"
+          if [[ -z "$VERSION" || "$VERSION" == "$RELEASE_TAG" ]]; then
+            echo "::error::Tag '$RELEASE_TAG' is not in the expected 'vX.Y.Z' form" >&2
             exit 1
           fi
           echo "Stamping version=$VERSION into tauri.conf.json + Cargo.toml"
@@ -123,7 +145,7 @@ jobs:
             json.version = process.argv[1];
             const base = (process.env.UPDATER_PUBLIC_BASE || '').replace(/\/+\$/, '');
             if (base) {
-              json.plugins.updater.endpoints = [base + '/stable/latest.json'];
+              json.plugins.updater.endpoints = [base + '/' + (process.env.RELEASE_CHANNEL || 'stable') + '/latest.json'];
             }
             fs.writeFileSync(p, JSON.stringify(json, null, 2) + '\n');
           " "$VERSION"
@@ -366,8 +388,8 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         with:
           projectPath: packages/app
-          tagName: ${{ github.ref_name }}
-          releaseName: Sentinel ${{ github.ref_name }}
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: Sentinel ${{ env.RELEASE_TAG }}
           releaseBody: ${{ needs.prepare-notes.outputs.notes }}
           releaseDraft: true
           prerelease: false
@@ -451,7 +473,7 @@ jobs:
           # Apple is slow, by the scheduled notarize-poll workflow (a later run) — hence a
           # release asset, not a run-scoped workflow artifact. The per-arch filename keeps
           # the two macOS legs from clobbering each other.
-          gh release upload "$GITHUB_REF_NAME" notary-out/notary-*.json --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "$RELEASE_TAG" notary-out/notary-*.json --clobber --repo "$GITHUB_REPOSITORY"
 
   # Short inline wait on Apple's notary queue (1x ubuntu) to catch the common
   # fast-notarization case so a typical release finalizes within its own run. If Apple is
@@ -467,6 +489,7 @@ jobs:
     outputs:
       state: ${{ steps.poll.outputs.state }}
     env:
+      RELEASE_TAG: ${{ inputs.version || github.ref_name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
       APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -482,7 +505,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p notary-ids
-          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --dir notary-ids --pattern 'notary-*.json'
           ls -1 notary-ids
       - name: Poll notary (short), else defer to the scheduled poller
@@ -511,5 +534,6 @@ jobs:
     if: needs.notarize-wait.outputs.state == 'accepted'
     uses: ./.github/workflows/notarize-finalize.yml
     with:
-      tag: ${{ github.ref_name }}
+      tag: ${{ inputs.version || github.ref_name }}
+      channel: ${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'stable' }}
     secrets: inherit
