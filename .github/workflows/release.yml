@@ -57,9 +57,15 @@ jobs:
           node-version: '24'
       - name: Build notes from conventional commits
         id: notes
+        env:
+          # On a manual staging dispatch the ref is a branch, not a tag, and
+          # release-notes.mjs only accepts <vX.Y.Z|HEAD> — so pass HEAD (it diffs from the
+          # last tag to current HEAD; the notes are irrelevant for the never-promoted
+          # staging draft). Tag pushes still pass the real tag.
+          NOTES_REF: ${{ github.event_name == 'workflow_dispatch' && 'HEAD' || github.ref_name }}
         run: |
           set -euo pipefail
-          node scripts/release-notes.mjs "$GITHUB_REF_NAME" | tee notes.md
+          node scripts/release-notes.mjs "$NOTES_REF" | tee notes.md
           {
             echo 'notes<<NOTES_EOF'
             cat notes.md
