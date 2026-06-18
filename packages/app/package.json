@@ -1,5 +1,5 @@
 {
-  "name": "@claude-sentinel/app",
+  "name": "@sentinel/app",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -15,7 +15,7 @@
     "e2e:install": "playwright install chromium"
   },
   "dependencies": {
-    "@claude-sentinel/shared": "workspace:*",
+    "@sentinel/shared": "workspace:*",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-fs": "^2.0.0",
@@ -30,7 +30,7 @@
     "recharts": "^2.12.7"
   },
   "devDependencies": {
-    "@claude-sentinel/test-harness": "workspace:*",
+    "@sentinel/test-harness": "workspace:*",
     "@playwright/test": "^1.47.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/better-sqlite3": "^7.6.13",

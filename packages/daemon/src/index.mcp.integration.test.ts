@@ -7,7 +7,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { McpInstallRecord, RetrievalMcpStatus, Settings } from '@claude-sentinel/shared';
+import type { McpInstallRecord, RetrievalMcpStatus, Settings } from '@sentinel/shared';
 import { startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 
 describe('Retrieval MCP IPC end-to-end', () => {
@@ -32,7 +32,7 @@ describe('Retrieval MCP IPC end-to-end', () => {
 
   it('installs at user scope: writes ~/.claude.json, enables retrieval, status reflects it', async () => {
     ctx = await startTestDaemon();
-    const claudeJsonPath = process.env['CLAUDE_SENTINEL_TEST_CLAUDE_JSON']!;
+    const claudeJsonPath = process.env['SENTINEL_TEST_CLAUDE_JSON']!;
 
     const install = await ctx.request<{
       configPath: string;

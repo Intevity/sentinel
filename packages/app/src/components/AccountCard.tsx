@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Loader2, Check, X } from 'lucide-react';
-import type { AccountInfo, PauseReason } from '@claude-sentinel/shared';
+import type { AccountInfo, PauseReason } from '@sentinel/shared';
 import { planLabel, planColor } from '../lib/plan.js';
 import { getAccountStatus } from '../lib/account-status.js';
 import { avatarStyle } from '../lib/accountColor.js';

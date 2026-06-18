@@ -14,7 +14,7 @@ import { createServer, type AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
-import { startFakeAnthropic, type FakeAnthropic } from '@claude-sentinel/test-harness';
+import { startFakeAnthropic, type FakeAnthropic } from '@sentinel/test-harness';
 import type {
   AppToDaemonMessage,
   ClaudeCodeCredentials,
@@ -22,12 +22,12 @@ import type {
   DaemonToAppMessage,
   IpcResponse,
   Settings,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { startDaemon, type DaemonHandle } from './index.js';
 import { IpcClient } from './ipc.js';
 
 /** Shape of the test keychain JSON file read/written by accounts.ts in
- *  test mode. Top level keys are service names ('Claude Sentinel-credentials',
+ *  test mode. Top level keys are service names ('Sentinel-credentials',
  *  'Claude Code-credentials'); inner keys are account identifiers. */
 export interface TestKeychain {
   [service: string]: { [account: string]: string };
@@ -37,7 +37,7 @@ export interface StartTestDaemonOptions {
   /** Pre-seeded ~/.claude.json. Useful for giving the daemon a preselected
    *  active account at boot. */
   claudeState?: ClaudeState;
-  /** Pre-seeded ~/.claude-sentinel/settings.json (merged onto DEFAULT_SETTINGS
+  /** Pre-seeded ~/.sentinel/settings.json (merged onto DEFAULT_SETTINGS
    *  by the loader). */
   settings?: Partial<Settings>;
   /** Pre-seeded ~/.claude/settings.json (the file Claude Code itself reads).
@@ -45,7 +45,7 @@ export interface StartTestDaemonOptions {
    *  handlers. Default: an empty object. */
   claudeSettings?: Record<string, unknown>;
   /** Pre-seeded Sentinel credentials, keyed by sentinel key (orgUuid || accountUuid).
-   *  Written into the tmp keychain file under the 'Claude Sentinel-credentials'
+   *  Written into the tmp keychain file under the 'Sentinel-credentials'
    *  service so `readSentinelCredentials(key)` resolves. */
   sentinelCredentials?: Record<string, ClaudeCodeCredentials>;
   /** Pre-seeded Claude Code credentials, keyed by OS username. Written under
@@ -116,19 +116,19 @@ async function pickFreePort(): Promise<number> {
 
 /** Keys written to process.env by startTestDaemon. Deleted on cleanup. */
 const TEST_ENV_KEYS = [
-  'CLAUDE_SENTINEL_TEST_DB_FILE',
-  'CLAUDE_SENTINEL_TEST_REQUEST_LOG_DB_FILE',
-  'CLAUDE_SENTINEL_TEST_COMPRESSION_DB_FILE',
-  'CLAUDE_SENTINEL_TEST_CONTEXT_COST_DB_FILE',
-  'CLAUDE_SENTINEL_TEST_CODE_MODE_DIR',
-  'CLAUDE_SENTINEL_TEST_HOME',
-  'CLAUDE_SENTINEL_TEST_CLAUDE_JSON',
-  'CLAUDE_SENTINEL_TEST_SETTINGS_FILE',
-  'CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE',
-  'CLAUDE_SENTINEL_TEST_IPC_SOCKET',
-  'CLAUDE_SENTINEL_TEST_DAEMON_PORT',
-  'CLAUDE_SENTINEL_TEST_AGENTS_DIR',
-  'CLAUDE_SENTINEL_TEST_CLAUDE_SETTINGS_FILE',
+  'SENTINEL_TEST_DB_FILE',
+  'SENTINEL_TEST_REQUEST_LOG_DB_FILE',
+  'SENTINEL_TEST_COMPRESSION_DB_FILE',
+  'SENTINEL_TEST_CONTEXT_COST_DB_FILE',
+  'SENTINEL_TEST_CODE_MODE_DIR',
+  'SENTINEL_TEST_HOME',
+  'SENTINEL_TEST_CLAUDE_JSON',
+  'SENTINEL_TEST_SETTINGS_FILE',
+  'SENTINEL_TEST_KEYCHAIN_FILE',
+  'SENTINEL_TEST_IPC_SOCKET',
+  'SENTINEL_TEST_DAEMON_PORT',
+  'SENTINEL_TEST_AGENTS_DIR',
+  'SENTINEL_TEST_CLAUDE_SETTINGS_FILE',
   'ANTHROPIC_UPSTREAM_URL',
   'OAUTH_TOKEN_URL',
   'OAUTH_AUTH_URL',
@@ -156,9 +156,9 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   writeFileSync(claudeSettingsPath, JSON.stringify(opts.claudeSettings ?? {}, null, 2));
   const keychain: TestKeychain = {};
   if (opts.sentinelCredentials) {
-    keychain['Claude Sentinel-credentials'] = {};
+    keychain['Sentinel-credentials'] = {};
     for (const [key, creds] of Object.entries(opts.sentinelCredentials)) {
-      keychain['Claude Sentinel-credentials'][key] = JSON.stringify(creds);
+      keychain['Sentinel-credentials'][key] = JSON.stringify(creds);
     }
   }
   if (opts.claudeCodeCredentials) {
@@ -170,7 +170,7 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   writeFileSync(keychainPath, JSON.stringify(keychain, null, 2));
   // Route the HMAC keychain entry through this test keychain file
   // before signing so we don't pollute the developer's real keychain.
-  process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
+  process.env.SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
   // Drop any cached HMAC key from a prior test in the same vitest worker —
   // each test gets its own keychain file, so the in-memory key from
   // worker-level state would not match the on-disk key for this run.
@@ -191,27 +191,27 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   // Set env seams. These must be in place before startDaemon() imports
   // resolve call-time defaults in db.ts / request-log-db.ts / claude-state.ts /
   // ipc.ts / proxy.ts.
-  process.env.CLAUDE_SENTINEL_TEST_DB_FILE = dbPath;
-  process.env.CLAUDE_SENTINEL_TEST_REQUEST_LOG_DB_FILE = requestLogDbPath;
-  process.env.CLAUDE_SENTINEL_TEST_COMPRESSION_DB_FILE = compressionDbPath;
-  process.env.CLAUDE_SENTINEL_TEST_CLAUDE_JSON = claudeJsonPath;
-  process.env.CLAUDE_SENTINEL_TEST_SETTINGS_FILE = settingsPath;
-  process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
-  process.env.CLAUDE_SENTINEL_TEST_IPC_SOCKET = socketPath;
-  process.env.CLAUDE_SENTINEL_TEST_DAEMON_PORT = String(daemonPort);
+  process.env.SENTINEL_TEST_DB_FILE = dbPath;
+  process.env.SENTINEL_TEST_REQUEST_LOG_DB_FILE = requestLogDbPath;
+  process.env.SENTINEL_TEST_COMPRESSION_DB_FILE = compressionDbPath;
+  process.env.SENTINEL_TEST_CLAUDE_JSON = claudeJsonPath;
+  process.env.SENTINEL_TEST_SETTINGS_FILE = settingsPath;
+  process.env.SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
+  process.env.SENTINEL_TEST_IPC_SOCKET = socketPath;
+  process.env.SENTINEL_TEST_DAEMON_PORT = String(daemonPort);
   // Optimize feature: agents-sync watches ~/.claude/agents/ in
   // production; redirect to tmp so we don't touch the dev's real
   // subagents directory.
-  process.env.CLAUDE_SENTINEL_TEST_AGENTS_DIR = join(workdir, 'agents');
+  process.env.SENTINEL_TEST_AGENTS_DIR = join(workdir, 'agents');
   // Context-cost store + code-mode workspace/skill: redirect to tmp so the
   // daemon under test never opens the dev's real context-cost.db, never
-  // writes wrapper files under ~/.claude-sentinel, and never installs a
-  // skill into the dev's real ~/.claude/skills (CLAUDE_SENTINEL_TEST_HOME
+  // writes wrapper files under ~/.sentinel, and never installs a
+  // skill into the dev's real ~/.claude/skills (SENTINEL_TEST_HOME
   // also isolates context-bloat's CLAUDE.md/memory walks).
-  process.env.CLAUDE_SENTINEL_TEST_CONTEXT_COST_DB_FILE = join(workdir, 'context-cost.db');
-  process.env.CLAUDE_SENTINEL_TEST_CODE_MODE_DIR = join(workdir, 'code-mode');
-  process.env.CLAUDE_SENTINEL_TEST_HOME = workdir;
-  process.env.CLAUDE_SENTINEL_TEST_CLAUDE_SETTINGS_FILE = claudeSettingsPath;
+  process.env.SENTINEL_TEST_CONTEXT_COST_DB_FILE = join(workdir, 'context-cost.db');
+  process.env.SENTINEL_TEST_CODE_MODE_DIR = join(workdir, 'code-mode');
+  process.env.SENTINEL_TEST_HOME = workdir;
+  process.env.SENTINEL_TEST_CLAUDE_SETTINGS_FILE = claudeSettingsPath;
   process.env.ANTHROPIC_UPSTREAM_URL = fake.origin;
   process.env.OAUTH_TOKEN_URL = fake.tokenUrl;
   process.env.OAUTH_AUTH_URL = fake.authUrl;

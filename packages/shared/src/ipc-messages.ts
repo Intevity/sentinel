@@ -475,7 +475,7 @@ export interface RequestLogsClearedMessage {
 }
 
 /** Test-only broadcast emitted by `start_login` when the daemon env has
- *  `CLAUDE_SENTINEL_TEST_OAUTH_ECHO=1`. Carries the authorize URL the
+ *  `SENTINEL_TEST_OAUTH_ECHO=1`. Carries the authorize URL the
  *  daemon would normally hand off to a browser launcher, so the E2E
  *  harness can extract the PKCE `state` and POST a synthetic callback
  *  to the daemon's loopback callback server. Never fires in production

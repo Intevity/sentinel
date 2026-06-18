@@ -7,7 +7,7 @@ import type {
   PermissionRuleSource,
   SecurityAllowlistEntry,
   Settings,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { usePermissionRules } from '../hooks/usePermissionRules.js';
 import { useSecurityAllowlist } from '../hooks/useSecurityAllowlist.js';
 import { useInlineConfirm } from '../hooks/useInlineConfirm.js';

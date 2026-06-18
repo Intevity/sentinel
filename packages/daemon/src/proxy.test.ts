@@ -5,7 +5,7 @@
  * Every test that used to exercise the proxy's request/response pipeline
  * by mocking the https module has been migrated to integration tests that
  * run the real `createProxyServer` against the fake Anthropic listener
- * from `@claude-sentinel/test-harness`. See proxy.*.integration.test.ts.
+ * from `@sentinel/test-harness`. See proxy.*.integration.test.ts.
  */
 
 import { describe, it, expect, vi } from 'vitest';

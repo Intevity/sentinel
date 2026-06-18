@@ -316,7 +316,7 @@ describe('ContextCostStore broadcasts', () => {
 });
 
 describe('singleton accessor + env seam', () => {
-  const envKey = 'CLAUDE_SENTINEL_TEST_CONTEXT_COST_DB_FILE';
+  const envKey = 'SENTINEL_TEST_CONTEXT_COST_DB_FILE';
   let envPath: string;
 
   beforeEach(() => {

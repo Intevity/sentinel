@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { ClaudeCodeCredentials, AccountInfo } from '@claude-sentinel/shared';
+import type { ClaudeCodeCredentials, AccountInfo } from '@sentinel/shared';
 
 const probeRateLimitsMock = vi.fn<(accountId: string, ipc?: unknown, token?: string) => void>();
 const listAccountsMock = vi.fn<() => AccountInfo[]>();

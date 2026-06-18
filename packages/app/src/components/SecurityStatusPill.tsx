@@ -1,5 +1,5 @@
 import React from 'react';
-import type { SecurityEvent } from '@claude-sentinel/shared';
+import type { SecurityEvent } from '@sentinel/shared';
 import { securityStatusInfo, type SecurityStatusVariant } from '../lib/securityStatusLabel.js';
 
 const VARIANT_CLASS: Record<SecurityStatusVariant, string> = {

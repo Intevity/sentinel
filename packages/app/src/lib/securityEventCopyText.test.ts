@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SecurityEvent } from '@claude-sentinel/shared';
+import type { SecurityEvent } from '@sentinel/shared';
 import { buildEventCopyText, stripSnippetMarkers } from './securityEventCopyText.js';
 
 const baseEvent: SecurityEvent = {
@@ -43,7 +43,7 @@ describe('buildEventCopyText', () => {
   it('emits the canonical header line and core fields in order', () => {
     const out = buildEventCopyText(baseEvent);
     const lines = out.split('\n');
-    expect(lines[0]).toBe('Claude Sentinel security event');
+    expect(lines[0]).toBe('Sentinel security event');
     expect(lines[1]).toBe('Time: 2026-05-04T14:23:11.000Z');
     expect(lines[2]).toBe('Severity: high');
     expect(lines[3]).toBe('Kind: secret (aws-access-key)');

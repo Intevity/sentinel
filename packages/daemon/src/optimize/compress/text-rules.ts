@@ -107,7 +107,7 @@ export function collapseStackTraces(text: string, keep: number, onElide?: OnElid
       out.push(...lines.slice(i, i + keep));
       const elided = lines.slice(i + keep, j - keep).join('\n');
       const hint = retrievalHint(onElide, 'stack_trace_collapse', elided);
-      out.push(`    ... [${runLen - keep * 2} stack frames elided by Claude Sentinel${hint}] ...`);
+      out.push(`    ... [${runLen - keep * 2} stack frames elided by Sentinel${hint}] ...`);
       out.push(...lines.slice(j - keep, j));
       changed = true;
     } else {
@@ -165,7 +165,7 @@ export interface ErrorExtractOpts {
  *
  * Deterministic (pure function of the text). Idempotent via the same marker
  * guard the whole engine relies on: once any rule has written an "elided by
- * Claude Sentinel" marker, a second pass returns the text unchanged. Returns
+ * Sentinel" marker, a second pass returns the text unchanged. Returns
  * the input unchanged when no framework is detected, the log is short, or no
  * run is long enough to elide.
  */
@@ -173,7 +173,7 @@ export function extractLogErrors(text: string, opts: ErrorExtractOpts, onElide?:
   // Idempotency + non-interference: never re-process text that already carries
   // an elision marker (ours, or a stack-collapse marker from an earlier rule
   // in the same pass — both use this exact phrase).
-  if (text.includes('elided by Claude Sentinel')) return text;
+  if (text.includes('elided by Sentinel')) return text;
   const lines = text.split('\n');
   if (lines.length <= opts.triggerLines) return text;
   if (!LOG_FRAMEWORK_RE.test(text)) return text;
@@ -206,7 +206,7 @@ export function extractLogErrors(text: string, opts: ErrorExtractOpts, onElide?:
     if (runLen >= opts.minRun) {
       const elided = lines.slice(i, j).join('\n');
       const hint = retrievalHint(onElide, 'log_error_extract', elided);
-      out.push(`... [${runLen} lines elided by Claude Sentinel${hint}] ...`);
+      out.push(`... [${runLen} lines elided by Sentinel${hint}] ...`);
       changed = true;
     } else {
       for (let k = i; k < j; k++) out.push(lines[k] ?? '');
@@ -239,6 +239,6 @@ export function truncateLog(text: string, opts: TruncateOpts, onElide?: OnElide)
   const tail = lines.slice(lines.length - opts.tailLines);
   const elidedLines = lines.slice(opts.headLines, lines.length - opts.tailLines);
   const hint = retrievalHint(onElide, 'log_truncate', elidedLines.join('\n'));
-  const marker = `... [${elidedLines.length} lines elided by Claude Sentinel${hint}] ...`;
+  const marker = `... [${elidedLines.length} lines elided by Sentinel${hint}] ...`;
   return [...head, marker, ...tail].join('\n');
 }

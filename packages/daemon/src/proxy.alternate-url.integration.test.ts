@@ -26,7 +26,7 @@ import {
   patchTestSettings,
   type StartedProxy,
 } from './proxy.test-helpers.js';
-import { startFakeAnthropic, type FakeAnthropic } from '@claude-sentinel/test-harness';
+import { startFakeAnthropic, type FakeAnthropic } from '@sentinel/test-harness';
 import { getAnthropicOrigin } from './hosts.js';
 
 describe('alternate API URL routes Claude Code traffic without affecting daemon-side calls', () => {

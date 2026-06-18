@@ -1,4 +1,4 @@
-import type { SecuritySeverity, SecurityOsNotifyThreshold } from '@claude-sentinel/shared';
+import type { SecuritySeverity, SecurityOsNotifyThreshold } from '@sentinel/shared';
 
 const SEVERITY_ORDER: Record<SecuritySeverity, number> = { low: 0, medium: 1, high: 2 };
 const THRESHOLD_ORDER: Record<SecurityOsNotifyThreshold, number> = {

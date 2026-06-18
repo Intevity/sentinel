@@ -3,7 +3,7 @@ import type {
   SecurityKind,
   SecurityOsNotifyThreshold,
   SecuritySeverity,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { shouldFireSecurityOsNotification } from '../lib/security-threshold.js';
 
 export type SecurityBannerPayload =

@@ -31,7 +31,7 @@ import type {
   Settings,
   SecurityBenchmarkResult,
   ScanBenchmarkSample,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { SCHEMA } from '../db.js';
 import { createSecurityScanner } from './scanner.js';
 

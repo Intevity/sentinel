@@ -6,7 +6,7 @@
  * mode 0600 enforcement, every tamper-detection branch).
  *
  * All keychain reads/writes route through the
- * `CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE` JSON-file seam so the developer's
+ * `SENTINEL_TEST_KEYCHAIN_FILE` JSON-file seam so the developer's
  * real keychain is never touched. The cache in `settings-integrity.ts` is
  * reset between tests where it matters (key rotation, fresh-install
  * scenarios) via `clearSettingsHmacKey()` /
@@ -48,11 +48,11 @@ beforeAll(() => {
     tmpdir(),
     `sentinel-integrity-test-keychain-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
   );
-  process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
+  process.env.SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
 });
 
 afterAll(() => {
-  delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+  delete process.env.SENTINEL_TEST_KEYCHAIN_FILE;
   if (existsSync(keychainPath)) rmSync(keychainPath);
   resetSettingsHmacKeyCache();
 });
@@ -123,7 +123,7 @@ describe('getOrCreateSettingsHmacKey', () => {
       string,
       Record<string, string>
     >;
-    expect(stored['Claude Sentinel-settings-hmac']?.['default']).toBe(key.toString('hex'));
+    expect(stored['Sentinel-settings-hmac']?.['default']).toBe(key.toString('hex'));
   });
 
   it('generates exactly 32 bytes', () => {

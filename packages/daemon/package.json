@@ -1,11 +1,11 @@
 {
-  "name": "@claude-sentinel/daemon",
+  "name": "@sentinel/daemon",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
-    "claude-sentinel": "./dist/cli.js"
+    "sentinel": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
@@ -17,12 +17,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@claude-sentinel/shared": "workspace:*",
+    "@sentinel/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "better-sqlite3": "^12.0.0"
   },
   "devDependencies": {
-    "@claude-sentinel/test-harness": "workspace:*",
+    "@sentinel/test-harness": "workspace:*",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^24.0.0",
     "@yao-pkg/pkg": "^6.19.0",

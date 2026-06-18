@@ -255,7 +255,7 @@ export function compressMessagesBody(body: Buffer, opts: CompressOpts): Compress
           if (seenFold.has(h)) {
             const inB = byteLen(f.text);
             const hint = retrievalHint(onElide, 'intra_body_fold', f.text);
-            const marker = `... [identical to an earlier tool result, ${inB} bytes, elided by Claude Sentinel${hint}] ...`;
+            const marker = `... [identical to an earlier tool result, ${inB} bytes, elided by Sentinel${hint}] ...`;
             f.set(marker);
             const outB = byteLen(marker);
             bytesIn += inB;

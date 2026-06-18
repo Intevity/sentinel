@@ -11,7 +11,7 @@
  */
 import { promises as fs } from 'fs';
 import { createHash } from 'crypto';
-import type { OtelDriftDetails, OtelDriftState } from '@claude-sentinel/shared';
+import type { OtelDriftDetails, OtelDriftState } from '@sentinel/shared';
 import {
   OTEL_HEADERS_KEY,
   isUrlSafeForForwarder,

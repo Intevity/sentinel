@@ -14,7 +14,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-import type { AccountInfo } from '@claude-sentinel/shared';
+import type { AccountInfo } from '@sentinel/shared';
 import {
   startAppHarness,
   startTestDaemon,

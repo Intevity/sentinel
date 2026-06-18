@@ -1,5 +1,5 @@
 import React from 'react';
-import type { OptimizeChartView } from '@claude-sentinel/shared';
+import type { OptimizeChartView } from '@sentinel/shared';
 
 /** Display order + short labels for the segmented control. The order
  *  also drives the underlying enum values exposed via Settings; keep it

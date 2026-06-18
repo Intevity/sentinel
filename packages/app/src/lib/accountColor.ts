@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import type { AccountInfo } from '@claude-sentinel/shared';
+import type { AccountInfo } from '@sentinel/shared';
 
 // ─── Default avatar palette ──────────────────────────────────────────────────
 // Pairs with Tailwind gradient classes used when no custom color is set. The

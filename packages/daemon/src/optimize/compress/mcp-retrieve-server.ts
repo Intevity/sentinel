@@ -66,8 +66,8 @@ function buildServer(deps: RetrieveMcpDeps): Server {
       {
         name: RETRIEVE_TOOL_NAME,
         description:
-          'Retrieve the full original text that Claude Sentinel elided from a tool result. ' +
-          'When a tool result contains a marker like [... elided by Claude Sentinel; ' +
+          'Retrieve the full original text that Sentinel elided from a tool result. ' +
+          'When a tool result contains a marker like [... elided by Sentinel; ' +
           'retrieve the full output with the sentinel retrieve tool, id="..."], call this ' +
           'tool with that id to get the omitted content.',
         inputSchema: {

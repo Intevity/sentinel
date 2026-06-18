@@ -5,7 +5,7 @@ import type {
   MetricsByDayModel,
   CacheTtlSessionRow,
   OptimizeRangePreset,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { useMetricsSummary, type MetricsScope } from '../hooks/useMetricsSummary.js';
 import { useSettings } from '../hooks/useSettings.js';
 import InfoTooltip from './InfoTooltip.js';

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { ClaudeAiUsageSnapshot } from '@claude-sentinel/shared';
+import type { ClaudeAiUsageSnapshot } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 type UsageError = 'missing_key' | 'auth_expired' | 'oauth_forbidden' | 'network' | 'parse' | null;

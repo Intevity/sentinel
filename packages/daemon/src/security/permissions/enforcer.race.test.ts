@@ -11,7 +11,7 @@ import {
   listSecurityEvents,
 } from '../../db.js';
 import { createPermissionsEnforcer } from './enforcer.js';
-import type { Settings, PermissionRule } from '@claude-sentinel/shared';
+import type { Settings, PermissionRule } from '@sentinel/shared';
 
 // Sprint 10: pin the contract that mutations during in-flight requests
 // — settings flips, rule deletes — do not corrupt the in-flight

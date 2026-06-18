@@ -46,7 +46,7 @@ describe('Optimize IPC end-to-end', () => {
 
   it('install_curated_subagent writes the .md file and inserts a row', async () => {
     ctx = await startTestDaemon();
-    const agentsDir = process.env['CLAUDE_SENTINEL_TEST_AGENTS_DIR']!;
+    const agentsDir = process.env['SENTINEL_TEST_AGENTS_DIR']!;
 
     const r = await ctx.request<{ name: string; mdPath: string }>({
       type: 'install_curated_subagent',
@@ -96,7 +96,7 @@ describe('Optimize IPC end-to-end', () => {
 
   it('uninstall_subagent removes the file and soft-deletes the row', async () => {
     ctx = await startTestDaemon();
-    const agentsDir = process.env['CLAUDE_SENTINEL_TEST_AGENTS_DIR']!;
+    const agentsDir = process.env['SENTINEL_TEST_AGENTS_DIR']!;
     await ctx.request({
       type: 'install_curated_subagent',
       curatedId: 'repo-mapper',

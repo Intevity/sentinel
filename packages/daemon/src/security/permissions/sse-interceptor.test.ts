@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { PermissionRule } from '@claude-sentinel/shared';
+import type { PermissionRule } from '@sentinel/shared';
 import {
   createPermissionsSseInterceptor,
   buildBlockText,
@@ -86,11 +86,11 @@ function buildToolUseStream(opts: {
 describe('buildBlockText', () => {
   it('includes rule raw', () => {
     const r = rule({ raw: 'Bash(rm -rf *)' });
-    expect(buildBlockText(r)).toBe('[Blocked by Claude Sentinel: Bash(rm -rf *)]');
+    expect(buildBlockText(r)).toBe('[Blocked by Sentinel: Bash(rm -rf *)]');
   });
   it('appends note when present', () => {
     const r = rule({ raw: 'WebFetch', note: 'no network in CI' });
-    expect(buildBlockText(r)).toBe('[Blocked by Claude Sentinel: WebFetch — no network in CI]');
+    expect(buildBlockText(r)).toBe('[Blocked by Sentinel: WebFetch — no network in CI]');
   });
 });
 
@@ -180,7 +180,7 @@ describe('interceptor — deny decision', () => {
     it.flush();
     const out = sink.joined();
     expect(out).not.toContain('"type":"tool_use"');
-    expect(out).toContain('[Blocked by Claude Sentinel: Bash(rm -rf *)]');
+    expect(out).toContain('[Blocked by Sentinel: Bash(rm -rf *)]');
     expect(out).toContain('message_start');
     expect(out).toContain('message_stop');
     expect(onBlocked).toHaveBeenCalledTimes(1);
@@ -207,7 +207,7 @@ describe('interceptor — deny decision', () => {
     });
     it.push(stream);
     it.flush();
-    expect(sink.joined()).toContain('[Blocked by Claude Sentinel: WebFetch]');
+    expect(sink.joined()).toContain('[Blocked by Sentinel: WebFetch]');
   });
 
   it('handles tiny chunks spread across tool_use events', () => {
@@ -226,7 +226,7 @@ describe('interceptor — deny decision', () => {
     // Feed one byte at a time.
     for (const ch of stream) it.push(ch);
     it.flush();
-    expect(sink.joined()).toContain('[Blocked by Claude Sentinel: Bash(rm *)]');
+    expect(sink.joined()).toContain('[Blocked by Sentinel: Bash(rm *)]');
   });
 });
 
@@ -275,7 +275,7 @@ describe('interceptor — overflow safety', () => {
     it.flush();
     // Overflow → pass-through. The denied rule does NOT get to rewrite the block.
     expect(sink.joined()).toContain('"type":"tool_use"');
-    expect(sink.joined()).not.toContain('[Blocked by Claude Sentinel');
+    expect(sink.joined()).not.toContain('[Blocked by Sentinel');
   });
 });
 
@@ -496,7 +496,7 @@ describe('interceptor — multiple blocks', () => {
     it.push(stream);
     it.flush();
     const out = sink.joined();
-    expect(out).toContain('[Blocked by Claude Sentinel: Bash(rm *)]');
+    expect(out).toContain('[Blocked by Sentinel: Bash(rm *)]');
     // Read tool_use should be passed verbatim
     expect(out).toContain('"name":"Read"');
     expect(out).toContain('\\"file_path\\":\\"/a\\"');
@@ -543,7 +543,7 @@ describe('interceptor — async hold flow', () => {
     // And the ping emitted during the hold came through.
     expect(out).toContain('"type":"ping"');
     // No synthetic block text was inserted.
-    expect(out).not.toContain('[Blocked by Claude Sentinel');
+    expect(out).not.toContain('[Blocked by Sentinel');
     // onBlocked is NOT invoked on the async-approve path (the pending
     // registry's onFinalized already persists the event — no double-fire).
     expect(onBlocked).not.toHaveBeenCalled();
@@ -570,7 +570,7 @@ describe('interceptor — async hold flow', () => {
     it.flush();
 
     const out = sink.joined();
-    expect(out).toContain('[Blocked by Claude Sentinel: Bash(rm *)]');
+    expect(out).toContain('[Blocked by Sentinel: Bash(rm *)]');
     // Original tool_use frames must NOT appear.
     expect(out).not.toContain('rm -rf /tmp');
   });
@@ -594,7 +594,7 @@ describe('interceptor — async hold flow', () => {
     await new Promise((r) => setTimeout(r, 0));
     it.flush();
 
-    expect(sink.joined()).toContain('[Blocked by Claude Sentinel: Bash(rm *)]');
+    expect(sink.joined()).toContain('[Blocked by Sentinel: Bash(rm *)]');
   });
 
   it('awaitDecision throws → treated as deny (fail-closed)', async () => {
@@ -612,7 +612,7 @@ describe('interceptor — async hold flow', () => {
     await new Promise((r) => setTimeout(r, 0));
     it.flush();
 
-    expect(sink.joined()).toContain('[Blocked by Claude Sentinel: Bash(rm *)]');
+    expect(sink.joined()).toContain('[Blocked by Sentinel: Bash(rm *)]');
   });
 
   it('destroy during a pending hold discards every buffer cleanly', async () => {
@@ -644,7 +644,7 @@ describe('interceptor — async hold flow', () => {
     // Some frames may have been emitted before decideAndFlush awaited, but
     // nothing after the destroy should land. Most importantly, no synthetic
     // block, no "later" frame.
-    expect(sink.joined()).not.toContain('[Blocked by Claude Sentinel');
+    expect(sink.joined()).not.toContain('[Blocked by Sentinel');
     expect(sink.joined()).not.toContain('event: later');
   });
 
@@ -687,7 +687,7 @@ describe('interceptor — async hold flow', () => {
     it.push(stream);
     it.flush();
     // Wildcard deny still matches the empty tool name; synthesized block emitted.
-    expect(sink.joined()).toContain('[Blocked by Claude Sentinel');
+    expect(sink.joined()).toContain('[Blocked by Sentinel');
   });
 
   it('flush during an active hold emits buffered tool_use frames verbatim (fail-open)', async () => {

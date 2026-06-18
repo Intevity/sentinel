@@ -12,7 +12,7 @@
  * cache of compiled rules and invalidates it on mutation.
  */
 
-import type { PermissionDecision, PermissionRule } from '@claude-sentinel/shared';
+import type { PermissionDecision, PermissionRule } from '@sentinel/shared';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { posix as posixPath } from 'path';

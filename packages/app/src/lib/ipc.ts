@@ -8,7 +8,7 @@
  * the Tauri path is the only live one.
  */
 import { invoke } from '@tauri-apps/api/core';
-import type { AppToDaemonMessage, DaemonToAppMessage, IpcResponse } from '@claude-sentinel/shared';
+import type { AppToDaemonMessage, DaemonToAppMessage, IpcResponse } from '@sentinel/shared';
 
 export type { AppToDaemonMessage, DaemonToAppMessage, IpcResponse };
 

@@ -59,7 +59,7 @@ for tgz in *.app.tar.gz; do
   # Re-sign the regenerated tarball with the Tauri updater key (reads
   # TAURI_SIGNING_PRIVATE_KEY[_PASSWORD] from env). Overwrites the stale .sig.
   rm -f "$DIR_ABS/$tgz.sig"
-  pnpm --filter @claude-sentinel/app exec tauri signer sign "$DIR_ABS/$tgz"
+  pnpm --filter @sentinel/app exec tauri signer sign "$DIR_ABS/$tgz"
   if [[ ! -f "$DIR_ABS/$tgz.sig" ]]; then
     echo "::error::tauri signer did not produce $tgz.sig" >&2
     exit 1

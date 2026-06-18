@@ -9,7 +9,7 @@ import type {
   McpInstallScope,
   McpRecommendationBadge,
   MetricsWindow,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../../lib/ipc.js';
 import { formatTokens } from '../../lib/optimizeUnits.js';
 import { formatUsd } from './charts/shared.js';

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Settings } from '@claude-sentinel/shared';
+import type { Settings } from '@sentinel/shared';
 import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 

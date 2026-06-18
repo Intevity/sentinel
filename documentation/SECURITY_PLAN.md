@@ -1,6 +1,6 @@
-# Claude Sentinel Security Plan
+# Sentinel Security Plan
 
-This document is the master plan for hardening Claude Sentinel's security posture beyond the testing improvements landed in April 2026. Each sprint is self-contained: a fresh agent session, given this document plus `CLAUDE.md`, should be able to execute the sprint cold.
+This document is the master plan for hardening Sentinel's security posture beyond the testing improvements landed in April 2026. Each sprint is self-contained: a fresh agent session, given this document plus `CLAUDE.md`, should be able to execute the sprint cold.
 
 ## How to use this document
 
@@ -14,7 +14,7 @@ When a sprint is complete, edit the **Sprint tracker** table at the top of this 
 
 ## Threat model
 
-Claude Sentinel proxies Claude Code's traffic to Anthropic. The threats it defends against are the agent acting on the user's machine in ways the user did not intend. The agent is treated as untrusted — it might be following user instructions, hallucinating, or under prompt injection. Concrete attack paths:
+Sentinel proxies Claude Code's traffic to Anthropic. The threats it defends against are the agent acting on the user's machine in ways the user did not intend. The agent is treated as untrusted — it might be following user instructions, hallucinating, or under prompt injection. Concrete attack paths:
 
 1. **Catastrophic local action**: `rm -rf` on the user's home, dropping production database tables, encrypting files for ransom, deploying half-finished code.
 2. **Data exfiltration**: reading `~/.ssh/id_rsa`, `~/.aws/credentials`, `.env` files, browser cookies, and shipping them to an attacker's server.
@@ -40,12 +40,12 @@ That work raised the floor on **the matcher** and on **lifecycle correctness**. 
 
 Apply these in every sprint:
 
-- **Tests must use real boundaries.** No `vi.mock('https')`, no `global.fetch = vi.fn()`, no `vi.spyOn` on our own modules. Use the fake-Anthropic harness, real SQLite via env-seam, real keychain via `CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE`, real IPC via `CLAUDE_SENTINEL_TEST_IPC_SOCKET`. The `.mock-budget.json` floor is enforced by CI.
+- **Tests must use real boundaries.** No `vi.mock('https')`, no `global.fetch = vi.fn()`, no `vi.spyOn` on our own modules. Use the fake-Anthropic harness, real SQLite via env-seam, real keychain via `SENTINEL_TEST_KEYCHAIN_FILE`, real IPC via `SENTINEL_TEST_IPC_SOCKET`. The `.mock-budget.json` floor is enforced by CI.
 - **Tests must actually test.** Specific assertions that fail on regression. No `expect(x).toBeDefined()` without a companion shape assertion, no `expect(mock).toHaveBeenCalled()` without `toHaveBeenCalledWith(...)`, no `await expect(...).resolves.not.toThrow()` without asserting on the resolved value.
 - **Coverage gates** (95% lines/funcs/statements, 93% branches) are checked by `pnpm test`. Don't lower thresholds, don't add files to the exclude list, don't add bare `/* v8 ignore */` to hit the number. Genuinely-CI-unreachable branches need a one-line inline justification.
 - **Verification protocol** before declaring a sprint complete:
   ```sh
-  pnpm --filter @claude-sentinel/daemon run build
+  pnpm --filter @sentinel/daemon run build
   pnpm exec vitest run packages/daemon/src/security                # fast feedback
   pnpm test                                                        # full + coverage
   pnpm mock:budget                                                 # zero new mocks
@@ -53,7 +53,7 @@ Apply these in every sprint:
   pnpm exec prettier --check .                                     # CI gate
   ```
   If `pnpm mock:budget` flags a legitimate addition (e.g., `vi.fn()` IPC stub mirroring an existing test's pattern), run `pnpm mock:budget:update` and justify in the PR body.
-- **Daemon deploy**: most sprints touch only TypeScript; the fast iteration loop in CLAUDE.md applies (`pnpm --filter @claude-sentinel/daemon run build && build:sidecar`, replace the binary in the installed app, ask the user to restart). Sprints that touch Rust (`packages/app/src-tauri/src/**`) need a full `pnpm --filter @claude-sentinel/app run tauri:build`.
+- **Daemon deploy**: most sprints touch only TypeScript; the fast iteration loop in CLAUDE.md applies (`pnpm --filter @sentinel/daemon run build && build:sidecar`, replace the binary in the installed app, ask the user to restart). Sprints that touch Rust (`packages/app/src-tauri/src/**`) need a full `pnpm --filter @sentinel/app run tauri:build`.
 - **No em dashes in user-facing copy.** Use colons or semicolons. Applies to UI strings, banners, settings descriptions, error messages, but not source comments.
 - **Avoid creating new MD files** unless a sprint explicitly says so. Update existing docs in place.
 
@@ -155,7 +155,7 @@ Sprint dependencies are mostly forward: a later sprint can reference earlier wor
 
 **Threat addressed**:
 
-- Agent calls `Write(~/.claude-sentinel/settings.json, "{...toolPermissionsEnabled:false}")` to disable enforcement.
+- Agent calls `Write(~/.sentinel/settings.json, "{...toolPermissionsEnabled:false}")` to disable enforcement.
 - Agent connects to the daemon's IPC socket directly and calls `purge_all_data`, `delete_permission_rule`, or `update_settings`.
 - Agent escalates by editing `~/.claude/settings.json` allow rules.
 
@@ -172,18 +172,18 @@ Sprint dependencies are mostly forward: a later sprint can reference earlier wor
 
 - **Default-deny config writes** (preset additions in `securityPresets.ts`):
   - `Write(~/.claude/**)`, `Edit(~/.claude/**)`, `MultiEdit(~/.claude/**)`
-  - `Write(~/.claude-sentinel/**)`, `Edit(~/.claude-sentinel/**)`, `MultiEdit(~/.claude-sentinel/**)`
+  - `Write(~/.sentinel/**)`, `Edit(~/.sentinel/**)`, `MultiEdit(~/.sentinel/**)`
   - Bash: any command that writes to those paths (`tee`, `>`, `>>`, `cp`, `mv`, `sed -i`, `printf >`, etc.). Implement as a Bash detector since path-tool rules don't catch these.
   - Add to **all** presets (Low, Medium, High) since this is a self-protection invariant, not a policy choice.
 - **IPC peer-credential check** (`ipc.ts`):
   - On connection, retrieve the peer's PID via `SO_PEERCRED` (Linux) or `LOCAL_PEERCRED` getsockopt (macOS) or `GetNamedPipeServerProcessId` (Windows; use a named pipe instead of Unix socket on Windows).
   - Verify the peer PID belongs to the Tauri parent process tree (the daemon was spawned by Tauri; the Tauri process PID is known and recoverable). Walk the process parentage.
   - Reject connections that don't belong to the trusted tree; log the rejection at WARN.
-  - Test mode (`CLAUDE_SENTINEL_TEST_IPC_SOCKET` env set) bypasses the check so existing integration tests still work.
+  - Test mode (`SENTINEL_TEST_IPC_SOCKET` env set) bypasses the check so existing integration tests still work.
 - **Settings file permission enforcement** (`settings.ts`):
   - On `saveSettings()`, set mode `0600` after the rename. On `loadSettings()`, if the mode is loose (group/other have any bits), log a WARN and refuse to load (fall back to `DEFAULT_SETTINGS`).
 - **Settings file HMAC signature** (`settings.ts` + new `settings-integrity.ts`):
-  - Generate a per-installation signing key on first daemon start; store in the OS keychain under `Claude Sentinel-settings-hmac` (mirror the `accounts.ts` keychain pattern).
+  - Generate a per-installation signing key on first daemon start; store in the OS keychain under `Sentinel-settings-hmac` (mirror the `accounts.ts` keychain pattern).
   - On `saveSettings()`, append `{ "_signature": "<hmac-sha256>" }` (or write a sidecar `settings.json.sig`).
   - On `loadSettings()`, verify the HMAC. On mismatch, log ERROR, broadcast a `settings_tamper_detected` IPC message, and fall back to defaults. The user sees a banner.
   - Tampering with the file from outside the daemon → detected on next read.
@@ -201,19 +201,19 @@ Sprint dependencies are mostly forward: a later sprint can reference earlier wor
 - `packages/daemon/src/security/permissions/security-presets.ts` (or wherever presets live; check `app/src/lib/securityPresets.ts`) — config-path default denies in all presets.
 - `packages/daemon/src/security/detectors.ts` — Bash detector for writes-to-config-path patterns.
 - New file: `packages/daemon/src/settings-integrity.ts` — HMAC sign/verify + keychain integration.
-- `packages/app/src-tauri/src/daemon.rs` — record parent Tauri PID where the daemon can find it (e.g., env var or `~/.claude-sentinel/parent.pid`).
+- `packages/app/src-tauri/src/daemon.rs` — record parent Tauri PID where the daemon can find it (e.g., env var or `~/.sentinel/parent.pid`).
 
 **Tests to add**:
 
 - `packages/daemon/src/ipc.peer-auth.test.ts` (~8 cases): connection from current process accepted; mocked-PID-from-different-tree rejected; test-mode env bypass works; rejection is logged.
 - `packages/daemon/src/settings-integrity.test.ts` (~10 cases): sign/verify round-trip; tampered file detected; missing signature treated as untrusted; test-mode keychain works; key rotation supported (graceful when keychain returns no key — generate fresh, but don't trust pre-existing file).
-- `packages/daemon/src/security/permissions/matchers.config-protection.test.ts` (~8 cases): each preset blocks Write/Edit/Bash to `~/.claude/settings.json` and `~/.claude-sentinel/settings.json`.
+- `packages/daemon/src/security/permissions/matchers.config-protection.test.ts` (~8 cases): each preset blocks Write/Edit/Bash to `~/.claude/settings.json` and `~/.sentinel/settings.json`.
 
 **Acceptance criteria**:
 
-- An agent's `Bash("echo 'toolPermissionsEnabled=false' >> ~/.claude-sentinel/settings.json")` is denied (via Bash detector or via path-rule depending on tool used).
-- An external `nc -U ~/.claude-sentinel/daemon.sock` from a different process tree is rejected.
-- Manually editing `~/.claude-sentinel/settings.json` outside the daemon → daemon next-load detects HMAC mismatch and broadcasts `settings_tamper_detected`.
+- An agent's `Bash("echo 'toolPermissionsEnabled=false' >> ~/.sentinel/settings.json")` is denied (via Bash detector or via path-rule depending on tool used).
+- An external `nc -U ~/.sentinel/daemon.sock` from a different process tree is rejected.
+- Manually editing `~/.sentinel/settings.json` outside the daemon → daemon next-load detects HMAC mismatch and broadcasts `settings_tamper_detected`.
 - `pnpm test` passes; coverage gates green.
 
 **Effort**: medium. Touches Rust + TypeScript. Peer-cred check is platform-specific. Settings HMAC is straightforward.
@@ -566,7 +566,7 @@ Detection patterns the detector must match:
 
 **Threat addressed**:
 
-- After malicious activity, agent runs `Bash("sqlite3 ~/.claude-sentinel/sentinel.db 'DELETE FROM security_events'")` to cover its tracks.
+- After malicious activity, agent runs `Bash("sqlite3 ~/.sentinel/sentinel.db 'DELETE FROM security_events'")` to cover its tracks.
 - Forensic analyst investigating an incident has only the security event row — no surrounding context to reconstruct what happened.
 - Tool-input snippets are stored verbatim in security events, leaking secrets that the scanner was supposed to detect.
 
@@ -692,7 +692,7 @@ Detection patterns the detector must match:
 
 **Acceptance criteria**:
 
-- Medium preset, when applied, denies writes to `~/.claude-sentinel/**` and to common persistence vectors.
+- Medium preset, when applied, denies writes to `~/.sentinel/**` and to common persistence vectors.
 - Webhook fires within 5s of a HIGH event in test mode (using a test HTTP receiver).
 - Per-project rule with scope `/Users/jeff/work/prod/**` does NOT fire when working directory is `/Users/jeff/scratch/`.
 - `pnpm test` passes; coverage gates green.
@@ -789,7 +789,7 @@ Every detector entry in `SECRET_RULES`, `INJECTION_RULES`, or `BASH_RULES` MUST 
 
 - **Real proxy + DB + fake-Anthropic**: `startProxyWithFake({ enableSecurityScanner, enablePermissionsEnforcer })` from `packages/daemon/src/proxy.test-helpers.ts`. Returns `{ fake, proxy, proxyPort, db, ipcServer, scanner?, enforcer?, cleanup }`.
 - **Real claude-sync engine with injected settings path**: pass `settingsPath` to `createClaudeSyncEngine`. No env var needed.
-- **Real keychain**: set `CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE` before importing accounts.
+- **Real keychain**: set `SENTINEL_TEST_KEYCHAIN_FILE` before importing accounts.
 - **Real settings**: use `seedTestSettings({ ... })` from `proxy.test-helpers.ts`.
 
 ### Cross-platform notes

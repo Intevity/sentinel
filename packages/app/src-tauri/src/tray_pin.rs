@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn paths_match_is_case_insensitive() {
         assert!(paths_match(
-            "C:\\Program Files\\Claude Sentinel\\claude-sentinel.exe",
+            "C:\\Program Files\\Sentinel\\sentinel.exe",
             "c:\\program files\\claude sentinel\\Claude-Sentinel.EXE",
         ));
     }
@@ -98,20 +98,20 @@ mod tests {
     #[test]
     fn paths_match_normalizes_slash_direction() {
         assert!(paths_match(
-            "C:/Apps/claude-sentinel.exe",
-            "C:\\Apps\\claude-sentinel.exe",
+            "C:/Apps/sentinel.exe",
+            "C:\\Apps\\sentinel.exe",
         ));
     }
 
     #[test]
     fn paths_match_rejects_different_binaries() {
         assert!(!paths_match(
-            "C:\\Apps\\claude-sentinel.exe",
+            "C:\\Apps\\sentinel.exe",
             "C:\\Apps\\other-app.exe",
         ));
         assert!(!paths_match(
-            "C:\\A\\claude-sentinel.exe",
-            "C:\\B\\claude-sentinel.exe",
+            "C:\\A\\sentinel.exe",
+            "C:\\B\\sentinel.exe",
         ));
     }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { rangeLadder, snapRangeToLadder } from '@claude-sentinel/shared';
+import { rangeLadder, snapRangeToLadder } from '@sentinel/shared';
 
 describe('rangeLadder', () => {
   it('returns the historical six presets for retention of a year or more', () => {

@@ -1,4 +1,4 @@
-import type { Alert } from '@claude-sentinel/shared';
+import type { Alert } from '@sentinel/shared';
 
 type AlertSummaryInput = Pick<Alert, 'thresholdPct' | 'enabled'>;
 

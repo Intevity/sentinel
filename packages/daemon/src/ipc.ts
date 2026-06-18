@@ -3,13 +3,13 @@ import { existsSync, unlinkSync, mkdirSync, chmodSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { timingSafeEqual } from 'crypto';
-import type { DaemonToAppMessage, AppToDaemonMessage, IpcResponse } from '@claude-sentinel/shared';
+import type { DaemonToAppMessage, AppToDaemonMessage, IpcResponse } from '@sentinel/shared';
 
 /* v8 ignore next 3 */
 export const IPC_PATH =
   process.platform === 'win32'
-    ? '\\\\.\\pipe\\claude-sentinel'
-    : join(homedir(), '.claude-sentinel', 'daemon.sock');
+    ? '\\\\.\\pipe\\sentinel'
+    : join(homedir(), '.sentinel', 'daemon.sock');
 
 /** Sprint 2: every connection's first line must be a handshake message
  *  with this shape carrying the per-spawn token. The token is shared
@@ -43,7 +43,7 @@ function safeEqualStrings(a: string, b: string): boolean {
  *
  * as its first complete line; mismatches and missing handshakes cause the
  * socket to be destroyed before any other handler sees data. The
- * `CLAUDE_SENTINEL_TEST_IPC_TOKEN` env var bypasses the check (set with a
+ * `SENTINEL_TEST_IPC_TOKEN` env var bypasses the check (set with a
  * blank value) for legacy integration tests that don't go through Tauri.
  */
 export class IpcServer {
@@ -72,7 +72,7 @@ export class IpcServer {
   }
 
   start(
-    socketPath: string = process.env.CLAUDE_SENTINEL_TEST_IPC_SOCKET ?? IPC_PATH,
+    socketPath: string = process.env.SENTINEL_TEST_IPC_SOCKET ?? IPC_PATH,
     expectedToken: string | null = null,
   ): void {
     this.expectedToken = expectedToken;
@@ -94,7 +94,7 @@ export class IpcServer {
       // peer sends any data still reach it. When `expectedToken` is set
       // and no test-bypass env is present, the socket stays in the
       // unauthenticated bucket until its first line passes the handshake.
-      if (this.expectedToken === null || process.env.CLAUDE_SENTINEL_TEST_IPC_TOKEN !== undefined) {
+      if (this.expectedToken === null || process.env.SENTINEL_TEST_IPC_TOKEN !== undefined) {
         this.authenticated.add(socket);
       }
       let buffer = '';
@@ -118,7 +118,7 @@ export class IpcServer {
           if (
             !this.authenticated.has(socket) &&
             this.expectedToken !== null &&
-            process.env.CLAUDE_SENTINEL_TEST_IPC_TOKEN === undefined
+            process.env.SENTINEL_TEST_IPC_TOKEN === undefined
           ) {
             if (!this.acceptHandshake(socket, line)) {
               // Reject and close. Don't read any further data.
@@ -310,7 +310,7 @@ export class IpcClient {
   }
 
   connect(
-    socketPath: string = process.env.CLAUDE_SENTINEL_TEST_IPC_SOCKET ?? IPC_PATH,
+    socketPath: string = process.env.SENTINEL_TEST_IPC_SOCKET ?? IPC_PATH,
     token: string | null = null,
   ): void {
     this.socket = connect(socketPath, () => {

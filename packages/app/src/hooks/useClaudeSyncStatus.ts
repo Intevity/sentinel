@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { ClaudeSyncStatus } from '@claude-sentinel/shared';
+import type { ClaudeSyncStatus } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 interface UseClaudeSyncStatusResult {

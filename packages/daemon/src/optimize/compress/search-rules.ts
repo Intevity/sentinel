@@ -158,7 +158,7 @@ export function extractSearchMatches(
 ): string {
   // Idempotency + non-interference: never re-process text already carrying a
   // marker (ours or another rule's; all use this exact phrase).
-  if (text.includes('elided by Claude Sentinel')) return text;
+  if (text.includes('elided by Sentinel')) return text;
 
   const lines = text.split('\n');
   const sample = nonEmptyLines(lines, 200);
@@ -259,7 +259,7 @@ function modeA(
     const elided = elidedLines.join('\n');
     const hint = retrievalHint(onElide, 'search_extract', elided);
     out.push(
-      `... [${fileCount} more files with ${matchCount} matches elided by Claude Sentinel${hint}] ...`,
+      `... [${fileCount} more files with ${matchCount} matches elided by Sentinel${hint}] ...`,
     );
     i = j;
   }
@@ -290,7 +290,7 @@ function emitGroup(
   const middle = g.lines.slice(headN, g.lines.length - tailN);
   const elided = middle.join('\n');
   const hint = retrievalHint(onElide, 'search_extract', elided);
-  out.push(`${g.path}: ... [${middle.length} more matches elided by Claude Sentinel${hint}] ...`);
+  out.push(`${g.path}: ... [${middle.length} more matches elided by Sentinel${hint}] ...`);
   out.push(...g.lines.slice(g.lines.length - tailN));
 }
 
@@ -316,6 +316,6 @@ function modeB(
   if (middle.length === 0) return text;
   const elided = middle.join('\n');
   const hint = retrievalHint(onElide, 'search_extract', elided);
-  const marker = `... [${middle.length} more paths elided by Claude Sentinel${hint}] ...`;
+  const marker = `... [${middle.length} more paths elided by Sentinel${hint}] ...`;
   return [...head, marker, ...tail].join('\n');
 }

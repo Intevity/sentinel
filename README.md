@@ -1,13 +1,13 @@
-# Claude Sentinel
+# Sentinel
 
 An open-source Claude Code companion: a tray app and bundled local daemon for in-flight security scanning, multi-account routing, usage metrics, and overage alerts.
 
-**Website:** https://intevity.github.io/claude-sentinel (feature tour, demos, and downloads)
+**Website:** https://intevity.github.io/sentinel (feature tour, demos, and downloads)
 
-[![CI](https://github.com/Intevity/claude-sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/Intevity/claude-sentinel/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/Intevity/claude-sentinel?include_prereleases)](https://github.com/Intevity/claude-sentinel/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Intevity/claude-sentinel/total)](https://github.com/Intevity/claude-sentinel/releases)
-[![License: MIT](https://img.shields.io/github/license/Intevity/claude-sentinel)](./LICENSE)
+[![CI](https://github.com/Intevity/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/Intevity/sentinel/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Intevity/sentinel?include_prereleases)](https://github.com/Intevity/sentinel/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Intevity/sentinel/total)](https://github.com/Intevity/sentinel/releases)
+[![License: MIT](https://img.shields.io/github/license/Intevity/sentinel)](./LICENSE)
 [![No telemetry](https://img.shields.io/badge/telemetry-none-brightgreen)](#security)
 [![Network: localhost only](https://img.shields.io/badge/network-localhost%20only-blue)](#security)
 [![Credentials: OS keychain](https://img.shields.io/badge/credentials-OS%20keychain-blue)](#security)
@@ -21,16 +21,16 @@ An open-source Claude Code companion: a tray app and bundled local daemon for in
 
 ## Download
 
-Grab the latest installer from the **[Releases page](https://github.com/Intevity/claude-sentinel/releases/latest)**, or pick your platform directly:
+Grab the latest installer from the **[Releases page](https://github.com/Intevity/sentinel/releases/latest)**, or pick your platform directly:
 
 | Platform                                   | Format        | Download                                                                      |
 | ------------------------------------------ | ------------- | ----------------------------------------------------------------------------- |
-| **macOS** — Apple Silicon (M1/M2/M3/M4/M5) | `.dmg`        | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
-| **macOS** — Intel                          | `.dmg`        | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
-| **Windows** 10/11                          | `.msi` / NSIS | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
-| **Linux** (Debian/Ubuntu)                  | `.deb`        | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
-| **Linux** (Fedora/RHEL)                    | `.rpm`        | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
-| **Linux** (portable)                       | `.AppImage`   | [Latest release](https://github.com/Intevity/claude-sentinel/releases/latest) |
+| **macOS** — Apple Silicon (M1/M2/M3/M4/M5) | `.dmg`        | [Latest release](https://github.com/Intevity/sentinel/releases/latest) |
+| **macOS** — Intel                          | `.dmg`        | [Latest release](https://github.com/Intevity/sentinel/releases/latest) |
+| **Windows** 10/11                          | `.msi` / NSIS | [Latest release](https://github.com/Intevity/sentinel/releases/latest) |
+| **Linux** (Debian/Ubuntu)                  | `.deb`        | [Latest release](https://github.com/Intevity/sentinel/releases/latest) |
+| **Linux** (Fedora/RHEL)                    | `.rpm`        | [Latest release](https://github.com/Intevity/sentinel/releases/latest) |
+| **Linux** (portable)                       | `.AppImage`   | [Latest release](https://github.com/Intevity/sentinel/releases/latest) |
 
 > **macOS note:** v0.1.x builds ship unsigned. See the [first-launch Gatekeeper steps](#installation) below — it's a one-time right-click.
 
@@ -60,7 +60,7 @@ Claude Code  ──→  localhost:47284  ──→  api.anthropic.com
                         │
                         │  Unix socket / named pipe
                         ▼
-                  Claude Sentinel App
+                  Sentinel App
                   (Tauri v2 tray app)
 ```
 
@@ -81,7 +81,7 @@ Claude Code  ──→  localhost:47284  ──→  api.anthropic.com
 
    > **macOS:** release builds are signed with a Developer ID certificate and notarized by Apple, so they open with a normal double-click — no "unidentified developer" prompt and no `xattr` workaround needed. (If you build locally from source, your build is only ad-hoc signed; right-click → **Open** once to launch it.)
 
-2. **Launch Claude Sentinel** from your Applications folder. The tray icon appears in the menu bar / system tray, and the daemon starts automatically.
+2. **Launch Sentinel** from your Applications folder. The tray icon appears in the menu bar / system tray, and the daemon starts automatically.
 
 3. **Click "Activate Sentinel"** in the banner that appears on first launch. This writes `ANTHROPIC_BASE_URL=http://localhost:47284` plus OTEL env vars into `~/.claude/settings.json` — the only setup step required.
 
@@ -108,7 +108,7 @@ Claude Code  ──→  localhost:47284  ──→  api.anthropic.com
 Open the tray app → **⋯ menu → Uninstall Sentinel…**. The uninstall dialog lets you choose whether to also delete local data (usage history, rate-limit cache, keychain credentials). Uninstalling:
 
 - Removes the Sentinel env vars from `~/.claude/settings.json` so Claude Code goes back to calling `api.anthropic.com` directly.
-- Optionally wipes `~/.claude-sentinel/` and every `Claude Sentinel-credentials` keychain entry.
+- Optionally wipes `~/.sentinel/` and every `Sentinel-credentials` keychain entry.
 - Shuts the daemon down and quits the app.
 
 The Sentinel app itself is still in `/Applications` after uninstall — trash it normally if you want to remove the binaries too.
@@ -124,7 +124,7 @@ The in-app ⋯ menu also shows daemon pid and uptime.
 
 ## Window behavior
 
-Sentinel is a tray-only app (no Dock icon). Closing the window with the red ⨉ (or ⌘W) hides it — the background daemon keeps running so Claude Code can continue routing through it. To fully stop Sentinel, use the ⋯ menu → **Quit Sentinel**, or the tray menu → **Quit Claude Sentinel**.
+Sentinel is a tray-only app (no Dock icon). Closing the window with the red ⨉ (or ⌘W) hides it — the background daemon keeps running so Claude Code can continue routing through it. To fully stop Sentinel, use the ⋯ menu → **Quit Sentinel**, or the tray menu → **Quit Sentinel**.
 
 ## Building from source
 
@@ -140,8 +140,8 @@ Sentinel is a tray-only app (no Dock icon). Closing the window with the red ⨉ 
 ### Setup
 
 ```sh
-git clone https://github.com/Intevity/claude-sentinel
-cd claude-sentinel
+git clone https://github.com/Intevity/sentinel
+cd sentinel
 pnpm install
 ```
 
@@ -153,11 +153,11 @@ The daemon is compiled into a self-contained binary by `beforeBuildCommand` auto
 
 ```sh
 # Current platform only
-pnpm --filter @claude-sentinel/app run tauri:build
+pnpm --filter @sentinel/app run tauri:build
 
 # Cross-compile for a specific macOS target
-pnpm --filter @claude-sentinel/app run tauri:build -- --target aarch64-apple-darwin
-pnpm --filter @claude-sentinel/app run tauri:build -- --target x86_64-apple-darwin
+pnpm --filter @sentinel/app run tauri:build -- --target aarch64-apple-darwin
+pnpm --filter @sentinel/app run tauri:build -- --target x86_64-apple-darwin
 ```
 
 > **`tauri:build` is the full release build.** Because the updater is configured
@@ -177,7 +177,7 @@ Artifacts land in `packages/app/src-tauri/target/release/bundle/`:
 
 | Platform | Output                              |
 | -------- | ----------------------------------- |
-| macOS    | `macos/Claude Sentinel.app`, `.dmg` |
+| macOS    | `macos/Sentinel.app`, `.dmg` |
 | Linux    | `.deb`, `.rpm`, `.AppImage`         |
 | Windows  | `.msi`, NSIS installer              |
 
@@ -195,11 +195,11 @@ pnpm build:app
 
 | OS          | What `pnpm build:app` does                                                                       |
 | ----------- | ------------------------------------------------------------------------------------------------ |
-| **macOS**   | Builds the `.app`, replaces `/Applications/Claude Sentinel.app`, re-signs ad-hoc, and opens it   |
+| **macOS**   | Builds the `.app`, replaces `/Applications/Sentinel.app`, re-signs ad-hoc, and opens it   |
 | **Linux**   | Builds an unsigned `.AppImage` and launches it (`--appimage-extract-and-run`, so no FUSE needed) |
 | **Windows** | Builds the unsigned NSIS `-setup.exe` and launches the installer                                 |
 
-> Quit Claude Sentinel before running on macOS — the script refuses to swap a
+> Quit Sentinel before running on macOS — the script refuses to swap a
 > running app. Preview the per-OS plan without building via
 > `node scripts/build-app.mjs --dry-run` (add `--platform=linux|win32|darwin`).
 >
@@ -212,9 +212,9 @@ pnpm build:app
 `beforeDevCommand` is just Vite), so build the daemon binary once first:
 
 ```sh
-pnpm --filter @claude-sentinel/daemon run build
-pnpm --filter @claude-sentinel/daemon run build:sidecar
-pnpm --filter @claude-sentinel/app run tauri:dev
+pnpm --filter @sentinel/daemon run build
+pnpm --filter @sentinel/daemon run build:sidecar
+pnpm --filter @sentinel/app run tauri:dev
 ```
 
 > **Signed release build:** `pnpm build:app:release` runs the full `tauri build`
@@ -230,12 +230,12 @@ On macOS, `pnpm build:app` runs [`scripts/install-app.sh`](./scripts/install-app
    [`tauri.dev.conf.json`](./packages/app/src-tauri/tauri.dev.conf.json)), so
    there is **no signing-key password prompt** and no Apple Developer ID
    requirement (the bundle is ad-hoc signed).
-2. Refuses to run if Claude Sentinel is still open (quit it from the tray first).
-3. Removes the existing `/Applications/Claude Sentinel.app`, copies the fresh
+2. Refuses to run if Sentinel is still open (quit it from the tray first).
+3. Removes the existing `/Applications/Sentinel.app`, copies the fresh
    bundle, re-signs it ad-hoc, verifies, and launches it.
 
 > **Do not `cp -R` a build over the existing app yourself.** `cp -R` into an
-> existing `/Applications/Claude Sentinel.app` _merges_ into it, and macOS
+> existing `/Applications/Sentinel.app` _merges_ into it, and macOS
 > protects the installed app's files — so you get `cp: ... Operation not permitted`
 > for `Contents/MacOS/...`, `Info.plist`, etc. The script avoids this by removing
 > the old app first; the ad-hoc re-sign step is also load-bearing (without it the
@@ -254,11 +254,11 @@ the binary in the installed bundle).
 If you need just the daemon binary (e.g. for testing):
 
 ```sh
-pnpm --filter @claude-sentinel/daemon run build          # tsc compile
-pnpm --filter @claude-sentinel/daemon run build:sidecar  # pkg → platform binary
+pnpm --filter @sentinel/daemon run build          # tsc compile
+pnpm --filter @sentinel/daemon run build:sidecar  # pkg → platform binary
 ```
 
-Output: `packages/app/src-tauri/binaries/claude-sentinel-daemon-<triple>[.exe]`
+Output: `packages/app/src-tauri/binaries/sentinel-daemon-<triple>[.exe]`
 
 ### Release via GitHub Actions
 
@@ -335,7 +335,7 @@ To generate the updater key pair (do this once; **store the private key and its 
 manager — losing them means existing installs can no longer accept updates**):
 
 ```sh
-pnpm --filter @claude-sentinel/app exec tauri signer generate -w ~/.tauri/claude-sentinel.key
+pnpm --filter @sentinel/app exec tauri signer generate -w ~/.tauri/sentinel.key
 # → public key goes in tauri.conf.json (plugins.updater.pubkey)
 # → private key file contents → TAURI_SIGNING_PRIVATE_KEY secret
 # → chosen password           → TAURI_SIGNING_PRIVATE_KEY_PASSWORD secret
@@ -354,7 +354,7 @@ All tests must maintain **≥95% coverage** across statements, branches, functio
 ### Run the daemon locally
 
 ```sh
-pnpm --filter @claude-sentinel/daemon run dev
+pnpm --filter @sentinel/daemon run dev
 ```
 
 ### Run the Tauri app locally
@@ -362,7 +362,7 @@ pnpm --filter @claude-sentinel/daemon run dev
 Run the daemon first (above), then in a separate terminal:
 
 ```sh
-pnpm --filter @claude-sentinel/app run tauri:dev
+pnpm --filter @sentinel/app run tauri:dev
 ```
 
 In dev mode the app will log a warning if the sidecar binary hasn't been built yet and skip spawning it — that's expected. The IPC module retries the socket connection automatically once the daemon is running.
@@ -373,13 +373,13 @@ The website lives in its own workspace, `packages/site` (Astro + React, static b
 
 ```sh
 pnpm install                                   # once, from the repo root
-pnpm --filter @claude-sentinel/site dev        # dev server with hot reload
-pnpm --filter @claude-sentinel/site build      # static build to packages/site/dist
-pnpm --filter @claude-sentinel/site preview     # serve the production build locally
-pnpm --filter @claude-sentinel/site typecheck   # astro check
+pnpm --filter @sentinel/site dev        # dev server with hot reload
+pnpm --filter @sentinel/site build      # static build to packages/site/dist
+pnpm --filter @sentinel/site preview     # serve the production build locally
+pnpm --filter @sentinel/site typecheck   # astro check
 ```
 
-The dev server serves the site under the `/claude-sentinel` base path (matching the GitHub Pages URL), so open the localhost URL Astro prints rather than bare `/`.
+The dev server serves the site under the `/sentinel` base path (matching the GitHub Pages URL), so open the localhost URL Astro prints rather than bare `/`.
 
 **Demo videos:** the feature carousel ships branded placeholder posters. To add real recordings, follow `packages/site/public/videos/README.md` (filenames, shot list) and flip `hasVideo: true` for that feature in `packages/site/src/data/features.ts`.
 
@@ -558,7 +558,7 @@ After each scenario, check:
 ### Project structure
 
 ```
-claude-sentinel/
+sentinel/
 ├── packages/
 │   ├── daemon/src/            # Node.js daemon
 │   │   ├── proxy.ts           # HTTP reverse proxy + overage header inspection
@@ -569,7 +569,7 @@ claude-sentinel/
 │   │   ├── accounts.ts        # OS credential store
 │   │   ├── claude-state.ts    # ~/.claude.json management
 │   │   ├── oauth.ts           # PKCE login flow
-│   │   ├── settings.ts        # ~/.claude-sentinel/settings.json
+│   │   ├── settings.ts        # ~/.sentinel/settings.json
 │   │   ├── token-rotator.ts   # round-robin token selector
 │   │   ├── auto-switch.ts     # threshold-based auto-switch
 │   │   └── alerts.ts          # user-configured alert evaluator
@@ -589,26 +589,26 @@ claude-sentinel/
 
 ### Daemon logs
 
-The daemon writes timestamped logs to `~/.claude-sentinel/daemon.log`. This file is the first place to look for any issue — OAuth failures, account switch errors, proxy problems, and IPC events are all logged there.
+The daemon writes timestamped logs to `~/.sentinel/daemon.log`. This file is the first place to look for any issue — OAuth failures, account switch errors, proxy problems, and IPC events are all logged there.
 
 ```sh
 # Stream logs in real time
-tail -f ~/.claude-sentinel/daemon.log
+tail -f ~/.sentinel/daemon.log
 
 # Last 100 lines
-tail -100 ~/.claude-sentinel/daemon.log
+tail -100 ~/.sentinel/daemon.log
 
 # Filter to OAuth events only
-grep '\[OAuth\]' ~/.claude-sentinel/daemon.log
+grep '\[OAuth\]' ~/.sentinel/daemon.log
 
 # Filter to errors
-grep 'ERROR' ~/.claude-sentinel/daemon.log
+grep 'ERROR' ~/.sentinel/daemon.log
 ```
 
 The file appends across app restarts and is never truncated automatically. Rotate it manually if it grows large:
 
 ```sh
-> ~/.claude-sentinel/daemon.log
+> ~/.sentinel/daemon.log
 ```
 
 ### Check daemon health
@@ -627,7 +627,7 @@ If this returns an error or times out, the daemon is not running. Relaunch the a
 The app communicates with the daemon over a Unix socket:
 
 ```sh
-ls -la ~/.claude-sentinel/daemon.sock
+ls -la ~/.sentinel/daemon.sock
 ```
 
 If the socket file is missing after the app is running, the daemon failed to start. Check the log for details.
@@ -693,7 +693,7 @@ The response is forwarded to Claude Code unmodified — the proxy is transparent
 ## Security
 
 - The proxy only listens on `127.0.0.1:47284` — never exposed to the network.
-- Inactive account credentials are stored in the OS keychain (Keychain on macOS, Credential Manager on Windows, libsecret on Linux) under the service name `Claude Sentinel-credentials`.
+- Inactive account credentials are stored in the OS keychain (Keychain on macOS, Credential Manager on Windows, libsecret on Linux) under the service name `Sentinel-credentials`.
 - The daemon never logs credential values — only metadata (email, UUID) is stored in SQLite.
 - The IPC socket is created with `0600` permissions (owner read/write only).
 - `~/.claude.json` and `~/.claude/settings.json` writes use atomic rename.

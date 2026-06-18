@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Check } from 'lucide-react';
-import type { AccountInfo, OAuthAccount, SwitchingMode } from '@claude-sentinel/shared';
+import type { AccountInfo, OAuthAccount, SwitchingMode } from '@sentinel/shared';
 import { planLabel } from '../lib/plan.js';
 import { getAccountStatus, type AccountStatus } from '../lib/account-status.js';
 import { accountColor } from '../lib/accountColor.js';

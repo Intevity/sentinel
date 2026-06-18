@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import type { SecurityBenchmarkResult } from '@claude-sentinel/shared';
+import type { SecurityBenchmarkResult } from '@sentinel/shared';
 import { sendToSentinel } from '../lib/ipc.js';
 
 interface UseScanBenchmarkResult {

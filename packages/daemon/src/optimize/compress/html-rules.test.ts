@@ -117,7 +117,7 @@ describe('extractHtmlText', () => {
     expect(out).toContain('Use <widgets> today.');
     expect(out).toContain("Don't wait.");
     // Marker is the final line, byte-count shaped, no hint (onElide absent).
-    expect(marker).toBe('... [' + removed + ' bytes of HTML markup elided by Claude Sentinel] ...');
+    expect(marker).toBe('... [' + removed + ' bytes of HTML markup elided by Sentinel] ...');
   });
 
   it('produces a deterministic, byte-stable result across two runs', () => {
@@ -133,7 +133,7 @@ describe('extractHtmlText', () => {
   });
 
   it('returns the marker-bearing input unchanged (leading guard, same instance)', () => {
-    const marked = 'some text\n... [10 bytes of HTML markup elided by Claude Sentinel] ...';
+    const marked = 'some text\n... [10 bytes of HTML markup elided by Sentinel] ...';
     expect(extractHtmlText(marked)).toBe(marked);
   });
 
@@ -256,7 +256,7 @@ describe('extractHtmlText threshold and boundary behavior', () => {
     const marker = out.slice(idx + 1);
     const expectedN = byteLen(REALISTIC_PAGE) - byteLen(body);
     expect(
-      marker.startsWith('... [' + expectedN + ' bytes of HTML markup elided by Claude Sentinel'),
+      marker.startsWith('... [' + expectedN + ' bytes of HTML markup elided by Sentinel'),
     ).toBe(true);
   });
 });

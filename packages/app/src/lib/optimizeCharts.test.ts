@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { OptimizationMetrics } from '@claude-sentinel/shared';
+import type { OptimizationMetrics } from '@sentinel/shared';
 import {
   buildBySubagentSeries,
   buildComparisonSeries,

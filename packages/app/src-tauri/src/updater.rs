@@ -1,9 +1,9 @@
-//! Auto-update plumbing for Claude Sentinel.
+//! Auto-update plumbing for Sentinel.
 //!
 //! Three entry points share the same check core:
 //!   - `spawn_update_timer` — called from `main.rs` setup; checks shortly
 //!     after launch and then every `CHECK_INTERVAL` (4 h, overridable via
-//!     `CLAUDE_SENTINEL_UPDATE_CHECK_INTERVAL_SECS` for testing).
+//!     `SENTINEL_UPDATE_CHECK_INTERVAL_SECS` for testing).
 //!   - `check_for_updates` — Tauri command invoked from the "Check for
 //!     updates…" tray item. Always runs and always surfaces feedback.
 //!   - `install_update` — Tauri command invoked from the in-app update
@@ -25,7 +25,7 @@
 //! The daemon sidecar is deliberately long-lived: it keeps proxying Claude
 //! Code traffic while the UI window is closed and is NOT killed when the
 //! window hides. At update time it is therefore still running and, on
-//! Windows, still holds an exclusive lock on claude-sentinel-daemon.exe —
+//! Windows, still holds an exclusive lock on sentinel-daemon.exe —
 //! the NSIS/MSI passive installers then fail with "Error opening file for
 //! writing" (Tauri #7931 class). Both install sites below download first
 //! (proxy keeps serving), then call `daemon::stop_daemon_for_update()`
@@ -77,7 +77,7 @@ struct UpdateAvailablePayload {
     current_version: String,
 }
 
-/// Subset of `~/.claude-sentinel/settings.json` we care about here.
+/// Subset of `~/.sentinel/settings.json` we care about here.
 /// Extra keys are tolerated so the daemon stays the source of truth for the
 /// full schema.
 #[derive(Debug, Deserialize)]
@@ -91,7 +91,7 @@ fn read_auto_update_pref(app: &AppHandle) -> bool {
     let Ok(home) = app.path().home_dir() else {
         return false;
     };
-    let path = home.join(".claude-sentinel").join("settings.json");
+    let path = home.join(".sentinel").join("settings.json");
     let Ok(contents) = std::fs::read_to_string(&path) else {
         return false;
     };
@@ -101,10 +101,10 @@ fn read_auto_update_pref(app: &AppHandle) -> bool {
 }
 
 /// Background-check cadence, overridable for testing
-/// (`CLAUDE_SENTINEL_UPDATE_CHECK_INTERVAL_SECS=60` makes the loop tick
+/// (`SENTINEL_UPDATE_CHECK_INTERVAL_SECS=60` makes the loop tick
 /// every minute).
 fn check_interval() -> Duration {
-    std::env::var("CLAUDE_SENTINEL_UPDATE_CHECK_INTERVAL_SECS")
+    std::env::var("SENTINEL_UPDATE_CHECK_INTERVAL_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&secs| secs > 0)
@@ -116,7 +116,7 @@ fn notify(app: &AppHandle, body: String) {
     let _ = app
         .notification()
         .builder()
-        .title("Claude Sentinel")
+        .title("Sentinel")
         .body(body)
         .show();
 }
@@ -231,7 +231,7 @@ async fn scheduled_check(app: &AppHandle, notified_version: &mut Option<String>)
         if notified_version.as_deref() != Some(version.as_str()) {
             notify(
                 app,
-                format!("Claude Sentinel v{version} is available. Open Sentinel to install."),
+                format!("Sentinel v{version} is available. Open Sentinel to install."),
             );
             *notified_version = Some(version);
         }

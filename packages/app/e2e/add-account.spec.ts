@@ -4,7 +4,7 @@
  * Drives the AccountSwitcher "+ Add Account" button through the full
  * PKCE round-trip against the fake Anthropic server. No real browser.
  *
- * The daemon runs with `CLAUDE_SENTINEL_TEST_OAUTH_ECHO=1`, so
+ * The daemon runs with `SENTINEL_TEST_OAUTH_ECHO=1`, so
  * `start_login` broadcasts `test_oauth_url_opened` with the authorize
  * URL the production path would hand to a browser launcher. The test
  * extracts the PKCE `state`, POSTs a synthetic callback to the daemon's

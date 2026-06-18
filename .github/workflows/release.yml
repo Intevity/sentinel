@@ -329,7 +329,7 @@ jobs:
                 "--" + sub + "-endpoint", process.env.AZURE_TS_ENDPOINT,
                 "--" + sub + "-account", process.env.AZURE_TS_ACCOUNT,
                 "--" + sub + "-certificate-profile", process.env.AZURE_TS_PROFILE,
-                "-d", "Claude Sentinel",
+                "-d", "Sentinel",
                 "%1",
               ],
             };
@@ -367,7 +367,7 @@ jobs:
         with:
           projectPath: packages/app
           tagName: ${{ github.ref_name }}
-          releaseName: Claude Sentinel ${{ github.ref_name }}
+          releaseName: Sentinel ${{ github.ref_name }}
           releaseBody: ${{ needs.prepare-notes.outputs.notes }}
           releaseDraft: true
           prerelease: false

@@ -32,7 +32,7 @@ import {
   upsertPermissionRule,
   deletePermissionRule,
 } from './db.js';
-import type { AccountInfo, RateLimitWindow } from '@claude-sentinel/shared';
+import type { AccountInfo, RateLimitWindow } from '@sentinel/shared';
 
 const TEST_DB = join(tmpdir(), `sentinel-test-${Date.now()}.db`);
 
@@ -3074,7 +3074,7 @@ describe('listOptimizationEventsWithSources', () => {
     const byId = new Map(r.events.map((e) => [e.curatedId, e.digestTokens]));
     // Numbers must match the shared optimize-digests table; refusing to
     // duplicate them in the assertion keeps the source-of-truth single.
-    const { getDigestTokens } = await import('@claude-sentinel/shared');
+    const { getDigestTokens } = await import('@sentinel/shared');
     expect(byId.get('file-explorer')).toBe(getDigestTokens('file-explorer'));
     expect(byId.get('log-analyzer')).toBe(getDigestTokens('log-analyzer'));
     expect(byId.get('unknown-future-agent')).toBe(getDigestTokens('unknown-future-agent'));

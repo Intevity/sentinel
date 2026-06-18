@@ -31,6 +31,6 @@ switch (command) {
 
   default:
     console.error(`[Sentinel] Unknown command: ${command}`);
-    console.error('Usage: claude-sentinel [start]');
+    console.error('Usage: sentinel [start]');
     process.exit(1);
 }

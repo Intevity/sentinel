@@ -3,7 +3,7 @@ import type {
   NotificationRecord,
   NotificationType,
   SecurityOsNotifyThreshold,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import { shouldFireSecurityOsNotification } from '../lib/security-threshold.js';
@@ -91,7 +91,7 @@ export function useNativeAlertNotifications(): void {
           const short = msg.accountId.slice(0, 8);
           const pct = (msg.utilization * 100).toFixed(1);
           void fireNativeStandard(
-            'Claude Sentinel: Sonnet 7-day saturated',
+            'Sentinel: Sonnet 7-day saturated',
             `${short}… at ${pct}% of Sonnet weekly quota. Further Sonnet requests will draw from overage.`,
             soundName,
           );
@@ -100,7 +100,7 @@ export function useNativeAlertNotifications(): void {
         if (overageOsNotify) {
           const short = msg.accountId.slice(0, 8);
           void fireNativeStandard(
-            'Claude Sentinel: Overage started',
+            'Sentinel: Overage started',
             `${short}… is now using overage budget.`,
             soundName,
           );
@@ -110,7 +110,7 @@ export function useNativeAlertNotifications(): void {
           const short = msg.accountId.slice(0, 8);
           const reason = msg.reason && msg.reason !== 'unknown' ? ` (${msg.reason})` : '';
           void fireNativeStandard(
-            'Claude Sentinel: Overage cap reached',
+            'Sentinel: Overage cap reached',
             `${short}… hit its overage limit${reason}.`,
             soundName,
           );
@@ -132,7 +132,7 @@ export function useNativeAlertNotifications(): void {
                 ? 'Anthropic disabled overage'
                 : 'paused';
         void fireNativeStandard(
-          'Claude Sentinel: Account paused',
+          'Sentinel: Account paused',
           `${short}… ${reasonBlurb}.`,
           soundName,
         );
@@ -317,7 +317,7 @@ export function useNotifications(params: UseNotificationsParams = {}): UseNotifi
  *
  * Routed through the `display_alert_notification` Tauri command so
  * delivery uses the notification plugin's Rust API and failures land
- * in ~/.claude-sentinel/app.log. The previous `sendNotification` JS
+ * in ~/.sentinel/app.log. The previous `sendNotification` JS
  * path fired through the plugin's injected window.Notification shim,
  * whose constructor cannot propagate errors: a Windows toast failure
  * (e.g. unregistered AUMID) was invisible. Same plugin backend as

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { OtelDriftDetails } from '@claude-sentinel/shared';
+import type { OtelDriftDetails } from '@sentinel/shared';
 import { useOtelDrift } from '../hooks/useOtelDrift.js';
 
 /**

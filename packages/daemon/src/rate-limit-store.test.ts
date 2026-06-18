@@ -281,7 +281,7 @@ describe('RateLimitStore', () => {
     const store = new RateLimitStore();
     const updates: Array<{
       accountId: string;
-      windows: import('@claude-sentinel/shared').RateLimitWindow[];
+      windows: import('@sentinel/shared').RateLimitWindow[];
     }> = [];
     store.onUpdate((accountId, windows) => updates.push({ accountId, windows }));
 
@@ -347,7 +347,7 @@ describe('RateLimitStore', () => {
   // ── syncFromClaudeAiSnapshot ────────────────────────────────────────────────
 
   describe('syncFromClaudeAiSnapshot', () => {
-    const baseSnapshot = (): import('@claude-sentinel/shared').ClaudeAiUsageSnapshot => ({
+    const baseSnapshot = (): import('@sentinel/shared').ClaudeAiUsageSnapshot => ({
       fiveHourUtilization: 0.2,
       fiveHourResetsAt: '2026-04-22T03:00:00Z',
       sevenDayUtilization: 0.65,

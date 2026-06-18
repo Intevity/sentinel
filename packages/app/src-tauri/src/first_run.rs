@@ -26,7 +26,7 @@ pub fn is_first_run(app: &AppHandle) -> bool {
     let Ok(home) = app.path().home_dir() else {
         return true;
     };
-    let path = home.join(".claude-sentinel").join("settings.json");
+    let path = home.join(".sentinel").join("settings.json");
     let Ok(contents) = std::fs::read_to_string(&path) else {
         return true;
     };

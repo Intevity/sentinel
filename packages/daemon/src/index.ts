@@ -53,6 +53,7 @@ import {
   deletePermissionRule,
   insertNotification,
   runDetectorTuningMigration,
+  migrateLegacyDataDir,
   listDetectorStats,
   getCacheTtlByDayModel,
   getCacheTtlBySession,
@@ -116,7 +117,7 @@ import { homedir, hostname } from 'os';
 import { join } from 'path';
 import { runScanBenchmark } from './security/scanner-benchmark.js';
 import { parseRule as parsePermissionRule } from './security/permissions/parser.js';
-import type { Settings, MetricsWindow } from '@claude-sentinel/shared';
+import type { Settings, MetricsWindow } from '@sentinel/shared';
 import { getActiveAccount, setActiveAccount } from './claude-state.js';
 import {
   readActiveCredentials,
@@ -142,7 +143,7 @@ import type {
   ClaudeCodeCredentials,
   MetricsSummary,
   AlertScope,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { request as httpRequest, type Server } from 'http';
 import { log } from './logger.js';
 import { getRequestLogStore, closeRequestLogStore } from './request-log-db.js';
@@ -231,7 +232,7 @@ function isDaemonAlreadyRunning(): Promise<boolean> {
 
 // Logger initialization is performed inside startDaemon() (see top of the
 // function body) so tests can point the settings reader at a tmp file via
-// CLAUDE_SENTINEL_TEST_SETTINGS_FILE before the first settings load runs.
+// SENTINEL_TEST_SETTINGS_FILE before the first settings load runs.
 // The setup still happens before the first console.log in startDaemon, so
 // production behavior is unchanged.
 
@@ -314,10 +315,10 @@ let loginAbortController: AbortController | null = null;
  * Behaviour:
  *   - Tauri-spawned daemon: stdin is a piped fd, the token arrives within
  *     ms, and this resolves with the trimmed token string.
- *   - `pnpm --filter @claude-sentinel/daemon run start` (dev CLI): stdin is
+ *   - `pnpm --filter @sentinel/daemon run start` (dev CLI): stdin is
  *     a TTY or empty; after `graceMs` we resolve null and the IPC server
  *     starts in unauthenticated mode (the dev needs to talk to it).
- *   - `CLAUDE_SENTINEL_TEST_IPC_TOKEN` set: skip stdin entirely; the env
+ *   - `SENTINEL_TEST_IPC_TOKEN` set: skip stdin entirely; the env
  *     value short-circuits the IPC handshake check.
  *
  * Reading from `process.stdin` with `'data'` listeners flips it into
@@ -326,7 +327,7 @@ let loginAbortController: AbortController | null = null;
  * silently consumed.
  */
 function readHandshakeTokenFromStdin(graceMs: number = 250): Promise<string | null> {
-  if (process.env.CLAUDE_SENTINEL_TEST_IPC_TOKEN !== undefined) return Promise.resolve(null);
+  if (process.env.SENTINEL_TEST_IPC_TOKEN !== undefined) return Promise.resolve(null);
   return new Promise<string | null>((resolve) => {
     let buffer = '';
     let done = false;
@@ -386,7 +387,7 @@ export interface DaemonHandle {
 }
 
 export async function startDaemon(): Promise<DaemonHandle> {
-  // The Tauri app pipes our stdout/stderr into ~/.claude-sentinel/app.log
+  // The Tauri app pipes our stdout/stderr into ~/.sentinel/app.log
   // for Windows diagnosability. The daemon deliberately outlives the app
   // process, and once the parent exits the pipes' read ends close; without
   // these guards the next console write raises an unhandled EPIPE stream
@@ -394,13 +395,25 @@ export async function startDaemon(): Promise<DaemonHandle> {
   process.stdout.on('error', () => undefined);
   process.stderr.on('error', () => undefined);
 
+  // One-time legacy data-dir migration (~/.claude-sentinel → ~/.sentinel) for
+  // users upgrading across the "Claude Sentinel" → "Sentinel" rename, run before
+  // anything below reads settings/DB/logs. The Tauri app already does this in
+  // Rust before spawning us; this is the standalone-daemon fallback. Production-
+  // startup-only: the test harness redirects every path via SENTINEL_TEST_* env
+  // and must never touch the developer's real home dir (mirrors the
+  // isDaemonAlreadyRunning guard below).
+  /* v8 ignore next 3 -- production-startup-only; tests set SENTINEL_TEST_* and skip this */
+  if (!Object.keys(process.env).some((k) => k.startsWith('SENTINEL_TEST_'))) {
+    migrateLegacyDataDir();
+  }
+
   // Read the IPC handshake token from stdin before any I/O so the parent's
   // pipe write isn't lost if startup races. Tauri-spawned daemons see a
   // value within ms; the dev CLI sees null after the grace window.
   const ipcHandshakeToken = await readHandshakeTokenFromStdin();
 
   // Logger setup: level filtering + ring buffer + console monkey-patch. Done
-  // here (not at module scope) so tests that set CLAUDE_SENTINEL_TEST_SETTINGS_FILE
+  // here (not at module scope) so tests that set SENTINEL_TEST_SETTINGS_FILE
   // between imports and startDaemon() see their tmp settings file. In
   // production the effect is identical: the first console.log below still
   // runs through the patched console with the persisted level already set.
@@ -414,7 +427,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
   console.log(
     `[Sentinel] env platform=${process.platform} arch=${process.arch} ` +
       `node=${process.versions.node} pid=${process.pid} home=${homedir()} ` +
-      `ipc=${process.env.CLAUDE_SENTINEL_TEST_IPC_SOCKET ?? IPC_PATH}`,
+      `ipc=${process.env.SENTINEL_TEST_IPC_SOCKET ?? IPC_PATH}`,
   );
 
   // Shared across this startup closure: set to true once shutdown() begins so
@@ -429,7 +442,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // failure if two parallel tests' pick-then-close ports ever collide. Detect test
   // mode via the port override the harness always sets, skip the probe, and below
   // bind an OS-assigned port (listen(0)) so a collision is impossible.
-  const inTestMode = process.env.CLAUDE_SENTINEL_TEST_DAEMON_PORT !== undefined;
+  const inTestMode = process.env.SENTINEL_TEST_DAEMON_PORT !== undefined;
 
   /* v8 ignore next 6 */
   if (!inTestMode && (await isDaemonAlreadyRunning())) {
@@ -1549,8 +1562,8 @@ export async function startDaemon(): Promise<DaemonHandle> {
         // soft- or hard-removed rows — once the user hits Uninstall we want
         // zero trace of their credentials left on the system.
         //
-        // Covers both services Sentinel writes to: `Claude Sentinel-credentials`
-        // (OAuth tokens) AND `Claude Sentinel-claude-ai-session` (claude.ai
+        // Covers both services Sentinel writes to: `Sentinel-credentials`
+        // (OAuth tokens) AND `Sentinel-claude-ai-session` (claude.ai
         // session cookies used to read overage budget). Missing the session
         // service meant a post-uninstall reinstall silently inherited the old
         // cookie, so the app never asked the user to reconnect claude.ai.
@@ -2473,14 +2486,14 @@ export async function startDaemon(): Promise<DaemonHandle> {
         // Respond immediately — the login is async and we broadcast when done
         respond({ requestType: 'start_login', success: true });
 
-        // E2E seam: when CLAUDE_SENTINEL_TEST_OAUTH_ECHO is set, intercept
+        // E2E seam: when SENTINEL_TEST_OAUTH_ECHO is set, intercept
         // the authorize URL and broadcast it so the Playwright harness can
         // extract the PKCE state and POST a synthetic callback to the
         // loopback callback server. Off by default — production falls
         // through to the platform browser launcher inside oauth.ts.
         /* v8 ignore next 5 */
         const testOauthEcho =
-          process.env.CLAUDE_SENTINEL_TEST_OAUTH_ECHO === '1'
+          process.env.SENTINEL_TEST_OAUTH_ECHO === '1'
             ? (url: string): void => {
                 ipcServer.broadcast({ type: 'test_oauth_url_opened', url });
               }
@@ -2550,7 +2563,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
           break;
         }
         const agentsDir =
-          process.env['CLAUDE_SENTINEL_TEST_AGENTS_DIR'] ?? join(homedir(), '.claude', 'agents');
+          process.env['SENTINEL_TEST_AGENTS_DIR'] ?? join(homedir(), '.claude', 'agents');
         const mdPath = join(agentsDir, `${entry.curatedId}.md`);
         agentsSyncEngine
           .installCuratedFile({
@@ -3463,7 +3476,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // handlers can capture it in their closure; started just before the
   // IPC server accepts connections to keep daemon startup deterministic.
   const claudeSettingsPath =
-    process.env.CLAUDE_SENTINEL_TEST_CLAUDE_SETTINGS_FILE ??
+    process.env.SENTINEL_TEST_CLAUDE_SETTINGS_FILE ??
     join(homedir(), '.claude', 'settings.json');
   const otelSettingsWatcher = createOtelSettingsWatcher({
     settingsPath: claudeSettingsPath,
@@ -3750,13 +3763,13 @@ export async function startDaemon(): Promise<DaemonHandle> {
       // Reflect the actually-bound port so getDaemonPort() (which reads this env
       // var) stays consistent in tests; in production the var is unset (no-op).
       /* v8 ignore next -- prod leaves the env var unset, making this a no-op */
-      if (inTestMode) process.env.CLAUDE_SENTINEL_TEST_DAEMON_PORT = String(boundPort);
+      if (inTestMode) process.env.SENTINEL_TEST_DAEMON_PORT = String(boundPort);
       console.log(`[Sentinel] HTTP proxy listening on http://127.0.0.1:${boundPort}`);
       // [OTEL-DIAG] Temporary: confirm the platform-resolved paths + bound
       // address the receiver writes to / reads from. Remove before merging.
       console.log(
         `[OTEL-DIAG] startup platform=${process.platform} homedir=${homedir()} ` +
-          `db=${join(homedir(), '.claude-sentinel', 'sentinel.db')} ` +
+          `db=${join(homedir(), '.sentinel', 'sentinel.db')} ` +
           `listen=127.0.0.1:${boundPort} endpoint=${SENTINEL_BASE_URL}`,
       );
       // Probe for fresh rate-limit headers through the proxy now that it is ready.

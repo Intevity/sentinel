@@ -23,7 +23,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import type { McpInstallScope } from '@claude-sentinel/shared';
+import type { McpInstallScope } from '@sentinel/shared';
 import { readClaudeState, writeClaudeState, getClaudeJsonPath } from '../../claude-state.js';
 
 export interface ServerScopeRef {

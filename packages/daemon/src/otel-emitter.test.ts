@@ -17,7 +17,7 @@ import { OtelForwarder } from './otel-forwarder.js';
 import { writeOtelExporterSecret } from './otel-forwarder-secret.js';
 import { DEFAULT_SETTINGS } from './settings.js';
 import { closeDb, getDb, insertUsageEvent, insertCacheTtlEvent } from './db.js';
-import type { Settings, OAuthAccount, DaemonToAppMessage } from '@claude-sentinel/shared';
+import type { Settings, OAuthAccount, DaemonToAppMessage } from '@sentinel/shared';
 import type { IpcServer } from './ipc.js';
 
 interface Captured {
@@ -122,7 +122,7 @@ describe('OtelEmitter', () => {
     dbPath = join(tmpDir, 'test.db');
     kchainPath = join(tmpDir, 'keychain.json');
     writeFileSync(kchainPath, '{}');
-    process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = kchainPath;
+    process.env.SENTINEL_TEST_KEYCHAIN_FILE = kchainPath;
     db = getDb(dbPath);
     fake = await startFake();
     writeOtelExporterSecret('test-secret');
@@ -133,7 +133,7 @@ describe('OtelEmitter', () => {
     await stopFake(fake);
     // Reset the singleton so the next test can open a fresh DB at a new path.
     closeDb();
-    delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+    delete process.env.SENTINEL_TEST_KEYCHAIN_FILE;
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -219,7 +219,7 @@ describe('OtelEmitter', () => {
       value: { stringValue: string };
     }>;
     const serviceName = resourceAttrs.find((a) => a.key === 'service.name');
-    expect(serviceName?.value.stringValue).toBe('claude-sentinel');
+    expect(serviceName?.value.stringValue).toBe('sentinel');
 
     const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics as Array<{
       name: string;

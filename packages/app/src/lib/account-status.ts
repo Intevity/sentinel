@@ -1,4 +1,4 @@
-import type { SwitchingMode } from '@claude-sentinel/shared';
+import type { SwitchingMode } from '@sentinel/shared';
 
 /**
  * Visual status shared by AccountCard (Accounts tab) and AccountViewPicker

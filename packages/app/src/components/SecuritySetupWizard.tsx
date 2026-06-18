@@ -19,7 +19,7 @@ import {
 } from '../lib/securityPresets.js';
 import { useScanBenchmark } from '../hooks/useScanBenchmark.js';
 import { sendToSentinel } from '../lib/ipc.js';
-import type { SecurityBenchmarkResult } from '@claude-sentinel/shared';
+import type { SecurityBenchmarkResult } from '@sentinel/shared';
 
 interface SecuritySetupWizardProps {
   /** Dismiss the wizard. Called after Apply succeeds or Skip/Close. */

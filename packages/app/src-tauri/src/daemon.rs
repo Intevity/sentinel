@@ -50,9 +50,9 @@ fn sidecar_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?.to_path_buf();
     let name = if cfg!(target_os = "windows") {
-        "claude-sentinel-daemon.exe"
+        "sentinel-daemon.exe"
     } else {
-        "claude-sentinel-daemon"
+        "sentinel-daemon"
     };
     Some(dir.join(name))
 }
@@ -205,17 +205,17 @@ async fn evict_stale_daemon() {
     }
     #[cfg(windows)]
     {
-        // Image-name catch-all: kills every claude-sentinel-daemon.exe
+        // Image-name catch-all: kills every sentinel-daemon.exe
         // regardless of which install spawned it or what PID it reports.
         app_log("Daemon still bound after force kill; falling back to image-name taskkill");
         let mut cmd = tokio::process::Command::new("taskkill");
         cmd.creation_flags(0x0800_0000);
-        cmd.args(["/F", "/IM", "claude-sentinel-daemon.exe"]);
+        cmd.args(["/F", "/IM", "sentinel-daemon.exe"]);
         match cmd.output().await {
             Ok(out) => {
                 if !out.status.success() {
                     app_log(&format!(
-                        "taskkill /F /IM claude-sentinel-daemon.exe failed: {}",
+                        "taskkill /F /IM sentinel-daemon.exe failed: {}",
                         String::from_utf8_lossy(&out.stderr).trim()
                     ));
                 }
@@ -231,7 +231,7 @@ async fn evict_stale_daemon() {
 
 /// Stop the running daemon so an installer can replace its binary. Windows
 /// locks running executables, so the NSIS/MSI passive installers fail with
-/// "Error opening file for writing: …claude-sentinel-daemon.exe" if the
+/// "Error opening file for writing: …sentinel-daemon.exe" if the
 /// daemon survives into the install (Tauri #7931 class). Called before every
 /// updater `download_and_install`; harmless on macOS/Linux (no exe lock
 /// there) and the post-install relaunch respawns the daemon regardless.

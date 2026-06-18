@@ -3,11 +3,11 @@
  * the bearer-token file its curl one-liner reads.
  *
  * Token handling is the load-bearing security decision: the token lives in
- * `~/.claude-sentinel/code-mode/.token` with 0600 perms and SKILL.md only
+ * `~/.sentinel/code-mode/.token` with 0600 perms and SKILL.md only
  * ever references it as `$(cat <path>)`. The literal secret never appears in
  * skill text (which may be synced or committed by users) and never enters
  * conversation context. The skill goes to `~/.claude/skills/sentinel-code-mode/`
- * (home resolved via `CLAUDE_SENTINEL_TEST_HOME` in tests, matching
+ * (home resolved via `SENTINEL_TEST_HOME` in tests, matching
  * context-bloat's seam).
  */
 
@@ -21,7 +21,7 @@ import { codeModeTokenFilePath, resolveCodeModeDir } from './workspace-gen.js';
 export const SKILL_NAME = 'sentinel-code-mode';
 
 function resolveHome(): string {
-  return process.env.CLAUDE_SENTINEL_TEST_HOME ?? homedir();
+  return process.env.SENTINEL_TEST_HOME ?? homedir();
 }
 
 export function skillDirPath(): string {
@@ -72,12 +72,12 @@ export async function installCodeModeSkill(opts: InstallSkillOpts): Promise<stri
   const content = [
     '---',
     `name: ${SKILL_NAME}`,
-    `description: Call MCP tools from the bridged servers (${serverList}) through Claude Sentinel's local code-mode endpoint. Use whenever a task needs one of these servers; their native mcp__ tools are intentionally not loaded.`,
+    `description: Call MCP tools from the bridged servers (${serverList}) through Sentinel's local code-mode endpoint. Use whenever a task needs one of these servers; their native mcp__ tools are intentionally not loaded.`,
     '---',
     '',
     '# Sentinel code mode',
     '',
-    `These MCP servers are bridged through Claude Sentinel: ${serverList}.`,
+    `These MCP servers are bridged through Sentinel: ${serverList}.`,
     'Their tool definitions are not in your context (saving the tokens they',
     'would occupy on every request) and their native `mcp__<server>__*` tools',
     'are NOT available. Call them through the local bridge instead:',

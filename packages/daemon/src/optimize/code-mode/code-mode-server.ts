@@ -18,7 +18,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { CodeModeAuditRow } from '@claude-sentinel/shared';
+import type { CodeModeAuditRow } from '@sentinel/shared';
 import { bearerAuthorized } from '../compress/mcp-retrieve-server.js';
 import type { McpClientManager } from './mcp-client-manager.js';
 

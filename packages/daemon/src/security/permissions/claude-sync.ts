@@ -24,7 +24,7 @@ import { promises as fs, type FSWatcher, watch } from 'fs';
 import { homedir } from 'os';
 import { join, dirname, basename } from 'path';
 import { createHash, randomBytes } from 'crypto';
-import type { ClaudeSyncStatus, PermissionDecision, PermissionRule } from '@claude-sentinel/shared';
+import type { ClaudeSyncStatus, PermissionDecision, PermissionRule } from '@sentinel/shared';
 import type Database from 'better-sqlite3';
 import type { IpcServer } from '../../ipc.js';
 import { listPermissionRules, upsertPermissionRule, deletePermissionRule } from '../../db.js';

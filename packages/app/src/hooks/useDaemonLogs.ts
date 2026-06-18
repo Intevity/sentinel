@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { LogEntry } from '@claude-sentinel/shared';
+import type { LogEntry } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 /** Frontend in-memory cap. Larger than the daemon's ring buffer (2000) so a

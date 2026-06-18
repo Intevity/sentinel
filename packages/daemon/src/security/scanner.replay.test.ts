@@ -11,7 +11,7 @@ import {
 } from '../db.js';
 import { createSecurityScanner } from './scanner.js';
 import { createIncidentReplayRecorder } from './incident-replay.js';
-import type { Settings } from '@claude-sentinel/shared';
+import type { Settings } from '@sentinel/shared';
 
 const NEW_DB = () =>
   join(tmpdir(), `sentinel-replay-scanner-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);

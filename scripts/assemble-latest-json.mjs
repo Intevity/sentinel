@@ -104,7 +104,7 @@ if (missing.length) fail(`release is missing updater artifacts for: ${missing.jo
 
 const manifest = {
   version,
-  notes: `Claude Sentinel ${version}`,
+  notes: `Sentinel ${version}`,
   pub_date: new Date().toISOString(),
   platforms: Object.fromEntries(Object.entries(platforms).sort(([a], [b]) => a.localeCompare(b))),
 };

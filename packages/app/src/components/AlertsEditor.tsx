@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2, Loader2, Pencil, Bell, BellOff } from 'lucide-react';
-import type { AccountInfo, Alert, NotificationType, OAuthAccount } from '@claude-sentinel/shared';
+import type { AccountInfo, Alert, NotificationType, OAuthAccount } from '@sentinel/shared';
 import { useAlerts, type UseAlertsTarget } from '../hooks/useAlerts.js';
 import { useNotifications } from '../hooks/useNotifications.js';
 import { useSettings } from '../hooks/useSettings.js';

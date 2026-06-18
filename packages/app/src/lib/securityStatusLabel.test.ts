@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SecurityEvent } from '@claude-sentinel/shared';
+import type { SecurityEvent } from '@sentinel/shared';
 import { securityStatusInfo, securityRowAction } from './securityStatusLabel.js';
 
 type StatusInput = Pick<SecurityEvent, 'blocked' | 'kind' | 'resolution' | 'acknowledged'>;

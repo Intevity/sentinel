@@ -345,7 +345,7 @@ pub fn route_recent_event() {
 pub fn init_notification_bundle(bundle_id: &str) {
     let path = format!("Software\\Classes\\AppUserModelId\\{bundle_id}");
     match CURRENT_USER.create(&path) {
-        Ok(key) => match key.set_string("DisplayName", "Claude Sentinel") {
+        Ok(key) => match key.set_string("DisplayName", "Sentinel") {
             Ok(()) => diag_log(&format!("AUMID registered at HKCU\\{path}")),
             Err(e) => diag_log(&format!("AUMID DisplayName write failed: {e}")),
         },
@@ -442,7 +442,7 @@ unsafe fn set_private_shows_buttons(notification: &NSUserNotification) {
     let _: () = unsafe { msg_send![notification, setValue: &*yes, forKey: &*key] };
 }
 
-/// Append a timestamped line to `~/.claude-sentinel/app.log`. Silently
+/// Append a timestamped line to `~/.sentinel/app.log`. Silently
 /// drops on any I/O error — logging is best-effort and must never
 /// break the UI path. The daemon logs to `daemon.log` in the same
 /// directory; having a separate `app.log` here keeps the two streams
@@ -459,13 +459,13 @@ fn diag_log(msg: &str) {
 
 fn sentinel_dir() -> Option<PathBuf> {
     // `HOME` doesn't exist on Windows — mirror `app_log::home_dir` so
-    // the diag lines land in the same `~/.claude-sentinel` the daemon
+    // the diag lines land in the same `~/.sentinel` the daemon
     // (Node `os.homedir()`) writes to on every platform.
     #[cfg(windows)]
     let home = std::env::var_os("USERPROFILE")?;
     #[cfg(not(windows))]
     let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".claude-sentinel"))
+    Some(PathBuf::from(home).join(".sentinel"))
 }
 
 /// Cheap HH:MM:SS timestamp without pulling in `chrono`. Enough for

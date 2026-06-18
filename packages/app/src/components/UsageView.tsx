@@ -8,7 +8,7 @@ import type {
   AccountInfo,
   ClaudeAiUsageSnapshot,
   PauseReason,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { useSettings } from '../hooks/useSettings.js';
 import {
   useAllRateLimits,

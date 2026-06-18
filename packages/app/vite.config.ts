@@ -53,12 +53,12 @@ export default defineConfig({
   // so every deeper import (e.g. src/components/SettingsPanel.tsx) ends
   // up pointing at src/components/../shared/... which does not exist.
   // The symptom is a Vite overlay on `page.goto('/')` complaining
-  // "Failed to resolve import @claude-sentinel/shared". Tauri-mode
+  // "Failed to resolve import @sentinel/shared". Tauri-mode
   // builds never hit this because Tauri pre-bundles through pnpm's
   // workspace link, but plain Vite dev (used by E2E) does.
   resolve: {
     alias: {
-      '@claude-sentinel/shared': resolve(__dirname, '../shared/src/index.ts'),
+      '@sentinel/shared': resolve(__dirname, '../shared/src/index.ts'),
     },
   },
 });

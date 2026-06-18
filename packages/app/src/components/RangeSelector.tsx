@@ -1,6 +1,6 @@
 import React from 'react';
-import type { OptimizeRangePreset } from '@claude-sentinel/shared';
-import { rangeLadder } from '@claude-sentinel/shared';
+import type { OptimizeRangePreset } from '@sentinel/shared';
+import { rangeLadder } from '@sentinel/shared';
 
 /**
  * Shared date-range selector: the segmented preset group plus the custom

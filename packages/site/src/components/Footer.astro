@@ -3,7 +3,7 @@ import Icon from './Icon.astro';
 
 const base = import.meta.env.BASE_URL;
 const asset = (p: string) => `${base.replace(/\/$/, '')}/${p.replace(/^\//, '')}`;
-const repo = 'https://github.com/Intevity/claude-sentinel';
+const repo = 'https://github.com/Intevity/sentinel';
 
 const links = [
   { label: 'GitHub', href: repo },
@@ -19,7 +19,7 @@ const links = [
   >
     <div class="flex items-center gap-2.5">
       <img src={asset('sentinel-mascot.png')} alt="" width="24" height="24" class="rounded-md" />
-      <span class="text-sm font-semibold text-foreground">Claude Sentinel</span>
+      <span class="text-sm font-semibold text-foreground">Sentinel</span>
     </div>
 
     <nav class="flex flex-wrap items-center justify-center gap-x-5 gap-y-2">

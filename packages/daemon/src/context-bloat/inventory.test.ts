@@ -19,17 +19,17 @@ describe('buildContextInventory', () => {
     projectDir = mkdtempSync(join(tmpdir(), 'sentinel-inv-proj-'));
     mkdirSync(join(homeDir, '.claude'), { recursive: true });
     claudeJsonPath = join(homeDir, '.claude.json');
-    process.env['CLAUDE_SENTINEL_TEST_HOME'] = homeDir;
-    process.env['CLAUDE_SENTINEL_TEST_CLAUDE_JSON'] = claudeJsonPath;
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB;
+    process.env['SENTINEL_TEST_HOME'] = homeDir;
+    process.env['SENTINEL_TEST_CLAUDE_JSON'] = claudeJsonPath;
+    process.env['SENTINEL_TEST_DB_FILE'] = TMP_DB;
     db = getDb(TMP_DB);
     db.exec('DELETE FROM tool_calls; DELETE FROM subagent_installs');
   });
   afterEach(() => {
     closeDb();
-    delete process.env['CLAUDE_SENTINEL_TEST_HOME'];
-    delete process.env['CLAUDE_SENTINEL_TEST_CLAUDE_JSON'];
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_HOME'];
+    delete process.env['SENTINEL_TEST_CLAUDE_JSON'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
     rmSync(homeDir, { recursive: true, force: true });
     rmSync(projectDir, { recursive: true, force: true });
     try {

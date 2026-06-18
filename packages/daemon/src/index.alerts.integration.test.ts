@@ -5,7 +5,7 @@
  * only check that the startDaemon bootstrap correctly forwards alert events.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import type { AlertTriggeredMessage, OAuthAccount } from '@claude-sentinel/shared';
+import type { AlertTriggeredMessage, OAuthAccount } from '@sentinel/shared';
 import { makeCreds, startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 
 let ctx: TestDaemon | null = null;

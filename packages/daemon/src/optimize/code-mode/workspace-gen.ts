@@ -4,7 +4,7 @@
  * of carrying every definition in every request (the core trade of the
  * "code execution with MCP" pattern).
  *
- * Layout under `~/.claude-sentinel/code-mode/`:
+ * Layout under `~/.sentinel/code-mode/`:
  *   README.md                       — index of bridged servers
  *   servers/<server>/index.md       — tool list, one line each
  *   servers/<server>/tools/<tool>.md — full description + input schema + call example
@@ -24,9 +24,9 @@ import { randomBytes } from 'node:crypto';
 import { SENTINEL_DIR } from '../../db.js';
 import type { McpToolDescriptor } from './mcp-client-manager.js';
 
-/** Workspace root; `CLAUDE_SENTINEL_TEST_CODE_MODE_DIR` overrides for tests. */
+/** Workspace root; `SENTINEL_TEST_CODE_MODE_DIR` overrides for tests. */
 export function resolveCodeModeDir(): string {
-  return process.env.CLAUDE_SENTINEL_TEST_CODE_MODE_DIR ?? join(SENTINEL_DIR, 'code-mode');
+  return process.env.SENTINEL_TEST_CODE_MODE_DIR ?? join(SENTINEL_DIR, 'code-mode');
 }
 
 /** The bearer-token file the SKILL.md curl one-liner reads. */
@@ -82,7 +82,7 @@ export async function generateServerWorkspace(opts: GenerateWorkspaceOpts): Prom
   await fs.rm(join(serverDir, 'tools'), { recursive: true, force: true });
 
   const indexLines = [
-    `# MCP server: ${opts.server} (bridged by Claude Sentinel)`,
+    `# MCP server: ${opts.server} (bridged by Sentinel)`,
     '',
     `This server's tools are available through Sentinel's code-mode endpoint,`,
     `not as native MCP tools. Read \`tools/<tool>.md\` for a tool's input`,
@@ -104,7 +104,7 @@ export async function generateServerWorkspace(opts: GenerateWorkspaceOpts): Prom
     const body = [
       `# ${tool.name}`,
       '',
-      `Server: \`${opts.server}\` (bridged by Claude Sentinel)`,
+      `Server: \`${opts.server}\` (bridged by Sentinel)`,
       '',
       tool.description || '(no description provided by the server)',
       '',
@@ -166,9 +166,9 @@ async function refreshWorkspaceReadme(root: string): Promise<void> {
     return;
   }
   const lines = [
-    '# Claude Sentinel code-mode workspace',
+    '# Sentinel code-mode workspace',
     '',
-    'MCP servers bridged through Claude Sentinel. Their tool definitions are',
+    'MCP servers bridged through Sentinel. Their tool definitions are',
     'NOT loaded into context; read the per-server index, then the per-tool',
     'file, then call via the documented curl one-liner.',
     '',

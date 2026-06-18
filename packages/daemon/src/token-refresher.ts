@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import type { ClaudeCodeCredentials } from '@claude-sentinel/shared';
+import type { ClaudeCodeCredentials } from '@sentinel/shared';
 import { listAccounts } from './db.js';
 import {
   readSentinelCredentials,

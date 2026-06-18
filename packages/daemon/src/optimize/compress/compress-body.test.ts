@@ -306,7 +306,7 @@ describe('compressMessagesBody intra-body fold', () => {
     const [anchor, folded] = resultContents(out.body);
     expect(anchor).toBe(big);
     expect(folded).toContain('identical to an earlier tool result');
-    expect(folded).toContain('elided by Claude Sentinel');
+    expect(folded).toContain('elided by Sentinel');
     // Reversible: the capture restores the exact original, and its id is in the marker.
     const cap = out.captures.find((c) => c.ruleId === 'intra_body_fold');
     expect(cap?.original).toBe(big);

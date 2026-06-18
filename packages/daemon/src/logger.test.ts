@@ -36,6 +36,19 @@ describe('logger', () => {
     return logger;
   }
 
+  describe('default log directory (test-pollution guard)', () => {
+    it('writes daemon.log to a per-process temp dir under the runner, never the real ~/.sentinel', () => {
+      // No opts.dir → defaultLogDir(). Because VITEST is set, it must resolve to
+      // a temp dir. A regression back to ~/.sentinel here is precisely what
+      // created the stray dir that defeated the one-time data-dir migration.
+      logger = createLogger();
+      logger.info('probe-line');
+      const expected = join(tmpdir(), 'sentinel-test-logs', String(process.pid), 'daemon.log');
+      expect(existsSync(expected)).toBe(true);
+      expect(readFileSync(expected, 'utf-8')).toContain('probe-line');
+    });
+  });
+
   describe('level filtering', () => {
     it('suppresses DEBUG when level is info', () => {
       const log = make({ initialLevel: 'info' });

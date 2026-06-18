@@ -134,11 +134,11 @@ describe('workspace-gen', () => {
   });
 
   it('resolveCodeModeDir honors the test env seam', () => {
-    const prev = process.env.CLAUDE_SENTINEL_TEST_CODE_MODE_DIR;
-    process.env.CLAUDE_SENTINEL_TEST_CODE_MODE_DIR = '/tmp/somewhere';
+    const prev = process.env.SENTINEL_TEST_CODE_MODE_DIR;
+    process.env.SENTINEL_TEST_CODE_MODE_DIR = '/tmp/somewhere';
     expect(resolveCodeModeDir()).toBe('/tmp/somewhere');
-    if (prev === undefined) delete process.env.CLAUDE_SENTINEL_TEST_CODE_MODE_DIR;
-    else process.env.CLAUDE_SENTINEL_TEST_CODE_MODE_DIR = prev;
-    expect(resolveCodeModeDir()).toContain('.claude-sentinel');
+    if (prev === undefined) delete process.env.SENTINEL_TEST_CODE_MODE_DIR;
+    else process.env.SENTINEL_TEST_CODE_MODE_DIR = prev;
+    expect(resolveCodeModeDir()).toContain('.sentinel');
   });
 });

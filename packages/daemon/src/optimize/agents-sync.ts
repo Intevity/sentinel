@@ -25,7 +25,7 @@ import { promises as fs, type FSWatcher, watch } from 'fs';
 import { homedir } from 'os';
 import { join, dirname, basename } from 'path';
 import { createHash, randomBytes } from 'crypto';
-import type { AgentsSyncStatus } from '@claude-sentinel/shared';
+import type { AgentsSyncStatus } from '@sentinel/shared';
 import type Database from 'better-sqlite3';
 import type { IpcServer } from '../ipc.js';
 import {
@@ -37,11 +37,11 @@ import {
 } from '../db.js';
 
 /** Production default. Overridable per-call via `agentsDir` (used by
- *  unit tests) or via the `CLAUDE_SENTINEL_TEST_AGENTS_DIR` env var
+ *  unit tests) or via the `SENTINEL_TEST_AGENTS_DIR` env var
  *  (used by the full-daemon integration tests in `index.test-helpers.ts`,
  *  which can't pass options through). */
 function defaultAgentsDir(): string {
-  return process.env['CLAUDE_SENTINEL_TEST_AGENTS_DIR'] ?? join(homedir(), '.claude', 'agents');
+  return process.env['SENTINEL_TEST_AGENTS_DIR'] ?? join(homedir(), '.claude', 'agents');
 }
 const DEBOUNCE_MS = 500;
 

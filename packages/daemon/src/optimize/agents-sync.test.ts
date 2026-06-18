@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync, unlinkSync, readFileSync, existsSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type Database from 'better-sqlite3';
-import type { DaemonToAppMessage } from '@claude-sentinel/shared';
+import type { DaemonToAppMessage } from '@sentinel/shared';
 import { createAgentsSyncEngine, parseFrontmatter } from './agents-sync.js';
 import { getCuratedSubagent } from './curated-library.js';
 import {
@@ -91,14 +91,14 @@ describe('agents-sync engine', () => {
     tmpDir = mkdtempSync(join(TMP_PARENT, 'sentinel-agents-sync-'));
     dbPath = join(tmpDir, 'sentinel.db');
     agentsDir = join(tmpDir, 'agents');
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = dbPath;
+    process.env['SENTINEL_TEST_DB_FILE'] = dbPath;
     db = getDb(dbPath);
     ipc = makeCapturingIpc();
   });
 
   afterEach(() => {
     closeDb();
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
     try {
       rmSync(tmpDir, { recursive: true, force: true });
     } catch {

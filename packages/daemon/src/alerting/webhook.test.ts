@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'http';
 import type { AddressInfo } from 'net';
 import { createHmac } from 'crypto';
-import type { Settings } from '@claude-sentinel/shared';
+import type { Settings } from '@sentinel/shared';
 import { createWebhookEmitter, type WebhookEvent } from './webhook.js';
 
 interface FakeReceiverState {

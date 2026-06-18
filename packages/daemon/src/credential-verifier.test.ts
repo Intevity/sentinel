@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { unlinkSync, existsSync } from 'fs';
-import type { ClaudeCodeCredentials, OAuthAccount } from '@claude-sentinel/shared';
+import type { ClaudeCodeCredentials, OAuthAccount } from '@sentinel/shared';
 import { verifyStartupActiveAccount, healDriftedRows, sentinelKey } from './credential-verifier.js';
 import { getDb, closeDb, upsertAccount, listAccounts } from './db.js';
 import type { ProfileResult } from './oauth.js';

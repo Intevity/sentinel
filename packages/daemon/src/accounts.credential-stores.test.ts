@@ -2,7 +2,7 @@
  * Tests for the credential-store helpers added for Windows support:
  *
  *  - the pure credential-map layer backing the DPAPI-protected store
- *    (~/.claude-sentinel/credentials.dat on win32), and
+ *    (~/.sentinel/credentials.dat on win32), and
  *  - the Claude Code `.credentials.json` file mapping used on win32 + linux,
  *    where Claude Code does NOT use the OS keychain.
  *
@@ -47,8 +47,8 @@ afterEach(() => {
 
 describe('credential map (pure layer)', () => {
   const sample: CredentialMap = {
-    'Claude Sentinel-credentials': { 'uuid-1': '{"accessToken":"at-1"}', 'uuid-2': 'blob-2' },
-    'Claude Sentinel-settings-hmac': { default: 'deadbeef' },
+    'Sentinel-credentials': { 'uuid-1': '{"accessToken":"at-1"}', 'uuid-2': 'blob-2' },
+    'Sentinel-settings-hmac': { default: 'deadbeef' },
   };
 
   it('round-trips through serialize/parse', () => {
@@ -67,39 +67,39 @@ describe('credential map (pure layer)', () => {
   });
 
   it('mapGet returns the blob on hit and null on service/account miss', () => {
-    expect(mapGet(sample, 'Claude Sentinel-credentials', 'uuid-2')).toBe('blob-2');
+    expect(mapGet(sample, 'Sentinel-credentials', 'uuid-2')).toBe('blob-2');
     expect(mapGet(sample, 'no-such-service', 'uuid-1')).toBeNull();
-    expect(mapGet(sample, 'Claude Sentinel-credentials', 'no-such-account')).toBeNull();
+    expect(mapGet(sample, 'Sentinel-credentials', 'no-such-account')).toBeNull();
   });
 
   it('mapSet adds an entry without mutating the input map', () => {
     const next = mapSet(sample, 'svc-new', 'acct', 'blob-new');
     expect(next['svc-new']).toEqual({ acct: 'blob-new' });
     // Existing services carried over untouched.
-    expect(next['Claude Sentinel-settings-hmac']).toEqual({ default: 'deadbeef' });
+    expect(next['Sentinel-settings-hmac']).toEqual({ default: 'deadbeef' });
     // Input not mutated.
     expect(sample['svc-new']).toBeUndefined();
   });
 
   it('mapSet updates an existing (service, account) in place', () => {
-    const next = mapSet(sample, 'Claude Sentinel-credentials', 'uuid-1', 'rotated');
-    expect(next['Claude Sentinel-credentials']).toEqual({
+    const next = mapSet(sample, 'Sentinel-credentials', 'uuid-1', 'rotated');
+    expect(next['Sentinel-credentials']).toEqual({
       'uuid-1': 'rotated',
       'uuid-2': 'blob-2',
     });
-    expect(sample['Claude Sentinel-credentials']?.['uuid-1']).toBe('{"accessToken":"at-1"}');
+    expect(sample['Sentinel-credentials']?.['uuid-1']).toBe('{"accessToken":"at-1"}');
   });
 
   it('mapDelete removes only the targeted account without mutating the input', () => {
-    const next = mapDelete(sample, 'Claude Sentinel-credentials', 'uuid-1');
-    expect(next['Claude Sentinel-credentials']).toEqual({ 'uuid-2': 'blob-2' });
-    expect(sample['Claude Sentinel-credentials']?.['uuid-1']).toBe('{"accessToken":"at-1"}');
+    const next = mapDelete(sample, 'Sentinel-credentials', 'uuid-1');
+    expect(next['Sentinel-credentials']).toEqual({ 'uuid-2': 'blob-2' });
+    expect(sample['Sentinel-credentials']?.['uuid-1']).toBe('{"accessToken":"at-1"}');
   });
 
   it('mapDelete is a no-op for a missing service or account', () => {
     expect(mapDelete(sample, 'no-such-service', 'uuid-1')).toBe(sample);
-    const next = mapDelete(sample, 'Claude Sentinel-settings-hmac', 'no-such-account');
-    expect(next['Claude Sentinel-settings-hmac']).toEqual({ default: 'deadbeef' });
+    const next = mapDelete(sample, 'Sentinel-settings-hmac', 'no-such-account');
+    expect(next['Sentinel-settings-hmac']).toEqual({ default: 'deadbeef' });
   });
 });
 

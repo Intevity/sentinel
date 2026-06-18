@@ -6,13 +6,13 @@
  * into the MCP server config's `Authorization` header at install time and
  * validated on every `/mcp` request. Stored in the OS keychain (mirroring
  * `settings-integrity`'s HMAC key) so a different local process can't read it
- * silently, and honoring `CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE` for tests.
+ * silently, and honoring `SENTINEL_TEST_KEYCHAIN_FILE` for tests.
  */
 
 import { randomBytes } from 'node:crypto';
-import { readCredentialBlob, writeCredentialBlob } from '../../accounts.js';
+import { readCredentialBlobMigrating, writeCredentialBlob } from '../../accounts.js';
 
-const MCP_SERVICE = 'Claude Sentinel-mcp-auth';
+const MCP_SERVICE = 'Sentinel-mcp-auth';
 const MCP_ACCOUNT = 'default';
 const TOKEN_BYTES = 32; // 256-bit, hex-encoded → 64 chars
 
@@ -22,7 +22,7 @@ let cached: string | null = null;
  *  on first call. Cached in-process; reset via {@link resetMcpTokenCache}. */
 export function getOrCreateMcpToken(): string {
   if (cached) return cached;
-  const existing = readCredentialBlob(MCP_SERVICE, MCP_ACCOUNT);
+  const existing = readCredentialBlobMigrating(MCP_SERVICE, MCP_ACCOUNT);
   if (existing && /^[0-9a-f]{64}$/i.test(existing)) {
     cached = existing;
     return cached;

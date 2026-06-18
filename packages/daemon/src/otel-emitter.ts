@@ -10,7 +10,7 @@
  *   - Security scanner findings + counters.
  *   - Proxy request/error counters (best-effort tap from the proxy).
  *
- * Every emitted payload is tagged with `service.name=claude-sentinel`
+ * Every emitted payload is tagged with `service.name=sentinel`
  * resource attribute so dashboards can split it from the tee'd Claude
  * Code stream (`service.name=claude-code`).
  *
@@ -32,12 +32,12 @@ import type {
   DaemonToAppMessage,
   OAuthAccount,
   PermissionDecision,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import type { OtelForwarder } from './otel-forwarder.js';
 import type { IpcServer } from './ipc.js';
 
 const DEFAULT_TICK_MS = 30_000;
-const SENTINEL_SERVICE_NAME = 'claude-sentinel';
+const SENTINEL_SERVICE_NAME = 'sentinel';
 /** 5h in ms — matches Anthropic's subscription window. */
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 /** Per-channel ring buffer cap for log events. Drops oldest on overflow. */
@@ -390,7 +390,7 @@ export class OtelEmitter {
           resource: { attributes: this.resourceAttrs() },
           scopeMetrics: [
             {
-              scope: { name: 'claude-sentinel', version: this.deps.serviceVersion },
+              scope: { name: 'sentinel', version: this.deps.serviceVersion },
               metrics,
             },
           ],
@@ -451,7 +451,7 @@ export class OtelEmitter {
           resource: { attributes: this.resourceAttrs() },
           scopeLogs: [
             {
-              scope: { name: 'claude-sentinel', version: this.deps.serviceVersion },
+              scope: { name: 'sentinel', version: this.deps.serviceVersion },
               logRecords: records,
             },
           ],

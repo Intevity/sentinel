@@ -31,8 +31,8 @@ import type {
   McpContextSavings,
   McpRecommendationBadge,
   MetricsWindow,
-} from '@claude-sentinel/shared';
-import { estimateTokensFromBytes } from '@claude-sentinel/shared';
+} from '@sentinel/shared';
+import { estimateTokensFromBytes } from '@sentinel/shared';
 import { getClaudeJsonPath } from '../claude-state.js';
 import {
   getBaseInputPricePerMillion,

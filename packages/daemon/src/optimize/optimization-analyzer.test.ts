@@ -17,7 +17,7 @@ import {
 } from '../db.js';
 import { createOptimizationAnalyzer, scoreOpportunity } from './optimization-analyzer.js';
 import type { IpcServer } from '../ipc.js';
-import type { DaemonToAppMessage } from '@claude-sentinel/shared';
+import type { DaemonToAppMessage } from '@sentinel/shared';
 
 const TMP_DB = `/tmp/sentinel-analyzer-test-${process.pid}-${Date.now()}.db`;
 
@@ -83,7 +83,7 @@ describe('createOptimizationAnalyzer.runOnce', () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB;
+    process.env['SENTINEL_TEST_DB_FILE'] = TMP_DB;
     db = getDb(TMP_DB);
     db.exec(
       'DELETE FROM tool_calls; DELETE FROM optimization_events; DELETE FROM subagent_installs',
@@ -94,7 +94,7 @@ describe('createOptimizationAnalyzer.runOnce', () => {
   afterEach(() => {
     logSpy.mockRestore();
     closeDb();
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
     try {
       unlinkSync(TMP_DB);
     } catch {
@@ -350,7 +350,7 @@ describe('getOptimizationMetrics — realized vs potential split', () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB;
+    process.env['SENTINEL_TEST_DB_FILE'] = TMP_DB;
     db = getDb(TMP_DB);
     db.exec(
       'DELETE FROM tool_calls; DELETE FROM optimization_events; DELETE FROM subagent_installs',
@@ -360,7 +360,7 @@ describe('getOptimizationMetrics — realized vs potential split', () => {
   afterEach(() => {
     logSpy.mockRestore();
     closeDb();
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
     try {
       unlinkSync(TMP_DB);
     } catch {
@@ -883,7 +883,7 @@ describe('analyzer schedule', () => {
 
   it('start/stop is safe and idempotent', () => {
     const ipc = makeIpc();
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB;
+    process.env['SENTINEL_TEST_DB_FILE'] = TMP_DB;
     const db = getDb(TMP_DB);
     const analyzer = createOptimizationAnalyzer({
       db,
@@ -895,7 +895,7 @@ describe('analyzer schedule', () => {
     analyzer.stop();
     analyzer.stop(); // double-stop is a no-op
     closeDb();
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
     try {
       unlinkSync(TMP_DB);
     } catch {
@@ -904,7 +904,7 @@ describe('analyzer schedule', () => {
   });
 
   it('start fires the interval callback, which runs runOnce', async () => {
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB;
+    process.env['SENTINEL_TEST_DB_FILE'] = TMP_DB;
     const db = getDb(TMP_DB);
     db.exec('DELETE FROM tool_calls; DELETE FROM optimization_events');
     const ipc = makeIpc();
@@ -927,7 +927,7 @@ describe('analyzer schedule', () => {
     analyzer.stop();
     expect(ipc.broadcasts.some((b) => b.type === 'optimization_metrics_updated')).toBe(true);
     closeDb();
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
     try {
       unlinkSync(TMP_DB);
     } catch {
@@ -942,7 +942,7 @@ describe('analyzer scheduleRun (debounced trigger)', () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB;
+    process.env['SENTINEL_TEST_DB_FILE'] = TMP_DB;
     db = getDb(TMP_DB);
     db.exec(
       'DELETE FROM tool_calls; DELETE FROM optimization_events; DELETE FROM subagent_installs',
@@ -953,7 +953,7 @@ describe('analyzer scheduleRun (debounced trigger)', () => {
   afterEach(() => {
     logSpy.mockRestore();
     closeDb();
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
     try {
       unlinkSync(TMP_DB);
     } catch {
@@ -1048,7 +1048,7 @@ describe('analyzer diagnostic logging', () => {
   let ipc: ReturnType<typeof makeIpc>;
 
   beforeEach(() => {
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB;
+    process.env['SENTINEL_TEST_DB_FILE'] = TMP_DB;
     db = getDb(TMP_DB);
     db.exec(
       'DELETE FROM tool_calls; DELETE FROM optimization_events; DELETE FROM subagent_installs',
@@ -1057,7 +1057,7 @@ describe('analyzer diagnostic logging', () => {
   });
   afterEach(() => {
     closeDb();
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
     try {
       unlinkSync(TMP_DB);
     } catch {
@@ -1201,7 +1201,7 @@ describe('getOptimizationMetrics — beneficial gate keeps headline tiles non-ne
   let db: Database.Database;
 
   beforeEach(() => {
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = TMP_DB;
+    process.env['SENTINEL_TEST_DB_FILE'] = TMP_DB;
     db = getDb(TMP_DB);
     db.exec(
       'DELETE FROM tool_calls; DELETE FROM optimization_events; DELETE FROM subagent_installs',
@@ -1209,7 +1209,7 @@ describe('getOptimizationMetrics — beneficial gate keeps headline tiles non-ne
   });
   afterEach(() => {
     closeDb();
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
     try {
       unlinkSync(TMP_DB);
     } catch {

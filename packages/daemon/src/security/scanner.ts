@@ -8,7 +8,7 @@ import type {
   NotificationType,
   PendingSecurityBlock,
   SecurityTestScenario,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import type { IpcServer } from '../ipc.js';
 import {
   insertSecurityEvent,

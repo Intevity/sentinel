@@ -23,8 +23,8 @@ import type {
   SecurityKind,
   SecuritySeverity,
   NotificationType,
-} from '@claude-sentinel/shared';
-import { TOOL_INPUT_FIELD_MAX_CHARS } from '@claude-sentinel/shared';
+} from '@sentinel/shared';
+import { TOOL_INPUT_FIELD_MAX_CHARS } from '@sentinel/shared';
 import type { IpcServer } from '../../ipc.js';
 import { listPermissionRules } from '../../db.js';
 import {
@@ -55,7 +55,7 @@ import {
   type PermissionsSseInterceptor,
 } from './sse-interceptor.js';
 import { createPermissionsPendingRegistry, type PermissionsPendingRegistry } from './pending.js';
-import type { PendingSecurityBlock } from '@claude-sentinel/shared';
+import type { PendingSecurityBlock } from '@sentinel/shared';
 import type { PendingOutcome } from '../scanner.js';
 import type { ServerResponse } from 'http';
 

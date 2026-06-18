@@ -3,7 +3,7 @@ import type {
   DaemonToAppMessage,
   PendingSecurityBlock,
   SecuritySeverity,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { buildSecurityBannerPayload } from './useSecurityBanner.logic.js';
 
 function eventMsg(severity: SecuritySeverity, overrides: Partial<DaemonToAppMessage> = {}) {

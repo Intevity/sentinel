@@ -2,21 +2,25 @@
  * Storage helpers for the external OTEL exporter ingestion key.
  *
  * The secret value is held in the OS keychain (parallel to OAuth tokens
- * and the settings HMAC key), never in `~/.claude-sentinel/settings.json`.
+ * and the settings HMAC key), never in `~/.sentinel/settings.json`.
  * Only the header NAME (e.g. `signoz-ingestion-key`) and the endpoint URL
- * live in settings. Tests route through `CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE`
+ * live in settings. Tests route through `SENTINEL_TEST_KEYCHAIN_FILE`
  * automatically — these helpers don't need to know about the test seam.
  *
  * Single global slot — there's only one external destination per Sentinel
  * install for v1, so the account key is the constant `'default'`.
  */
-import { deleteCredentialBlob, readCredentialBlob, writeCredentialBlob } from './accounts.js';
+import {
+  deleteCredentialBlob,
+  readCredentialBlobMigrating,
+  writeCredentialBlob,
+} from './accounts.js';
 
-const OTEL_SERVICE = 'Claude Sentinel-otel-exporter';
+const OTEL_SERVICE = 'Sentinel-otel-exporter';
 const OTEL_ACCOUNT = 'default';
 
 export function readOtelExporterSecret(): string | null {
-  return readCredentialBlob(OTEL_SERVICE, OTEL_ACCOUNT);
+  return readCredentialBlobMigrating(OTEL_SERVICE, OTEL_ACCOUNT);
 }
 
 export function writeOtelExporterSecret(value: string): void {

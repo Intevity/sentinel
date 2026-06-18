@@ -1,4 +1,4 @@
-import type { SonnetSaturationTransition } from '@claude-sentinel/shared';
+import type { SonnetSaturationTransition } from '@sentinel/shared';
 
 /**
  * Event emitted when an account's Sonnet 7-day utilization crosses (or

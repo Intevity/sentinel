@@ -4,7 +4,7 @@ import type {
   SecurityEnforcementMode,
   SecurityOsNotifyThreshold,
   PermissionDecision,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { sendToSentinel } from './ipc.js';
 
 export type RiskProfile = 'low' | 'medium' | 'high' | 'paranoid';
@@ -74,7 +74,7 @@ const SHARED_ASK_RULES: PresetRule[] = [
 
 // ─── Self-protection rules applied to ALL presets ────────────────────────
 // Sprint 2: an agent that can write to ~/.claude/settings.json or anywhere
-// under ~/.claude-sentinel/ can disable Sentinel. Treat config-path writes
+// under ~/.sentinel/ can disable Sentinel. Treat config-path writes
 // as a self-protection invariant, not a policy choice; deny in low/medium/
 // high alike. The Bash detector `config-path-write` is the second layer
 // for shell redirects that don't route through the Write/Edit/MultiEdit
@@ -127,19 +127,19 @@ const SHARED_CONFIG_PROTECTION_RULES: PresetRule[] = [
   {
     decision: 'deny',
     tool: 'Write',
-    pattern: '~/.claude-sentinel/**',
+    pattern: '~/.sentinel/**',
     note: 'Protect Sentinel state and settings.',
   },
   {
     decision: 'deny',
     tool: 'Edit',
-    pattern: '~/.claude-sentinel/**',
+    pattern: '~/.sentinel/**',
     note: 'Protect Sentinel state and settings.',
   },
   {
     decision: 'deny',
     tool: 'MultiEdit',
-    pattern: '~/.claude-sentinel/**',
+    pattern: '~/.sentinel/**',
     note: 'Protect Sentinel state and settings.',
   },
 ];

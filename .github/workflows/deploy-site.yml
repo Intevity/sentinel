@@ -57,7 +57,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build site
-        run: pnpm --filter @claude-sentinel/site run build
+        run: pnpm --filter @sentinel/site run build
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

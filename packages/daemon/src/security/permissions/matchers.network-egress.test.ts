@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { PermissionRule } from '@claude-sentinel/shared';
+import type { PermissionRule } from '@sentinel/shared';
 import { isLinkLocalOrMetadata, pickHost } from './matchers.js';
 import {
   compileRules,

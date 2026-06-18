@@ -4,7 +4,7 @@ import type {
   MetricsWindow,
   OptimizationEventRecord,
   OptimizationEventSourceCall,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../../lib/ipc.js';
 import {
   buildListRequest,

@@ -1,9 +1,9 @@
 {
-  "name": "@claude-sentinel/site",
+  "name": "@sentinel/site",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Marketing website for Claude Sentinel (Astro + React, deployed to GitHub Pages)",
+  "description": "Marketing website for Sentinel (Astro + React, deployed to GitHub Pages)",
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",

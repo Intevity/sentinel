@@ -1,18 +1,18 @@
 import { readFileSync, writeFileSync, renameSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import type { ClaudeState, OAuthAccount } from '@claude-sentinel/shared';
+import type { ClaudeState, OAuthAccount } from '@sentinel/shared';
 
 export const CLAUDE_JSON_PATH = join(homedir(), '.claude.json');
 
 /**
- * Resolve the claude.json path, honoring CLAUDE_SENTINEL_TEST_CLAUDE_JSON when
+ * Resolve the claude.json path, honoring SENTINEL_TEST_CLAUDE_JSON when
  * set so integration tests can point at a tmp file without patching imports or
  * touching the real user state. Production callers read CLAUDE_JSON_PATH
  * unchanged.
  */
 export function getClaudeJsonPath(): string {
-  return process.env.CLAUDE_SENTINEL_TEST_CLAUDE_JSON ?? CLAUDE_JSON_PATH;
+  return process.env.SENTINEL_TEST_CLAUDE_JSON ?? CLAUDE_JSON_PATH;
 }
 
 /**

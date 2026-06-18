@@ -8,12 +8,12 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { CodeModeStatus, McpContextCosts, Settings } from '@claude-sentinel/shared';
+import type { CodeModeStatus, McpContextCosts, Settings } from '@sentinel/shared';
 import {
   startFakeMcpHttpServer,
   FAKE_MCP_TOOLS,
   type FakeMcpHttpServer,
-} from '@claude-sentinel/test-harness';
+} from '@sentinel/test-harness';
 import { startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 import { getOrCreateCodeModeToken } from './optimize/code-mode/code-mode-token.js';
 

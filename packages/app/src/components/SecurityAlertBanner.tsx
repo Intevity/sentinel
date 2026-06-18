@@ -1,7 +1,7 @@
 import React from 'react';
 import { Shield, ShieldAlert, ShieldX, X } from 'lucide-react';
 import { motion } from 'motion/react';
-import type { SecurityKind, SecuritySeverity } from '@claude-sentinel/shared';
+import type { SecurityKind, SecuritySeverity } from '@sentinel/shared';
 import { DUR, EASE_STD } from '../lib/motion.js';
 import type { SecurityBannerPayload } from '../hooks/useSecurityBanner.js';
 

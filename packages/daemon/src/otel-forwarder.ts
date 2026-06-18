@@ -6,7 +6,7 @@
  * (e.g. SigNoz Cloud), AND ships Sentinel's own derived metrics
  * (synthesized by `OtelEmitter`) through the same endpoint so dashboards
  * see one stream tagged by `service.name=claude-code` (raw Claude Code
- * data) or `service.name=claude-sentinel` (Sentinel-computed signals).
+ * data) or `service.name=sentinel` (Sentinel-computed signals).
  *
  * Cross-cutting guarantees:
  *  - Fire-and-forget: `forward()` never blocks the receiver's response
@@ -27,7 +27,7 @@ import type {
   Settings,
   OtelForwarderStatus,
   OtelExporterTestResult,
-} from '@claude-sentinel/shared';
+} from '@sentinel/shared';
 import { hasOtelExporterSecret, readOtelExporterSecret } from './otel-forwarder-secret.js';
 
 export type OtelForwardPath = '/v1/metrics' | '/v1/logs';

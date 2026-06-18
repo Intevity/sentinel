@@ -87,7 +87,7 @@ describe('proxy securityScanner.scanOutbound (real detector, real HTTP)', () => 
     const res = await resPromise;
     expect(res.status).toBe(403);
     const text = await res.text();
-    expect(text).toContain('Blocked by Claude Sentinel');
+    expect(text).toContain('Blocked by Sentinel');
     expect(text).toContain('AWS access key');
     // Upstream MUST NOT have seen the request after deny.
     expect(ctx.fake.requests().some((r) => r.url.startsWith('/v1/messages'))).toBe(false);
@@ -171,7 +171,7 @@ describe('proxy securityScanner held-block approve/deny (real detector, real HTT
 
     const res = await resPromise;
     expect(res.status).toBe(403);
-    expect(await res.text()).toContain('Blocked by Claude Sentinel');
+    expect(await res.text()).toContain('Blocked by Sentinel');
     expect(ctx.fake.requests().some((r) => r.url.startsWith('/v1/messages'))).toBe(false);
   });
 });

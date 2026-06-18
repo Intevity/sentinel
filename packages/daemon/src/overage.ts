@@ -1,4 +1,4 @@
-import type { OverageState, OverageHeaders, OverageTransition } from '@claude-sentinel/shared';
+import type { OverageState, OverageHeaders, OverageTransition } from '@sentinel/shared';
 
 export const OVERAGE_STATUS_HEADER = 'anthropic-ratelimit-unified-overage-status';
 export const OVERAGE_RESET_HEADER = 'anthropic-ratelimit-unified-overage-reset';

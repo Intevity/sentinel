@@ -16,8 +16,8 @@ import {
   AUTO_MODE_FRESHNESS_MS,
   SESSION_HARD_TIMEOUT_MS,
 } from './enforcer.js';
-import type { Settings } from '@claude-sentinel/shared';
-import { TOOL_INPUT_FIELD_MAX_CHARS } from '@claude-sentinel/shared';
+import type { Settings } from '@sentinel/shared';
+import { TOOL_INPUT_FIELD_MAX_CHARS } from '@sentinel/shared';
 
 const TEST_DB = (): string =>
   join(tmpdir(), `sentinel-enforcer-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);

@@ -12,7 +12,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
-import type { AccountInfo, ClaudeState } from '@claude-sentinel/shared';
+import type { AccountInfo, ClaudeState } from '@sentinel/shared';
 import {
   startAppHarness,
   startTestDaemon,

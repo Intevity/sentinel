@@ -10,7 +10,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { CompressionLevel } from '@claude-sentinel/shared';
+import type { CompressionLevel } from '@sentinel/shared';
 
 export type { CompressionLevel };
 
@@ -133,4 +133,4 @@ export function byteLen(s: string): number {
  *  ruler (3.5 bytes/token) so compression, the subagent analyzer, and the
  *  context-bloat estimators all agree. Kept exported here so the many local
  *  `./types.js` imports don't have to change. */
-export { estimateTokensFromBytes } from '@claude-sentinel/shared';
+export { estimateTokensFromBytes } from '@sentinel/shared';

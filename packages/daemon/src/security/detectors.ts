@@ -1,4 +1,4 @@
-import type { SecurityKind, SecuritySeverity, FindingProvenance } from '@claude-sentinel/shared';
+import type { SecurityKind, SecuritySeverity, FindingProvenance } from '@sentinel/shared';
 import {
   buildPatternSnippet,
   buildSnippet,
@@ -216,7 +216,7 @@ export type ContextKindHint = 'tool-call-shape' | 'base64-proximity';
  *  own data back, or the agent is describing/auditing the configuration —
  *  in neither case is the match a real injection attempt. */
 const SELF_REFERENTIAL_RE =
-  /(?:^|\W)(rule:|allowlist|Sentinel|permission_rules|settings\.json|detector_id|matchHash|claude-sentinel)(?:\W|$)/i;
+  /(?:^|\W)(rule:|allowlist|Sentinel|permission_rules|settings\.json|detector_id|matchHash|sentinel)(?:\W|$)/i;
 
 /** Inspect the ±200 char window + matched text and return a total
  *  confidence drop plus an explanation string. Never drops below 0. */
@@ -1395,16 +1395,16 @@ const BASH_RULES: BashRule[] = [
     id: 'config-path-write',
     title: 'Write to Claude Code or Sentinel config path',
     reason:
-      'Bash command writes to ~/.claude/settings.json, ~/.claude/CLAUDE.md, or ~/.claude-sentinel/* — subverts permission rules or self-protection.',
+      'Bash command writes to ~/.claude/settings.json, ~/.claude/CLAUDE.md, or ~/.sentinel/* — subverts permission rules or self-protection.',
     confidence: 0.9,
     severity: 'high',
     // Matches redirect (>, >>), tee, sed -i, cp, mv, install where the
     // target path is settings.json or CLAUDE.md under ~/.claude (anchored
-    // so .claudish doesn't false-fire) OR anything under ~/.claude-sentinel.
+    // so .claudish doesn't false-fire) OR anything under ~/.sentinel.
     // The lookahead consumes the operator-then-args prefix in one alternation
     // so we don't have to repeat the path branch four times.
     regex:
-      /(?:>>?|\btee\b(?:\s+-[aA])?|\bsed\b\s+-[a-zA-Z]*i[a-zA-Z]*|\bcp\b|\bmv\b|\binstall\b)\s+[^\n|;&]*?(?:~|\$HOME|\/Users\/[^/\s]+|\/home\/[^/\s]+)\/?(?:\.claude\/(?:settings\.json|CLAUDE\.md)|\.claude-sentinel(?:\/[^\s]*)?)\b/g,
+      /(?:>>?|\btee\b(?:\s+-[aA])?|\bsed\b\s+-[a-zA-Z]*i[a-zA-Z]*|\bcp\b|\bmv\b|\binstall\b)\s+[^\n|;&]*?(?:~|\$HOME|\/Users\/[^/\s]+|\/home\/[^/\s]+)\/?(?:\.claude\/(?:settings\.json|CLAUDE\.md)|\.sentinel(?:\/[^\s]*)?)\b/g,
   },
   {
     id: 'cron-install',
@@ -1690,7 +1690,7 @@ const RISKY_WRITE_HIGH: RegExp[] = [
   // rule is path-specific because ~/.claude/plans/ and ~/.claude/projects/
   // are legitimate workspace areas Claude Code writes to constantly.
   /(^|\/)\.claude\/credentials(\.[a-z]+)?$/,
-  /(^|\/)\.claude-sentinel\/credentials(\.[a-z]+)?$/,
+  /(^|\/)\.sentinel\/credentials(\.[a-z]+)?$/,
   /(^|\/)\.claude\/oauth_token(\.[a-z]+)?$/,
   // Sprint 2 self-protection: tampering with Claude Code permission
   // rules or user-level memory directly subverts the agent. Sentinel's
@@ -1699,7 +1699,7 @@ const RISKY_WRITE_HIGH: RegExp[] = [
   // securityPresets.ts SHARED_CONFIG_PROTECTION_RULES for rationale.
   /(^|\/)\.claude\/settings\.json$/,
   /(^|\/)\.claude\/CLAUDE\.md$/,
-  /(^|\/)\.claude-sentinel(\/|$)/,
+  /(^|\/)\.sentinel(\/|$)/,
   /^\/etc\/sudoers/,
   /(^|\/)\.bashrc$/,
   /(^|\/)\.zshrc$/,

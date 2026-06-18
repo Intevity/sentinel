@@ -7,7 +7,7 @@ import type {
   RequestOptions,
 } from 'http';
 import { DEFAULT_SETTINGS } from './settings.js';
-import type { Settings } from '@claude-sentinel/shared';
+import type { Settings } from '@sentinel/shared';
 
 vi.mock('https', () => ({ request: vi.fn() }));
 

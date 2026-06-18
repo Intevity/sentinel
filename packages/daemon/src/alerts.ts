@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import type { RateLimitStore } from './rate-limit-store.js';
 import type { IpcServer } from './ipc.js';
-import type { AlertScope, RateLimitWindow, Settings } from '@claude-sentinel/shared';
+import type { AlertScope, RateLimitWindow, Settings } from '@sentinel/shared';
 import { listAlerts, listAccounts, markAlertTriggered, insertNotification } from './db.js';
 
 /** Only evaluate alerts against the 5-hour window — see plan rationale. */

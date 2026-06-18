@@ -5,7 +5,7 @@ import {
   type CreatePermissionsPendingDeps,
 } from './pending.js';
 import type { IpcServer } from '../../ipc.js';
-import type { PermissionRule } from '@claude-sentinel/shared';
+import type { PermissionRule } from '@sentinel/shared';
 
 // Sprint 10: pin the pending registry's hard cap. New pendings above
 // PERMISSIONS_PENDING_MAX fail-open (resolve immediately to 'approve')

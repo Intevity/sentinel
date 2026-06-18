@@ -14,7 +14,7 @@ import {
   type OnPendingFinalized,
 } from './pending.js';
 import type { IpcServer } from '../../ipc.js';
-import type { PermissionRule } from '@claude-sentinel/shared';
+import type { PermissionRule } from '@sentinel/shared';
 
 function makeIpc(): IpcServer {
   return {

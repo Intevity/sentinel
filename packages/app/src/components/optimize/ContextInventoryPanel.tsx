@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, ServerCog } from 'lucide-react';
-import type { ContextInventory } from '@claude-sentinel/shared';
+import type { ContextInventory } from '@sentinel/shared';
 import { sendToSentinel } from '../../lib/ipc.js';
 import {
   formatBytes,

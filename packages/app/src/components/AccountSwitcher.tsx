@@ -12,7 +12,7 @@ import { useSettings } from '../hooks/useSettings.js';
 import { usePausedAccounts } from '../hooks/usePausedAccounts.js';
 import { QuickSegmented } from './settings/primitives.js';
 import RoundRobinStrategyMenu from './RoundRobinStrategyMenu.js';
-import type { SwitchingMode, RoundRobinStrategy } from '@claude-sentinel/shared';
+import type { SwitchingMode, RoundRobinStrategy } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import { DUR, EASE_OUT } from '../lib/motion.js';
 

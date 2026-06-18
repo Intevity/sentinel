@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import type { OverageCreditGrant } from '@claude-sentinel/shared';
+import type { OverageCreditGrant } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 interface UseOverageGrantsResult {

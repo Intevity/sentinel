@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { SecurityAllowlistEntry } from '@claude-sentinel/shared';
+import type { SecurityAllowlistEntry } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 interface UseSecurityAllowlistResult {

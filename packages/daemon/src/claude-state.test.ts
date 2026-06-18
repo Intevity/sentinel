@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync, unlinkSync, readdirSync } from 'fs';
-import type { OAuthAccount, ClaudeState } from '@claude-sentinel/shared';
+import type { OAuthAccount, ClaudeState } from '@sentinel/shared';
 import {
   CLAUDE_JSON_PATH,
   readClaudeState,

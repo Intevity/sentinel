@@ -1,6 +1,6 @@
 import React from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-import type { OptimizationMetrics } from '@claude-sentinel/shared';
+import type { OptimizationMetrics } from '@sentinel/shared';
 import type { SavingsUnits } from '../../../lib/optimizeUnits.js';
 import { buildCumulativeSeries } from '../../../lib/optimizeCharts.js';
 import {

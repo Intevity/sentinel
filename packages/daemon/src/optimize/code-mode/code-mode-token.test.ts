@@ -11,16 +11,16 @@ describe('getOrCreateCodeModeToken', () => {
   let prev: string | undefined;
 
   beforeEach(() => {
-    prev = process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+    prev = process.env.SENTINEL_TEST_KEYCHAIN_FILE;
     keychainPath = join(tmpdir(), `sentinel-code-mode-token-${randomUUID()}.json`);
-    process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
+    process.env.SENTINEL_TEST_KEYCHAIN_FILE = keychainPath;
     resetCodeModeTokenCache();
     resetMcpTokenCache();
   });
 
   afterEach(() => {
-    if (prev === undefined) delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
-    else process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = prev;
+    if (prev === undefined) delete process.env.SENTINEL_TEST_KEYCHAIN_FILE;
+    else process.env.SENTINEL_TEST_KEYCHAIN_FILE = prev;
     if (existsSync(keychainPath)) rmSync(keychainPath);
     resetCodeModeTokenCache();
     resetMcpTokenCache();
@@ -45,7 +45,7 @@ describe('getOrCreateCodeModeToken', () => {
       string,
       Record<string, string>
     >;
-    raw['Claude Sentinel-code-mode-auth']!['default'] = 'not-a-hex-token';
+    raw['Sentinel-code-mode-auth']!['default'] = 'not-a-hex-token';
     writeFileSync(keychainPath, JSON.stringify(raw));
     resetCodeModeTokenCache();
     expect(getOrCreateCodeModeToken()).toMatch(/^[0-9a-f]{64}$/);
@@ -58,8 +58,8 @@ describe('getOrCreateCodeModeToken', () => {
     // Each lives under its own keychain service entry.
     const raw = JSON.parse(readFileSync(keychainPath, 'utf-8')) as Record<string, unknown>;
     expect(Object.keys(raw).sort()).toEqual([
-      'Claude Sentinel-code-mode-auth',
-      'Claude Sentinel-mcp-auth',
+      'Sentinel-code-mode-auth',
+      'Sentinel-mcp-auth',
     ]);
   });
 });

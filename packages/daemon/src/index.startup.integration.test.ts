@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'fs';
 import { makeCreds, startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 import { IpcClient } from './ipc.js';
-import type { OAuthAccount } from '@claude-sentinel/shared';
+import type { OAuthAccount } from '@sentinel/shared';
 
 let ctx: TestDaemon | null = null;
 afterEach(async () => {
@@ -45,7 +45,7 @@ describe('startDaemon — bring-up', () => {
     expect(resp.data).toEqual([]);
   });
 
-  it('honors the tmp settings file via CLAUDE_SENTINEL_TEST_SETTINGS_FILE', async () => {
+  it('honors the tmp settings file via SENTINEL_TEST_SETTINGS_FILE', async () => {
     ctx = await startTestDaemon({ settings: { switchingMode: 'round-robin' } });
     const resp = await ctx.request<{ switchingMode: string }>({ type: 'get_settings' });
     expect(resp.success).toBe(true);
@@ -287,11 +287,11 @@ describe('startDaemon — isolated tmp workspaces', () => {
 describe('startDaemon — env vars cleared on cleanup', () => {
   it('removes all test env vars after cleanup', async () => {
     ctx = await startTestDaemon();
-    expect(process.env.CLAUDE_SENTINEL_TEST_DB_FILE).toBe(ctx.dbPath);
+    expect(process.env.SENTINEL_TEST_DB_FILE).toBe(ctx.dbPath);
     await ctx.cleanup();
     ctx = null;
-    expect(process.env.CLAUDE_SENTINEL_TEST_DB_FILE).toBeUndefined();
-    expect(process.env.CLAUDE_SENTINEL_TEST_IPC_SOCKET).toBeUndefined();
+    expect(process.env.SENTINEL_TEST_DB_FILE).toBeUndefined();
+    expect(process.env.SENTINEL_TEST_IPC_SOCKET).toBeUndefined();
     expect(process.env.ANTHROPIC_UPSTREAM_URL).toBeUndefined();
   });
 });

@@ -78,7 +78,7 @@ export default function UpdateModal({
         </div>
         <div className="space-y-2 text-[12px] leading-relaxed text-muted">
           <p>
-            Claude Sentinel{' '}
+            Sentinel{' '}
             <span className="font-semibold text-black dark:text-white">v{version}</span> is ready to
             install. You are on v{currentVersion}.
           </p>

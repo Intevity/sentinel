@@ -9,8 +9,8 @@ import type {
   PermissionDecision,
   ThemePreference,
   CompressionLevel,
-} from '@claude-sentinel/shared';
-import { ALERT_SOUNDS, ALERT_SOUNDS_WINDOWS } from '@claude-sentinel/shared';
+} from '@sentinel/shared';
+import { ALERT_SOUNDS, ALERT_SOUNDS_WINDOWS } from '@sentinel/shared';
 import { invoke } from '@tauri-apps/api/core';
 import { sendToSentinel } from '../lib/ipc.js';
 import { useSettings } from '../hooks/useSettings.js';
@@ -373,7 +373,7 @@ export default function SettingsPanel({
       // No afplay equivalent on Windows: preview by firing a real toast
       // carrying the selected winrt sound — exactly what a live alert does.
       await invoke('display_alert_notification', {
-        title: 'Claude Sentinel',
+        title: 'Sentinel',
         body: 'Alert sound preview',
         sound: name,
       }).catch(() => undefined);
@@ -749,7 +749,7 @@ export default function SettingsPanel({
               <Section title="Request logging">
                 <ToggleRow
                   label="Capture API request/response bodies"
-                  description="When on, every proxied Claude API call is recorded to ~/.claude-sentinel/request-logs.db and surfaced in the Logs tab as an expandable row. Captured bodies include prompts and model output, so this is off by default."
+                  description="When on, every proxied Claude API call is recorded to ~/.sentinel/request-logs.db and surfaced in the Logs tab as an expandable row. Captured bodies include prompts and model output, so this is off by default."
                   checked={settings.requestLoggingEnabled}
                   onChange={setRequestLoggingEnabled}
                 />
@@ -966,7 +966,7 @@ export default function SettingsPanel({
                     Relay Claude Code's OTEL metrics and logs to an external observability backend
                     like SigNoz Cloud. Sentinel keeps storing telemetry locally for the Metrics tab;
                     this adds an outbound copy and emits Sentinel-specific signals such as the Cache
-                    TTL breakdown, tagged with service.name=claude-sentinel.
+                    TTL breakdown, tagged with service.name=sentinel.
                   </p>
                 </div>
                 <ToggleRow
@@ -1032,7 +1032,7 @@ export default function SettingsPanel({
                   />
                   <ToggleRow
                     label="Emit Sentinel custom metrics"
-                    description="Adds Sentinel-specific signals (cache TTL breakdown, per-account 5h usage, account switches, security events, proxy traffic) on a 30s cadence. Tagged with service.name=claude-sentinel so dashboards can split them from the Claude Code stream."
+                    description="Adds Sentinel-specific signals (cache TTL breakdown, per-account 5h usage, account switches, security events, proxy traffic) on a 30s cadence. Tagged with service.name=sentinel so dashboards can split them from the Claude Code stream."
                     checked={settings.otelEmitSentinelMetrics}
                     onChange={setOtelEmitSentinelMetrics}
                   />
@@ -1818,7 +1818,7 @@ function FirstEnableSyncModal({
 function TuneForSystemSubsection({
   bench,
 }: {
-  bench: import('@claude-sentinel/shared').SecurityBenchmarkResult | null;
+  bench: import('@sentinel/shared').SecurityBenchmarkResult | null;
 }): React.ReactElement {
   const { settings, update } = useSettings();
   const { run, running, error } = useScanBenchmark();
@@ -1929,7 +1929,7 @@ function BypassesRow({
   entry,
   onRemove,
 }: {
-  entry: import('@claude-sentinel/shared').PermissionBypassEntry;
+  entry: import('@sentinel/shared').PermissionBypassEntry;
   onRemove: () => Promise<void>;
 }): React.ReactElement {
   const { pending, trigger } = useInlineConfirm(onRemove);
@@ -1989,7 +1989,7 @@ function ClaudeAiConnectionRow({
   onBudgetChange,
   onRefresh,
 }: {
-  account: import('@claude-sentinel/shared').AccountInfo;
+  account: import('@sentinel/shared').AccountInfo;
   overageEnabled: boolean;
   onToggleOverage: (v: boolean) => void;
   budgetUsd: number | null | undefined;
@@ -2261,7 +2261,7 @@ function PoolMemberPreview({
   accounts,
   excludedIds,
 }: {
-  accounts: import('@claude-sentinel/shared').AccountInfo[];
+  accounts: import('@sentinel/shared').AccountInfo[];
   excludedIds: readonly string[];
 }): React.ReactElement {
   const excludedSet = new Set(excludedIds);

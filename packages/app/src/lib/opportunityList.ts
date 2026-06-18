@@ -4,7 +4,7 @@
  * (the app package's vitest setup only collects `*.test.ts`).
  */
 
-import type { ListOptimizationEventsMessage, MetricsWindow } from '@claude-sentinel/shared';
+import type { ListOptimizationEventsMessage, MetricsWindow } from '@sentinel/shared';
 
 export type StatusFilter = 'all' | 'realized' | 'regression' | 'potential' | 'dismissed';
 

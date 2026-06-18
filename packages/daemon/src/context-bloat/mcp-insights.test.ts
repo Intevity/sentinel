@@ -3,7 +3,7 @@ import { writeFileSync, unlinkSync, existsSync, rmSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type Database from 'better-sqlite3';
-import { estimateTokensFromBytes, type CodeModeMigration } from '@claude-sentinel/shared';
+import { estimateTokensFromBytes, type CodeModeMigration } from '@sentinel/shared';
 import { getDb, closeDb, insertToolCall } from '../db.js';
 import { ContextCostStore } from './context-cost-db.js';
 import {
@@ -26,7 +26,7 @@ describe('buildMcpContextInsights', () => {
 
   beforeEach(() => {
     dbPath = join(tmpdir(), `sentinel-insights-${stamp()}.db`);
-    process.env['CLAUDE_SENTINEL_TEST_DB_FILE'] = dbPath;
+    process.env['SENTINEL_TEST_DB_FILE'] = dbPath;
     db = getDb(dbPath);
     db.exec('DELETE FROM tool_calls');
 
@@ -34,14 +34,14 @@ describe('buildMcpContextInsights', () => {
     store = new ContextCostStore({ dbPath: storePath });
 
     claudeJsonPath = join(tmpdir(), `sentinel-insights-claude-${stamp()}.json`);
-    process.env['CLAUDE_SENTINEL_TEST_CLAUDE_JSON'] = claudeJsonPath;
+    process.env['SENTINEL_TEST_CLAUDE_JSON'] = claudeJsonPath;
   });
 
   afterEach(() => {
     closeDb();
     store.close();
-    delete process.env['CLAUDE_SENTINEL_TEST_DB_FILE'];
-    delete process.env['CLAUDE_SENTINEL_TEST_CLAUDE_JSON'];
+    delete process.env['SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_CLAUDE_JSON'];
     for (const p of [dbPath, storePath]) {
       for (const suffix of ['', '-wal', '-shm']) {
         if (existsSync(p + suffix)) rmSync(p + suffix);

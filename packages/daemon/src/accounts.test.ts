@@ -42,7 +42,7 @@ describe('accounts', () => {
       const result = readSentinelCredentials('test@example.com');
       expect(result?.accessToken).toBe('at-test');
       const cmd = mockExecSync.mock.calls[0]?.[0] ?? '';
-      expect(cmd).toContain('Claude Sentinel-credentials');
+      expect(cmd).toContain('Sentinel-credentials');
     });
 
     it('returns null when execSync throws', () => {
@@ -67,7 +67,7 @@ describe('accounts', () => {
       writeSentinelCredentials('test@example.com', sampleCreds);
       const cmd = mockExecSync.mock.calls[0]?.[0] ?? '';
       expect(cmd).toContain('security add-generic-password');
-      expect(cmd).toContain('Claude Sentinel-credentials');
+      expect(cmd).toContain('Sentinel-credentials');
     });
 
     it('writes to sentinel service on linux', () => {
@@ -86,7 +86,7 @@ describe('accounts', () => {
       deleteSentinelCredentials('test@example.com');
       const cmd = mockExecSync.mock.calls[0]?.[0] ?? '';
       expect(cmd).toContain('security delete-generic-password');
-      expect(cmd).toContain('Claude Sentinel-credentials');
+      expect(cmd).toContain('Sentinel-credentials');
     });
 
     it('swallows errors when the entry does not exist on darwin', () => {
@@ -125,17 +125,20 @@ describe('accounts', () => {
       expect(result?.accessToken).toBe('at-test');
       // Should have hit the sentinel service, not Claude Code's service
       const cmd = mockExecSync.mock.calls[0]?.[0] ?? '';
-      expect(cmd).toContain('Claude Sentinel-credentials');
+      expect(cmd).toContain('Sentinel-credentials');
     });
 
     it('falls back to Claude Code keychain when no sentinel entry exists', () => {
       Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      // First call (sentinel) throws, second call (CC) returns creds
+      // Sentinel reads (new + legacy) both miss, then the CC slot returns creds
       const ccBlob = JSON.stringify({ claudeAiOauth: sampleCreds });
       mockExecSync
         .mockImplementationOnce(() => {
           throw new Error('not found');
-        }) // sentinel miss
+        }) // sentinel read (new service) miss
+        .mockImplementationOnce(() => {
+          throw new Error('not found');
+        }) // sentinel read (legacy "Claude Sentinel-*" service) miss
         .mockReturnValue(ccBlob); // CC slot
 
       // activeEmail matches the target email → fall back allowed
@@ -157,14 +160,17 @@ describe('accounts', () => {
       mockExecSync
         .mockImplementationOnce(() => {
           throw new Error('not found');
-        }) // sentinel miss
+        }) // sentinel read (new service) miss
+        .mockImplementationOnce(() => {
+          throw new Error('not found');
+        }) // sentinel read (legacy "Claude Sentinel-*" service) miss
         .mockReturnValue(JSON.stringify({ claudeAiOauth: sampleCreds })); // CC slot
 
       // Target email != active email → no fallback
       const result = readActiveCredentials('other@example.com', 'active@example.com');
       expect(result).toBeNull();
-      // Only 1 call made (sentinel only)
-      expect(mockExecSync).toHaveBeenCalledOnce();
+      // Sentinel new + legacy reads only; the CC slot is never read (active != target)
+      expect(mockExecSync).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -185,20 +191,21 @@ describe('accounts', () => {
     it('reads CC slot, writes to sentinel store, and returns creds', () => {
       Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
       const ccBlob = JSON.stringify({ claudeAiOauth: sampleCreds });
-      // Call 1: CC read, Call 2: sentinel read (always — feeds the
-      // skip-identical-write comparison), Call 3: sentinel write (existing
-      // entry missing → must write)
+      // Call 1: CC read; Calls 2–3: sentinel read (new service, then the legacy
+      // "Claude Sentinel-*" fallback on the miss — feeds the skip-identical-write
+      // comparison); Call 4: sentinel write (existing entry missing → must write).
       mockExecSync
         .mockReturnValueOnce(ccBlob) // CC read
-        .mockReturnValueOnce('') // sentinel read (miss)
+        .mockReturnValueOnce('') // sentinel read (new service) miss
+        .mockReturnValueOnce('') // sentinel read (legacy service) miss
         .mockReturnValueOnce(''); // sentinel write
 
       const result = captureCurrentCredentials('test@example.com');
       expect(result?.accessToken).toBe('at-test');
-      expect(mockExecSync).toHaveBeenCalledTimes(3);
-      // Third call should write to sentinel
-      const writeCmd = mockExecSync.mock.calls[2]?.[0] ?? '';
-      expect(writeCmd).toContain('Claude Sentinel-credentials');
+      expect(mockExecSync).toHaveBeenCalledTimes(4);
+      // Final call should write to the (new) sentinel service
+      const writeCmd = mockExecSync.mock.calls[3]?.[0] ?? '';
+      expect(writeCmd).toContain('Sentinel-credentials');
     });
 
     it('preserves subscriptionType and SKIPS the write when nothing changed', () => {
@@ -260,13 +267,14 @@ describe('accounts', () => {
       // skip-identical-write comparison) but must not override them.
       mockExecSync
         .mockReturnValueOnce(ccBlob) // CC read
-        .mockReturnValueOnce('') // sentinel read (miss)
+        .mockReturnValueOnce('') // sentinel read (new service) miss
+        .mockReturnValueOnce('') // sentinel read (legacy service) miss
         .mockReturnValueOnce(''); // sentinel write
 
       const result = captureCurrentCredentials('account-uuid');
       expect(result?.subscriptionType).toBe('team');
-      // 3 calls: CC read + sentinel read + sentinel write
-      expect(mockExecSync).toHaveBeenCalledTimes(3);
+      // 4 calls: CC read + sentinel new read + sentinel legacy read + sentinel write
+      expect(mockExecSync).toHaveBeenCalledTimes(4);
     });
 
     it('handles sentinel read failure gracefully during preservation', () => {
@@ -357,8 +365,11 @@ describe('accounts', () => {
       mockExecSync
         .mockImplementationOnce(() => {
           throw new Error('sentinel miss');
-        })
-        .mockReturnValueOnce('not-valid-json');
+        }) // sentinel read (new service) miss
+        .mockImplementationOnce(() => {
+          throw new Error('sentinel miss');
+        }) // sentinel read (legacy service) miss
+        .mockReturnValueOnce('not-valid-json'); // CC slot
       // Without activeId specified, fall-back is allowed and the catch kicks in.
       expect(readActiveCredentials('test@example.com')).toBeNull();
     });
@@ -370,8 +381,11 @@ describe('accounts', () => {
       mockExecSync
         .mockImplementationOnce(() => {
           throw new Error('sentinel miss');
-        })
-        .mockReturnValueOnce(JSON.stringify({ something_else: 1 }));
+        }) // sentinel read (new service) miss
+        .mockImplementationOnce(() => {
+          throw new Error('sentinel miss');
+        }) // sentinel read (legacy service) miss
+        .mockReturnValueOnce(JSON.stringify({ something_else: 1 })); // CC slot
       expect(readActiveCredentials('test@example.com')).toBeNull();
     });
   });

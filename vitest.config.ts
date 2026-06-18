@@ -57,7 +57,7 @@ export default defineConfig({
         // siblings. Has no production callers. Added in Sprint 1 of the
         // test migration (see documentation/TEST_MIGRATION_PLAN.md).
         'packages/daemon/src/proxy.test-helpers.ts',
-        // The fake Anthropic server (`@claude-sentinel/test-harness`) is
+        // The fake Anthropic server (`@sentinel/test-harness`) is
         // itself test infrastructure — a real HTTP listener that replaces
         // `vi.mock('https')` in the daemon's integration tests. Its own
         // behavior is gated by `fake-anthropic.contract.test.ts`, which

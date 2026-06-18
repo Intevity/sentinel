@@ -17,7 +17,7 @@ import {
   writeOtelExporterSecret,
 } from './otel-forwarder-secret.js';
 import { DEFAULT_SETTINGS } from './settings.js';
-import type { Settings } from '@claude-sentinel/shared';
+import type { Settings } from '@sentinel/shared';
 
 interface CapturedRequest {
   url: string;
@@ -92,11 +92,11 @@ describe('OtelForwarder', () => {
     kchainDir = mkdtempSync(join(tmpdir(), 'otel-forwarder-test-'));
     const kchain = join(kchainDir, 'keychain.json');
     writeFileSync(kchain, '{}');
-    process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE = kchain;
+    process.env.SENTINEL_TEST_KEYCHAIN_FILE = kchain;
   });
 
   afterEach(() => {
-    delete process.env.CLAUDE_SENTINEL_TEST_KEYCHAIN_FILE;
+    delete process.env.SENTINEL_TEST_KEYCHAIN_FILE;
     rmSync(kchainDir, { force: true, recursive: true });
   });
 

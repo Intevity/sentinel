@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { PermissionBypassEntry } from '@claude-sentinel/shared';
+import type { PermissionBypassEntry } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 interface UsePermissionBypassesResult {

@@ -20,7 +20,7 @@
  */
 
 import { createHmac } from 'crypto';
-import type { Settings, SecuritySeverity, SecurityKind } from '@claude-sentinel/shared';
+import type { Settings, SecuritySeverity, SecurityKind } from '@sentinel/shared';
 import type { IpcServer } from '../ipc.js';
 
 const SEVERITY_RANK: Record<SecuritySeverity, number> = { low: 0, medium: 1, high: 2 };

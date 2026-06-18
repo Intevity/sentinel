@@ -64,7 +64,7 @@ fn settings_path() -> PathBuf {
 }
 
 fn sentinel_data_dir() -> PathBuf {
-    home_dir().join(".claude-sentinel")
+    home_dir().join(".sentinel")
 }
 
 fn read_settings() -> Value {
@@ -159,7 +159,7 @@ pub fn activate_sentinel() -> Result<(), String> {
 
 /// Remove the Sentinel-managed env vars from settings.json. If the `env`
 /// object is empty afterward, drop it entirely. `delete_data` additionally
-/// removes `~/.claude-sentinel/` (SQLite DB, logs, socket) — the daemon
+/// removes `~/.sentinel/` (SQLite DB, logs, socket) — the daemon
 /// should be shut down first so the socket file isn't held open.
 #[tauri::command]
 pub fn deactivate_sentinel(delete_data: bool) -> Result<(), String> {
