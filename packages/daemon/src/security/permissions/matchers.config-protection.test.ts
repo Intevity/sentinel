@@ -89,32 +89,24 @@ describe('matchPath: ~/.claude/CLAUDE.md protection', () => {
 
 describe('matchPath: ~/.sentinel/** broad protection', () => {
   it('matches settings.json under the Sentinel state dir', () => {
-    expect(
-      matchPath('~/.sentinel/**', { file_path: `${HOME}/.sentinel/settings.json` }),
-    ).toBe(true);
+    expect(matchPath('~/.sentinel/**', { file_path: `${HOME}/.sentinel/settings.json` })).toBe(
+      true,
+    );
   });
 
   it('matches the daemon log under the Sentinel state dir', () => {
-    expect(
-      matchPath('~/.sentinel/**', { file_path: `${HOME}/.sentinel/daemon.log` }),
-    ).toBe(true);
+    expect(matchPath('~/.sentinel/**', { file_path: `${HOME}/.sentinel/daemon.log` })).toBe(true);
   });
 
   it('matches a deeply-nested file under the Sentinel state dir', () => {
-    expect(
-      matchPath('~/.sentinel/**', { file_path: `${HOME}/.sentinel/runtime/x/y` }),
-    ).toBe(true);
+    expect(matchPath('~/.sentinel/**', { file_path: `${HOME}/.sentinel/runtime/x/y` })).toBe(true);
   });
 
   it('does NOT match ~/.sentinelish/x (suffix-confusion guard)', () => {
-    expect(
-      matchPath('~/.sentinel/**', { file_path: `${HOME}/.sentinelish/foo.txt` }),
-    ).toBe(false);
+    expect(matchPath('~/.sentinel/**', { file_path: `${HOME}/.sentinelish/foo.txt` })).toBe(false);
   });
 
   it('does NOT match ~/.claude/anything (different dir)', () => {
-    expect(matchPath('~/.sentinel/**', { file_path: `${HOME}/.claude/settings.json` })).toBe(
-      false,
-    );
+    expect(matchPath('~/.sentinel/**', { file_path: `${HOME}/.claude/settings.json` })).toBe(false);
   });
 });

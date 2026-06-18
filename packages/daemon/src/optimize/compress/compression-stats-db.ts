@@ -122,9 +122,7 @@ export class CompressionStatsStore {
 
   constructor(opts?: { dbPath?: string; ipcServer?: IpcServer }) {
     const dbPath =
-      opts?.dbPath ??
-      process.env.SENTINEL_TEST_COMPRESSION_DB_FILE ??
-      COMPRESSION_STATS_DB_PATH;
+      opts?.dbPath ?? process.env.SENTINEL_TEST_COMPRESSION_DB_FILE ?? COMPRESSION_STATS_DB_PATH;
     this.ipcServer = opts?.ipcServer ?? null;
 
     const dir = dirname(dbPath);

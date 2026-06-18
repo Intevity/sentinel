@@ -23,11 +23,7 @@
  *    fake — but the canonical test approach in this repo is `http.createServer`
  *    so the real fetch path runs end to end.
  */
-import type {
-  Settings,
-  OtelForwarderStatus,
-  OtelExporterTestResult,
-} from '@sentinel/shared';
+import type { Settings, OtelForwarderStatus, OtelExporterTestResult } from '@sentinel/shared';
 import { hasOtelExporterSecret, readOtelExporterSecret } from './otel-forwarder-secret.js';
 
 export type OtelForwardPath = '/v1/metrics' | '/v1/logs';

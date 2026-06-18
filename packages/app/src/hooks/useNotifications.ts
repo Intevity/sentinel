@@ -131,11 +131,7 @@ export function useNativeAlertNotifications(): void {
               : msg.reason === 'anthropic_overage_disabled'
                 ? 'Anthropic disabled overage'
                 : 'paused';
-        void fireNativeStandard(
-          'Sentinel: Account paused',
-          `${short}… ${reasonBlurb}.`,
-          soundName,
-        );
+        void fireNativeStandard('Sentinel: Account paused', `${short}… ${reasonBlurb}.`, soundName);
       } else if (msg.type === 'security_event_detected') {
         if (shouldFireSecurityOsNotification(msg.severity, securityThreshold)) {
           const title = msg.blocked

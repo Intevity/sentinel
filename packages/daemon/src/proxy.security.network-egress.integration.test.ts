@@ -154,9 +154,7 @@ describe('proxy network-egress: synthetic default-deny end-to-end', () => {
     await resolveAllPending(onCtx, 'deny');
     const onRes = await onResPromise;
     const onBody = await onRes.text();
-    expect(onBody).toContain(
-      `[Blocked by Sentinel: ${SYNTHETIC_NETWORK_EGRESS_DENY_ID}(10.1.2.3)`,
-    );
+    expect(onBody).toContain(`[Blocked by Sentinel: ${SYNTHETIC_NETWORK_EGRESS_DENY_ID}(10.1.2.3)`);
     await onCtx.cleanup();
     activeCtx = undefined;
 

@@ -3476,8 +3476,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // handlers can capture it in their closure; started just before the
   // IPC server accepts connections to keep daemon startup deterministic.
   const claudeSettingsPath =
-    process.env.SENTINEL_TEST_CLAUDE_SETTINGS_FILE ??
-    join(homedir(), '.claude', 'settings.json');
+    process.env.SENTINEL_TEST_CLAUDE_SETTINGS_FILE ?? join(homedir(), '.claude', 'settings.json');
   const otelSettingsWatcher = createOtelSettingsWatcher({
     settingsPath: claudeSettingsPath,
     ipcServer,

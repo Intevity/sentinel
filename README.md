@@ -23,8 +23,8 @@ An open-source Claude Code companion: a tray app and bundled local daemon for in
 
 Grab the latest installer from the **[Releases page](https://github.com/Intevity/sentinel/releases/latest)**, or pick your platform directly:
 
-| Platform                                   | Format        | Download                                                                      |
-| ------------------------------------------ | ------------- | ----------------------------------------------------------------------------- |
+| Platform                                   | Format        | Download                                                               |
+| ------------------------------------------ | ------------- | ---------------------------------------------------------------------- |
 | **macOS** — Apple Silicon (M1/M2/M3/M4/M5) | `.dmg`        | [Latest release](https://github.com/Intevity/sentinel/releases/latest) |
 | **macOS** — Intel                          | `.dmg`        | [Latest release](https://github.com/Intevity/sentinel/releases/latest) |
 | **Windows** 10/11                          | `.msi` / NSIS | [Latest release](https://github.com/Intevity/sentinel/releases/latest) |
@@ -175,11 +175,11 @@ What `tauri:build` does internally:
 
 Artifacts land in `packages/app/src-tauri/target/release/bundle/`:
 
-| Platform | Output                              |
-| -------- | ----------------------------------- |
+| Platform | Output                       |
+| -------- | ---------------------------- |
 | macOS    | `macos/Sentinel.app`, `.dmg` |
-| Linux    | `.deb`, `.rpm`, `.AppImage`         |
-| Windows  | `.msi`, NSIS installer              |
+| Linux    | `.deb`, `.rpm`, `.AppImage`  |
+| Windows  | `.msi`, NSIS installer       |
 
 ### Running a local build
 
@@ -195,7 +195,7 @@ pnpm build:app
 
 | OS          | What `pnpm build:app` does                                                                       |
 | ----------- | ------------------------------------------------------------------------------------------------ |
-| **macOS**   | Builds the `.app`, replaces `/Applications/Sentinel.app`, re-signs ad-hoc, and opens it   |
+| **macOS**   | Builds the `.app`, replaces `/Applications/Sentinel.app`, re-signs ad-hoc, and opens it          |
 | **Linux**   | Builds an unsigned `.AppImage` and launches it (`--appimage-extract-and-run`, so no FUSE needed) |
 | **Windows** | Builds the unsigned NSIS `-setup.exe` and launches the installer                                 |
 

@@ -127,9 +127,7 @@ describe('mcp-client-manager (HTTP transport)', () => {
     expect(result.truncated).toBe(true);
     expect(result.bytes).toBeGreaterThan(10_000);
     const parsed = JSON.parse(result.contentJson) as Array<{ type: string; text: string }>;
-    expect(parsed[0]?.text).toMatch(
-      /truncated by Sentinel: \d+ bytes exceeded the 1024-byte/,
-    );
+    expect(parsed[0]?.text).toMatch(/truncated by Sentinel: \d+ bytes exceeded the 1024-byte/);
   });
 
   it('surfaces isError results without throwing', async () => {

@@ -57,9 +57,6 @@ describe('getOrCreateCodeModeToken', () => {
     expect(codeMode).not.toBe(retrieval);
     // Each lives under its own keychain service entry.
     const raw = JSON.parse(readFileSync(keychainPath, 'utf-8')) as Record<string, unknown>;
-    expect(Object.keys(raw).sort()).toEqual([
-      'Sentinel-code-mode-auth',
-      'Sentinel-mcp-auth',
-    ]);
+    expect(Object.keys(raw).sort()).toEqual(['Sentinel-code-mode-auth', 'Sentinel-mcp-auth']);
   });
 });

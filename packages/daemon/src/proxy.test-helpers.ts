@@ -35,11 +35,7 @@ import type {
   IpcResponse,
 } from '@sentinel/shared';
 import type { Database } from 'better-sqlite3';
-import {
-  startFakeAnthropic,
-  type FakeAnthropic,
-  type ScenarioName,
-} from '@sentinel/test-harness';
+import { startFakeAnthropic, type FakeAnthropic, type ScenarioName } from '@sentinel/test-harness';
 import {
   createProxyServer,
   type ActiveAccountId,

@@ -83,11 +83,9 @@ interface BodySection {
 }
 
 function envSection(env: EnvInfo): string {
-  return [
-    '## Environment',
-    `- Sentinel: ${env.appVersion}`,
-    `- User agent: ${env.userAgent}`,
-  ].join('\n');
+  return ['## Environment', `- Sentinel: ${env.appVersion}`, `- User agent: ${env.userAgent}`].join(
+    '\n',
+  );
 }
 
 function logsSection(entries: LogEntry[]): string {
