@@ -32,8 +32,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "updates" {
   }
 }
 
-# Public read for ONLY the published prefix (stable/*). The rest of the bucket — and
-# any future private prefixes — stay unreadable to the world.
+# Public read for ONLY the published channel prefixes (stable/*, staging/*). The rest of
+# the bucket — and any future private prefixes — stay unreadable to the world.
 data "aws_iam_policy_document" "public_read" {
   statement {
     sid    = "PublicReadUpdateArtifacts"
@@ -43,7 +43,7 @@ data "aws_iam_policy_document" "public_read" {
       identifiers = ["*"]
     }
     actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.updates.arn}/${var.s3_prefix}/*"]
+    resources = [for p in var.s3_prefixes : "${aws_s3_bucket.updates.arn}/${p}/*"]
   }
 }
 

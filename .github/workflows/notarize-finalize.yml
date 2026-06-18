@@ -14,6 +14,11 @@ on:
         description: Release tag to finalize (e.g. v0.3.6)
         required: true
         type: string
+      channel:
+        description: Update channel / S3 prefix to publish to (stable or staging). Staging never promotes the GitHub release.
+        required: false
+        default: stable
+        type: string
   # Manual (re)finalize / recovery for a single tag: staple + publish + S3. Idempotent —
   # re-stapling and re-promoting an already-finalized release is a no-op. Use this to
   # republish a release whose S3 step failed, once the cause is fixed.
@@ -22,6 +27,11 @@ on:
       tag:
         description: Release tag to (re)finalize — staple + publish + S3 (e.g. v0.3.6)
         required: true
+        type: string
+      channel:
+        description: Update channel / S3 prefix (stable or staging). Staging never promotes the GitHub release.
+        required: false
+        default: stable
         type: string
 
 permissions:
@@ -76,7 +86,9 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     needs: [staple, publish-updates]
-    if: ${{ always() && needs.staple.result == 'success' && needs.publish-updates.result != 'failure' && needs.publish-updates.result != 'cancelled' }}
+    # Staging is a throwaway dry-run channel: publish artifacts to staging/ but NEVER promote
+    # the GitHub release out of draft (and never touch stable). Only stable promotes.
+    if: ${{ always() && needs.staple.result == 'success' && needs.publish-updates.result != 'failure' && needs.publish-updates.result != 'cancelled' && inputs.channel == 'stable' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -120,7 +132,7 @@ jobs:
       id-token: write # mint the OIDC token used to assume the AWS role (no stored keys)
     env:
       S3_BUCKET: ${{ vars.S3_BUCKET }}
-      S3_PREFIX: stable
+      S3_PREFIX: ${{ inputs.channel }}
       UPDATER_PUBLIC_BASE: ${{ vars.UPDATER_PUBLIC_BASE }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ inputs.tag }}
