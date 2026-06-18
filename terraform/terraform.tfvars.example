@@ -6,7 +6,7 @@
 # s3_prefix   = "stable"
 
 # github_owner = "Intevity"
-# github_repo  = "claude-sentinel"
+# github_repo  = "sentinel"
 
 # Flip to true ONLY if `terraform plan` reports the GitHub OIDC provider is missing.
 # create_github_oidc_provider = false
