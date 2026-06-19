@@ -85,9 +85,11 @@ jobs:
     # macOS notarization is NO LONGER awaited here: this leg signs the bundle and submits
     # to Apple's notary WITHOUT waiting (see the "Submit to notary" step), then exits. The
     # queue wait is paid on the 1x ubuntu `notarize-wait` job and stapling happens on the
-    # short `notarize-finalize` macOS job, so the 10x build leg never blocks on Apple. 30
-    # min comfortably covers build + submit on every platform.
-    timeout-minutes: 30
+    # short `notarize-finalize` macOS job, so the 10x build leg never blocks on Apple. 50
+    # min covers a COLD build (no Cargo cache) on the slow 2-core Linux runner — a full
+    # dep recompile + AppImage/deb/rpm bundling there runs ~34 min and exceeded the old
+    # 30-min cap whenever Cargo.lock changes (e.g. the rename); warm builds finish far under.
+    timeout-minutes: 50
     # Single source of truth for channel + version across this job's steps. Tag pushes
     # always publish `stable`; a manual workflow_dispatch can target `staging`.
     env:
