@@ -51,36 +51,21 @@ describe('migrateLegacyDataDir', () => {
     expect(readFileSync(join(home, '.sentinel', 'sentinel.db'), 'utf-8')).toBe('DBDATA');
   });
 
-  it('promotes the legacy data when a shell ~/.sentinel already exists, preserving the shell as a backup', () => {
-    // Reproduces the real data-loss trigger: a stray/empty ~/.sentinel (e.g.
-    // created by a test run's logger) must NOT strand the legacy data.
+  it('never clobbers an existing ~/.sentinel — no-op even when a legacy dir also exists', () => {
+    // The data-loss footgun fix: if BOTH dirs exist (e.g. an old "Claude Sentinel"
+    // build recreated ~/.claude-sentinel after the migration already ran), ~/.sentinel
+    // is the source of truth and must be left fully intact; the stray legacy dir is
+    // ignored, never set aside or promoted over the real data.
     const home = tmpHome();
     mkdirSync(join(home, '.claude-sentinel'));
-    writeFileSync(join(home, '.claude-sentinel', 'sentinel.db'), 'REALDATA');
+    writeFileSync(join(home, '.claude-sentinel', 'sentinel.db'), 'STRAY');
     mkdirSync(join(home, '.sentinel'));
-    writeFileSync(join(home, '.sentinel', 'daemon.log'), 'shell-log');
-
-    expect(migrateLegacyDataDir(home)).toBe(true);
-    // The legacy data is now the live dir; the legacy path is gone.
-    expect(existsSync(join(home, '.claude-sentinel'))).toBe(false);
-    expect(readFileSync(join(home, '.sentinel', 'sentinel.db'), 'utf-8')).toBe('REALDATA');
-    // The prior shell was set aside (non-destructive), not deleted.
-    const backups = readdirSync(home).filter((n) => n.startsWith('.sentinel.superseded-'));
-    expect(backups).toHaveLength(1);
-    expect(readFileSync(join(home, backups[0]!, 'daemon.log'), 'utf-8')).toBe('shell-log');
-  });
-
-  it('returns false and leaves both dirs intact when the shell cannot be set aside', () => {
-    const home = tmpHome();
-    mkdirSync(join(home, '.claude-sentinel'));
-    writeFileSync(join(home, '.claude-sentinel', 'sentinel.db'), 'REALDATA');
-    mkdirSync(join(home, '.sentinel'));
-    chmodSync(home, 0o555); // read-only home: the backup dir cannot be created
+    writeFileSync(join(home, '.sentinel', 'sentinel.db'), 'REAL');
 
     expect(migrateLegacyDataDir(home)).toBe(false);
-    chmodSync(home, 0o755);
-    expect(existsSync(join(home, '.claude-sentinel', 'sentinel.db'))).toBe(true);
-    expect(existsSync(join(home, '.sentinel'))).toBe(true);
+    expect(readFileSync(join(home, '.sentinel', 'sentinel.db'), 'utf-8')).toBe('REAL');
+    expect(readdirSync(home).filter((n) => n.startsWith('.sentinel.superseded-'))).toHaveLength(0);
+    expect(existsSync(join(home, '.claude-sentinel'))).toBe(true);
   });
 
   it('is a no-op when there is no legacy dir to migrate', () => {

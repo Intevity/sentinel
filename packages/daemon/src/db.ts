@@ -41,57 +41,33 @@ export const DB_PATH = join(SENTINEL_DIR, 'sentinel.db');
 /**
  * One-time migration of the legacy data directory `~/.claude-sentinel` to
  * `~/.sentinel`, for users upgrading across the "Claude Sentinel" → "Sentinel"
- * rename. Idempotent and best-effort:
- *   - if the new dir already exists, or the legacy one doesn't, it's a no-op;
- *   - otherwise the whole tree is renamed (atomic on a single filesystem),
- *     carrying the DBs, settings (+`.sig`), logs, `code-mode/`, and the Windows
- *     `credentials.dat` across in one move.
+ * rename. Idempotent, best-effort, and — critically — NON-CLOBBERING:
+ *   - no-op if `~/.sentinel` already exists (it's the source of truth) or the
+ *     legacy dir doesn't exist;
+ *   - otherwise the whole legacy tree is renamed into place (atomic on one
+ *     filesystem), carrying the DBs, settings (+`.sig`), logs, `code-mode/`, and
+ *     the Windows `credentials.dat` across in one move.
  * Returns true iff a rename actually happened (for logging/tests).
  *
- * The Tauri app performs the equivalent in Rust before it spawns the daemon,
- * so production daemons normally see a no-op here; this covers standalone / dev
+ * The Tauri app performs the equivalent in Rust before it spawns the daemon, so
+ * production daemons normally see a no-op here; this covers standalone / dev
  * daemon launches and is safe to run alongside the Rust path (existence-guarded).
  */
 export function migrateLegacyDataDir(home: string = homedir()): boolean {
   const legacy = join(home, '.claude-sentinel');
-  // One-shot keyed on the legacy dir: a successful migration renames it away.
-  if (!existsSync(legacy)) return false;
   const next = join(home, '.sentinel');
-  if (!existsSync(next)) {
-    // Clean case: nothing at the new path yet — atomic rename.
-    try {
-      renameSync(legacy, next);
-      return true;
-    } catch {
-      // Best-effort: a failed rename leaves the legacy dir untouched so the
-      // next launch retries. No recursive-copy fallback — a half-copied
-      // credential/DB tree is worse than retrying the atomic rename.
-      return false;
-    }
-  }
-  // ~/.sentinel already exists even though the real data is still in the legacy
-  // dir — something created a *shell* ~/.sentinel before migration (a stray
-  // launch, an interrupted attempt, or a test run's logger writing daemon.log
-  // there). The legacy dir is the source of truth: set the shell aside to a
-  // timestamped backup (non-destructive) and promote the legacy data into
-  // place. Without this, a pre-existing empty ~/.sentinel strands user data.
-  const backup = `${next}.superseded-${Math.floor(Date.now() / 1000)}`;
-  try {
-    renameSync(next, backup);
-  } catch {
-    return false;
-  }
+  // Migrate ONLY into a fresh location. If ~/.sentinel already exists we never touch it —
+  // it is the source of truth (the real, already-migrated data), and setting it aside or
+  // overwriting it risks losing data. If both dirs exist (e.g. someone ran an old
+  // "Claude Sentinel" build after migrating, recreating ~/.claude-sentinel), the app keeps
+  // using ~/.sentinel and the stray legacy dir is left untouched.
+  if (existsSync(next) || !existsSync(legacy)) return false;
   try {
     renameSync(legacy, next);
     return true;
   } catch {
-    // Promotion failed — restore the backup so we never leave the daemon with
-    // no ~/.sentinel at all.
-    try {
-      renameSync(backup, next);
-    } catch {
-      /* best-effort rollback */
-    }
+    // Best-effort: a failed rename leaves the legacy dir untouched so the next launch
+    // retries. No recursive-copy fallback — a half-copied credential/DB tree is worse.
     return false;
   }
 }
