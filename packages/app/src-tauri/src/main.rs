@@ -8,6 +8,7 @@ mod first_run;
 mod ipc;
 mod notify;
 mod settings_patch;
+mod setup_token;
 mod sound;
 mod tray;
 mod tray_icon_render;
@@ -297,6 +298,7 @@ fn main() {
             // in-app update modal. The managed state holds the pending
             // update between the check and the modal's Install click.
             app.manage(updater::PendingUpdate(std::sync::Mutex::new(None)));
+            app.manage(setup_token::SetupTokenState::default());
             updater::spawn_update_timer(app.handle().clone());
 
             Ok(())
@@ -315,6 +317,10 @@ fn main() {
             notify::display_alert_notification,
             updater::check_for_updates,
             updater::install_update,
+            setup_token::setup_token_start,
+            setup_token::setup_token_write,
+            setup_token::setup_token_resize,
+            setup_token::setup_token_kill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sentinel");

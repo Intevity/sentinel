@@ -52,18 +52,9 @@ interface AccountCardProps {
   /** When true, the card shows a persistent "Sign-in expired" banner instead
    *  of the usual actions; clicking it triggers re-authentication. */
   needsReauth?: boolean;
-  /** Click handler for the expired-sign-in banner. Receives the current
-   *  state of the inline "Private window" checkbox so the parent can route
-   *  the OAuth flow through the right browser launcher. */
-  onReauth?: (id: string, incognito: boolean) => void;
-  /** Current state of the inline "Private window" checkbox in the expired
-   *  banner. Sourced from `settings.reauthIncognitoDefault` so every visible
-   *  expired card stays in sync. Defaults to `true` when the parent is
-   *  still loading settings. */
-  reauthIncognito?: boolean;
-  /** Called when the user toggles "Private window". Parent persists this
-   *  to settings so the choice sticks across cards and sessions. */
-  onReauthIncognitoChange?: (next: boolean) => void;
+  /** Click handler for the expired-sign-in banner. The parent opens the
+   *  `claude setup-token` terminal so the user can re-authenticate. */
+  onReauth?: (id: string) => void;
   /** When true, the card is rendered in round-robin mode. Manual switching
    *  is replaced by an Include/Exclude pool-membership action. */
   isRoundRobin?: boolean;
@@ -94,8 +85,6 @@ export default function AccountCard({
   refreshing,
   needsReauth,
   onReauth,
-  reauthIncognito,
-  onReauthIncognitoChange,
   isRoundRobin,
   inPool,
   canExclude,
@@ -427,28 +416,17 @@ export default function AccountCard({
       {pickerOpen && <AccountColorPicker account={account} onClose={() => setPickerOpen(false)} />}
 
       {/* ── Sign-in expired banner ────────────────────────────
-          Two rows: the warning copy on top, a controls row below
-          with the "Private window" checkbox and Re-authenticate
-          button. The checkbox is sourced from a global setting so
-          flipping it on one card updates every other expired card. */}
+          Warning copy on top, a Re-authenticate button below. Re-authenticate
+          opens the in-app `claude setup-token` terminal so the user can sign in
+          again and refresh this account's token. */}
       {needsReauth && (
         <div className="rounded-xl bg-ios-orange/10 dark:bg-ios-orange/15 px-3 py-2 space-y-1.5">
           <p className="text-[11px] text-ios-orange leading-snug">
-            Sign-in expired. Reconnect to keep this account working.
+            Sign-in expired. Re-authenticate to restore access.
           </p>
-          <div className="flex items-center justify-between gap-2">
-            <label className="flex items-center gap-1.5 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={reauthIncognito ?? true}
-                onChange={(e) => onReauthIncognitoChange?.(e.target.checked)}
-                className="accent-ios-orange w-3.5 h-3.5"
-                aria-label="Open re-authentication in a private browser window"
-              />
-              <span className="text-[11px] text-ios-orange">Private window</span>
-            </label>
+          <div className="flex items-center justify-end gap-2">
             <button
-              onClick={() => onReauth?.(account.id, reauthIncognito ?? true)}
+              onClick={() => onReauth?.(account.id)}
               className="shrink-0 text-[11px] font-semibold text-white bg-ios-orange
                          hover:opacity-90 active:scale-95 px-2.5 py-1 rounded-full transition-all"
             >

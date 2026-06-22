@@ -158,6 +158,15 @@ export default function App(): React.ReactElement {
     };
   }, [navigateToSecurityEvent]);
 
+  // The Usage tab's Reconnect CTA fires this window event so the user lands on
+  // the Accounts tab, where Add Account opens the `claude setup-token` terminal.
+  // Lives in App so it works regardless of which tab dispatched it.
+  useEffect(() => {
+    const onOpenAddAccount = (): void => setActiveTab('accounts');
+    window.addEventListener('sentinel:open-add-account', onOpenAddAccount);
+    return () => window.removeEventListener('sentinel:open-add-account', onOpenAddAccount);
+  }, []);
+
   // "Update available" dialog. The Rust updater emits this after any check
   // that finds an update (tray item, Settings button, or the background
   // timer) and has already stashed the update for `install_update`. The

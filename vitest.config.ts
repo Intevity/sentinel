@@ -76,7 +76,7 @@ export default defineConfig({
         // Branches at 93 (down from 94.5 in Sprint 1). Sprint 6 of the
         // test-migration plan lifted the coverage exemption on
         // `packages/daemon/src/index.ts` (2,357 LOC: startDaemon, 62 IPC
-        // handlers, performSwitch, persistOAuthResult, alert evaluator
+        // handlers, performSwitch, storeSetupTokenAccount, alert evaluator
         // wiring, retention-purge loops, shutdown). The new
         // `index.*.integration.test.ts` files bring lines + statements +
         // functions above 95, but index.ts is heavily callback-driven:

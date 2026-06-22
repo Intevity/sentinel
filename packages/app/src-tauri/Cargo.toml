@@ -30,6 +30,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Sprint 2: handshake-token generation for IPC peer auth.
 rand = "0.8"
 hex = "0.4"
+# In-app `claude setup-token` terminal: spawn the CLI in a cross-platform
+# pseudo-terminal (incl. Windows ConPTY) so it runs as if attached to a real TTY.
+portable-pty = "0.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Tray auto-pin: reads/writes HKCU\Control Panel\NotifyIconSettings.

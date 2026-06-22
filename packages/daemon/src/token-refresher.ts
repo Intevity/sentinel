@@ -51,6 +51,15 @@ export async function refreshIfNeeded(
   accountId: string,
   email: string,
   force = false,
+  /** True only when the caller has REAL evidence the token was rejected
+   *  upstream (a 401 on an actual inference request). Routine callers — manual
+   *  "Refresh token", the usage-API liveness probe, the startup heal pass —
+   *  leave this false. It governs whether an inference-only (no-refresh-token)
+   *  account is flagged for re-auth: such a token is long-lived and can't be
+   *  refreshed, so a mere `force` must NOT condemn it; only a real rejection
+   *  (or actual local expiry) does. Ignored for accounts that have a refresh
+   *  token — those refresh normally. */
+  tokenRejected = false,
 ): Promise<RefreshResult> {
   if (!force && expiredRefreshTokens.has(accountId)) {
     return {
@@ -61,12 +70,11 @@ export async function refreshIfNeeded(
   }
 
   const creds = readSentinelCredentials(accountId);
-  if (!creds?.refreshToken) {
-    // Missing keychain entry is the same end-state as a rejected refresh
-    // token from the user's POV: the account cannot be refreshed without
-    // re-auth. Broadcast so the UI's Re-authenticate banner lights up
-    // instead of the card silently drifting on stale data. Reused reason
-    // 'expired' keeps the UI listener single-path (AccountSwitcher maps
+  if (!creds?.accessToken) {
+    // No stored credential at all — same end-state as a dead token: the account
+    // can't be used without re-auth. Broadcast so the Re-authenticate banner
+    // lights up instead of the card silently drifting on stale data. Reused
+    // reason 'expired' keeps the UI listener single-path (AccountSwitcher maps
     // that reason to expiredAccountIds → needsReauth → banner).
     deps.ipcServer.broadcast({
       type: 'token_refresh_failed',
@@ -76,12 +84,36 @@ export async function refreshIfNeeded(
     });
     return {
       success: false,
-      error: 'No stored refresh token — sign in again.',
+      error: 'No stored credentials — add the account again.',
       needsReauth: true,
     };
   }
 
   const msRemaining = creds.expiresAt - Date.now();
+
+  if (!creds.refreshToken) {
+    // Inference-scoped `claude setup-token` accounts carry a long-lived (~1yr)
+    // access token with NO refresh token. They're healthy unless the access
+    // token has actually expired, OR an upstream 401 (tokenRejected) proves it's
+    // dead. A routine `force` (manual refresh, usage probe, startup heal) is NOT
+    // evidence of death and must NOT light the Re-authenticate banner — that was
+    // the bug where refreshing/restarting instantly "expired" a fresh account.
+    if (tokenRejected || msRemaining <= 0) {
+      deps.ipcServer.broadcast({
+        type: 'token_refresh_failed',
+        accountId,
+        email,
+        reason: 'expired',
+      });
+      return {
+        success: false,
+        error: 'Token expired — add the account again.',
+        needsReauth: true,
+      };
+    }
+    return { success: true, expiresAt: creds.expiresAt };
+  }
+
   if (!force && msRemaining > REFRESH_THRESHOLD_MS) {
     return { success: true, expiresAt: creds.expiresAt };
   }

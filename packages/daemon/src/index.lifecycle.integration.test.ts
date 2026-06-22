@@ -4,7 +4,8 @@
  * assertions live here so the lean IPC smoke file stays readable.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
+import { userInfo } from 'os';
 import type { OAuthAccount } from '@sentinel/shared';
 import { makeCreds, startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 
@@ -89,37 +90,252 @@ describe('lifecycle — switch_account', () => {
   });
 });
 
-// ─── OAuth login / cancel ────────────────────────────────────────────────────
+// ─── store_setup_token (claude setup-token capture) ──────────────────────────
 
-describe('lifecycle — start_login / cancel_login', () => {
-  it('start_login acknowledges immediately and returns success', async () => {
+describe('lifecycle — store_setup_token', () => {
+  const TOKEN = `sk-ant-oat01-${'A'.repeat(95)}`;
+
+  it('stores a setup-token account using the label when the profile sniff fails', async () => {
+    // No token registered on the fake → /api/oauth/profile 401 → fetchProfile
+    // returns empty → the daemon falls back to the user-provided label.
     ctx = await startTestDaemon();
-    const r = await ctx.request({ type: 'start_login' });
+    const r = await ctx.request({
+      type: 'store_setup_token',
+      token: TOKEN,
+      label: 'work@example.com',
+    });
     expect(r.success).toBe(true);
-    // The login attempt runs in the background and may log a browser-launch
-    // error, but the IPC ACK is what the UI waits on.
+
+    const bc = await ctx.waitForBroadcast<{
+      type: 'login_complete';
+      email: string;
+      imported?: boolean;
+    }>((m) => m.type === 'login_complete', 8000);
+    expect(bc.email).toBe('work@example.com');
+    expect(bc.imported).toBe(true);
+
+    // The row exists; its stored credential is the oat token with NO refresh
+    // token and a ~1yr expiry.
+    const accts = await ctx.request<Array<{ id: string; email: string }>>({
+      type: 'refresh_accounts',
+    });
+    const row = accts.data?.find((x) => x.email === 'work@example.com');
+    expect(row).toBeDefined();
+    const keychain = JSON.parse(readFileSync(ctx.keychainPath, 'utf-8')) as {
+      'Sentinel-credentials'?: Record<string, string>;
+    };
+    const stored = keychain['Sentinel-credentials']?.[row!.id];
+    expect(stored).toBeDefined();
+    const creds = JSON.parse(stored!) as {
+      accessToken: string;
+      refreshToken: string;
+      expiresAt: number;
+    };
+    expect(creds.accessToken).toBe(TOKEN);
+    expect(creds.refreshToken).toBe('');
+    expect(creds.expiresAt).toBeGreaterThan(Date.now() + 300 * 24 * 60 * 60 * 1000);
+
+    // Default 95% alert seeded.
+    const alerts = await ctx.request<Array<{ thresholdPct: number; enabled: boolean }>>({
+      type: 'list_alerts',
+      accountId: row!.id,
+    });
+    expect(alerts.data?.some((al) => al.thresholdPct === 95 && al.enabled)).toBe(true);
   });
 
-  it('cancel_login aborts a pending login', async () => {
+  it('uses fetched profile metadata when the token can read /api/oauth/profile', async () => {
     ctx = await startTestDaemon();
-    await ctx.request({ type: 'start_login' });
-    const r = await ctx.request({ type: 'cancel_login' });
+    const token = `sk-ant-oat01-${'B'.repeat(95)}`;
+    // Register the token so the fake's /api/oauth/profile returns this identity.
+    ctx.fake.registerToken(token, {
+      email: 'real@corp.com',
+      org_uuid: 'org-xyz',
+      org_name: 'Corp',
+      org_type: 'claude_max',
+    });
+    const r = await ctx.request({ type: 'store_setup_token', token });
     expect(r.success).toBe(true);
+
+    const bc = await ctx.waitForBroadcast<{
+      type: 'login_complete';
+      email: string;
+      orgName?: string;
+    }>((m) => m.type === 'login_complete', 8000);
+    expect(bc.email).toBe('real@corp.com');
+    expect(bc.orgName).toBe('Corp');
+
+    const accts = await ctx.request<Array<{ email: string; orgName: string }>>({
+      type: 'refresh_accounts',
+    });
+    expect(accts.data?.find((x) => x.email === 'real@corp.com')?.orgName).toBe('Corp');
   });
 
-  it('cancel_login when no login is in-flight is a no-op success', async () => {
+  it('rejects a token that is not an sk-ant-oat01 token', async () => {
     ctx = await startTestDaemon();
-    const r = await ctx.request({ type: 'cancel_login' });
-    expect(r.success).toBe(true);
+    const r = await ctx.request({ type: 'store_setup_token', token: 'not-a-token' });
+    expect(r.success).toBe(false);
+    expect(r.error).toBe('invalid-token');
+    const accts = await ctx.request<unknown[]>({ type: 'refresh_accounts' });
+    expect(accts.data?.length ?? 0).toBe(0);
   });
 
-  it('start_login while a login is in-flight aborts the previous one', async () => {
+  it(
+    'does not flag an inference-only account as expired when the usage API rejects it',
+    { timeout: 15000 },
+    async () => {
+      ctx = await startTestDaemon();
+      const token = `sk-ant-oat01-${'D'.repeat(95)}`;
+      // Register with an org so the account has an orgUuid (required for usage
+      // polling). The usage endpoint is forced to 401 below to simulate the
+      // inference-only token lacking usage scope.
+      ctx.fake.registerToken(token, {
+        email: 'oat@corp.com',
+        org_uuid: 'org-oat',
+        org_name: 'OatCorp',
+        org_type: 'claude_max',
+      });
+      await ctx.request({ type: 'store_setup_token', token });
+      await ctx.waitForBroadcast(
+        (m) => m.type === 'login_complete' && (m as { email?: string }).email === 'oat@corp.com',
+        8000,
+      );
+      const accts = await ctx.request<Array<{ id: string; email: string }>>({
+        type: 'refresh_accounts',
+      });
+      const row = accts.data?.find((x) => x.email === 'oat@corp.com');
+      expect(row).toBeDefined();
+
+      // Force the usage endpoint to 401 (inference-only token can't read usage),
+      // then fire the auth-liveness usage check the UI runs on focus/mount.
+      ctx.fake.queueResponse('/api/oauth/usage', { status: 401 });
+      await ctx.request({ type: 'refresh_claude_ai_usage', accountId: row!.id });
+      await ctx.waitForBroadcast(
+        (m) =>
+          m.type === 'claude_ai_usage_updated' &&
+          (m as { accountId?: string }).accountId === row!.id &&
+          (m as { error?: string | null }).error === 'auth_expired',
+        8000,
+      );
+
+      // A usage-API 401 is an expected scope limitation for an inference-only
+      // token — it must NOT light the Re-authenticate banner.
+      const flagged = ctx.broadcasts.filter(
+        (m) =>
+          m.type === 'token_refresh_failed' && (m as { accountId?: string }).accountId === row!.id,
+      );
+      expect(flagged).toHaveLength(0);
+    },
+  );
+
+  it("does not clobber the stored oat credential from Claude Code's stale keychain slot", async () => {
     ctx = await startTestDaemon();
-    await ctx.request({ type: 'start_login' });
-    // Second call within the same session should succeed without hanging on
-    // the first's pending AbortController.
-    const r = await ctx.request({ type: 'start_login' });
-    expect(r.success).toBe(true);
+    const token = `sk-ant-oat01-${'E'.repeat(95)}`;
+    ctx.fake.registerToken(token, {
+      email: 'clobber@corp.com',
+      org_uuid: 'org-clob',
+      org_name: 'Clob',
+      org_type: 'claude_max',
+    });
+    await ctx.request({ type: 'store_setup_token', token });
+    await ctx.waitForBroadcast(
+      (m) => m.type === 'login_complete' && (m as { email?: string }).email === 'clobber@corp.com',
+      8000,
+    );
+
+    // Simulate Claude Code rewriting its own keychain slot with a STALE, expired
+    // copy of the oat token (the real-world clobber source).
+    const ccUser = userInfo().username;
+    const kc = JSON.parse(readFileSync(ctx.keychainPath, 'utf-8')) as Record<
+      string,
+      Record<string, string>
+    >;
+    kc['Claude Code-credentials'] = kc['Claude Code-credentials'] ?? {};
+    kc['Claude Code-credentials'][ccUser] = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: token,
+        refreshToken: '',
+        expiresAt: Date.now() - 60 * 60 * 1000,
+        scopes: ['user:inference', 'user:profile'],
+      },
+    });
+    writeFileSync(ctx.keychainPath, JSON.stringify(kc, null, 2));
+
+    // refresh_accounts captures the active account — it must NOT overwrite the
+    // fresh Sentinel credential with the stale CC-keychain copy.
+    await ctx.request({ type: 'refresh_accounts' });
+
+    const after = JSON.parse(readFileSync(ctx.keychainPath, 'utf-8')) as {
+      'Sentinel-credentials': Record<string, string>;
+    };
+    const stored = JSON.parse(after['Sentinel-credentials']['org-clob']!) as {
+      accessToken: string;
+      expiresAt: number;
+    };
+    expect(stored.accessToken).toBe(token);
+    // Still the fresh ~330d expiry, not reverted to the stale past one.
+    expect(stored.expiresAt).toBeGreaterThan(Date.now() + 300 * 24 * 60 * 60 * 1000);
+  });
+
+  it('re-auth (accountId) refreshes the credential in place — no duplicate row', async () => {
+    ctx = await startTestDaemon();
+    // First add creates the account (label path).
+    await ctx.request({ type: 'store_setup_token', token: TOKEN, label: 'reauth@example.com' });
+    await ctx.waitForBroadcast<{ type: 'login_complete'; email: string }>(
+      (m) => m.type === 'login_complete',
+      8000,
+    );
+    const list1 = await ctx.request<Array<{ id: string; email: string }>>({
+      type: 'refresh_accounts',
+    });
+    const row = list1.data?.find((x) => x.email === 'reauth@example.com');
+    expect(row).toBeDefined();
+
+    // Re-authenticate that account with a NEW token + its accountId.
+    const NEW = `sk-ant-oat01-${'C'.repeat(95)}`;
+    await ctx.request({ type: 'store_setup_token', token: NEW, accountId: row!.id });
+    const reauthBc = await ctx.waitForBroadcast<{
+      type: 'login_complete';
+      email: string;
+      reauth?: boolean;
+    }>((m) => m.type === 'login_complete' && (m as { reauth?: boolean }).reauth === true, 8000);
+    expect(reauthBc.email).toBe('reauth@example.com');
+
+    // Still one row; credential updated to the new token (in place).
+    const list2 = await ctx.request<unknown[]>({ type: 'refresh_accounts' });
+    expect(list2.data?.length).toBe(1);
+    const keychain = JSON.parse(readFileSync(ctx.keychainPath, 'utf-8')) as {
+      'Sentinel-credentials'?: Record<string, string>;
+    };
+    const creds = JSON.parse(keychain['Sentinel-credentials']![row!.id]!) as {
+      accessToken: string;
+    };
+    expect(creds.accessToken).toBe(NEW);
+  });
+});
+
+// ─── refresh_accounts does not auto-create accounts ──────────────────────────
+
+describe('lifecycle — refresh_accounts (no auto-create)', () => {
+  const ccUser = userInfo().username;
+
+  it('does not create a row for an active Claude Code account the user never added', async () => {
+    // Nothing seeded as active at startup → no startup row. Claude Code's slot
+    // has creds, and a regular login becomes active mid-session.
+    ctx = await startTestDaemon({
+      claudeCodeCredentials: { [ccUser]: makeCreds({ accessToken: 'tok-untracked' }) },
+      registerTokens: ['tok-untracked'],
+    });
+    const a = defaultAccount(
+      '00000000-0000-0000-0000-0000000000c1',
+      '00000000-0000-0000-0000-0000000000c2',
+      'untracked@example.com',
+    );
+    writeFileSync(ctx.claudeJsonPath, JSON.stringify({ oauthAccount: a }, null, 2));
+
+    // Refresh must NOT surface a brand-new account — only the setup-token flow adds.
+    const r = await ctx.request<Array<{ email: string }>>({ type: 'refresh_accounts' });
+    expect(r.data?.some((x) => x.email === 'untracked@example.com')).toBe(false);
+    expect(r.data?.length ?? 0).toBe(0);
   });
 });
 

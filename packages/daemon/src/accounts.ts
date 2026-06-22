@@ -104,10 +104,20 @@ export function captureCurrentCredentials(accountKey: string): ClaudeCodeCredent
     const parsed = JSON.parse(blob) as { claudeAiOauth?: ClaudeCodeCredentials };
     const creds = parsed.claudeAiOauth ?? null;
     if (creds) {
+      const existing = readSentinelCredentials(accountKey);
+      // `claude setup-token` accounts keep their long-lived oat token ONLY in
+      // Sentinel's store — Claude Code's keychain slot may hold a stale/expired
+      // copy (Claude Code rewrites it with its own expiry). Sentinel's store is
+      // authoritative for these: return it and never overwrite from CC's slot —
+      // that clobber reverted a freshly-stored token to a stale, "expired" one on
+      // every refresh_accounts. Identified by the oat token prefix (the reliable
+      // signal; a missing refresh token alone is too broad).
+      if (existing?.accessToken.startsWith('sk-ant-oat01-')) {
+        return existing;
+      }
       // CC's keychain slot doesn't include subscriptionType / rateLimitTier.
       // Preserve those fields from Sentinel's existing entry so a refresh call
       // doesn't clobber the plan information stored by the OAuth flow.
-      const existing = readSentinelCredentials(accountKey);
       if (existing?.subscriptionType && !creds.subscriptionType) {
         creds.subscriptionType = existing.subscriptionType;
       }

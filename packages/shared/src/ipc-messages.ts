@@ -97,18 +97,19 @@ export interface AccountUpdatedMessage {
 export interface LoginCompleteMessage {
   type: 'login_complete';
   email: string;
-  /** Human-readable org name returned by the OAuth profile endpoint. */
+  /** Human-readable org name for the account, when known. */
   orgName?: string;
-  /** True when the authorized org already existed in the DB — i.e. the user
-   *  re-authorized an account they already had, rather than adding a new one.
-   *  The UI uses this to show guidance for adding a *different* org. */
+  /** True when the account already existed in the DB — i.e. the user
+   *  re-added an account they already had, rather than adding a new one.
+   *  The UI uses this to show guidance for adding a *different* account. */
   reauth?: boolean;
-  /** True when this enrollment happened through the silent sibling flow —
-   *  no OAuth webview, no user-visible window. Implies the sessionKey is
-   *  already mirrored, so the UI should NOT auto-kick the Connect
-   *  claude.ai flow after this broadcast (which would pop a window and
-   *  defeat the whole point). */
-  silent?: boolean;
+  /** Set when adding the account failed. An empty `email` always accompanies
+   *  an error. */
+  error?: string;
+  /** True when the account was newly added (as opposed to a re-add / refresh
+   *  of an account Sentinel already had). Lets the UI show "Added <email>"
+   *  vs a quieter refresh. */
+  imported?: boolean;
 }
 
 export interface RateLimitsUpdatedMessage {
@@ -474,18 +475,6 @@ export interface RequestLogsClearedMessage {
   deleted: number;
 }
 
-/** Test-only broadcast emitted by `start_login` when the daemon env has
- *  `SENTINEL_TEST_OAUTH_ECHO=1`. Carries the authorize URL the
- *  daemon would normally hand off to a browser launcher, so the E2E
- *  harness can extract the PKCE `state` and POST a synthetic callback
- *  to the daemon's loopback callback server. Never fires in production
- *  (the env var is off); listed in the union so the test-side type
- *  narrows cleanly through `onDaemonMessage`. */
-export interface TestOAuthUrlOpenedMessage {
-  type: 'test_oauth_url_opened';
-  url: string;
-}
-
 /** Sprint 8 audit log integrity: the daemon's chain walker found a
  *  break in `security_events` (a row whose `payload_hash` doesn't match
  *  what the chain says it should be, OR a row whose `prev_hash` doesn't
@@ -564,7 +553,6 @@ export type DaemonToAppMessage =
   | PermissionsStatusMessage
   | SettingsTamperDetectedMessage
   | AuditLogTamperedMessage
-  | TestOAuthUrlOpenedMessage
   | OtelForwarderStatusBroadcastMessage
   | OtelDriftStateMessage;
 
@@ -639,27 +627,25 @@ export interface RefreshAccountsMessage {
   type: 'refresh_accounts';
 }
 
-export interface StartLoginMessage {
-  type: 'start_login';
-  /** When present, hint claude.ai's OAuth authorize page to
-   *  preselect this organization so the user doesn't have to click
-   *  through the org chooser. Used by the sibling-enrollment walk
-   *  where we already know which sibling org is being added. No
-   *  effect if claude.ai ignores the hint (the user still gets the
-   *  chooser as a fallback). */
-  orgUuidHint?: string;
-  /** Open the OAuth URL in a private/incognito browser window. Set
-   *  this when the user is adding a DIFFERENT email/identity than any
-   *  existing Sentinel account — claude.ai's "switch accounts" link
-   *  on the OAuth consent page drops OAuth state (same bug as Claude
-   *  Code CLI), so a fresh cookie jar is the only reliable way to
-   *  switch identities mid-flow. The UI exposes this as an opt-in
-   *  checkbox on the Add Account confirmation sheet. */
-  incognito?: boolean;
-}
-
-export interface CancelLoginMessage {
-  type: 'cancel_login';
+/** App → Daemon: store a long-lived token captured from `claude setup-token`.
+ *  Sentinel runs `claude setup-token` in an in-app terminal (PTY in the Tauri
+ *  layer); the user completes Claude Code's browser sign-in and the printed
+ *  `sk-ant-oat01…` token is scraped from the terminal stream and sent here.
+ *  Sentinel never runs the OAuth flow itself. The token is `user:inference`-
+ *  scoped (~1yr, no refresh token), so metadata can't always be fetched —
+ *  `label` is the user-provided fallback name. Outcome is announced via a
+ *  `login_complete` broadcast. */
+export interface StoreSetupTokenMessage {
+  type: 'store_setup_token';
+  /** The captured `sk-ant-oat01…` long-lived OAuth token. */
+  token: string;
+  /** User-provided account label, used when profile metadata can't be fetched
+   *  (the inference-only token typically can't read /api/oauth/profile). */
+  label?: string;
+  /** When re-authenticating an existing account, its Sentinel key. The daemon
+   *  refreshes that account's credential in place instead of creating a new
+   *  one (the inference-only token can't be matched back to it by identity). */
+  accountId?: string;
 }
 
 export interface RemoveAccountMessage {
@@ -1946,8 +1932,7 @@ export type AppToDaemonMessage =
   | AcknowledgeAllNotificationsMessage
   | SwitchAccountMessage
   | RefreshAccountsMessage
-  | StartLoginMessage
-  | CancelLoginMessage
+  | StoreSetupTokenMessage
   | RemoveAccountMessage
   | GetRateLimitsMessage
   | GetAllRateLimitsMessage

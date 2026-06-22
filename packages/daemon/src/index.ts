@@ -118,6 +118,7 @@ import { join } from 'path';
 import { runScanBenchmark } from './security/scanner-benchmark.js';
 import { parseRule as parsePermissionRule } from './security/permissions/parser.js';
 import type { Settings, MetricsWindow } from '@sentinel/shared';
+import { randomUUID } from 'crypto';
 import { getActiveAccount, setActiveAccount } from './claude-state.js';
 import {
   readActiveCredentials,
@@ -127,8 +128,7 @@ import {
   deleteSentinelCredentials,
   readSentinelCredentials,
 } from './accounts.js';
-import { startOAuthLogin, OAUTH_ABORTED, fetchProfile } from './oauth.js';
-import type { OAuthResult } from './oauth.js';
+import { fetchProfile } from './oauth.js';
 import { verifyStartupActiveAccount, healDriftedRows } from './credential-verifier.js';
 import {
   startTokenRefresher,
@@ -298,10 +298,6 @@ function inferPlanType(account: OAuthAccount, creds?: ClaudeCodeCredentials | nu
 
 // In-memory credential store for inactive accounts (populated via IPC from Tauri app)
 const credentialStore = new Map<string, string>();
-
-// Abort controller for the currently-pending OAuth login (if any).
-// Replaced each time start_login is received; used by cancel_login.
-let loginAbortController: AbortController | null = null;
 
 // probeRateLimits now lives in ./rate-limit-probe.ts to avoid a circular
 // dependency with ./usage-probe.ts, which imports it.
@@ -775,6 +771,15 @@ export async function startDaemon(): Promise<DaemonHandle> {
       // Skip when the daemon is tearing down — the DB is about to close or
       // already has, and the refresh chain would throw TypeError on listAccounts.
       if (shuttingDown) return { success: false };
+      // Inference-only `setup-token` accounts (no refresh token) can't read the
+      // claude.ai usage API — a 401 there is an expected scope limitation, not a
+      // dead sign-in. There's nothing to refresh, so short-circuit: don't call
+      // refreshIfNeeded (avoids a pointless retry) and never flag re-auth from
+      // this path. A genuinely dead inference token surfaces via the proxy's
+      // onUpstreamAuthFailure path (which passes tokenRejected). Accounts WITH a
+      // refresh token still force-refresh here, catching server-side revocation.
+      const stored = readSentinelCredentials(accountId);
+      if (!stored?.refreshToken) return { success: false };
       const acc = listAccounts(db).find((a) => a.id === accountId);
       const result = await refreshIfNeeded(
         { db, activeToken, activeAccountId, ipcServer, tokenRotator },
@@ -981,106 +986,218 @@ export async function startDaemon(): Promise<DaemonHandle> {
   });
 
   /**
-   * Persist an OAuthResult into Sentinel's keychain + DB and broadcast
-   * login_complete. Shared between the browser-driven `start_login`
-   * path and the server-to-server `silent_sibling_login` path — both
-   * end with the same state transition (new credentials, new DB row,
-   * default alert seeded, login_complete broadcast), so centralizing
-   * the logic means they can't drift.
+   * Snapshot whatever account is currently active in Claude Code (~/.claude.json
+   * + CC's keychain slot) into Sentinel's own per-account store + DB, and mark it
+   * the active account. Called by `refresh_accounts` on every UI refresh so the
+   * active account stays tracked and switchable. Sentinel never runs the OAuth
+   * flow itself; this only mirrors credentials Claude Code already minted.
    *
-   * Reachable only via `start_login` → real PKCE callback → `startOAuthLogin`
-   * resolution. The in-process integration harness drives `start_login` but
-   * stops at the ack; completing the callback flow requires the `openAuthUrl`
-   * seam that Sprint 5 already wired into `oauth.integration.test.ts`.
-   * Wiring that seam through `start_login` for Sprint 6 is out of scope (see
-   * documentation/TEST_MIGRATION_PLAN.md), so the body rides on an ignore
-   * block. Each field it touches is exercised elsewhere (`upsertAccount`,
-   * `upsertAlert`, `writeSentinelCredentials`, `probeRateLimits`,
-   * `setActiveAccount`, `tokenRotator.refresh`).
+   * Returns the captured account, or null when Claude Code has no account
+   * signed in (no `~/.claude.json` active account, or an empty keychain slot).
    */
-  /* v8 ignore start */
-  const persistOAuthResult = (result: OAuthResult): void => {
-    const {
-      credentials,
-      email,
-      displayName,
+  const captureActiveClaudeAccount = (): {
+    credKey: string;
+    account: OAuthAccount;
+    creds: ClaudeCodeCredentials;
+    /** True when an active (removed=0) row already existed for this credKey. */
+    wasKnown: boolean;
+  } | null => {
+    const current = getActiveAccount();
+    if (!current) return null;
+    const credKey = sentinelKey(current.organizationUuid ?? '', current.accountUuid);
+    // Snapshot Claude Code's current keychain token into Sentinel's per-account
+    // store. Returns null when CC's slot is empty (effectively signed out).
+    const creds = captureCurrentCredentials(credKey);
+    if (!creds) return null;
+
+    // Keep the proxy's active-token reference in sync regardless of whether we
+    // track a row, so requests for the active Claude Code session route correctly.
+    activeToken.value = creds.accessToken;
+    activeAccountId.value = credKey;
+
+    // Only UPDATE accounts the user explicitly added (via setup-token). Never
+    // auto-create a row for whatever is currently logged into Claude Code — that
+    // produced surprise duplicate accounts on refresh. Accounts are added solely
+    // through the Add Account (setup-token) flow.
+    const existing = getAccount(db, credKey);
+    if (!existing) {
+      return { credKey, account: current, creds, wasKnown: false };
+    }
+
+    // Preserve planType/color from the existing row — don't re-derive planType
+    // from ~/.claude.json metadata, which Sentinel itself rewrites during
+    // switches and can be stale. No reactivateAccount() here — a passive refresh
+    // must not resurrect a soft-removed account (explicit add/switch does that).
+    upsertAccount(db, {
+      id: credKey,
+      accountUuid: current.accountUuid,
+      email: current.emailAddress,
+      displayName: current.displayName ?? '',
+      orgUuid: current.organizationUuid ?? '',
+      orgName: current.organizationName ?? '',
+      planType: existing.planType,
+      isActive: true,
+      createdAt: existing.createdAt,
+      color: existing.color,
+    });
+    const wasKnown = hasActiveAccount(db, credKey);
+    // Remove old-style duplicate rows for this email+org (pre-sentinelKey rows
+    // where id = accountUuid instead of orgUuid), scoped to the same org.
+    deleteStaleAccountRows(db, current.emailAddress, credKey, current.organizationUuid ?? '');
+
+    return { credKey, account: current, creds, wasKnown };
+  };
+
+  /**
+   * Store a long-lived token captured from `claude setup-token` as a Sentinel
+   * account. The token is `user:inference`-scoped (no refresh token, ~1yr).
+   *
+   * When `accountId` is given (re-authentication), the existing account's
+   * credential is refreshed in place — keeping its metadata — since the
+   * inference-only token can't be matched back to it by identity. Otherwise this
+   * is a new add: we try `fetchProfile` for identity and fall back to the
+   * user-provided `label`. A new account does NOT change Claude Code's active
+   * session (the user switches to it in Sentinel), except the very first account
+   * is made active so the proxy has a token to serve. Returns fields for the
+   * `login_complete` broadcast.
+   */
+  const storeSetupTokenAccount = async (
+    token: string,
+    label: string | undefined,
+    accountId?: string,
+  ): Promise<{ email: string; orgName?: string; wasKnown: boolean }> => {
+    // setup-token mints a long-lived (~1yr) inference-scoped token with no
+    // refresh token. Stamp a 330-day expiry so the refresher's validity check
+    // treats it as healthy until well before the real ~365-day expiry.
+    const expiresAt = Date.now() + 330 * 24 * 60 * 60 * 1000;
+
+    // Re-auth path: refresh the named account's credential in place.
+    const existingForReauth = accountId ? getAccount(db, accountId) : null;
+    if (accountId && existingForReauth) {
+      const prev = readSentinelCredentials(accountId);
+      const creds: ClaudeCodeCredentials = {
+        accessToken: token,
+        refreshToken: '',
+        expiresAt,
+        scopes: ['user:inference'],
+      };
+      if (prev?.subscriptionType) creds.subscriptionType = prev.subscriptionType;
+      if (prev?.rateLimitTier) creds.rateLimitTier = prev.rateLimitTier;
+      writeSentinelCredentials(accountId, creds);
+      reactivateAccount(db, accountId);
+      markAccountReauthenticated(accountId);
+      // Keep the proxy serving the fresh token if this account is active, and
+      // mirror it into Claude Code's keychain slot so CC's own local copy isn't a
+      // stale/expired oat token. (The proxy overrides the auth header anyway, but
+      // Claude Code checks its slot's local expiry before sending.)
+      if (accountId === activeAccountId.value) {
+        activeToken.value = token;
+        try {
+          writeClaudeCodeCredentials(creds);
+        } catch (err) {
+          console.warn(
+            `[SetupToken] Could not update Claude Code keychain: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      probeRateLimits(accountId, ipcServer, token);
+      tokenRotator.refresh();
+      void claudeAiUsageStore.refresh(accountId);
+      console.log(`[SetupToken] Re-authenticated ${existingForReauth.email} (${accountId})`);
+      return {
+        email: existingForReauth.email,
+        wasKnown: true,
+        ...(existingForReauth.orgName ? { orgName: existingForReauth.orgName } : {}),
+      };
+    }
+
+    // Sniff identity with the token itself. Inference-only tokens usually can't
+    // read /api/oauth/profile (fetchProfile returns an empty struct on 401), so
+    // fall back to the user's label. We do NOT read ~/.claude.json — it reflects
+    // a different, currently-active account and would mislabel this one.
+    const profile = await fetchProfile(token);
+    const hasProfile = Boolean(profile.email || profile.accountUuid || profile.orgUuid);
+
+    const accountUuid = profile.accountUuid || randomUUID();
+    const orgUuid = profile.orgUuid || '';
+    // Keep credKey consistent with accountUuid so the active-account key derived
+    // from ~/.claude.json (sentinelKey) matches the row/credential we store.
+    const credKey = sentinelKey(orgUuid, accountUuid) || accountUuid;
+    const email = profile.email || label || 'Claude account';
+    const displayName = profile.displayName || label || email;
+    const orgName = profile.orgName || '';
+
+    const creds: ClaudeCodeCredentials = {
+      accessToken: token,
+      refreshToken: '',
+      expiresAt,
+      scopes: ['user:inference'],
+    };
+    if (profile.subscriptionType) creds.subscriptionType = profile.subscriptionType;
+    if (profile.rateLimitTier) creds.rateLimitTier = profile.rateLimitTier;
+    writeSentinelCredentials(credKey, creds);
+
+    const wasKnown = hasActiveAccount(db, credKey);
+    reactivateAccount(db, credKey);
+
+    const acctMeta: OAuthAccount = {
       accountUuid,
-      orgUuid,
-      orgName,
-      subscriptionType,
-      organizationRole,
-      workspaceRole,
-      hasExtraUsageEnabled,
-    } = result;
-    const credKey = sentinelKey(orgUuid, accountUuid) || email;
-    const wasReauth = hasActiveAccount(db, credKey);
-
-    writeSentinelCredentials(credKey, credentials);
-
-    // Immediately probe rate-limit headers so the Usage tab shows the 5h
-    // quota bar on first render after add, rather than waiting for the
-    // first proxied Claude Code request (or the 300s background poller)
-    // to populate rateLimitStore. Mirrors what performSwitch does at the
-    // switch path.
-    probeRateLimits(credKey, ipcServer, credentials.accessToken);
-
-    const newAccount: OAuthAccount = {
-      accountUuid: accountUuid || email,
       emailAddress: email,
       organizationUuid: orgUuid,
-      hasExtraUsageEnabled,
-      billingType: subscriptionType ?? 'unknown',
+      hasExtraUsageEnabled: profile.hasExtraUsageEnabled,
+      billingType: profile.subscriptionType || 'unknown',
       accountCreatedAt: new Date().toISOString(),
       subscriptionCreatedAt: new Date().toISOString(),
       displayName,
-      organizationRole: (organizationRole as OAuthAccount['organizationRole']) || 'user',
-      workspaceRole,
+      organizationRole: (profile.organizationRole as OAuthAccount['organizationRole']) || 'user',
+      workspaceRole: profile.workspaceRole,
       organizationName: orgName,
     };
-
-    reactivateAccount(db, credKey);
-    markAccountReauthenticated(credKey);
-
-    const planType = inferPlanType(newAccount, credentials);
+    const existing = listAccounts(db).find((a) => a.id === credKey);
     upsertAccount(db, {
       id: credKey,
-      accountUuid: newAccount.accountUuid,
-      email: newAccount.emailAddress,
-      displayName: newAccount.displayName,
-      orgUuid: newAccount.organizationUuid,
-      orgName: newAccount.organizationName,
-      planType,
+      accountUuid,
+      email,
+      displayName,
+      orgUuid,
+      orgName,
+      planType: existing?.planType ?? inferPlanType(acctMeta, creds),
       isActive: false,
       createdAt: Date.now(),
-      color: null,
+      color: existing?.color ?? null,
     });
 
-    if (listAlerts(db, { scope: 'account', accountId: credKey }).length === 0) {
+    if (!wasKnown && listAlerts(db, { scope: 'account', accountId: credKey }).length === 0) {
       upsertAlert(db, { scope: 'account', accountId: credKey, thresholdPct: 95, enabled: true });
-      console.log(`[OAuth] Seeded default 95% alert for ${credKey}`);
+      console.log(`[SetupToken] Seeded default 95% alert for ${credKey}`);
     }
 
-    const current = getActiveAccount();
-    if (!current) {
-      setActiveAccount(newAccount);
-      activeToken.value = credentials.accessToken;
+    // First account ever → make it active so the proxy immediately has a token
+    // to serve (the credential lives in Sentinel's store, read back on startup),
+    // and mirror it into Claude Code's keychain slot so CC's local copy is fresh.
+    if (!getActiveAccount()) {
+      setActiveAccount(acctMeta);
+      activeToken.value = token;
+      activeAccountId.value = credKey;
+      try {
+        writeClaudeCodeCredentials(creds);
+      } catch (err) {
+        console.warn(
+          `[SetupToken] Could not update Claude Code keychain: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
 
+    probeRateLimits(credKey, ipcServer, token);
+    markAccountReauthenticated(credKey);
     tokenRotator.refresh();
-
-    // Kick an immediate usage fetch for the new account so the Usage
-    // tab renders real overage / extra-usage numbers on first open
-    // rather than waiting up to 30s for the next poll tick. Fire-and-
-    // forget: failures are surfaced via the store's own broadcast path
-    // (claude_ai_usage_updated with an error discriminator).
     void claudeAiUsageStore.refresh(credKey);
 
     console.log(
-      `[OAuth] Login complete for ${email} (org: ${orgName || '?'}, reauth: ${wasReauth}), broadcasting to ${ipcServer.connectedClients} client(s)`,
+      `[SetupToken] Stored ${email} (org: ${orgName || '?'}, profile: ${hasProfile}), broadcasting to ${ipcServer.connectedClients} client(s)`,
     );
-    ipcServer.broadcast({ type: 'login_complete', email, orgName, reauth: wasReauth });
+    return { email, wasKnown, ...(orgName ? { orgName } : {}) };
   };
-  /* v8 ignore stop */
 
   // Register IPC message handlers
   ipcServer.onMessage((msg, respond) => {
@@ -1430,38 +1547,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
       case 'refresh_accounts': {
         // Re-read ~/.claude.json and snapshot the current active account's
         // keychain token into Sentinel's own store so we can restore it later
-        // when switching back to this account from the UI.
-        const current = getActiveAccount();
-        if (current) {
-          const credKey = sentinelKey(current.organizationUuid ?? '', current.accountUuid);
-          const creds = captureCurrentCredentials(credKey);
-          // Preserve the existing planType from the DB — don't re-derive it from
-          // ~/.claude.json metadata, which may reflect a previous account's state
-          // (Sentinel itself writes hasExtraUsageEnabled during switches, so it can
-          // be stale when a different account becomes active). Only infer for new entries.
-          const allAcctsForRefresh = listAccounts(db);
-          const existingForRefresh = allAcctsForRefresh.find((a) => a.id === credKey);
-          upsertAccount(db, {
-            id: credKey,
-            accountUuid: current.accountUuid,
-            email: current.emailAddress,
-            displayName: current.displayName ?? '',
-            orgUuid: current.organizationUuid ?? '',
-            orgName: current.organizationName ?? '',
-            planType: existingForRefresh?.planType ?? inferPlanType(current, creds),
-            isActive: true,
-            createdAt: Date.now(),
-            color: existingForRefresh?.color ?? null,
-          });
-          if (creds) activeToken.value = creds.accessToken;
-          // Keep proxy rate-limit key in sync with active account
-          activeAccountId.value = credKey;
-
-          // Remove old-style duplicate rows for this email+org (pre-sentinelKey rows
-          // where id = accountUuid instead of orgUuid). Scoped to the same org_uuid
-          // so accounts in other orgs with the same email are left untouched.
-          deleteStaleAccountRows(db, current.emailAddress, credKey, current.organizationUuid ?? '');
-        }
+        // when switching back to this account from the UI. Shared with the
+        // import flow via captureActiveClaudeAccount (passive: does not seed
+        // alerts, probe rate limits, or resurrect a soft-removed account).
+        captureActiveClaudeAccount();
         const accounts = listAccounts(db);
         const active = getActiveAccount();
         const activeCredKey = active
@@ -1584,8 +1673,8 @@ export async function startDaemon(): Promise<DaemonHandle> {
           // Cover the legacy case where the entry was keyed by accountUuid
           // (pre-sentinelKey rows) rather than the sentinel id.
           if (a.accountUuid) purgeKey(a.accountUuid);
-          // Older entries were email-keyed (see SENTINEL_SERVICE fallback in
-          // persistOAuthResult's credKey). Clear those too when present.
+          // Older entries were email-keyed (legacy SENTINEL_SERVICE fallback
+          // before sentinelKey). Clear those too when present.
           if (a.email) purgeKey(a.email);
         }
         console.log(`[Sentinel] Purged keychain entries for ${seen.size} identifier(s).`);
@@ -2460,76 +2549,32 @@ export async function startDaemon(): Promise<DaemonHandle> {
         break;
       }
 
-      case 'cancel_login': {
-        if (loginAbortController) {
-          loginAbortController.abort();
-          loginAbortController = null;
-          console.log('[OAuth] Login cancelled by user.');
+      case 'store_setup_token': {
+        // Store a long-lived token captured from `claude setup-token` (run in
+        // the in-app terminal). Sentinel never runs the OAuth flow itself — it
+        // only persists the token the user obtained through Claude Code.
+        if (!/^sk-ant-oat01-/.test(msg.token)) {
+          respond({ requestType: 'store_setup_token', success: false, error: 'invalid-token' });
+          break;
         }
-        respond({ requestType: 'cancel_login', success: true });
-        break;
-      }
-
-      case 'start_login': {
-        // If a login is already pending, abort it silently before starting a new
-        // one. This happens when the user clicks Cancel in the UI (which only
-        // resets UI state) and then clicks Add Account again.
-        if (loginAbortController) {
-          loginAbortController.abort();
-          loginAbortController = null;
-          console.log('[OAuth] Aborting previous pending login to start a new one.');
-        }
-
-        const abortController = new AbortController();
-        loginAbortController = abortController;
-
-        // Respond immediately — the login is async and we broadcast when done
-        respond({ requestType: 'start_login', success: true });
-
-        // E2E seam: when SENTINEL_TEST_OAUTH_ECHO is set, intercept
-        // the authorize URL and broadcast it so the Playwright harness can
-        // extract the PKCE state and POST a synthetic callback to the
-        // loopback callback server. Off by default — production falls
-        // through to the platform browser launcher inside oauth.ts.
-        /* v8 ignore next 5 */
-        const testOauthEcho =
-          process.env.SENTINEL_TEST_OAUTH_ECHO === '1'
-            ? (url: string): void => {
-                ipcServer.broadcast({ type: 'test_oauth_url_opened', url });
-              }
-            : undefined;
-
-        startOAuthLogin({
-          signal: abortController.signal,
-          ...(msg.orgUuidHint ? { orgUuidHint: msg.orgUuidHint } : {}),
-          // When the UI requests incognito, open the OAuth URL in a
-          // private-mode browser window. Used for Add Account when the
-          // user is enrolling a different email/identity than any
-          // existing Sentinel account — claude.ai's "switch accounts"
-          // link on the OAuth consent page drops OAuth state in a
-          // default browser that already has a live sessionKey. A
-          // fresh cookie jar lets the user complete the flow cleanly.
-          ...(msg.incognito ? { incognito: true } : {}),
-          ...(testOauthEcho ? { openAuthUrl: testOauthEcho } : {}),
-        })
-          .then((result) => {
-            loginAbortController = null;
-            persistOAuthResult(result);
+        // Ack immediately; the store does a profile sniff (network) and then
+        // announces completion via login_complete — same async shape the old
+        // login path used.
+        respond({ requestType: 'store_setup_token', success: true });
+        void storeSetupTokenAccount(msg.token, msg.label, msg.accountId)
+          .then(({ email, orgName, wasKnown }) => {
+            ipcServer.broadcast({
+              type: 'login_complete',
+              email,
+              ...(orgName ? { orgName } : {}),
+              reauth: wasKnown,
+              imported: !wasKnown,
+            });
           })
           .catch((err: unknown) => {
-            loginAbortController = null;
             const errMsg = err instanceof Error ? err.message : String(err);
-            // Don't broadcast a failure when the login was intentionally aborted
-            // (user clicked Cancel or started a new login — the UI already knows).
-            if (errMsg === OAUTH_ABORTED) {
-              console.log('[OAuth] Login aborted — suppressing failure broadcast.');
-              return;
-            }
-            console.error('[OAuth] Login failed:', errMsg);
-            console.log(
-              `[OAuth] Broadcasting login_complete(failure) to ${ipcServer.connectedClients} client(s)`,
-            );
-            ipcServer.broadcast({ type: 'login_complete', email: '' });
+            console.error('[SetupToken] store failed:', errMsg);
+            ipcServer.broadcast({ type: 'login_complete', email: '', error: 'store-failed' });
           });
         break;
       }
@@ -3684,6 +3729,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
           accountId,
           acct.email,
           /* force */ true,
+          /* tokenRejected */ true, // a real upstream 401 — condemn even oat tokens
         ).finally(() => {
           inFlightAuthRefresh.delete(accountId);
         });
