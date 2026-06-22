@@ -441,25 +441,6 @@ describe('startup nullish defaults', () => {
   });
 });
 
-// ─── start_login with orgUuidHint + incognito ───────────────────────────────
-
-describe('start_login option variations', () => {
-  it('accepts orgUuidHint', async () => {
-    ctx = await startTestDaemon();
-    const r = await ctx.request({
-      type: 'start_login',
-      orgUuidHint: '00000000-0000-0000-0000-000000000abc',
-    });
-    expect(r.success).toBe(true);
-  });
-
-  it('accepts incognito=true', async () => {
-    ctx = await startTestDaemon();
-    const r = await ctx.request({ type: 'start_login', incognito: true });
-    expect(r.success).toBe(true);
-  });
-});
-
 // ─── list_alerts scope filter variations ─────────────────────────────────────
 
 describe('list_alerts scope variations', () => {

@@ -179,8 +179,8 @@ interface OverageMeterRowProps {
   /** User-configured Sentinel cap for the viewed account, or null if none
    *  is set. When null, the Sentinel sub-bar is suppressed. */
   sentinelCapUsd: number | null;
-  /** Sentinel account id — used to route the Reconnect CTA to the right
-   *  account via `start_login`. */
+  /** Sentinel account id. The Reconnect CTA navigates to the Accounts tab so the
+   *  user can re-add the account via the `claude setup-token` terminal. */
   accountId: string | null;
   /** Paused-state metadata for the viewed account (null when not paused). */
   pauseState: PausedState | null;
@@ -298,7 +298,7 @@ function OverageMeterRow({
             </p>
           </div>
           <button
-            onClick={() => void sendToSentinel({ type: 'start_login' }).catch(() => undefined)}
+            onClick={() => window.dispatchEvent(new CustomEvent('sentinel:open-add-account'))}
             className="shrink-0 text-[11px] font-semibold text-white bg-ios-blue hover:brightness-110 px-3 py-1.5 rounded-full transition"
           >
             Reconnect
@@ -395,7 +395,7 @@ function OverageMeterRow({
 
       {usageError === 'auth_expired' && accountId && (
         <button
-          onClick={() => void sendToSentinel({ type: 'start_login' }).catch(() => undefined)}
+          onClick={() => window.dispatchEvent(new CustomEvent('sentinel:open-add-account'))}
           className="w-full text-left text-[11px] text-ios-orange hover:underline"
         >
           Sign-in expired. Reconnect to refresh numbers →

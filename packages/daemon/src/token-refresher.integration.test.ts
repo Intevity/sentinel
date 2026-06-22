@@ -224,10 +224,81 @@ describe('token-refresher integration (real refresh path)', () => {
       expect(fake.requests().filter((r) => r.url === '/v1/oauth/token')).toHaveLength(1);
     });
 
-    it('returns error and broadcasts when there is no stored refresh token', async () => {
+    it('returns error and broadcasts when there are no stored credentials', async () => {
       const h = setup();
       // keychain file is empty — no stored creds for acct-1.
       const result = await refreshIfNeeded(h.deps, 'acct-1', 'a@b.com');
+
+      expect(result.success).toBe(false);
+      expect(result.needsReauth).toBe(true);
+      expect(h.broadcasts).toContainEqual(
+        expect.objectContaining({ type: 'token_refresh_failed', reason: 'expired' }),
+      );
+    });
+
+    it('treats a no-refresh-token account with a valid access token as healthy (setup-token)', async () => {
+      const h = setup();
+      const acctId = `acct-oat-${randomUUID()}`;
+      // `claude setup-token` accounts: long-lived access token, no refresh token.
+      writeSentinelCredentials(
+        acctId,
+        makeCreds({ refreshToken: '', expiresAt: Date.now() + 60 * 60 * 1000 }),
+      );
+      const result = await refreshIfNeeded(h.deps, acctId, 'oat@b.com');
+
+      expect(result.success).toBe(true);
+      expect(result.needsReauth).toBeFalsy();
+      // Not flagged, and no refresh call attempted.
+      expect(h.broadcasts.filter((m) => m.type === 'token_refresh_failed')).toHaveLength(0);
+      expect(fake.requests().filter((r) => r.url === '/v1/oauth/token')).toHaveLength(0);
+    });
+
+    it('flags a no-refresh-token account for re-auth once its access token expires', async () => {
+      const h = setup();
+      const acctId = `acct-oat-exp-${randomUUID()}`;
+      writeSentinelCredentials(
+        acctId,
+        makeCreds({ refreshToken: '', expiresAt: Date.now() - 1_000 }),
+      );
+      const result = await refreshIfNeeded(h.deps, acctId, 'oat@b.com');
+
+      expect(result.success).toBe(false);
+      expect(result.needsReauth).toBe(true);
+      expect(h.broadcasts).toContainEqual(
+        expect.objectContaining({ type: 'token_refresh_failed', reason: 'expired' }),
+      );
+    });
+
+    it('does NOT flag a no-refresh-token account on a routine force (manual refresh / startup heal)', async () => {
+      const h = setup();
+      const acctId = `acct-oat-force-${randomUUID()}`;
+      writeSentinelCredentials(
+        acctId,
+        makeCreds({ refreshToken: '', expiresAt: Date.now() + 60 * 60 * 1000 }),
+      );
+      // force=true but tokenRejected=false (no upstream 401): a manual refresh or
+      // startup heal must not "expire" a perfectly valid long-lived token.
+      const result = await refreshIfNeeded(h.deps, acctId, 'oat@b.com', /* force */ true);
+
+      expect(result.success).toBe(true);
+      expect(result.needsReauth).toBeFalsy();
+      expect(h.broadcasts.filter((m) => m.type === 'token_refresh_failed')).toHaveLength(0);
+    });
+
+    it('flags a no-refresh-token account when an upstream 401 rejects it (tokenRejected)', async () => {
+      const h = setup();
+      const acctId = `acct-oat-401-${randomUUID()}`;
+      writeSentinelCredentials(
+        acctId,
+        makeCreds({ refreshToken: '', expiresAt: Date.now() + 60 * 60 * 1000 }),
+      );
+      const result = await refreshIfNeeded(
+        h.deps,
+        acctId,
+        'oat@b.com',
+        /* force */ true,
+        /* tokenRejected */ true,
+      );
 
       expect(result.success).toBe(false);
       expect(result.needsReauth).toBe(true);

@@ -16,7 +16,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
@@ -45,17 +45,11 @@ export interface TestDaemonInit {
   seedAccounts?: SeedAccount[];
   /**
    * When set, writes ~/.claude.json with the matching seed as the active
-   * OAuthAccount. Must reference an id present in `seedAccounts`. Used by
-   * the switch-account flow to start in a known state.
+   * OAuthAccount AND seeds Claude Code's keychain slot with its credentials.
+   * Must reference an id present in `seedAccounts`. Used by the switch-account
+   * and import flows to start in a known "signed into Claude Code" state.
    */
   seedActiveId?: string;
-  /**
-   * Enable the start_login openAuthUrl echo seam. When true, the daemon
-   * broadcasts `test_oauth_url_opened` whenever a login begins, so tests
-   * can extract the PKCE state and POST a synthetic callback without
-   * driving a real browser.
-   */
-  oauthEcho?: boolean;
 }
 
 /**
@@ -206,6 +200,24 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
       organizationName: active.displayName ?? active.email,
     };
     writeFileSync(claudeJsonFile, JSON.stringify({ oauthAccount }, null, 2));
+
+    // Seed Claude Code's keychain slot (keyed by the OS username) for the
+    // active account — the import flow (`captureCurrentCredentials`) reads it
+    // to capture the signed-in account, mirroring a real `claude /login`.
+    const kc = JSON.parse(readFileSync(keychainFile, 'utf-8')) as Record<
+      string,
+      Record<string, string>
+    >;
+    if (!kc['Claude Code-credentials']) kc['Claude Code-credentials'] = {};
+    kc['Claude Code-credentials']![userInfo().username] = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: active.token,
+        refreshToken: `refresh-${active.id}`,
+        expiresAt: Date.now() + 3600_000,
+        scopes: ['user:profile', 'user:inference'],
+      },
+    });
+    writeFileSync(keychainFile, JSON.stringify(kc, null, 2));
   }
 
   // Write + sign the settings seed (see comment at `seedSettings`). The
@@ -244,7 +256,6 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
     SENTINEL_TEST_SETTINGS_FILE: settingsFile,
     SENTINEL_TEST_DAEMON_PORT: String(daemonPort),
     HOME: workDir,
-    ...(init.oauthEcho ? { SENTINEL_TEST_OAUTH_ECHO: '1' } : {}),
   };
 
   const daemon = spawn('node', [daemonBin], {

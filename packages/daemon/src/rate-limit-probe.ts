@@ -2,6 +2,7 @@ import { request as httpRequest } from 'http';
 import { getDaemonPort } from './proxy.js';
 import type { IpcServer } from './ipc.js';
 import { isOAuthForbiddenBodyString } from './claude-ai-usage.js';
+import { readSentinelCredentials } from './accounts.js';
 
 /**
  * Probe POST /v1/messages through the local proxy to obtain fresh
@@ -22,6 +23,15 @@ import { isOAuthForbiddenBodyString } from './claude-ai-usage.js';
  * Must be called AFTER the proxy server is listening.
  */
 export function probeRateLimits(accountId: string, ipcServer?: IpcServer, token?: string): void {
+  // Inference-only `claude setup-token` accounts can't be probed: their oat token
+  // is honored only for genuine Claude Code-shaped traffic, so this minimal probe
+  // request gets a 401 "Invalid authentication credentials" — which would trip
+  // the proxy's auth-failure handler and falsely flag the account as expired.
+  // Skip them; their rate-limit data comes from real Claude Code requests, whose
+  // headers the proxy already records. (Checks the passed token, else the stored
+  // credential — covers both the token-provided and active-token-fallback calls.)
+  const probeToken = token ?? readSentinelCredentials(accountId)?.accessToken;
+  if (probeToken?.startsWith('sk-ant-oat01-')) return;
   // Send a minimal inference request (max_tokens: 1) to obtain rate-limit headers.
   // count_tokens rejects OAuth tokens; /v1/messages accepts them as long as the
   // request includes the oauth-2025-04-20 beta flag and matches the shape

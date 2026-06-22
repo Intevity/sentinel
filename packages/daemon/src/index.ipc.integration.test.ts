@@ -1,8 +1,8 @@
 /**
  * Smoke coverage for every IPC handler in `index.ts`. One test per message
  * type where possible; related grouped. Detailed behavior paths
- * (`switch_account`, `start_login`, `update_settings` cascades, alerts) live
- * in the lifecycle + alerts sibling files.
+ * (`switch_account`, `store_setup_token`, `update_settings` cascades,
+ * alerts) live in the lifecycle + alerts sibling files.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { OAuthAccount } from '@sentinel/shared';
