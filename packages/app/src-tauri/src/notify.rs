@@ -79,6 +79,10 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, Runtime, Wry};
+// macOS delivers both alert and security banners through the raw
+// NSUserNotification path (see `deliver_notification`); only Windows/Linux
+// go through the plugin builder, so the extension trait is unused on macOS.
+#[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
 
 #[cfg(target_os = "windows")]
@@ -92,13 +96,13 @@ use block2::RcBlock;
 #[cfg(target_os = "macos")]
 use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
-use objc2::{msg_send, MainThreadMarker};
+use objc2::{msg_send, AllocAnyThread, MainThreadMarker};
 #[cfg(target_os = "macos")]
-use objc2_app_kit::NSApplicationDidBecomeActiveNotification;
+use objc2_app_kit::{NSApplicationDidBecomeActiveNotification, NSImage};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{
-    NSDictionary, NSNotification, NSNotificationCenter, NSNumber, NSString, NSUserNotification,
-    NSUserNotificationCenter,
+    NSData, NSDictionary, NSNotification, NSNotificationCenter, NSNumber, NSString,
+    NSUserNotification, NSUserNotificationCenter,
 };
 
 /// Right-hand action on every security banner. We still render it
@@ -160,7 +164,9 @@ pub fn display_os_notification<R: Runtime>(
         let _ = app; // activation routing uses the handle stashed in `init`
         match MainThreadMarker::new() {
             Some(_) => {
-                deliver_notification(&title, &body, event_id);
+                // Security events: always actionable; sound is handled
+                // separately by the caller via `play_system_sound`.
+                deliver_notification(&title, &body, event_id, None, true);
                 Ok(())
             }
             None => {
@@ -223,34 +229,58 @@ pub fn display_alert_notification<R: Runtime>(
     body: String,
     sound: Option<String>,
 ) -> Result<(), String> {
-    // Settings carry one sound list per platform (ALERT_SOUNDS /
-    // ALERT_SOUNDS_WINDOWS), but a stored name can predate the split —
-    // e.g. the macOS-default "Glass" persisted on a Windows install.
-    // winrt parses unknown names to *silence* (a toast without audio
-    // renders silent, not the default chime), so map them to "Default"
-    // instead. `None` stays silent on purpose — that's the user's
-    // explicit 'None' choice.
-    #[cfg(target_os = "windows")]
-    let sound = sound.map(|s| {
-        use std::str::FromStr;
-        if tauri_winrt_notification::Sound::from_str(&s).is_ok() {
-            s
-        } else {
-            "Default".to_string()
+    // macOS: deliver via the raw NSUserNotification path (same backend the
+    // plugin uses) so the banner picks up the forced `_identityImage` app
+    // icon — the plugin builder offers no hook to override it. Alerts are
+    // not click-routable, so they deliver as a plain (no-button) banner.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app; // delivery needs no handle on macOS
+        match MainThreadMarker::new() {
+            Some(_) => {
+                deliver_notification(&title, &body, None, sound.as_deref(), false);
+                diag_log(&format!("delivered alert title={title:?} sound={sound:?}"));
+                Ok(())
+            }
+            None => {
+                diag_log("display_alert_notification called off main thread — rejecting");
+                Err("display_alert_notification must be called on the main thread".into())
+            }
         }
-    });
-    let mut builder = app.notification().builder().title(&title).body(&body);
-    if let Some(s) = sound.as_deref() {
-        builder = builder.sound(s);
     }
-    match builder.show() {
-        Ok(()) => {
-            diag_log(&format!("delivered alert title={title:?} sound={sound:?}"));
-            Ok(())
+    // Windows / Linux: deliver through the notification plugin (winrt
+    // toast / XDG), which resolves the icon from the app bundle/AUMID.
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Settings carry one sound list per platform (ALERT_SOUNDS /
+        // ALERT_SOUNDS_WINDOWS), but a stored name can predate the split —
+        // e.g. the macOS-default "Glass" persisted on a Windows install.
+        // winrt parses unknown names to *silence* (a toast without audio
+        // renders silent, not the default chime), so map them to "Default"
+        // instead. `None` stays silent on purpose — that's the user's
+        // explicit 'None' choice.
+        #[cfg(target_os = "windows")]
+        let sound = sound.map(|s| {
+            use std::str::FromStr;
+            if tauri_winrt_notification::Sound::from_str(&s).is_ok() {
+                s
+            } else {
+                "Default".to_string()
+            }
+        });
+        let mut builder = app.notification().builder().title(&title).body(&body);
+        if let Some(s) = sound.as_deref() {
+            builder = builder.sound(s);
         }
-        Err(e) => {
-            diag_log(&format!("alert notification failed: {e}"));
-            Err(e.to_string())
+        match builder.show() {
+            Ok(()) => {
+                diag_log(&format!("delivered alert title={title:?} sound={sound:?}"));
+                Ok(())
+            }
+            Err(e) => {
+                diag_log(&format!("alert notification failed: {e}"));
+                Err(e.to_string())
+            }
         }
     }
 }
@@ -384,8 +414,25 @@ fn consume_recent_event_id() -> Option<i64> {
     }
 }
 
+/// Deliver a banner via the (deprecated) `NSUserNotification` API.
+///
+/// `actionable` controls the "Details" action button + the richer banner
+/// layout — `true` for security events (every one carries the affordance,
+/// see `display_os_notification`), `false` for usage alerts which have
+/// nowhere to route a click. `sound`, when set, plays the named system
+/// sound (alerts only; security events sound via `play_system_sound`).
+/// `event_id`, when set, is stashed for click-routing.
+///
+/// Both alert and security paths funnel through here so that every macOS
+/// banner gets `_identityImage` — the forced app icon — uniformly.
 #[cfg(target_os = "macos")]
-fn deliver_notification(title: &str, body: &str, event_id: Option<i64>) {
+fn deliver_notification(
+    title: &str,
+    body: &str,
+    event_id: Option<i64>,
+    sound: Option<&str>,
+    actionable: bool,
+) {
     let seq = NOTIFICATION_SEQ.fetch_add(1, Ordering::Relaxed);
     let identifier = format!("sentinel-notif-{seq}");
 
@@ -393,13 +440,25 @@ fn deliver_notification(title: &str, body: &str, event_id: Option<i64>) {
     notification.setIdentifier(Some(&NSString::from_str(&identifier)));
     notification.setTitle(Some(&NSString::from_str(title)));
     notification.setInformativeText(Some(&NSString::from_str(body)));
-    notification.setHasActionButton(true);
-    notification.setActionButtonTitle(&NSString::from_str(DETAILS_LABEL));
 
-    // Private KVC: forces the action button to render on the banner.
-    // Without this, macOS renders a stripped-down banner that has
-    // been observed to coalesce with subsequent notifications.
-    unsafe { set_private_shows_buttons(&notification) };
+    if actionable {
+        notification.setHasActionButton(true);
+        notification.setActionButtonTitle(&NSString::from_str(DETAILS_LABEL));
+
+        // Private KVC: forces the action button to render on the banner.
+        // Without this, macOS renders a stripped-down banner that has
+        // been observed to coalesce with subsequent notifications.
+        unsafe { set_private_shows_buttons(&notification) };
+    }
+
+    // Private KVC: forces *our* bundled icon onto the banner, overriding
+    // whatever icon macOS has cached in LaunchServices for the (unchanged)
+    // bundle id. Without it, banners can show a stale pre-redesign icon.
+    unsafe { set_private_identity_image(&notification) };
+
+    if let Some(name) = sound {
+        notification.setSoundName(Some(&NSString::from_str(name)));
+    }
 
     if let Some(id) = event_id {
         // Belt-and-suspenders: also attach the id as userInfo, so if
@@ -440,6 +499,34 @@ unsafe fn set_private_shows_buttons(notification: &NSUserNotification) {
     let key = NSString::from_str("_showsButtons");
     let yes = NSNumber::numberWithBool(true);
     let _: () = unsafe { msg_send![notification, setValue: &*yes, forKey: &*key] };
+}
+
+/// The redesigned app icon, embedded at build time. Used to force the
+/// notification banner icon rather than letting macOS resolve it from the
+/// bundle id's (stale) LaunchServices record. 512×512 master — macOS
+/// downsamples it for the banner.
+#[cfg(target_os = "macos")]
+static APP_ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
+
+/// SAFETY: calls `[notification setValue:<NSImage> forKey:@"_identityImage"]`
+/// via the Objective-C runtime. `_identityImage` is a private KVC key on
+/// `NSUserNotification` that overrides the app icon shown on the *left* of the
+/// banner (distinct from the public `contentImage`, which renders on the
+/// right). We set it explicitly because macOS otherwise draws whatever icon
+/// LaunchServices has cached for our bundle id `com.jeffwooden.claude-sentinel`
+/// — which, after an icon redesign with the bundle id kept for auto-update
+/// continuity, can be the old icon. Mirrors `set_private_shows_buttons`.
+/// Best-effort: a nil image (corrupt bytes) is logged and skipped, leaving
+/// macOS's default behaviour intact rather than crashing the notify path.
+#[cfg(target_os = "macos")]
+unsafe fn set_private_identity_image(notification: &NSUserNotification) {
+    let data = NSData::with_bytes(APP_ICON_PNG);
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        diag_log("set_private_identity_image: NSImage init returned nil — skipping");
+        return;
+    };
+    let key = NSString::from_str("_identityImage");
+    let _: () = unsafe { msg_send![notification, setValue: &*image, forKey: &*key] };
 }
 
 /// Append a timestamped line to `~/.sentinel/app.log`. Silently
