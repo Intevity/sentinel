@@ -1,17 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-    # No branch protection on `main` requires this workflow, so skipping
-    # docs-only commits doesn't strand any PR on a missing required check.
-    # (Verified via `gh api repos/.../branches/main/protection` → 404.)
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.gitignore'
-      - 'CHANGELOG.md'
+  # PR-only by design. The PR run already validates the exact commit that
+  # merges (no-ff merge of an up-to-date branch), so re-running quality
+  # checks + Playwright on push-to-main would only burn CI minutes. No
+  # branch protection requires a push-to-main run, so dropping it strands
+  # nothing. (Verified via `gh api repos/.../branches/main/protection` → 404.)
+  # Main-branch work that legitimately needs `push` lives elsewhere:
+  # deploy-site.yml (site) and release.yml (tag-triggered builds).
   pull_request:
     branches: [main]
     paths-ignore:
