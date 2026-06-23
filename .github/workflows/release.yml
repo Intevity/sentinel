@@ -101,15 +101,19 @@ jobs:
           - os: macos-latest
             platform: macos-arm64
             args: --target aarch64-apple-darwin
+            node_arch: arm64
           - os: macos-latest
             platform: macos-x64
             args: --target x86_64-apple-darwin
+            node_arch: x64
           - os: ubuntu-22.04
             platform: linux-x64
             args: ''
+            node_arch: x64
           - os: windows-latest
             platform: windows-x64
             args: ''
+            node_arch: x64
 
     steps:
       - uses: actions/checkout@v4
@@ -218,10 +222,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build better-sqlite3 native module
+      # Build the native addon for the TARGET arch, not the runner's host arch.
+      # Both macOS legs run on an arm64 runner, so the x86_64 leg cross-compiles
+      # (`--arch=x64`). Without this the x64 artifact shipped an arm64
+      # better_sqlite3.node and the Intel daemon crashed at dlopen with
+      # "incompatible architecture". node-gyp forwards --arch to the compiler;
+      # build-sidecar.mjs then asserts the addon matches the target and fails
+      # the build if this ever regresses.
+      - name: Build better-sqlite3 native module (target arch)
         run: |
           cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3
-          npm run build-release
+          npm run build-release -- --arch=${{ matrix.node_arch }}
         shell: bash
 
       # beforeBuildCommand in tauri.conf.json compiles the daemon (tsc) and
