@@ -26,9 +26,11 @@ describe('augmentedPath', () => {
   });
 
   it('dedupes dirs already present in the base PATH', () => {
-    const dirs = augmentedPath({ basePath: '/usr/local/bin:/custom', home, platform: 'linux' }).split(
-      ':',
-    );
+    const dirs = augmentedPath({
+      basePath: '/usr/local/bin:/custom',
+      home,
+      platform: 'linux',
+    }).split(':');
     expect(dirs.filter((d) => d === '/usr/local/bin')).toHaveLength(1);
     expect(dirs).toContain('/custom');
   });
@@ -44,10 +46,13 @@ describe('augmentedPath', () => {
     expect(augmentedPath({ basePath: base, home, platform: 'win32' })).toBe(base);
   });
 
-  it.skipIf(process.platform === 'win32')('uses process defaults when called with no options', () => {
-    // Exercises the `?? process.platform / process.env.PATH / os.homedir()` defaults.
-    expect(augmentedPath().split(':')).toContain('/usr/bin');
-  });
+  it.skipIf(process.platform === 'win32')(
+    'uses process defaults when called with no options',
+    () => {
+      // Exercises the `?? process.platform / process.env.PATH / os.homedir()` defaults.
+      expect(augmentedPath().split(':')).toContain('/usr/bin');
+    },
+  );
 });
 
 describe('clarifySpawnError', () => {

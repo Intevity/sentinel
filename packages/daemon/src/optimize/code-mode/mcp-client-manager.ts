@@ -135,7 +135,9 @@ export function clarifySpawnError(server: string, entry: unknown, err: unknown):
   const code = (err as NodeJS.ErrnoException).code;
   if (code !== 'ENOENT' && !/ ENOENT\b/.test(err.message)) return err;
   const command =
-    entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>)['command'] === 'string'
+    entry &&
+    typeof entry === 'object' &&
+    typeof (entry as Record<string, unknown>)['command'] === 'string'
       ? ((entry as Record<string, unknown>)['command'] as string)
       : 'the configured command';
   return new Error(
