@@ -206,4 +206,62 @@ describe('mcp-client-manager (stdio transport — real child process)', () => {
     expect(v.ok).toBe(false);
     if (!v.ok) expect(v.error.length).toBeGreaterThan(0);
   });
+
+  // The bug this fix targets: a GUI-launched daemon inherits a minimal PATH, so
+  // a bare-name launcher (uvx/npx) fails to spawn. Simulate that by stripping
+  // PATH down to a bogus dir and spawning the bare command `env` (which lives in
+  // a dir augmentedPath() restores). Without the augmentation, the child env
+  // would carry the bogus PATH and `env` would ENOENT — so this fails on regression.
+  it.skipIf(process.platform === 'win32')(
+    'rescues a bare-name spawn when the inherited PATH lacks the tool dir',
+    async () => {
+      const script = writeFakeMcpStdioScript();
+      cleanupScript = script.cleanup;
+      const original = process.env['PATH'];
+      process.env['PATH'] = '/nonexistent-sentinel-pathdir';
+      try {
+        manager = createMcpClientManager({
+          // `env` resolves via PATH, then execs node (absolute) on the script.
+          resolveEntry: (server) =>
+            server === 'fakestdio'
+              ? { command: 'env', args: [process.execPath, script.path] }
+              : undefined,
+          isAllowed: (server) => server === 'fakestdio',
+        });
+        const tools = await manager.listTools('fakestdio');
+        expect(tools.map((t) => t.name)).toEqual(FAKE_MCP_TOOLS.map((t) => t.name));
+      } finally {
+        if (original === undefined) delete process.env['PATH'];
+        else process.env['PATH'] = original;
+      }
+    },
+  );
+
+  // An explicit per-server env.PATH is an intentional override and must win over
+  // the augmentation. Pinning it to a useless dir makes the bare `env` ENOENT,
+  // which also exercises the clarified not-found message.
+  it.skipIf(process.platform === 'win32')(
+    'respects an explicit env.PATH and reports a clear not-found error',
+    async () => {
+      const script = writeFakeMcpStdioScript();
+      cleanupScript = script.cleanup;
+      manager = createMcpClientManager({
+        resolveEntry: (server) =>
+          server === 'fakestdio'
+            ? {
+                command: 'env',
+                args: [process.execPath, script.path],
+                env: { PATH: '/nonexistent-sentinel-pathdir' },
+              }
+            : undefined,
+        isAllowed: (server) => server === 'fakestdio',
+      });
+      const v = await manager.verify('fakestdio');
+      expect(v.ok).toBe(false);
+      if (!v.ok) {
+        expect(v.error).toContain("command 'env'");
+        expect(v.error).toContain('not found on PATH');
+      }
+    },
+  );
 });

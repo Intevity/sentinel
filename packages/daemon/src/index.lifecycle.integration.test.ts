@@ -466,25 +466,35 @@ describe('lifecycle — purge_all_data', () => {
 describe('lifecycle — shutdown_daemon', () => {
   it('responds success and schedules a process exit (intercepted for test)', async () => {
     ctx = await startTestDaemon();
-    // Stub process.exit BEFORE sending the message so the 100ms timer inside
-    // the handler hits our no-op instead of killing the vitest worker. Also
-    // shut the daemon down ourselves to prevent the DB-close timing race
-    // from the shutdown that runs alongside our handle.shutdown().
+    // Stub process.exit BEFORE sending the message so the handler's deferred
+    // 100ms timer hits our no-op instead of killing the vitest worker. We must
+    // keep the stub installed until that timer actually fires — restoring it
+    // earlier (e.g. right after the response) leaves a dangling real
+    // process.exit(0) that fires post-assert and vitest flags as an unhandled
+    // error. A promise lets us await the scheduled exit deterministically
+    // instead of racing it against teardown.
     const realExit = process.exit;
     let exitCalled = 0;
+    let resolveExit!: () => void;
+    const exited = new Promise<void>((resolve) => {
+      resolveExit = resolve;
+    });
     (process.exit as unknown) = ((_code?: number) => {
       exitCalled++;
+      resolveExit();
     }) as typeof process.exit;
     try {
       const resp = await ctx.request({ type: 'shutdown_daemon' });
       expect(resp.success).toBe(true);
-      // Cleanup before the 100ms timer fires; that way our stub never runs
-      // and background tasks don't interleave with the daemon's own cleanup.
-      await ctx.cleanup();
-      ctx = null;
+      // Wait for the handler's deferred process.exit(0) to land in our stub —
+      // this both proves the exit was scheduled and drains the timer so it
+      // can't fire against the restored real exit after the test ends.
+      await exited;
+      expect(exitCalled).toBe(1);
     } finally {
       (process.exit as unknown) = realExit;
+      await ctx?.cleanup();
+      ctx = null;
     }
-    expect(exitCalled).toBe(0); // cleanup beat the 100ms timer
   });
 });
