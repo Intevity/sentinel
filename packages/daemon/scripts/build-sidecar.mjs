@@ -40,11 +40,35 @@ const TRIPLE_TO_PKG = {
   'x86_64-pc-windows-msvc': 'node24-win-x64',
 };
 
+// Rust target triple → Node arch name. Used to assert the bundled native addon
+// matches the TARGET arch (not the build host) before pkg seals it in.
+const TRIPLE_TO_NODE_ARCH = {
+  'aarch64-apple-darwin': 'arm64',
+  'x86_64-apple-darwin': 'x64',
+  'x86_64-unknown-linux-gnu': 'x64',
+  'aarch64-unknown-linux-gnu': 'arm64',
+  'x86_64-pc-windows-msvc': 'x64',
+};
+
 function getRustTriple() {
   try {
     const out = execSync('rustc -vV', { encoding: 'utf8' });
     const match = /^host:\s+(\S+)/m.exec(out);
     return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Read the Mach-O/ELF architecture of a native binary via `file`, mapped to
+// Node's arch names ('x64' | 'arm64'). Returns null if unknown or `file` is
+// unavailable (e.g. Windows runners).
+function detectArch(filePath) {
+  try {
+    const out = execSync(`file -b "${filePath}"`, { encoding: 'utf8' });
+    if (/x86[_-]64/.test(out)) return 'x64';
+    if (/arm64|aarch64/.test(out)) return 'arm64';
+    return null;
   } catch {
     return null;
   }
@@ -84,6 +108,32 @@ console.log(`[build-sidecar] Output      : ${output}`);
 const req = createRequire(pathToFileURL(join(DAEMON_ROOT, 'package.json')));
 const nativeAddonSrc = req.resolve('better-sqlite3/build/Release/better_sqlite3.node');
 console.log(`[build-sidecar] Native addon: ${nativeAddonSrc}`);
+
+// Fail loudly if the addon's arch doesn't match the build target. The bundled
+// .node must match the TARGET arch, not the build host: both macOS legs build on
+// an arm64 runner, so the x86_64 leg must carry an x86_64 addon. A mismatch ships
+// a binary that dies at startup with "incompatible architecture" on dlopen — the
+// exact bug this guard prevents from regressing. (Skipped on Windows: no `file`,
+// and host==target there.)
+const targetArch = TRIPLE_TO_NODE_ARCH[triple];
+if (targetArch && process.platform !== 'win32') {
+  const addonArch = detectArch(nativeAddonSrc);
+  if (addonArch && addonArch !== targetArch) {
+    console.error(
+      `[build-sidecar] FATAL: better_sqlite3.node is ${addonArch}, but the build target is ` +
+        `${triple} (${targetArch}).`,
+    );
+    console.error(
+      '[build-sidecar] The native addon must match the target arch, not the build host. ' +
+        'Rebuild it for the target before packaging:',
+    );
+    console.error(
+      '  (cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && ' +
+        `npm run build-release -- --arch=${targetArch})`,
+    );
+    process.exit(1);
+  }
+}
 
 // Copy the .node file into dist/ so it sits beside the bundle.
 // pkg detects require('./better_sqlite3.node') in the bundle and embeds it.
