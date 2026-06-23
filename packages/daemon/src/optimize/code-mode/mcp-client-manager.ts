@@ -22,6 +22,8 @@
  * the cached client so the next call reconnects fresh.
  */
 
+import os from 'node:os';
+import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import {
   StdioClientTransport,
@@ -90,6 +92,58 @@ interface ManagedClient {
   idleTimer: NodeJS.Timeout | null;
 }
 
+/** A GUI-launched app (the Tauri shell that spawns this daemon) inherits a
+ *  minimal PATH, so bare-name launchers like `uvx`/`npx` — installed under
+ *  Homebrew or `~/.local/bin` — fail to spawn with ENOENT. Prepend the common
+ *  user-bin locations so bridged stdio MCP servers resolve the same way they do
+ *  from the user's shell. Mirrors the Rust `augmented_path()` in
+ *  `packages/app/src-tauri/src/setup_token.rs`. Pure + injectable for tests. */
+export function augmentedPath(
+  opts: { basePath?: string; home?: string; platform?: NodeJS.Platform } = {},
+): string {
+  const platform = opts.platform ?? process.platform;
+  const basePath = opts.basePath ?? process.env['PATH'] ?? '';
+  // Windows GUI apps inherit the full system+user PATH, so there's nothing to
+  // repair — and the unix bin dirs below wouldn't apply anyway.
+  if (platform === 'win32') return basePath;
+  const home = opts.home ?? os.homedir();
+  const extra = [
+    path.join(home, '.local', 'bin'),
+    path.join(home, '.bun', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+  ];
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  for (const p of [...extra, ...basePath.split(':')]) {
+    if (p.length > 0 && !seen.has(p)) {
+      seen.add(p);
+      parts.push(p);
+    }
+  }
+  return parts.join(':');
+}
+
+/** Rewrite a child-spawn ENOENT into a message that names the missing command
+ *  and points at the real cause, instead of the SDK's bare `spawn uvx ENOENT`.
+ *  After PATH augmentation a persistent ENOENT means the tool isn't installed,
+ *  so say so. Any other error passes through unchanged. */
+export function clarifySpawnError(server: string, entry: unknown, err: unknown): unknown {
+  if (!(err instanceof Error)) return err;
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code !== 'ENOENT' && !/ ENOENT\b/.test(err.message)) return err;
+  const command =
+    entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>)['command'] === 'string'
+      ? ((entry as Record<string, unknown>)['command'] as string)
+      : 'the configured command';
+  return new Error(
+    `MCP server '${server}': command '${command}' was not found on PATH — is it ` +
+      `installed? (Sentinel already searches Homebrew and ~/.local/bin.)`,
+  );
+}
+
 /** Narrow a raw `mcpServers[name]` entry into a transport. Throws a
  *  user-readable error for shapes we can't bridge. */
 function buildTransport(server: string, entry: unknown): ClientTransport {
@@ -109,12 +163,18 @@ function buildTransport(server: string, entry: unknown): ClientTransport {
             ),
           )
         : {};
+    // Default safe env plus the entry's own vars — matching how Claude
+    // Code itself spawns the server. Secrets stay in this process.
+    const stdioEnv: Record<string, string> = { ...getDefaultEnvironment(), ...env };
+    // Repair the minimal GUI-inherited PATH so uvx/npx resolve, unless the
+    // entry pinned its own PATH (that's an explicit user override — respect it).
+    if (env['PATH'] === undefined) {
+      stdioEnv['PATH'] = augmentedPath();
+    }
     return new StdioClientTransport({
       command: e['command'],
       args,
-      // Default safe env plus the entry's own vars — matching how Claude
-      // Code itself spawns the server. Secrets stay in this process.
-      env: { ...getDefaultEnvironment(), ...env },
+      env: stdioEnv,
       stderr: 'ignore',
     });
   }
@@ -177,7 +237,7 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
       await client.connect(transport as unknown as Parameters<typeof client.connect>[0]);
     } catch (err) {
       deps.onAvailability?.(server, false);
-      throw err;
+      throw clarifySpawnError(server, entry, err);
     }
     const managed: ManagedClient = { client, idleTimer: null };
     clients.set(server, managed);
