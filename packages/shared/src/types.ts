@@ -743,8 +743,10 @@ export interface Settings {
    *  header name (RFC 7230 token). The secret VALUE itself is stored
    *  in the OS keychain (service `Sentinel-otel-exporter`,
    *  account `default`), never in this file. Default
-   *  `'signoz-ingestion-key'`. */
-  otelExporterHeaderName: string;
+   *  `'signoz-ingestion-key'`; `null` means the field has been cleared,
+   *  so no auth header is attached — for backends that need no auth (the
+   *  auth header is only sent when both this name and a secret are set). */
+  otelExporterHeaderName: string | null;
   /** Stable per-install UUID emitted as `service.instance.id` on every
    *  Sentinel-originated OTEL payload. Generated once on first launch
    *  (via `crypto.randomUUID()`) and persisted in settings.json so it
@@ -782,11 +784,14 @@ export type ThemePreference = 'light' | 'dark' | 'system';
  *  write/clear and at counter milestones. The secret value itself is
  *  never included. */
 export interface OtelForwarderStatus {
-  /** True when a non-empty secret is present in the keychain. */
+  /** True when a non-empty secret is present in the keychain. A secret
+   *  is optional — no-auth backends forward without one — so this is
+   *  surfaced for display but is no longer required for `ready`. */
   secretConfigured: boolean;
-  /** True when forwarding is fully configured: master toggle on,
-   *  endpoint set, secret configured. Renders the green "ready"
-   *  affordance in the Settings UI. */
+  /** True when forwarding is ready to egress: master toggle on and an
+   *  endpoint set. A secret is NOT required (no-auth backends forward
+   *  without one). Renders the green "ready" affordance in the Settings
+   *  UI. */
   ready: boolean;
   /** Number of relayed requests that received a 2xx response, since
    *  daemon start. */

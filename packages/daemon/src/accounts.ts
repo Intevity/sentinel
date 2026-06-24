@@ -303,6 +303,21 @@ export function deleteCredentialBlob(service: string, account: string): void {
   deleteLinux(service, account);
 }
 
+/**
+ * Delete a credential blob from BOTH the current `Sentinel-*` service and the
+ * pre-rename `Claude Sentinel-*` legacy service. The migrating read
+ * (`readCredentialBlobMigrating`) copies a legacy value forward on a miss, so
+ * a delete that removed only the new entry would be undone on the very next
+ * read — the surviving legacy copy resurrects it. Clearing both is what makes
+ * a user-initiated delete actually stick. Idempotent: deleting an absent entry
+ * is a no-op on every platform.
+ */
+export function deleteCredentialBlobMigrating(service: string, account: string): void {
+  deleteCredentialBlob(service, account);
+  const legacy = LEGACY_SERVICE[service];
+  if (legacy !== undefined) deleteCredentialBlob(legacy, account);
+}
+
 // ─── macOS ───────────────────────────────────────────────────────────────────
 
 function readDarwin(service: string, account: string): string | null {
