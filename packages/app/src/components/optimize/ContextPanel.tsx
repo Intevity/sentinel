@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Network, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
+import { Network, ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react';
 import type {
   CodeModeAuditRow,
   CodeModeStatus,
@@ -12,6 +12,7 @@ import type {
 } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../../lib/ipc.js';
 import { formatTokens } from '../../lib/optimizeUnits.js';
+import { filterMcpInsights, type McpServerChipState } from '../../lib/mcpServerFilter.js';
 import { formatUsd } from './charts/shared.js';
 import { MetricTile } from './MetricTile.js';
 
@@ -113,6 +114,17 @@ export default function ContextPanel({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [pickedProjects, setPickedProjects] = useState<Record<string, string>>({});
+  // Context-tab list filters. `hideUnmanaged` defaults on so servers Sentinel
+  // can't bridge or disable (Claude Code plugins, remote connectors, enterprise
+  // settings) stay out of view until the user opts to see them.
+  const [search, setSearch] = useState('');
+  const [hideUnmanaged, setHideUnmanaged] = useState(true);
+  const [chips, setChips] = useState<McpServerChipState>({
+    global: false,
+    bridged: false,
+    unused: false,
+    recommended: false,
+  });
 
   const refresh = useCallback(async () => {
     const [c, s, a] = await Promise.all([
@@ -212,6 +224,10 @@ export default function ContextPanel({
     () => new Set(status.migrations.map((m) => m.server)),
     [status.migrations],
   );
+  const filtered = useMemo(
+    () => filterMcpInsights(costs.insights, { search, hideUnmanaged, chips }),
+    [costs.insights, search, hideUnmanaged, chips],
+  );
   const drifted = status.migrations.filter((m) => m.drifted);
   const mcpDefBytes = costs.insights.reduce((acc, i) => acc + i.definition.bytes, 0);
   const mcpDefTokens = costs.insights.reduce((acc, i) => acc + i.definition.estTokens, 0);
@@ -281,8 +297,34 @@ export default function ContextPanel({
         </p>
       )}
 
+      {costs.insights.length > 0 && (
+        <McpServerFilters
+          search={search}
+          onSearch={setSearch}
+          hideUnmanaged={hideUnmanaged}
+          onToggleHideUnmanaged={() => setHideUnmanaged((v) => !v)}
+          chips={chips}
+          onToggleChip={(key) => setChips((prev) => ({ ...prev, [key]: !prev[key] }))}
+        />
+      )}
+
+      {filtered.hiddenUnmanaged > 0 && (
+        <p className="mb-2 text-[11px] text-foreground/55">
+          {filtered.hiddenUnmanaged} server{filtered.hiddenUnmanaged === 1 ? '' : 's'} configured
+          outside Claude Code {filtered.hiddenUnmanaged === 1 ? 'is' : 'are'} hidden — Sentinel
+          can't bridge or disable {filtered.hiddenUnmanaged === 1 ? 'it' : 'them'}.{' '}
+          <button
+            type="button"
+            onClick={() => setHideUnmanaged(false)}
+            className="text-ios-blue hover:underline"
+          >
+            Show
+          </button>
+        </p>
+      )}
+
       <ul className="space-y-2">
-        {costs.insights.map((insight) => (
+        {filtered.visible.map((insight) => (
           <ServerRow
             key={insight.server}
             insight={insight}
@@ -300,9 +342,105 @@ export default function ContextPanel({
             No MCP servers detected in ~/.claude.json or recent traffic.
           </li>
         )}
+        {costs.insights.length > 0 && filtered.visible.length === 0 && (
+          <li className="rounded-md border border-border-subtle/10 px-3 py-2 text-xs text-foreground/55">
+            No servers match the current filters.
+          </li>
+        )}
       </ul>
 
       {status.migrations.length > 0 && <CodeModeStatusSection status={status} audit={audit} />}
+    </div>
+  );
+}
+
+/** Chip-style toggle for the Context tab's quick filters, mirroring the
+ *  SecurityRulesOverlay chips so the two surfaces look consistent. */
+function FilterChip({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={
+        active
+          ? 'rounded-full bg-ios-blue px-2 py-0.5 text-[11px] font-medium text-white'
+          : 'rounded-full bg-black/[0.05] px-2 py-0.5 text-[11px] text-black/70 dark:bg-white/[0.08] dark:text-white/80'
+      }
+    >
+      {label}
+    </button>
+  );
+}
+
+const CHIP_DEFS: Array<{ key: keyof McpServerChipState; label: string }> = [
+  { key: 'global', label: 'Global' },
+  { key: 'bridged', label: 'Bridged' },
+  { key: 'unused', label: 'Unused' },
+  { key: 'recommended', label: 'Recommended' },
+];
+
+/** Search box + quick-filter chips + the default-on "hide external servers"
+ *  toggle that sit above the MCP server list. Chips are an OR group; the
+ *  toggle removes servers Sentinel can't act on (`managed === false`). */
+function McpServerFilters({
+  search,
+  onSearch,
+  hideUnmanaged,
+  onToggleHideUnmanaged,
+  chips,
+  onToggleChip,
+}: {
+  search: string;
+  onSearch: (value: string) => void;
+  hideUnmanaged: boolean;
+  onToggleHideUnmanaged: () => void;
+  chips: McpServerChipState;
+  onToggleChip: (key: keyof McpServerChipState) => void;
+}): React.ReactElement {
+  return (
+    <div className="mb-3 space-y-2">
+      <div className="relative">
+        <Search
+          size={13}
+          strokeWidth={2.5}
+          className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-foreground/40"
+        />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => onSearch(e.target.value)}
+          placeholder="Search servers by name"
+          className="w-full rounded-lg border-none bg-black/[0.04] py-1.5 pl-7 pr-2 text-[12px] text-black focus:outline-none focus:ring-1 focus:ring-ios-blue dark:bg-white/[0.06] dark:text-white"
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {CHIP_DEFS.map((c) => (
+          <FilterChip
+            key={c.key}
+            label={c.label}
+            active={chips[c.key]}
+            onClick={() => onToggleChip(c.key)}
+          />
+        ))}
+        <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-[11px] text-foreground/70">
+          <input
+            type="checkbox"
+            checked={hideUnmanaged}
+            onChange={onToggleHideUnmanaged}
+            className="accent-ios-blue"
+          />
+          Hide external servers
+        </label>
+      </div>
     </div>
   );
 }
