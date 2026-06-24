@@ -20,6 +20,7 @@ import {
   readCredentialBlob,
   writeCredentialBlob,
   readCredentialBlobMigrating,
+  deleteCredentialBlobMigrating,
   readSentinelCredentials,
 } from './accounts.js';
 import { getOrCreateSettingsHmacKey, resetSettingsHmacKeyCache } from './settings-integrity.js';
@@ -87,6 +88,28 @@ describe('readCredentialBlobMigrating', () => {
     // throws and is swallowed — the legacy value must still come back.
     chmodSync(kcFile, 0o444);
     expect(readCredentialBlobMigrating('Sentinel-mcp-auth', 'default')).toBe('legacy-value');
+  });
+});
+
+describe('deleteCredentialBlobMigrating', () => {
+  it('deletes BOTH the new and the legacy entry so a migrating read cannot resurrect it', () => {
+    // Simulate a pre-rename secret that a migrating read already copied forward:
+    // both the new and the legacy service hold the value.
+    writeCredentialBlob('Sentinel-otel-exporter', 'default', 'new-value');
+    writeCredentialBlob('Claude Sentinel-otel-exporter', 'default', 'legacy-value');
+
+    deleteCredentialBlobMigrating('Sentinel-otel-exporter', 'default');
+
+    expect(readCredentialBlob('Sentinel-otel-exporter', 'default')).toBeNull();
+    expect(readCredentialBlob('Claude Sentinel-otel-exporter', 'default')).toBeNull();
+    // And the migrating read — the one that previously resurrected it — is empty.
+    expect(readCredentialBlobMigrating('Sentinel-otel-exporter', 'default')).toBeNull();
+  });
+
+  it('deletes the new entry and is a no-op for a service with no legacy mapping', () => {
+    writeCredentialBlob('Some-unmapped-service', 'default', 'v');
+    expect(() => deleteCredentialBlobMigrating('Some-unmapped-service', 'default')).not.toThrow();
+    expect(readCredentialBlob('Some-unmapped-service', 'default')).toBeNull();
   });
 });
 

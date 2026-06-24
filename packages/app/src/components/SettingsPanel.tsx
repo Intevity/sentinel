@@ -258,7 +258,11 @@ export default function SettingsPanel({
     void update({ otelExporterEndpoint: trimmed === '' ? null : trimmed }).catch(() => undefined);
   };
   const setOtelExporterHeaderName = (value: string): void => {
-    void update({ otelExporterHeaderName: value }).catch(() => undefined);
+    // Empty clears the field (-> null): no auth header is sent, for backends
+    // that need no auth. Mirrors the endpoint setter's empty -> null handling.
+    void update({ otelExporterHeaderName: value.trim() === '' ? null : value }).catch(
+      () => undefined,
+    );
   };
   const [requestLogClearConfirm, setRequestLogClearConfirm] = useState(false);
   const clearRequestLogsConfirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1008,13 +1012,14 @@ export default function SettingsPanel({
                     <input
                       id="otel-header-name"
                       type="text"
-                      value={settings.otelExporterHeaderName}
+                      value={settings.otelExporterHeaderName ?? ''}
                       onChange={(e) => setOtelExporterHeaderName(e.target.value)}
                       className="w-full px-2 py-1 text-[12px] border border-gray-300 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-black dark:text-white"
                     />
                     <p className="text-[11px] text-muted mt-1 leading-snug">
-                      The HTTP header name used to carry your ingestion key. SigNoz uses
-                      &quot;signoz-ingestion-key&quot;; other backends differ.
+                      The HTTP header name that carries your ingestion key. SigNoz uses
+                      &quot;signoz-ingestion-key&quot;; other backends differ. Leave this and the
+                      ingestion key empty for a backend that needs no auth.
                     </p>
                   </div>
                   <OtelSecretRow />

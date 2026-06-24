@@ -9,11 +9,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createServer, type Server, type IncomingMessage } from 'http';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { OtelForwarder } from './otel-forwarder.js';
 import {
   deleteOtelExporterSecret,
   hasOtelExporterSecret,
+  readOtelExporterSecret,
   writeOtelExporterSecret,
 } from './otel-forwarder-secret.js';
 import { DEFAULT_SETTINGS } from './settings.js';
@@ -154,7 +155,7 @@ describe('OtelForwarder', () => {
     }
   });
 
-  it('no-op when secret is missing: status reports not-ready', async () => {
+  it('no-auth backend: forwards without an auth header when no secret is configured (status ready)', async () => {
     const fake = await startFake(async () => ({ status: 200 }));
     try {
       const fw = new OtelForwarder({
@@ -163,14 +164,51 @@ describe('OtelForwarder', () => {
             otelForwardingEnabled: true,
             otelForwardMetrics: true,
             otelExporterEndpoint: fake.url,
+            // Header name is set, but with no secret there is nothing to carry,
+            // so no auth header is attached — this is the no-auth backend case.
+            otelExporterHeaderName: 'signoz-ingestion-key',
+          }),
+      });
+      const body = Buffer.from(JSON.stringify({ resourceMetrics: [{ tag: 'no-auth-marker' }] }));
+      fw.forward('/v1/metrics', 'application/json', body);
+
+      await waitFor(() => fw.getStatus().sent === 1);
+
+      // A missing secret no longer gates egress — the body is still forwarded.
+      expect(fake.received).toHaveLength(1);
+      const captured = fake.received[0]!;
+      expect(captured.body.toString('utf-8')).toBe(body.toString('utf-8'));
+      // ...but no auth header is sent without a secret.
+      expect(captured.headers['signoz-ingestion-key']).toBeUndefined();
+      const status = fw.getStatus();
+      expect(status.secretConfigured).toBe(false);
+      expect(status.ready).toBe(true);
+    } finally {
+      await stopFake(fake);
+    }
+  });
+
+  it('no-auth backend: header name cleared to null suppresses the auth header even with a secret stored', async () => {
+    writeOtelExporterSecret('orphan-secret');
+    const fake = await startFake(async () => ({ status: 200 }));
+    try {
+      const fw = new OtelForwarder({
+        getSettings: () =>
+          makeSettings({
+            otelForwardingEnabled: true,
+            otelForwardMetrics: true,
+            otelExporterEndpoint: fake.url,
+            otelExporterHeaderName: null,
           }),
       });
       fw.forward('/v1/metrics', 'application/json', Buffer.from('{}'));
-      await new Promise((r) => setTimeout(r, 50));
-      expect(fake.received).toHaveLength(0);
-      const status = fw.getStatus();
-      expect(status.secretConfigured).toBe(false);
-      expect(status.ready).toBe(false);
+      await waitFor(() => fw.getStatus().sent === 1);
+      expect(fake.received).toHaveLength(1);
+      // No header name means no auth header — the stored secret is not leaked
+      // under some default name.
+      const headerNames = Object.keys(fake.received[0]!.headers);
+      expect(headerNames).not.toContain('signoz-ingestion-key');
+      expect(fake.received[0]!.headers['signoz-ingestion-key']).toBeUndefined();
     } finally {
       await stopFake(fake);
     }
@@ -186,6 +224,33 @@ describe('OtelForwarder', () => {
     deleteOtelExporterSecret();
     fw.onSecretChanged();
     expect(fw.getStatus().secretConfigured).toBe(false);
+  });
+
+  it('clear removes a pre-rename (legacy) secret instead of resurrecting it on the next read', () => {
+    // Reproduces the Clear-button bug: a key stored before the
+    // "Claude Sentinel" -> "Sentinel" rename lives under the legacy keychain
+    // service. The migrating read copies it forward, so a delete that skipped
+    // the legacy entry would let the next status read resurrect it.
+    const kchain = process.env.SENTINEL_TEST_KEYCHAIN_FILE!;
+    writeFileSync(
+      kchain,
+      JSON.stringify({ 'Claude Sentinel-otel-exporter': { default: 'legacy-key-value' } }),
+    );
+
+    // The migrating read finds the legacy value and copies it forward to the
+    // new service — now both entries exist on disk.
+    expect(readOtelExporterSecret()).toBe('legacy-key-value');
+    expect(hasOtelExporterSecret()).toBe(true);
+
+    // User clicks Clear.
+    deleteOtelExporterSecret();
+
+    // It must stay gone — no resurrection from the surviving legacy copy.
+    expect(hasOtelExporterSecret()).toBe(false);
+    expect(readOtelExporterSecret()).toBeNull();
+    const raw = JSON.parse(readFileSync(kchain, 'utf-8')) as Record<string, Record<string, string>>;
+    expect(raw['Sentinel-otel-exporter']?.default).toBeUndefined();
+    expect(raw['Claude Sentinel-otel-exporter']?.default).toBeUndefined();
   });
 
   it('upstream 4xx: failed counter increments and lastForwardErr is populated', async () => {
@@ -275,7 +340,7 @@ describe('OtelForwarder', () => {
     }
   });
 
-  it('testConnection reports not-configured paths cleanly', async () => {
+  it('testConnection: errors without an endpoint, probes no-auth without a secret, carries the header once set', async () => {
     const fw = new OtelForwarder({ getSettings: () => DEFAULT_SETTINGS });
     const noEndpoint = await fw.testConnection();
     expect(noEndpoint.ok).toBe(false);
@@ -289,17 +354,21 @@ describe('OtelForwarder', () => {
             otelExporterHeaderName: 'k',
           }),
       });
+      // No secret: the probe still POSTs (no-auth backend), without an auth header.
       const noSecret = await fw2.testConnection();
-      expect(noSecret.ok).toBe(false);
-      expect(noSecret.message).toBe('no secret stored');
+      expect(noSecret.ok).toBe(true);
+      expect(noSecret.status).toBe(200);
+      expect(fake.received).toHaveLength(1);
+      expect(fake.received[0]!.url).toBe('/v1/metrics');
+      expect(fake.received[0]!.headers.k).toBeUndefined();
+      // With a secret stored, the probe carries the auth header.
       writeOtelExporterSecret('test-key');
       const okResult = await fw2.testConnection();
       expect(okResult.ok).toBe(true);
       expect(okResult.status).toBe(200);
-      // Probe must hit /v1/metrics and carry the auth header.
-      expect(fake.received).toHaveLength(1);
-      expect(fake.received[0]!.url).toBe('/v1/metrics');
-      expect(fake.received[0]!.headers.k).toBe('test-key');
+      expect(fake.received).toHaveLength(2);
+      expect(fake.received[1]!.url).toBe('/v1/metrics');
+      expect(fake.received[1]!.headers.k).toBe('test-key');
     } finally {
       await stopFake(fake);
     }

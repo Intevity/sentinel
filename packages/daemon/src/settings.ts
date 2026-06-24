@@ -756,10 +756,17 @@ function coerce(raw: unknown): Settings {
       }
     }
   }
-  if (typeof obj['otelExporterHeaderName'] === 'string') {
+  if (obj['otelExporterHeaderName'] === null) {
+    // Explicit clear — no auth header. Round-trips a persisted null so it
+    // doesn't silently revert to the default (`next` is seeded from defaults).
+    next.otelExporterHeaderName = null;
+  } else if (typeof obj['otelExporterHeaderName'] === 'string') {
     const candidate = (obj['otelExporterHeaderName'] as string).trim();
     if (candidate === '') {
-      next.otelExporterHeaderName = DEFAULT_SETTINGS.otelExporterHeaderName;
+      // Empty means cleared, not "reset to default" — lets users forward to
+      // a no-auth backend (the auth header is only sent when both the name
+      // and a secret are present).
+      next.otelExporterHeaderName = null;
     } else if (HTTP_HEADER_NAME_RE.test(candidate)) {
       next.otelExporterHeaderName = candidate;
     }

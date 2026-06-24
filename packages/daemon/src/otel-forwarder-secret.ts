@@ -11,7 +11,7 @@
  * install for v1, so the account key is the constant `'default'`.
  */
 import {
-  deleteCredentialBlob,
+  deleteCredentialBlobMigrating,
   readCredentialBlobMigrating,
   writeCredentialBlob,
 } from './accounts.js';
@@ -28,7 +28,11 @@ export function writeOtelExporterSecret(value: string): void {
 }
 
 export function deleteOtelExporterSecret(): void {
-  deleteCredentialBlob(OTEL_SERVICE, OTEL_ACCOUNT);
+  // Migrating delete: also clears the pre-rename `Claude Sentinel-otel-exporter`
+  // entry. Otherwise the migrating read in `readOtelExporterSecret` would copy
+  // the legacy value forward again on the next status check and the secret
+  // would reappear right after the user cleared it.
+  deleteCredentialBlobMigrating(OTEL_SERVICE, OTEL_ACCOUNT);
 }
 
 export function hasOtelExporterSecret(): boolean {

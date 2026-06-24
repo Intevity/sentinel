@@ -78,8 +78,10 @@ export class OtelForwarder {
 
   /** Receiver and emitter call this. Fire-and-forget: never awaited.
    *  Drops silently when forwarding is disabled, the relevant
-   *  metrics/logs toggle is off, the endpoint is unset, or no secret
-   *  is configured — so callers don't need to gate themselves. */
+   *  metrics/logs toggle is off, or the endpoint is unset — so callers
+   *  don't need to gate themselves. A secret is optional: no-auth
+   *  backends forward with no auth header (the header is attached only
+   *  when both the header name and a secret are present). */
   forward(path: OtelForwardPath, contentType: string, body: Buffer): void {
     const s = this.deps.getSettings();
     if (!s.otelForwardingEnabled) return;
@@ -87,7 +89,6 @@ export class OtelForwarder {
     if (path === '/v1/logs' && !s.otelForwardLogs) return;
     if (!s.otelExporterEndpoint) return;
     const secret = this.getSecretCached();
-    if (!secret) return;
 
     const cap = this.deps.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT;
     if (this.inFlight >= cap) {
@@ -121,7 +122,9 @@ export class OtelForwarder {
     const secretConfigured = hasOtelExporterSecret();
     return {
       secretConfigured,
-      ready: s.otelForwardingEnabled && s.otelExporterEndpoint !== null && secretConfigured,
+      // A secret is optional — no-auth backends forward without one — so
+      // readiness only needs the master toggle and an endpoint.
+      ready: s.otelForwardingEnabled && s.otelExporterEndpoint !== null,
       sent: this.sent,
       dropped: this.dropped,
       failed: this.failed,
@@ -141,10 +144,8 @@ export class OtelForwarder {
     if (!s.otelExporterEndpoint) {
       return { ok: false, status: null, message: 'no endpoint configured' };
     }
+    // Secret is optional: a no-auth backend is probed without an auth header.
     const secret = readOtelExporterSecret();
-    if (!secret) {
-      return { ok: false, status: null, message: 'no secret stored' };
-    }
     const body = Buffer.from(JSON.stringify({ resourceMetrics: [] }), 'utf-8');
     return this.dispatchOnce(
       s.otelExporterEndpoint,
@@ -165,8 +166,8 @@ export class OtelForwarder {
 
   private async dispatch(
     endpointBase: string,
-    headerName: string,
-    secret: string,
+    headerName: string | null,
+    secret: string | null,
     path: OtelForwardPath,
     contentType: string,
     body: Buffer,
@@ -193,8 +194,8 @@ export class OtelForwarder {
 
   private async dispatchOnce(
     endpointBase: string,
-    headerName: string,
-    secret: string,
+    headerName: string | null,
+    secret: string | null,
     path: OtelForwardPath,
     contentType: string,
     body: Buffer,
@@ -204,14 +205,20 @@ export class OtelForwarder {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), this.deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     try {
+      // The auth header is attached only when BOTH the header name and a
+      // secret are present. A no-auth backend (either field cleared) is
+      // forwarded to without it.
+      const headers: Record<string, string> = {
+        'Content-Type': contentType || 'application/json',
+      };
+      if (headerName && secret) {
+        headers[headerName] = secret;
+      }
       // Buffer extends Uint8Array, which is a valid fetch body. Cast to
       // unknown first to dodge platform-typing differences (DOM vs Node).
       const res = await fetchFn(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': contentType || 'application/json',
-          [headerName]: secret,
-        },
+        headers,
         body: body as unknown as Uint8Array,
         signal: ac.signal,
       });

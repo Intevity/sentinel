@@ -401,11 +401,14 @@ describe('settings', () => {
       );
     });
 
-    it('OTEL: empty header name resets to the default rather than wiping', () => {
+    it('OTEL: empty header name clears to null (no auth header) rather than reverting to default', () => {
       writeRawWithSig(path, JSON.stringify({ otelExporterHeaderName: '' }));
-      expect(loadSettings(path).otelExporterHeaderName).toBe(
-        DEFAULT_SETTINGS.otelExporterHeaderName,
-      );
+      expect(loadSettings(path).otelExporterHeaderName).toBe(null);
+    });
+
+    it('OTEL: a persisted null header name round-trips to null (cleared field stays cleared)', () => {
+      writeRawWithSig(path, JSON.stringify({ otelExporterHeaderName: null }));
+      expect(loadSettings(path).otelExporterHeaderName).toBe(null);
     });
 
     it('OTEL: round-trips the boolean toggles', () => {
