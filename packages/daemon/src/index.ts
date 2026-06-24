@@ -102,6 +102,9 @@ import { attachWebhookToIpc } from './alerting/webhook.js';
 import { createIncidentReplayRecorder } from './security/incident-replay.js';
 import { redactSecretsInString } from './security/detectors.js';
 import { createClaudeSyncEngine } from './security/permissions/claude-sync.js';
+import { createSandboxSyncEngine } from './security/sandbox/sandbox-sync.js';
+import { createSandboxRuntime } from './security/sandbox/sandbox-runtime.js';
+import { resolvePlatformPaths } from './security/sandbox/platform-paths.js';
 import { createOtelSettingsWatcher } from './otel-settings-watcher.js';
 import { repatchClaudeOtelSettings } from './otel-settings-patch.js';
 import {
@@ -1824,6 +1827,34 @@ export async function startDaemon(): Promise<DaemonHandle> {
             claudeSyncEngine.stop();
           }
         }
+        // Sandbox (Leg A) sync lifecycle, mirroring the Claude Code sync toggle
+        // above: start/stop on the `syncToClaudeCode` transition; push when the
+        // policy content changes while sync stays on.
+        {
+          const prevPol = prev.isolationPolicy;
+          const nextPol = next.isolationPolicy;
+          if (!prevPol.syncToClaudeCode && nextPol.syncToClaudeCode) {
+            void sandboxSyncEngine.start().catch((err: unknown) => {
+              console.error('[SandboxSync] start failed:', err);
+            });
+          } else if (prevPol.syncToClaudeCode && !nextPol.syncToClaudeCode) {
+            sandboxSyncEngine.stop();
+          } else if (
+            nextPol.syncToClaudeCode &&
+            JSON.stringify(prevPol) !== JSON.stringify(nextPol)
+          ) {
+            void sandboxSyncEngine.pushNow().catch((err: unknown) => {
+              console.error('[SandboxSync] push failed:', err);
+            });
+          }
+          // Leg B: reconcile the sandbox runtime (initialize/reset/re-init)
+          // whenever any part of the policy changes.
+          if (JSON.stringify(prevPol) !== JSON.stringify(nextPol)) {
+            void sandboxRuntime.refresh().catch((err: unknown) => {
+              console.error('[Sandbox] refresh failed:', err);
+            });
+          }
+        }
         ipcServer.broadcast({ type: 'settings_changed', settings: next });
         respond({ requestType: 'update_settings', success: true, data: next });
         break;
@@ -2088,6 +2119,32 @@ export async function startDaemon(): Promise<DaemonHandle> {
           requestType: 'get_claude_sync_status',
           success: true,
           data: claudeSyncEngine.getStatus(),
+        });
+        break;
+      }
+
+      case 'sandbox_sync_pull': {
+        // Fire-and-forget; the engine broadcasts `sandbox_sync_status` with the
+        // end-state. Mode is honoured by first-enable only (see engine).
+        void sandboxSyncEngine.pullNow(msg.mode ?? 'merge');
+        respond({ requestType: 'sandbox_sync_pull', success: true });
+        break;
+      }
+
+      case 'get_sandbox_status': {
+        respond({
+          requestType: 'get_sandbox_status',
+          success: true,
+          data: sandboxSyncEngine.getStatus(),
+        });
+        break;
+      }
+
+      case 'get_sandbox_capability': {
+        respond({
+          requestType: 'get_sandbox_capability',
+          success: true,
+          data: sandboxRuntime.getStatus(),
         });
         break;
       }
@@ -3426,6 +3483,18 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // connect BEFORE the server is bridged (post-migration connects read the
   // stash in settings instead). Cleared in the handler's finally block.
   const codeModePendingEntries = new Map<string, unknown>();
+  // Sandbox feature, Leg B: wraps the code-mode MCP stdio children below in the
+  // OS sandbox when `isolationPolicy.enforceCodeMode` is on and the platform can
+  // enforce it. `refresh()` (called at startup and on settings change) owns the
+  // SandboxManager lifecycle; `wrapStdioCommand` returns null to run a child
+  // unsandboxed wherever the sandbox can't apply (degrade posture).
+  const sandboxRuntime = createSandboxRuntime({
+    getPolicy: () => currentSettings.isolationPolicy,
+    platformPaths: resolvePlatformPaths(),
+  });
+  void sandboxRuntime.refresh().catch((err: unknown) => {
+    console.error('[Sandbox] initial refresh failed:', err);
+  });
   // Code-mode bridge: the daemon-side MCP client manager plus the
   // `/code-mode/call` HTTP handler the proxy routes to. The allowlist is the
   // recorded migrations — the endpoint can never reach a server the user
@@ -3440,6 +3509,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
       if (available) codeModeUnavailable.delete(key);
       else codeModeUnavailable.add(key);
     },
+    wrapStdioCommand: (command, args, env) => sandboxRuntime.wrapStdioCommand(command, args, env),
   });
   const codeModeHandler = createCodeModeHandler({
     manager: codeModeManager,
@@ -3527,6 +3597,27 @@ export async function startDaemon(): Promise<DaemonHandle> {
     ipcServer,
     getSentinelExporterEndpoint: () => currentSettings.otelExporterEndpoint,
   });
+
+  // Sandbox feature, Leg A: sync the canonical isolation policy into Claude
+  // Code's own native sandbox at `settings.json#/sandbox` (same file as the
+  // OTEL watcher above). Started when `isolationPolicy.syncToClaudeCode` is on;
+  // a policy edit fires pushNow. A file-side edit pulls back (merge) and
+  // updates the policy via setPolicy, which persists + re-broadcasts settings.
+  const sandboxSyncEngine = createSandboxSyncEngine({
+    db,
+    ipcServer,
+    settingsPath: claudeSettingsPath,
+    getPolicy: () => currentSettings.isolationPolicy,
+    setPolicy: (p) => {
+      currentSettings = writeSettings({ isolationPolicy: p });
+      ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+    },
+  });
+  if (currentSettings.isolationPolicy.syncToClaudeCode) {
+    void sandboxSyncEngine.start().catch((err: unknown) => {
+      console.error('[SandboxSync] initial start failed:', err);
+    });
+  }
 
   // Optimize feature: agents-sync engine. Always started — capture
   // can be off (no new tool_calls accumulate), but if the user has
@@ -3956,6 +4047,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
     optimizationAnalyzer.stop();
     agentsSyncEngine.stop();
     otelSettingsWatcher.stop();
+    // Stop the sandbox engines so their watchers/timers don't outlive the
+    // daemon (a leaked watcher's setPolicy would otherwise write through the
+    // current settings file after shutdown).
+    sandboxSyncEngine.stop();
+    await sandboxRuntime.reset();
     ipcServer.close();
     await new Promise<void>((resolve) => {
       httpServer.close(() => resolve());

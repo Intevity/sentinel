@@ -13,8 +13,9 @@ import { useSecurityAllowlist } from '../hooks/useSecurityAllowlist.js';
 import { useInlineConfirm } from '../hooks/useInlineConfirm.js';
 import { sendToSentinel } from '../lib/ipc.js';
 import OverlayPanel from './OverlayPanel.js';
+import IsolationPanel from './IsolationPanel.js';
 
-export type SecurityOverlayTab = 'rules' | 'allowlist';
+export type SecurityOverlayTab = 'rules' | 'allowlist' | 'isolation';
 
 interface SecurityRulesOverlayProps {
   onClose: () => void;
@@ -108,6 +109,7 @@ export default function SecurityRulesOverlay({
           [
             { id: 'rules', label: 'Tool permissions' },
             { id: 'allowlist', label: 'Scanning allowlist' },
+            { id: 'isolation', label: 'Isolation' },
           ] as Array<{ id: SecurityOverlayTab; label: string }>
         ).map((tab) => {
           const active = tab.id === activeTab;
@@ -146,7 +148,9 @@ export default function SecurityRulesOverlay({
             onRunSetupWizard={onRunSetupWizard}
           />
         )}
-        {activeTab === 'rules' ? (
+        {activeTab === 'isolation' ? (
+          <IsolationPanel settings={settings} updateSettings={updateSettings} />
+        ) : activeTab === 'rules' ? (
           permsOn ? (
             <PermissionRulesView />
           ) : (

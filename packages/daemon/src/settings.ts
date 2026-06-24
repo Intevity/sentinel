@@ -27,12 +27,14 @@ import type {
   McpInstallRecord,
   CodeModeMigration,
   OptimizeSubTab,
+  IsolationPolicy,
 } from '@sentinel/shared';
 import {
   SECURITY_CONTEXT_WINDOW_CHARS,
   VALID_DETECTOR_TIERS,
   snapRangeToLadder,
 } from '@sentinel/shared';
+import { isValidSandboxDomain } from './security/sandbox/policy-map.js';
 import { signSettings, verifySettings } from './settings-integrity.js';
 
 /** Default settings-file path. Tests can override via
@@ -103,6 +105,14 @@ export const DEFAULT_SETTINGS: Settings = {
   securityMuteScanSkipped: false,
   lastScanBenchmark: null,
   claudeCodeSyncEnabled: false,
+  isolationPolicy: {
+    enabled: false,
+    syncToClaudeCode: false,
+    enforceCodeMode: false,
+    network: { allowedDomains: [], deniedDomains: [] },
+    filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] },
+    credentials: { files: [], envVars: [] },
+  },
   securityIncidentReplay: false,
   logLevel: 'info',
   requestLoggingEnabled: false,
@@ -292,6 +302,89 @@ function coerceCodeModeMigrations(raw: unknown): CodeModeMigration[] {
       });
     }
   }
+  return out;
+}
+
+/** Keep only non-empty, trimmed strings from an arbitrary value. Used for the
+ *  isolation policy's path / env-var / command arrays. */
+function coerceStringList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const v of raw) {
+    if (typeof v === 'string') {
+      const t = v.trim();
+      if (t !== '') out.push(t);
+    }
+  }
+  return out;
+}
+
+/**
+ * Coerce arbitrary JSON into a clean {@link IsolationPolicy}, dropping malformed
+ * entries and invalid domain patterns so what we persist is always safe to
+ * project onto both sandbox targets. Invalid domains are filtered here (the
+ * canonical boundary) using the package's stricter rules, so the UI never has
+ * to re-validate stored state. Mirrors the defensive style of
+ * `coerceCodeModeMigrations`. Never throws.
+ */
+function coerceIsolationPolicy(raw: unknown): IsolationPolicy {
+  const out: IsolationPolicy = {
+    enabled: false,
+    syncToClaudeCode: false,
+    enforceCodeMode: false,
+    network: { allowedDomains: [], deniedDomains: [] },
+    filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] },
+    credentials: { files: [], envVars: [] },
+  };
+  if (!raw || typeof raw !== 'object') return out;
+  const o = raw as Record<string, unknown>;
+
+  if (typeof o['enabled'] === 'boolean') out.enabled = o['enabled'];
+  if (typeof o['syncToClaudeCode'] === 'boolean') out.syncToClaudeCode = o['syncToClaudeCode'];
+  if (typeof o['enforceCodeMode'] === 'boolean') out.enforceCodeMode = o['enforceCodeMode'];
+
+  const net = o['network'];
+  if (net && typeof net === 'object') {
+    const n = net as Record<string, unknown>;
+    out.network.allowedDomains = coerceStringList(n['allowedDomains']).filter(isValidSandboxDomain);
+    out.network.deniedDomains = coerceStringList(n['deniedDomains']).filter(isValidSandboxDomain);
+  }
+
+  const fs = o['filesystem'];
+  if (fs && typeof fs === 'object') {
+    const f = fs as Record<string, unknown>;
+    out.filesystem.allowWrite = coerceStringList(f['allowWrite']);
+    out.filesystem.denyWrite = coerceStringList(f['denyWrite']);
+    out.filesystem.denyRead = coerceStringList(f['denyRead']);
+    out.filesystem.allowRead = coerceStringList(f['allowRead']);
+  }
+
+  const cred = o['credentials'];
+  if (cred && typeof cred === 'object') {
+    const c = cred as Record<string, unknown>;
+    out.credentials.files = coerceStringList(c['files']);
+    out.credentials.envVars = coerceStringList(c['envVars']);
+  }
+
+  const cc = o['claudeCode'];
+  if (cc && typeof cc === 'object') {
+    const c = cc as Record<string, unknown>;
+    const passthrough: NonNullable<IsolationPolicy['claudeCode']> = {};
+    if (typeof c['failIfUnavailable'] === 'boolean') {
+      passthrough.failIfUnavailable = c['failIfUnavailable'];
+    }
+    if (typeof c['allowUnsandboxedCommands'] === 'boolean') {
+      passthrough.allowUnsandboxedCommands = c['allowUnsandboxedCommands'];
+    }
+    if (Array.isArray(c['excludedCommands'])) {
+      passthrough.excludedCommands = coerceStringList(c['excludedCommands']);
+    }
+    if (typeof c['allowAppleEvents'] === 'boolean') {
+      passthrough.allowAppleEvents = c['allowAppleEvents'];
+    }
+    if (Object.keys(passthrough).length > 0) out.claudeCode = passthrough;
+  }
+
   return out;
 }
 
@@ -573,6 +666,7 @@ function coerce(raw: unknown): Settings {
   if (typeof obj['claudeCodeSyncEnabled'] === 'boolean') {
     next.claudeCodeSyncEnabled = obj['claudeCodeSyncEnabled'];
   }
+  next.isolationPolicy = coerceIsolationPolicy(obj['isolationPolicy']);
   if (typeof obj['securityIncidentReplay'] === 'boolean') {
     next.securityIncidentReplay = obj['securityIncidentReplay'];
   }

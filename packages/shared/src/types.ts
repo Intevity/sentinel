@@ -303,6 +303,101 @@ export interface CodeModeMigration {
   baselineServerRequests?: number;
 }
 
+// ─── OS-level sandbox / isolation ──────────────────────────────────────
+
+/**
+ * Canonical, platform-neutral description of an OS-level isolation policy.
+ *
+ * This is Sentinel's single source of truth for sandboxing. It is intentionally
+ * a *third* schema — narrower than either enforcement target — and is projected
+ * onto each by a pure mapper (see `security/sandbox/policy-map.ts`):
+ *
+ *  - **Leg A** — `toClaudeCodeSandboxBlock()` writes the `sandbox` block of
+ *    `~/.claude/settings.json`, so Claude Code's *own* native sandbox uses it.
+ *  - **Leg B** — `toSandboxRuntimeConfig()` produces the config handed to
+ *    `@anthropic-ai/sandbox-runtime` to wrap Sentinel's code-mode MCP children.
+ *
+ * Filesystem paths use the sandbox prefix convention (NOT the `//abs` form used
+ * by permission rules): `/abs` is absolute, `~/` is home-relative, `./` or a
+ * bare path is project/relative. Network entries are bare domains or a single
+ * `*.domain.tld` wildcard — the canonical layer rejects protocols, paths,
+ * ports, and overly-broad wildcards (`*.com`) so any Sentinel-valid policy is
+ * always valid for the package's stricter validator too.
+ */
+export interface IsolationPolicy {
+  /** Master switch. Off by default — the whole feature ships dark. */
+  enabled: boolean;
+  /** Leg A: mirror this policy into `~/.claude/settings.json#/sandbox`. */
+  syncToClaudeCode: boolean;
+  /** Leg B: wrap Sentinel's own code-mode stdio MCP children in the sandbox. */
+  enforceCodeMode: boolean;
+  network: {
+    /** Bare domain or `*.domain.tld`. Empty = no domains pre-allowed. */
+    allowedDomains: string[];
+    /** Blocked even when an `allowedDomains` wildcard would otherwise permit. */
+    deniedDomains: string[];
+  };
+  filesystem: {
+    /** Paths writable inside the sandbox beyond the default cwd + tempdir. */
+    allowWrite: string[];
+    /** Paths denied for write (takes precedence over allowWrite). */
+    denyWrite: string[];
+    /** Paths denied for read (read is otherwise allowed by default). */
+    denyRead: string[];
+    /** Re-allow reads of specific paths inside a denyRead region. */
+    allowRead: string[];
+  };
+  credentials: {
+    /** Credential files denied for read inside the sandbox. Mode is always
+     *  `deny` (the only value Claude Code supports), so the canonical model
+     *  stores just the path; the mapper re-adds `mode: "deny"`. */
+    files: string[];
+    /** Environment variable names unset before each sandboxed command. */
+    envVars: string[];
+  };
+  /** Leg-A-only passthrough: knobs Claude Code's native sandbox honors but the
+   *  package config has no equivalent for. Omitted entirely when unset (kept
+   *  undefined under exactOptionalPropertyTypes). */
+  claudeCode?: {
+    /** Make a missing dependency a hard failure for Claude Code rather than a
+     *  warn-and-fall-back. Sentinel leaves this false to honor its own
+     *  degrade-and-surface posture. */
+    failIfUnavailable?: boolean;
+    /** When false, Claude Code's `dangerouslyDisableSandbox` escape hatch is
+     *  ignored (strict mode). */
+    allowUnsandboxedCommands?: boolean;
+    /** Commands Claude Code runs OUTSIDE the sandbox (e.g. `docker *`). */
+    excludedCommands?: string[];
+    /** macOS only: lift the default Apple Events block. Weakens isolation;
+     *  deferred from the v1 editor. */
+    allowAppleEvents?: boolean;
+  };
+}
+
+/** How much isolation the current host can actually enforce. */
+export type SandboxCapability = 'full' | 'network-only' | 'unavailable';
+
+/** Presence of one host dependency the sandbox relies on. */
+export interface SandboxDependency {
+  /** e.g. 'sandbox-exec', 'ripgrep', 'bubblewrap', 'socat', 'seccomp', 'srt-win'. */
+  name: string;
+  present: boolean;
+}
+
+/**
+ * Live, per-platform sandbox readiness, surfaced to the UI so users see why a
+ * policy is degraded (e.g. "install bubblewrap + socat") rather than silently
+ * running unsandboxed. Computed by `security/sandbox/capability.ts` (Phase 1+).
+ */
+export interface SandboxStatus {
+  /** `process.platform` value: 'darwin' | 'linux' | 'win32' | … */
+  platform: string;
+  capability: SandboxCapability;
+  /** Human-readable reasons for anything less than `full`. */
+  reasons: string[];
+  dependencies: SandboxDependency[];
+}
+
 /**
  * Persistent user preferences stored at ~/.sentinel/settings.json.
  */
@@ -542,6 +637,15 @@ export interface Settings {
    *  by default — the first enable prompts the user to choose a
    *  merge direction via a modal to avoid data loss. */
   claudeCodeSyncEnabled: boolean;
+
+  // ─── OS-level sandbox / isolation ──────────────────────────────────
+  /** OS-level isolation policy (Sentinel's sandbox feature). The single
+   *  source of truth projected onto both Claude Code's native sandbox
+   *  (`~/.claude/settings.json#/sandbox`, Leg A) and
+   *  `@anthropic-ai/sandbox-runtime` for code-mode children (Leg B). Off by
+   *  default — the feature ships dark and users opt in after a dependency
+   *  check. See {@link IsolationPolicy}. */
+  isolationPolicy: IsolationPolicy;
 
   /** Minimum severity written to daemon.log and streamed to the in-app Logs
    *  tab. `debug` is opt-in; noisy subsystems emit DEBUG only for deep

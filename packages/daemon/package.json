@@ -17,8 +17,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@sentinel/shared": "workspace:*",
+    "@anthropic-ai/sandbox-runtime": "^0.0.59",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@sentinel/shared": "workspace:*",
     "better-sqlite3": "^12.0.0"
   },
   "devDependencies": {

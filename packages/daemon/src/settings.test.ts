@@ -1045,6 +1045,86 @@ describe('settings', () => {
     });
   });
 
+  describe('isolationPolicy', () => {
+    it('defaults to a fully-disabled policy with empty arrays', () => {
+      expect(DEFAULT_SETTINGS.isolationPolicy).toEqual({
+        enabled: false,
+        syncToClaudeCode: false,
+        enforceCodeMode: false,
+        network: { allowedDomains: [], deniedDomains: [] },
+        filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] },
+        credentials: { files: [], envVars: [] },
+      });
+      expect(loadSettings(path).isolationPolicy).toEqual(DEFAULT_SETTINGS.isolationPolicy);
+    });
+
+    it('round-trips a fully-populated policy', () => {
+      const policy = {
+        enabled: true,
+        syncToClaudeCode: true,
+        enforceCodeMode: true,
+        network: { allowedDomains: ['example.com', '*.npmjs.org'], deniedDomains: ['evil.test'] },
+        filesystem: {
+          allowWrite: ['~/.kube'],
+          denyWrite: ['/etc'],
+          denyRead: ['~/'],
+          allowRead: ['.'],
+        },
+        credentials: { files: ['~/.aws/credentials'], envVars: ['GITHUB_TOKEN'] },
+        claudeCode: { failIfUnavailable: true, excludedCommands: ['docker *'] },
+      };
+      const next = updateSettings({ isolationPolicy: policy }, path);
+      expect(next.isolationPolicy).toEqual(policy);
+      expect(loadSettings(path).isolationPolicy).toEqual(policy);
+    });
+
+    it('filters invalid domains and drops empty path/env entries', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          isolationPolicy: {
+            enabled: true,
+            network: {
+              allowedDomains: ['ok.com', 'https://bad.com', '*.com', '  ', 42],
+              deniedDomains: ['evil.test', 'has space'],
+            },
+            filesystem: { allowWrite: ['/good', '', '  ', 7] },
+            credentials: { files: ['~/.ssh', ''], envVars: ['TOKEN', '   '] },
+          },
+        }),
+      );
+      const got = loadSettings(path).isolationPolicy;
+      expect(got.enabled).toBe(true);
+      expect(got.network.allowedDomains).toEqual(['ok.com']);
+      expect(got.network.deniedDomains).toEqual(['evil.test']);
+      expect(got.filesystem.allowWrite).toEqual(['/good']);
+      expect(got.credentials.files).toEqual(['~/.ssh']);
+      expect(got.credentials.envVars).toEqual(['TOKEN']);
+    });
+
+    it('keeps only valid claudeCode passthrough keys and omits the block when none are valid', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          isolationPolicy: { claudeCode: { failIfUnavailable: true, allowAppleEvents: 'nope' } },
+        }),
+      );
+      const kept = loadSettings(path).isolationPolicy;
+      expect(kept.claudeCode).toEqual({ failIfUnavailable: true });
+
+      writeRawWithSig(
+        path,
+        JSON.stringify({ isolationPolicy: { claudeCode: { bogus: 1, allowAppleEvents: 5 } } }),
+      );
+      expect('claudeCode' in loadSettings(path).isolationPolicy).toBe(false);
+    });
+
+    it('falls back to the default policy when isolationPolicy is not an object', () => {
+      writeRawWithSig(path, JSON.stringify({ isolationPolicy: 'nope' }));
+      expect(loadSettings(path).isolationPolicy).toEqual(DEFAULT_SETTINGS.isolationPolicy);
+    });
+  });
+
   describe('optimizeSubTab', () => {
     it('defaults to subagents', () => {
       expect(DEFAULT_SETTINGS.optimizeSubTab).toBe('subagents');

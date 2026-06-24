@@ -5,7 +5,7 @@
  * the production one.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   startFakeMcpHttpServer,
   writeFakeMcpStdioScript,
@@ -264,4 +264,73 @@ describe('mcp-client-manager (stdio transport — real child process)', () => {
       }
     },
   );
+});
+
+describe('mcp-client-manager (Leg B sandbox wrapping)', () => {
+  let manager: McpClientManager | null = null;
+  let cleanupScript: (() => void) | null = null;
+
+  afterEach(async () => {
+    await manager?.stopAll();
+    cleanupScript?.();
+    manager = null;
+    cleanupScript = null;
+  });
+
+  it('invokes wrapStdioCommand with the resolved command/args/env and uses a pass-through wrapper', async () => {
+    const script = writeFakeMcpStdioScript();
+    cleanupScript = script.cleanup;
+    const wrap = vi.fn(
+      async (command: string, args: string[], env: Record<string, string>) => ({
+        command,
+        args,
+        env,
+      }),
+    );
+    manager = createMcpClientManager({
+      resolveEntry: (server) =>
+        server === 'fakestdio' ? { command: process.execPath, args: [script.path] } : undefined,
+      isAllowed: (server) => server === 'fakestdio',
+      wrapStdioCommand: wrap,
+    });
+    const tools = await manager.listTools('fakestdio');
+    expect(tools.map((t) => t.name)).toEqual(FAKE_MCP_TOOLS.map((t) => t.name));
+    expect(wrap).toHaveBeenCalledTimes(1);
+    const [cmd, args, env] = wrap.mock.calls[0]!;
+    expect(cmd).toBe(process.execPath);
+    expect(args).toEqual([script.path]);
+    expect(env).toHaveProperty('PATH'); // augmented stdio env was passed through
+  });
+
+  it('spawns the wrapper return value, not the original (a broken wrapper fails to connect)', async () => {
+    const script = writeFakeMcpStdioScript();
+    cleanupScript = script.cleanup;
+    manager = createMcpClientManager({
+      resolveEntry: (server) =>
+        server === 'fakestdio' ? { command: process.execPath, args: [script.path] } : undefined,
+      isAllowed: (server) => server === 'fakestdio',
+      // Wrapper substitutes a non-existent binary: if the wrapped command is what
+      // gets spawned (it should be), the connection fails.
+      wrapStdioCommand: async () => ({
+        command: '/nonexistent-sentinel-sandbox-binary',
+        args: [],
+        env: {},
+      }),
+    });
+    const v = await manager.verify('fakestdio');
+    expect(v.ok).toBe(false);
+  });
+
+  it('runs the child unsandboxed when the wrapper returns null (degrade path)', async () => {
+    const script = writeFakeMcpStdioScript();
+    cleanupScript = script.cleanup;
+    manager = createMcpClientManager({
+      resolveEntry: (server) =>
+        server === 'fakestdio' ? { command: process.execPath, args: [script.path] } : undefined,
+      isAllowed: (server) => server === 'fakestdio',
+      wrapStdioCommand: async () => null,
+    });
+    const tools = await manager.listTools('fakestdio');
+    expect(tools.map((t) => t.name)).toEqual(FAKE_MCP_TOOLS.map((t) => t.name));
+  });
 });

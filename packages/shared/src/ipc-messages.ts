@@ -284,6 +284,14 @@ export interface ClaudeSyncStatusMessage {
   status: ClaudeSyncStatus;
 }
 
+/** Broadcast when the sandbox (Leg A) settings-sync engine state changes.
+ *  Mirrors `claude_sync_status` for `~/.claude/settings.json#/sandbox`; reuses
+ *  the identical active/lastPulledAt/lastPushedAt/lastError shape. */
+export interface SandboxSyncStatusMessage {
+  type: 'sandbox_sync_status';
+  status: ClaudeSyncStatus;
+}
+
 /** Broadcast when the Optimize agents-sync engine state changes.
  *  Mirrors `claude_sync_status` for `~/.claude/agents/`. */
 export interface AgentsSyncStatusMessage {
@@ -533,6 +541,7 @@ export type DaemonToAppMessage =
   | SecurityAllowlistUpdatedMessage
   | PermissionBypassesUpdatedMessage
   | ClaudeSyncStatusMessage
+  | SandboxSyncStatusMessage
   | AgentsSyncStatusMessage
   | SubagentInstalledMessage
   | SubagentUninstalledMessage
@@ -1611,6 +1620,29 @@ export interface GetClaudeSyncStatusMessage {
   type: 'get_claude_sync_status';
 }
 
+/** Force a one-shot pull/reconcile of the sandbox policy from Claude
+ *  Code's `settings.json#/sandbox`. `mode` is honoured by first-enable
+ *  (merge/import/export); subsequent manual pulls always merge. Mirrors
+ *  `claude_sync_pull`. */
+export interface SandboxSyncPullMessage {
+  type: 'sandbox_sync_pull';
+  mode?: 'merge' | 'import' | 'export';
+}
+
+/** Read the current sandbox (Leg A) sync status without waiting for a
+ *  broadcast. Mirrors `get_claude_sync_status`. */
+export interface GetSandboxStatusMessage {
+  type: 'get_sandbox_status';
+}
+
+/** Read the current sandbox capability (Leg B): whether the host can enforce
+ *  full / network-only / no isolation, with per-dependency presence + reasons.
+ *  Drives the Isolation tab's status indicator. Response data is a
+ *  {@link SandboxStatus}. */
+export interface GetSandboxCapabilityMessage {
+  type: 'get_sandbox_capability';
+}
+
 /** Approve a held outbound block. The daemon adds the block's match to
  *  the allowlist (so subsequent identical matches are silently allowed),
  *  releases the request to flow upstream, and broadcasts
@@ -1988,6 +2020,9 @@ export type AppToDaemonMessage =
   | ClaudeSyncPullMessage
   | ClaudeSyncPushMessage
   | GetClaudeSyncStatusMessage
+  | SandboxSyncPullMessage
+  | GetSandboxStatusMessage
+  | GetSandboxCapabilityMessage
   | ApproveBlockedRequestMessage
   | DenyBlockedRequestMessage
   | ListPendingBlocksMessage

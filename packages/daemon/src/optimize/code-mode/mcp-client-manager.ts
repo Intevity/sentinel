@@ -69,6 +69,16 @@ export interface McpClientManagerDeps {
   /** Availability callback for status surfacing (Context tab's
    *  native/bridged/unavailable pill). */
   onAvailability?: (server: string, available: boolean) => void;
+  /** Leg B sandbox wrapper. When provided and it returns non-null, the stdio
+   *  child is spawned through the returned sandboxed command/args/env instead of
+   *  the raw ones. Returning null (or omitting the dep) runs the child
+   *  unsandboxed — the degrade path. Only applies to stdio servers; HTTP/SSE
+   *  transports execute no local command and are never wrapped. */
+  wrapStdioCommand?: (
+    command: string,
+    args: string[],
+    env: Record<string, string>,
+  ) => Promise<{ command: string; args: string[]; env: Record<string, string> } | null>;
   /** Test seams. */
   idleShutdownMs?: number;
   maxResultBytes?: number;
@@ -147,13 +157,19 @@ export function clarifySpawnError(server: string, entry: unknown, err: unknown):
 }
 
 /** Narrow a raw `mcpServers[name]` entry into a transport. Throws a
- *  user-readable error for shapes we can't bridge. */
-function buildTransport(server: string, entry: unknown): ClientTransport {
+ *  user-readable error for shapes we can't bridge. Async because the optional
+ *  Leg B sandbox wrapper may need to wrap the stdio spawn. */
+async function buildTransport(
+  server: string,
+  entry: unknown,
+  wrapStdioCommand?: McpClientManagerDeps['wrapStdioCommand'],
+): Promise<ClientTransport> {
   if (!entry || typeof entry !== 'object') {
     throw new Error(`No usable config entry for MCP server '${server}'`);
   }
   const e = entry as Record<string, unknown>;
   if (typeof e['command'] === 'string' && e['command'].length > 0) {
+    const command = e['command'];
     const args = Array.isArray(e['args'])
       ? e['args'].filter((a): a is string => typeof a === 'string')
       : [];
@@ -173,10 +189,23 @@ function buildTransport(server: string, entry: unknown): ClientTransport {
     if (env['PATH'] === undefined) {
       stdioEnv['PATH'] = augmentedPath();
     }
+    // Leg B: wrap the spawn in the OS sandbox when enforcement is active.
+    // A null result (or no wrapper) is the degrade path — run unsandboxed.
+    let spawnCommand = command;
+    let spawnArgs = args;
+    let spawnEnv = stdioEnv;
+    if (wrapStdioCommand) {
+      const wrapped = await wrapStdioCommand(command, args, stdioEnv);
+      if (wrapped) {
+        spawnCommand = wrapped.command;
+        spawnArgs = wrapped.args;
+        spawnEnv = wrapped.env;
+      }
+    }
     return new StdioClientTransport({
-      command: e['command'],
-      args,
-      env: stdioEnv,
+      command: spawnCommand,
+      args: spawnArgs,
+      env: spawnEnv,
       stderr: 'ignore',
     });
   }
@@ -231,7 +260,7 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
     }
     if (stopped) throw new Error('MCP client manager is shut down');
     const entry = deps.resolveEntry(server);
-    const transport = buildTransport(server, entry);
+    const transport = await buildTransport(server, entry, deps.wrapStdioCommand);
     const client = new Client({ name: 'sentinel-code-mode', version: '1.0.0' });
     try {
       // Cast bridges the same exactOptionalPropertyTypes mismatch as the
