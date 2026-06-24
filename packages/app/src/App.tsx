@@ -800,6 +800,10 @@ export default function App(): React.ReactElement {
                               onRequestOpenSettings={openSettingsAt}
                               autoExpandEventId={securityExpandEventId}
                               onAutoExpandHandled={() => setSecurityExpandEventId(null)}
+                              onManageIsolation={() => {
+                                setSecurityOverlayTab('isolation');
+                                setRulesOpen(true);
+                              }}
                             />
                           </>
                         );

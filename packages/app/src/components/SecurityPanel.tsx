@@ -28,6 +28,7 @@ import type {
 import { useSecurityEvents } from '../hooks/useSecurityEvents.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { useAutoModeStatus } from '../hooks/useAutoModeStatus.js';
+import { useSandboxStatus } from '../hooks/useSandboxStatus.js';
 import { usePermissionRules } from '../hooks/usePermissionRules.js';
 import { usePendingSecurityBlocks } from '../hooks/usePendingSecurityBlocks.js';
 import LiveSecurityRow from './LiveSecurityRow.js';
@@ -98,6 +99,8 @@ interface SecurityPanelProps {
   /** Called once the auto-expand has been applied so the parent can
    *  clear its state and not re-expand on subsequent renders. */
   onAutoExpandHandled?: () => void;
+  /** Opens the Security overlay on the Isolation tab (the card's Configure link). */
+  onManageIsolation?: () => void;
 }
 
 const SEVERITY_META: Record<
@@ -247,9 +250,11 @@ export default function SecurityPanel({
   onRequestOpenSettings,
   autoExpandEventId,
   onAutoExpandHandled,
+  onManageIsolation,
 }: SecurityPanelProps): React.ReactElement {
   const { settings, update } = useSettings();
   const autoMode = useAutoModeStatus();
+  const { capability: sandboxCapability } = useSandboxStatus();
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
   const [kindFilter, setKindFilter] = useState<KindFilter>('all');
   const [includeWeakSignals, setIncludeWeakSignals] = useState(false);
@@ -656,6 +661,96 @@ export default function SecurityPanel({
             </>
           )}
         </SettingsCard>
+      )}
+
+      {settings && (
+        <div data-tour-id="tour-isolation">
+          <SettingsCard
+            title="Isolation"
+            summary={
+              settings.isolationPolicy.enabled ? 'On' : 'Off — sandbox risky commands'
+            }
+            defaultOpen={false}
+          >
+            <SettingsRow
+              label="OS-level sandbox isolation"
+              description="Run commands and code-mode MCP servers under an OS sandbox with filesystem + network limits. Optional; off by default."
+            >
+              <Switch
+                label="OS-level sandbox isolation"
+                checked={settings.isolationPolicy.enabled}
+                onChange={(v) =>
+                  void update({
+                    isolationPolicy: { ...settings.isolationPolicy, enabled: v },
+                  }).catch(() => undefined)
+                }
+              />
+            </SettingsRow>
+            {settings.isolationPolicy.enabled && (
+              <>
+                <SettingsRow
+                  label="Sync to Claude Code's sandbox"
+                  description="Write this policy into ~/.claude/settings.json so Claude Code's own native sandbox enforces it."
+                >
+                  <Switch
+                    label="Sync to Claude Code's sandbox"
+                    checked={settings.isolationPolicy.syncToClaudeCode}
+                    onChange={(v) =>
+                      void update({
+                        isolationPolicy: {
+                          ...settings.isolationPolicy,
+                          syncToClaudeCode: v,
+                        },
+                      }).catch(() => undefined)
+                    }
+                  />
+                </SettingsRow>
+                <SettingsRow
+                  label="Sandbox code-mode MCP servers"
+                  description="Wrap Sentinel's own code-mode MCP child processes in the sandbox."
+                >
+                  <Switch
+                    label="Sandbox code-mode MCP servers"
+                    checked={settings.isolationPolicy.enforceCodeMode}
+                    onChange={(v) =>
+                      void update({
+                        isolationPolicy: {
+                          ...settings.isolationPolicy,
+                          enforceCodeMode: v,
+                        },
+                      }).catch(() => undefined)
+                    }
+                  />
+                </SettingsRow>
+                {sandboxCapability && (
+                  <div className="px-3 py-2 text-[11px] text-muted">
+                    Sandbox capability:{' '}
+                    <span
+                      className={`font-semibold ${
+                        sandboxCapability.capability === 'unavailable'
+                          ? 'text-ios-red'
+                          : 'text-black dark:text-white'
+                      }`}
+                    >
+                      {sandboxCapability.capability}
+                    </span>
+                    {sandboxCapability.reasons.map((r, i) => (
+                      <div key={i} className="text-[10px] text-ios-orange">
+                        {r}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button
+                  onClick={() => onManageIsolation?.()}
+                  className="w-full text-left px-3 py-2.5 text-[13px] font-medium text-ios-blue hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors"
+                >
+                  Configure domains &amp; paths…
+                </button>
+              </>
+            )}
+          </SettingsCard>
+        </div>
       )}
 
       {/* Collapsible filter section. Mirrors the Logs tab pattern: a chevron

@@ -9,6 +9,7 @@ import {
   Wallet,
   BarChart3,
   HelpCircle,
+  Lock,
 } from 'lucide-react';
 import {
   WelcomeIllustration,
@@ -117,6 +118,17 @@ export const TOUR_STEPS: TourStep[] = [
     placement: 'bottom',
     icon: ShieldCheck,
     accent: 'red',
+    illustration: SecurityIllustration,
+    track: 'core',
+  },
+  {
+    targetId: 'tour-isolation',
+    tab: 'security',
+    title: 'Sandbox risky commands',
+    body: 'Optional OS-level isolation: run commands from Claude Code and Sentinel code-mode MCP servers inside a sandbox that limits which files and network domains they can reach. Off by default - enable it here with one toggle, then fine-tune domains and paths. macOS and Linux get full filesystem and network isolation; Windows is network-only.',
+    placement: 'bottom',
+    icon: Lock,
+    accent: 'violet',
     illustration: SecurityIllustration,
     track: 'core',
   },
