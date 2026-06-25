@@ -14,7 +14,6 @@ import { dirname, join } from 'path';
 import type {
   Settings,
   SwitchingMode,
-  RoundRobinStrategy,
   SecurityEnforcementMode,
   SecurityOsNotifyThreshold,
   SecurityContextVerbosity,
@@ -64,7 +63,6 @@ export const DEFAULT_SETTINGS: Settings = {
   budgetWeeklyUsdByAccount: {},
   budgetWeeklyUsdGlobal: null,
   overageBufferPct: 5,
-  roundRobinStrategy: 'balance',
   backgroundProbeIntervalSec: 300,
   telemetryRetentionDays: 30,
   dataRetentionDays: 365,
@@ -190,8 +188,7 @@ function freshDefaults(): Settings {
   return { ...DEFAULT_SETTINGS, otelServiceInstanceId: randomUUID() };
 }
 
-const VALID_MODES: readonly SwitchingMode[] = ['off', 'round-robin'];
-const VALID_RR_STRATEGIES: readonly RoundRobinStrategy[] = ['balance', 'earliest-reset'];
+const VALID_MODES: readonly SwitchingMode[] = ['off', 'auto'];
 const VALID_ENFORCEMENT_MODES: readonly SecurityEnforcementMode[] = [
   'observe',
   'block_high',
@@ -412,11 +409,14 @@ function coerce(raw: unknown): Settings {
   if (typeof obj['launchAtLogin'] === 'boolean') {
     next.launchAtLogin = obj['launchAtLogin'];
   }
-  if (
-    typeof obj['switchingMode'] === 'string' &&
-    VALID_MODES.includes(obj['switchingMode'] as SwitchingMode)
-  ) {
-    next.switchingMode = obj['switchingMode'] as SwitchingMode;
+  if (typeof obj['switchingMode'] === 'string') {
+    // Auto-migrate the pre-rename value so beta users who had rotation on
+    // keep it after the "round-robin" → "auto" rename. No data loss, no
+    // user action — the remapped value is re-persisted on the next save.
+    const mode = obj['switchingMode'] === 'round-robin' ? 'auto' : obj['switchingMode'];
+    if (VALID_MODES.includes(mode as SwitchingMode)) {
+      next.switchingMode = mode as SwitchingMode;
+    }
   }
   if (obj['alertSoundName'] === null || typeof obj['alertSoundName'] === 'string') {
     next.alertSoundName = obj['alertSoundName'] as string | null;
@@ -486,12 +486,6 @@ function coerce(raw: unknown): Settings {
     (obj['overageBufferPct'] as number) <= 50
   ) {
     next.overageBufferPct = Math.floor(obj['overageBufferPct'] as number);
-  }
-  if (
-    typeof obj['roundRobinStrategy'] === 'string' &&
-    VALID_RR_STRATEGIES.includes(obj['roundRobinStrategy'] as RoundRobinStrategy)
-  ) {
-    next.roundRobinStrategy = obj['roundRobinStrategy'] as RoundRobinStrategy;
   }
   if (typeof obj['backgroundProbeIntervalSec'] === 'number') {
     const n = Math.floor(obj['backgroundProbeIntervalSec']);

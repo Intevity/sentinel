@@ -169,24 +169,13 @@ export interface ClaudeState {
 
 /**
  * One of two mutually exclusive account-switching behaviors.
- *   off         — no automatic switching; user manages accounts manually
- *   round-robin — proxy rotates OAuth tokens per request across accounts,
- *                 tuned by `roundRobinStrategy` (balance or earliest-reset)
+ *   off  — no automatic switching; user manages accounts manually
+ *   auto — proxy routes each request to the enrolled account whose 5-hour
+ *          window resets soonest (the "earliest-reset" engine), so quota
+ *          that's about to refresh gets used first. Rotation resumes only
+ *          when that account blocks or its window rolls over.
  */
-export type SwitchingMode = 'off' | 'round-robin';
-
-/**
- * Sub-strategy for round-robin rotation.
- *   balance        — prefer the account with the lowest unified-5h utilization
- *                    (1% tie band + cursor for fair rotation). Drains the pool
- *                    evenly — the classic round-robin behavior.
- *   earliest-reset — hard-target the non-blocked pool account whose 5-hour
- *                    window resets soonest. Accounts without reset data are
- *                    deprioritized. Maximizes usage of the headroom that is
- *                    about to be reclaimed anyway; rotation resumes only when
- *                    the target blocks or its window rolls over.
- */
-export type RoundRobinStrategy = 'balance' | 'earliest-reset';
+export type SwitchingMode = 'off' | 'auto';
 
 /** Which chart the Optimize dashboard renders above the curated subagent
  *  list. The user toggles between these via the segmented control in the
@@ -442,10 +431,10 @@ export interface Settings {
    *  Anthropic API regardless of this setting. Origin only; trailing path
    *  is stripped on save. `null` (default) routes to the canonical API. */
   alternateApiUrl: string | null;
-  /** Sentinel account IDs excluded from round-robin rotation. Empty means
+  /** Sentinel account IDs excluded from the Auto-switching pool. Empty means
    *  every enrolled account rotates (opt-out model) — preserves the
-   *  original "RR just works" behavior and auto-enrolls newly added
-   *  accounts. Ignored unless `switchingMode === 'round-robin'`. */
+   *  original "just works" behavior and auto-enrolls newly added
+   *  accounts. Ignored unless `switchingMode === 'auto'`. */
   poolExcludedIds: string[];
   /** Default state of the "Private window" checkbox in the per-account
    *  Re-authenticate banner on the Accounts page. Sticky across cards and
@@ -458,7 +447,7 @@ export interface Settings {
    *  budget when their subscription quota is exhausted. Opt-IN — an account
    *  NOT on this list is treated as "never spend overage". Default [].
    *
-   *  Round-robin mode: the `TokenRotator` refuses to pick an account whose
+   *  Auto mode: the `TokenRotator` refuses to pick an account whose
    *  next request would consume overage (5h window saturated with overage
    *  status `allowed`, or overage `in_use === true`) unless the account is
    *  on this list.
@@ -469,7 +458,7 @@ export interface Settings {
   /** Per-account weekly (rolling 7-day) spend cap in USD. When set and the
    *  account's cost_usd sum over the trailing 7 days meets or exceeds this
    *  value, Sentinel pauses the account — it becomes unpickable in
-   *  round-robin and the proxy returns 503 with a Retry-After header in
+   *  Auto mode and the proxy returns 503 with a Retry-After header in
    *  `off` mode. Overrides Anthropic's server-side overage grant. Clears on
    *  the next unified-5h rollover if spend has aged out of the window.
    *  0 or missing = no cap. Keyed by Sentinel id (not accountUuid). */
@@ -478,18 +467,15 @@ export interface Settings {
    *  When the summed rolling-7d spend crosses this value, every enrolled
    *  account is paused until its 5h window resets. Null = no global cap. */
   budgetWeeklyUsdGlobal: number | null;
-  /** Safety margin keeping round-robin from picking an account whose next
+  /** Safety margin keeping Auto switching from picking an account whose next
    *  request might spill into Anthropic overage. The rotator excludes any
    *  account whose unified-5h utilization is ≥ (1 − overageBufferPct/100).
    *  Defends against the race where an account at 98% util absorbs a 4%
    *  request and burns 2% overage the user didn't opt into. Integer range
    *  `[0, 50]`. Default 5 (= cut-off at 95% util). 0 = only cut off at
    *  full saturation (legacy pre-buffer behavior). Ignored unless
-   *  `switchingMode === 'round-robin'`. */
+   *  `switchingMode === 'auto'`. */
   overageBufferPct: number;
-  /** Which rotation strategy the round-robin token rotator uses.
-   *  Ignored unless `switchingMode === 'round-robin'`. Default `'balance'`. */
-  roundRobinStrategy: RoundRobinStrategy;
   /** Seconds between background probes of each non-active account's
    *  rate-limit state. Keeps the Usage tab in sync with claude.ai / other
    *  Anthropic surfaces when Claude Code isn't actively driving the
@@ -1587,10 +1573,10 @@ export const ALERT_SOUNDS_WINDOWS: ReadonlyArray<{ label: string; value: string 
  *                    Parallel to `account-sonnet` but reads the general
  *                    7-day window; users frequently want distinct
  *                    thresholds for the two weekly quotas.
- *   pool           — round-robin only; fires on the mean unified-5h
+ *   pool           — Auto mode only; fires on the mean unified-5h
  *                    utilization across every pool member (accounts not
  *                    in `poolExcludedIds`).
- *   pool-weekly    — round-robin only; fires on the mean unified-7d
+ *   pool-weekly    — Auto mode only; fires on the mean unified-7d
  *                    utilization across every pool member. Catches the
  *                    case where every pool account is drifting toward
  *                    weekly cap simultaneously so rotation alone can't

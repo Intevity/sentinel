@@ -42,7 +42,7 @@ export const features: Feature[] = [
     title: 'Combine every Claude account you own into one',
     tagline: 'Automatic token rotation across all your subscriptions.',
     description:
-      'Add every Claude account and let Sentinel rotate between them automatically. Round-robin spreads work across the pool, with a balance strategy that drains evenly or an earliest-reset strategy that always picks the account whose limit resets soonest. Switching is one click and rewrites the active credential safely.',
+      'Add every Claude account and let Sentinel switch between them automatically. Auto mode routes each request to the account whose limit resets soonest, using up quota that is about to refresh. Switching is one click and rewrites the active credential safely.',
     icon: 'rotate',
     video: 'accounts.mp4',
     poster: 'accounts.svg',

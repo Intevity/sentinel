@@ -1,6 +1,6 @@
 export { default as WelcomeIllustration } from './Welcome.js';
 export { default as AccountsIllustration } from './Accounts.js';
-export { default as RoundRobinIllustration } from './RoundRobin.js';
+export { default as AutoSwitchIllustration } from './AutoSwitch.js';
 export { default as SecurityIllustration } from './Security.js';
 export { default as AlertsIllustration } from './Alerts.js';
 export { default as PermissionsIllustration } from './Permissions.js';

@@ -3,7 +3,6 @@ import { X, Loader2, Volume2, Trash2, RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
 import type {
   SwitchingMode,
-  RoundRobinStrategy,
   SecurityEnforcementMode,
   SecurityOsNotifyThreshold,
   PermissionDecision,
@@ -213,10 +212,6 @@ export default function SettingsPanel({
 
   const setMode = (mode: SwitchingMode): void => {
     void update({ switchingMode: mode }).catch(() => undefined);
-  };
-
-  const setRoundRobinStrategy = (strategy: RoundRobinStrategy): void => {
-    void update({ roundRobinStrategy: strategy }).catch(() => undefined);
   };
 
   const setAlertSound = (value: string | null): void => {
@@ -620,34 +615,15 @@ export default function SettingsPanel({
                   onChange={() => setMode('off')}
                 />
                 <RadioRow
-                  label="Round-Robin"
-                  description="Rotate the OAuth token on every API request so usage drains across all accounts."
-                  checked={settings.switchingMode === 'round-robin'}
-                  onChange={() => setMode('round-robin')}
+                  label="Auto"
+                  description="Sentinel routes each request to the enrolled account whose 5-hour limit resets soonest, reclaiming headroom you'd lose anyway. Rotation resumes when it blocks or rolls over."
+                  checked={settings.switchingMode === 'auto'}
+                  onChange={() => setMode('auto')}
                 />
-                {settings.switchingMode === 'round-robin' && accounts.length > 0 && (
+                {settings.switchingMode === 'auto' && accounts.length > 0 && (
                   <PoolMemberPreview accounts={accounts} excludedIds={settings.poolExcludedIds} />
                 )}
-                {settings.switchingMode === 'round-robin' && (
-                  <div className="px-3 pb-3 pt-1">
-                    <p className="text-[11px] text-muted mb-1.5">Rotation strategy</p>
-                    <div className="rounded-xl bg-black/[0.02] dark:bg-white/[0.03] divide-y divide-black/5 dark:divide-white/5">
-                      <RadioRow
-                        label="Balance"
-                        description="Route each request to the lowest-utilization account, keeping the pool within ~1%. Best when you want to spread wear evenly."
-                        checked={settings.roundRobinStrategy === 'balance'}
-                        onChange={() => setRoundRobinStrategy('balance')}
-                      />
-                      <RadioRow
-                        label="Earliest reset"
-                        description="Pin traffic to the account whose 5-hour window resets soonest, reclaiming headroom you'd lose anyway. Rotation resumes when it blocks or rolls over."
-                        checked={settings.roundRobinStrategy === 'earliest-reset'}
-                        onChange={() => setRoundRobinStrategy('earliest-reset')}
-                      />
-                    </div>
-                  </div>
-                )}
-                {settings.switchingMode === 'round-robin' && (
+                {settings.switchingMode === 'auto' && (
                   <div className="px-3 pb-3 pt-1">
                     <div className="flex items-center justify-between mb-1">
                       <p className="text-[11px] text-muted">Overage safety buffer</p>
@@ -656,10 +632,10 @@ export default function SettingsPanel({
                       </span>
                     </div>
                     <p className="text-[10px] text-muted/80 leading-snug mb-2">
-                      Round-robin stops picking an account once its 5-hour (or Sonnet 7-day)
-                      utilization reaches {100 - settings.overageBufferPct}%. A larger buffer
-                      protects against a single large request pushing you into overage; a smaller
-                      one squeezes more pool throughput.
+                      Auto stops picking an account once its 5-hour (or Sonnet 7-day) utilization
+                      reaches {100 - settings.overageBufferPct}%. A larger buffer protects against a
+                      single large request pushing you into overage; a smaller one squeezes more
+                      pool throughput.
                     </p>
                     <input
                       type="range"
@@ -2076,7 +2052,7 @@ function BypassesRow({
 }
 
 /**
- * Read-only preview of the round-robin pool membership. Each enrolled
+ * Read-only preview of the Auto-switching pool membership. Each enrolled
  * account is rendered as a colored chip (avatar color + truncated email);
  * accounts in `excludedIds` are drawn muted and struck-through so the user
  * can see at a glance which accounts will rotate.
@@ -2171,9 +2147,9 @@ function ClaudeAiConnectionRow({
               Allow spending overage
             </p>
             <p className="text-[10px] text-muted leading-snug">
-              Round-robin picks this account for new requests after its 5-hour quota is exhausted,
-              and lets Sonnet requests through once the Sonnet 7-day quota is spent. Off: Sentinel
-              refuses either spillover with a 503.
+              Auto picks this account for new requests after its 5-hour quota is exhausted, and lets
+              Sonnet requests through once the Sonnet 7-day quota is spent. Off: Sentinel refuses
+              either spillover with a 503.
             </p>
           </div>
           <input

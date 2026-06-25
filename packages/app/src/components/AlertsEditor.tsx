@@ -35,7 +35,7 @@ interface AlertsEditorProps {
 
 /**
  * Renders three sections inside the Alerts tab:
- *   1. "Pooled alerts" — round-robin only. CRUD for alerts that fire on the
+ *   1. "Pooled alerts" — Auto mode only. CRUD for alerts that fire on the
  *      pool-wide MEAN unified-5h utilization across every pool member.
  *   2. "Alerts" — CRUD for user-configured usage alerts tied to the currently
  *      active account's Sentinel key.
@@ -53,7 +53,7 @@ export default function AlertsEditor({
   viewAccountId,
 }: AlertsEditorProps): React.ReactElement {
   const { settings, update } = useSettings();
-  const isRoundRobin = settings?.switchingMode === 'round-robin';
+  const isAuto = settings?.switchingMode === 'auto';
   const overageOsNotify = settings?.overageOsNotify ?? true;
   const toggleOverageNotify = (): void => {
     void update({ overageOsNotify: !overageOsNotify }).catch(() => undefined);
@@ -138,8 +138,8 @@ export default function AlertsEditor({
           the user can see what's configured without expanding. Same pattern
           as SecurityPanel's Scanning card. */}
 
-      {/* ── Pooled alerts (round-robin only) ───────────────────── */}
-      {isRoundRobin && (
+      {/* ── Pooled alerts (Auto mode only) ───────────────────── */}
+      {isAuto && (
         <SettingsCard
           title="Pooled alerts"
           summary={describeAlertsSummary(pool.alerts, true)}
@@ -161,8 +161,8 @@ export default function AlertsEditor({
         </SettingsCard>
       )}
 
-      {/* ── Pooled weekly alerts (round-robin only) ────────────── */}
-      {isRoundRobin && (
+      {/* ── Pooled weekly alerts (Auto mode only) ────────────── */}
+      {isAuto && (
         <SettingsCard
           title="Pooled weekly alerts"
           summary={describeAlertsSummary(poolWeekly.alerts, true)}
@@ -311,7 +311,7 @@ function AlertList({
   const [editThreshold, setEditThreshold] = useState(90);
 
   // Cancel any in-flight edit / add when availability toggles (account
-  // switch, round-robin mode flipped off) so we never save to the wrong
+  // switch, Auto mode flipped off) so we never save to the wrong
   // scope.
   useEffect(() => {
     setAdding(false);

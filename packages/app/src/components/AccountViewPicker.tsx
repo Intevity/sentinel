@@ -7,7 +7,7 @@ import { accountColor } from '../lib/accountColor.js';
 import AccountColorDot from './AccountColorDot.js';
 
 /** Sentinel value used in place of an accountId when the user picks the
- *  round-robin pool view (Usage + Metrics tabs). */
+ *  Auto-switching pool view (Usage + Metrics tabs). */
 export const POOL_VIEW = '__pool__';
 
 /** Sentinel value for the "All accounts (everything)" cross-account rollup
@@ -37,7 +37,7 @@ interface AccountViewPickerProps {
   value?: PickerValue;
   onChange: (value: PickerValue) => void;
   /** Current switching mode. Drives how status is rendered per row:
-   *  in round-robin, every pool member shows "Active" and excluded accounts
+   *  in Auto mode, every pool member shows "Active" and excluded accounts
    *  show "Excluded" — matching the Accounts tab. In 'off' mode, only the
    *  currently-bound account shows "Active". */
   switchingMode: SwitchingMode;
@@ -53,7 +53,7 @@ interface AccountViewPickerProps {
  *
  * Per-row status rendering delegates to `getAccountStatus` so this
  * dropdown stays in sync with AccountCard on the Accounts tab. In
- * round-robin mode that means every pool member reads "Active" (green)
+ * Auto mode that means every pool member reads "Active" (green)
  * and excluded accounts read "Excluded" (gray).
  */
 export default function AccountViewPicker({

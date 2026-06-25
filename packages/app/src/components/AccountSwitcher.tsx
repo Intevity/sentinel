@@ -12,8 +12,8 @@ import {
 import { useSettings } from '../hooks/useSettings.js';
 import { usePausedAccounts } from '../hooks/usePausedAccounts.js';
 import { QuickSegmented } from './settings/primitives.js';
-import RoundRobinStrategyMenu from './RoundRobinStrategyMenu.js';
-import type { SwitchingMode, RoundRobinStrategy } from '@sentinel/shared';
+import InfoModal from './InfoModal.js';
+import type { SwitchingMode } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import { DUR, EASE_OUT } from '../lib/motion.js';
 
@@ -46,7 +46,7 @@ export default function AccountSwitcher({
   const { byAccount: rateLimitsByAccount } = useAllRateLimits();
   const { settings, update } = useSettings();
   const pausedMap = usePausedAccounts();
-  const isRoundRobin = settings?.switchingMode === 'round-robin';
+  const isAuto = settings?.switchingMode === 'auto';
   // Pool-exclusion set (RR only). `poolExcludedIds` may contain stale IDs
   // of removed accounts — harmless because the rotator filters against the
   // live account list; we do the same here when counting members.
@@ -175,52 +175,47 @@ export default function AccountSwitcher({
   // Accounts flagged by the daemon as having an expired/revoked refresh token.
   // Cleared when token_refreshed or login_complete fires for the same account.
   const [expiredAccountIds, setExpiredAccountIds] = useState<Set<string>>(new Set());
-  // Session-scoped round-robin suggestion. Shown when the account count
-  // crosses 1 → ≥2 while the user is not already in round-robin mode.
+  // Session-scoped Auto-switching suggestion. Shown when the account count
+  // crosses 1 → ≥2 while the user is not already in Auto mode.
   // Re-arms on the next transition (i.e. adding a third account after
   // dismissing on the second); dismissal does not persist across restarts
   // by design — the user might want to revisit the prompt later.
-  const [rrSuggestionVisible, setRrSuggestionVisible] = useState(false);
-  const [enablingRoundRobin, setEnablingRoundRobin] = useState(false);
+  const [autoSuggestionVisible, setAutoSuggestionVisible] = useState(false);
+  const [enablingAuto, setEnablingAuto] = useState(false);
 
   const prevAccountCountRef = useRef<number>(accounts.length);
   useEffect(() => {
     const prev = prevAccountCountRef.current;
-    if (
-      prev === 1 &&
-      accounts.length >= 2 &&
-      settings &&
-      settings.switchingMode !== 'round-robin'
-    ) {
-      setRrSuggestionVisible(true);
+    if (prev === 1 && accounts.length >= 2 && settings && settings.switchingMode !== 'auto') {
+      setAutoSuggestionVisible(true);
     }
     prevAccountCountRef.current = accounts.length;
   }, [accounts.length, settings]);
-  // If the user switches into round-robin via Settings while the banner is
+  // If the user switches into Auto via Settings while the banner is
   // up, dismiss it — the suggestion no longer applies.
   useEffect(() => {
-    if (settings?.switchingMode === 'round-robin' && rrSuggestionVisible) {
-      setRrSuggestionVisible(false);
+    if (settings?.switchingMode === 'auto' && autoSuggestionVisible) {
+      setAutoSuggestionVisible(false);
     }
-  }, [settings?.switchingMode, rrSuggestionVisible]);
+  }, [settings?.switchingMode, autoSuggestionVisible]);
 
-  const enableRoundRobin = async (): Promise<void> => {
-    setEnablingRoundRobin(true);
+  const enableAuto = async (): Promise<void> => {
+    setEnablingAuto(true);
     try {
-      await sendToSentinel({ type: 'update_settings', settings: { switchingMode: 'round-robin' } });
-      setRrSuggestionVisible(false);
+      await sendToSentinel({ type: 'update_settings', settings: { switchingMode: 'auto' } });
+      setAutoSuggestionVisible(false);
       setStatusMessage({
-        text: 'Round-robin enabled. Sentinel will rotate requests across your accounts.',
+        text: 'Auto switching enabled. Sentinel will route requests across your accounts.',
         kind: 'success',
       });
       setTimeout(() => setStatusMessage(null), 6000);
     } catch {
       setStatusMessage({
-        text: 'Failed to enable round-robin. Try again from Settings.',
+        text: 'Failed to enable Auto switching. Try again from Settings.',
         kind: 'error',
       });
     } finally {
-      setEnablingRoundRobin(false);
+      setEnablingAuto(false);
     }
   };
 
@@ -407,10 +402,31 @@ export default function AccountSwitcher({
     <div className="space-y-2 pt-1">
       {/* Section header */}
       <div className="flex items-center justify-between mb-3">
+        <span className="section-label">Accounts</span>
         <div className="flex items-center gap-2">
-          <span className="section-label">Accounts</span>
           {settings && (
-            <div data-tour-id="switching-mode" className="flex items-center gap-1">
+            <div data-tour-id="switching-mode" className="flex items-center gap-1.5">
+              <span className="text-[11px] text-muted">Account Switching</span>
+              <InfoModal title="Account Switching" ariaLabel="How account switching works">
+                <p>
+                  <span className="font-semibold text-black dark:text-white">Manual</span> — You
+                  choose which account is active. Every Claude Code request goes through that one
+                  account until you switch.
+                </p>
+                <p>
+                  <span className="font-semibold text-black dark:text-white">Auto</span> — Sentinel
+                  routes each request to the enrolled account whose 5-hour limit resets soonest, so
+                  you make the most of quota that's about to refresh. The header always shows the
+                  account currently serving your requests.
+                </p>
+                <p>
+                  Auto is a convenience for people who legitimately hold more than one Claude
+                  subscription. It does not bypass any account's limits — each request's usage
+                  counts against the account that served it, and Sentinel honors every account's
+                  rate limits and your overage safety buffer. Use it in line with Anthropic's Terms
+                  of Service and Usage Policy.
+                </p>
+              </InfoModal>
               <QuickSegmented<SwitchingMode>
                 ariaLabel="Account switching mode"
                 value={settings.switchingMode}
@@ -418,35 +434,21 @@ export default function AccountSwitcher({
                 options={[
                   { value: 'off', label: 'Manual', title: 'You pick the active account manually' },
                   {
-                    value: 'round-robin',
-                    label: 'Round-robin',
-                    title: 'Proxy rotates tokens across enrolled accounts per request',
+                    value: 'auto',
+                    label: 'Auto',
+                    title:
+                      'Sentinel routes requests to the enrolled account whose limit resets soonest',
                   },
                 ]}
               />
-              <AnimatePresence initial={false}>
-                {isRoundRobin && (
-                  <motion.div
-                    key="rr-strategy-menu"
-                    initial={{ opacity: 0, scale: 0.85 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.85 }}
-                    transition={{ duration: DUR.fast, ease: EASE_OUT }}
-                    className="flex items-center"
-                  >
-                    <RoundRobinStrategyMenu
-                      value={settings.roundRobinStrategy}
-                      onChange={(v: RoundRobinStrategy) =>
-                        void update({ roundRobinStrategy: v }).catch(() => undefined)
-                      }
-                    />
-                  </motion.div>
-                )}
-              </AnimatePresence>
             </div>
           )}
-        </div>
-        <div className="flex items-center gap-2">
+          {settings && (
+            <div
+              className="mx-0.5 h-4 w-px shrink-0 bg-black/10 dark:bg-white/15"
+              aria-hidden="true"
+            />
+          )}
           <button
             onClick={() => void handleRefreshClick()}
             disabled={loading || refreshInFlight}
@@ -511,17 +513,17 @@ export default function AccountSwitcher({
           })()}
       </AnimatePresence>
 
-      {/* Round-robin suggestion — appears once per 1→≥2 transition while the
-          user isn't in round-robin mode. Gives a one-click path from the
+      {/* Auto-switching suggestion — appears once per 1→≥2 transition while the
+          user isn't in Auto mode. Gives a one-click path from the
           Accounts tab instead of making them dig into Settings. */}
       <AnimatePresence initial={false}>
-        {rrSuggestionVisible && (
+        {autoSuggestionVisible && (
           <motion.div
             {...TRANSIENT_ANIM}
             className="overflow-hidden rounded-2xl bg-ios-blue/[0.08] dark:bg-ios-blue/[0.12] ring-1 ring-ios-blue/20"
           >
             <div className="px-4 py-3">
-              <p className="text-[12px] font-semibold text-ios-blue mb-1">Try round-robin?</p>
+              <p className="text-[12px] font-semibold text-ios-blue mb-1">Try Auto switching?</p>
               <p className="text-[11px] text-muted leading-snug mb-2.5">
                 With multiple accounts enrolled, Sentinel can rotate the OAuth token per request so
                 usage drains across all of them. You can tune the strategy (balance vs. earliest
@@ -529,18 +531,18 @@ export default function AccountSwitcher({
               </p>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => void enableRoundRobin()}
-                  disabled={enablingRoundRobin}
+                  onClick={() => void enableAuto()}
+                  disabled={enablingAuto}
                   className="flex-1 text-[12px] font-semibold text-white bg-ios-blue hover:opacity-90 active:scale-95 px-3 py-1.5 rounded-full transition-all disabled:opacity-50"
                 >
-                  {enablingRoundRobin ? (
+                  {enablingAuto ? (
                     <Loader2 size={12} className="inline animate-spin" />
                   ) : (
-                    'Switch to round-robin'
+                    'Switch to Auto'
                   )}
                 </button>
                 <button
-                  onClick={() => setRrSuggestionVisible(false)}
+                  onClick={() => setAutoSuggestionVisible(false)}
                   className="text-[12px] text-muted hover:text-black dark:hover:text-white transition-colors px-2"
                 >
                   Not now
@@ -634,7 +636,7 @@ export default function AccountSwitcher({
             refreshing={refreshingId === account.id}
             needsReauth={expired}
             onReauth={(id) => openSetupTerminal('reauth', id)}
-            isRoundRobin={isRoundRobin}
+            isAuto={isAuto}
             inPool={inPool}
             canExclude={poolMemberCount > 1}
             onTogglePool={togglePoolMembership}

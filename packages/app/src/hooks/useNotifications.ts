@@ -77,9 +77,9 @@ export function useNativeAlertNotifications(): void {
                   : `Sentinel: ${msg.thresholdPct}% usage reached`;
         const body =
           msg.scope === 'pool'
-            ? `Round-robin pool has used ${pct}% on average across its 5-hour window.`
+            ? `Auto pool has used ${pct}% on average across its 5-hour window.`
             : msg.scope === 'pool-weekly'
-              ? `Round-robin pool has used ${pct}% on average across its 7-day window.`
+              ? `Auto pool has used ${pct}% on average across its 7-day window.`
               : msg.scope === 'account-sonnet'
                 ? `Active account has used ${pct}% of its Sonnet 7-day window.`
                 : msg.scope === 'account-weekly'

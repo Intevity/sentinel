@@ -30,7 +30,7 @@ describe('TOUR_STEPS', () => {
     }
   });
 
-  it('covers the core feature pillars: accounts, round-robin, optimize, security, isolation, alerts', () => {
+  it('covers the core feature pillars: accounts, auto-switching, optimize, security, isolation, alerts', () => {
     const coreIds = TOUR_STEPS.slice(0, CORE_STEP_COUNT).map((s) => s.targetId);
     expect(coreIds).toContain('add-account');
     expect(coreIds).toContain('switching-mode');

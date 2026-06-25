@@ -44,8 +44,8 @@ export interface AlertEvaluatorDeps {
   /** Optional — used to decorate notification titles/bodies with an email. */
   getEmailForAccount?: (accountId: string) => string | null;
   /** Optional — when provided, the per-account and Sonnet evaluators skip
-   *  accounts the user has excluded from the round-robin pool while
-   *  `switchingMode === 'round-robin'`. Prevents false-positive notifications
+   *  accounts the user has excluded from the Auto-switching pool while
+   *  `switchingMode === 'auto'`. Prevents false-positive notifications
    *  firing off rate-limit headers that arrive from background probes or
    *  claude.ai usage sync on accounts Sentinel is no longer routing to.
    *  Missing → legacy "always evaluate" behaviour. */
@@ -54,22 +54,22 @@ export interface AlertEvaluatorDeps {
 
 export interface PoolAlertEvaluatorDeps extends AlertEvaluatorDeps {
   /** Live accessor for the current persisted settings. Used to skip pool
-   *  evaluation outside round-robin mode and to filter out excluded accounts. */
+   *  evaluation outside Auto mode and to filter out excluded accounts. */
   getSettings: () => Settings;
 }
 
 /** Shared predicate: `true` when the given accountId is in the user's
- *  round-robin exclusion list AND round-robin is the active mode. Used by
+ *  Auto-pool exclusion list AND Auto is the active mode. Used by
  *  both per-account and Sonnet evaluators to stay silent on accounts the
- *  user has explicitly taken out of rotation. Outside round-robin mode
+ *  user has explicitly taken out of rotation. Outside Auto mode
  *  `poolExcludedIds` is defined to be ignored, so the guard no-ops there. */
-function isExcludedInRoundRobin(
+function isExcludedFromAutoPool(
   getSettings: (() => Settings) | undefined,
   accountId: string,
 ): boolean {
   const settings = getSettings?.();
   if (!settings) return false;
-  if (settings.switchingMode !== 'round-robin') return false;
+  if (settings.switchingMode !== 'auto') return false;
   return settings.poolExcludedIds.includes(accountId);
 }
 
@@ -91,7 +91,7 @@ export function startAlertEvaluator(deps: AlertEvaluatorDeps): void {
     const session = deps.rateLimitStore.getAll(accountId).find((w) => w.name === SESSION_WINDOW);
     if (!session || session.utilization == null) return;
 
-    if (isExcludedInRoundRobin(deps.getSettings, accountId)) return;
+    if (isExcludedFromAutoPool(deps.getSettings, accountId)) return;
 
     const alerts = listAlerts(deps.db, { scope: 'account', accountId }).filter((a) => a.enabled);
     if (alerts.length === 0) return;
@@ -185,7 +185,7 @@ function computePoolSnapshot(
  */
 export function evaluatePoolOnce(deps: PoolAlertEvaluatorDeps): void {
   const settings = deps.getSettings();
-  if (settings.switchingMode !== 'round-robin') return;
+  if (settings.switchingMode !== 'auto') return;
   const excluded = new Set(settings.poolExcludedIds);
   const snapshot = computePoolSnapshot(deps.db, deps.rateLimitStore, excluded);
   if (!snapshot) return;
@@ -204,7 +204,7 @@ export function evaluatePoolOnce(deps: PoolAlertEvaluatorDeps): void {
     }
 
     const title = `Sentinel: pool at ${alert.thresholdPct}%`;
-    const body = `Round-robin pool has used ${snapshot.utilPct.toFixed(1)}% of its 5-hour window on average across ${snapshot.memberCount} account${snapshot.memberCount === 1 ? '' : 's'}.`;
+    const body = `Auto pool has used ${snapshot.utilPct.toFixed(1)}% of its 5-hour window on average across ${snapshot.memberCount} account${snapshot.memberCount === 1 ? '' : 's'}.`;
 
     insertNotification(deps.db, {
       ts: Date.now(),
@@ -234,13 +234,13 @@ export function evaluatePoolOnce(deps: PoolAlertEvaluatorDeps): void {
  * Wire the pool-alert evaluator to rate-limit updates. Every time any
  * account's rate-limit headers land we recompute the pool mean and fire any
  * pool alerts whose threshold is crossed. No-op when switching mode is not
- * round-robin, or when the updated account is excluded from the pool (the
+ * Auto mode, or when the updated account is excluded from the pool (the
  * pool mean can't change in that case).
  */
 export function startPoolAlertEvaluator(deps: PoolAlertEvaluatorDeps): void {
   deps.rateLimitStore.onUpdate((accountId) => {
     const settings = deps.getSettings();
-    if (settings.switchingMode !== 'round-robin') return;
+    if (settings.switchingMode !== 'auto') return;
     if (settings.poolExcludedIds.includes(accountId)) return;
     evaluatePoolOnce(deps);
   });
@@ -248,7 +248,7 @@ export function startPoolAlertEvaluator(deps: PoolAlertEvaluatorDeps): void {
 
 /**
  * Pool-weekly counterpart of `evaluatePoolOnce` — fires `pool-weekly`-scope
- * alerts when the mean `unified-7d` utilization across the round-robin pool
+ * alerts when the mean `unified-7d` utilization across the Auto-switching pool
  * crosses a configured threshold. Mirrors the 5-hour pool evaluator but
  * reads the general weekly window instead, and only re-fires once per 7-day
  * rollover. Called both on every rate-limit update and eagerly when
@@ -256,7 +256,7 @@ export function startPoolAlertEvaluator(deps: PoolAlertEvaluatorDeps): void {
  */
 export function evaluateWeeklyPoolOnce(deps: PoolAlertEvaluatorDeps): void {
   const settings = deps.getSettings();
-  if (settings.switchingMode !== 'round-robin') return;
+  if (settings.switchingMode !== 'auto') return;
   const excluded = new Set(settings.poolExcludedIds);
   const snapshot = computePoolSnapshot(deps.db, deps.rateLimitStore, excluded, WEEKLY_WINDOW);
   if (!snapshot) return;
@@ -275,7 +275,7 @@ export function evaluateWeeklyPoolOnce(deps: PoolAlertEvaluatorDeps): void {
     }
 
     const title = `Sentinel: pool weekly at ${alert.thresholdPct}%`;
-    const body = `Round-robin pool has used ${snapshot.utilPct.toFixed(1)}% of its 7-day window on average across ${snapshot.memberCount} account${snapshot.memberCount === 1 ? '' : 's'}.`;
+    const body = `Auto pool has used ${snapshot.utilPct.toFixed(1)}% of its 7-day window on average across ${snapshot.memberCount} account${snapshot.memberCount === 1 ? '' : 's'}.`;
 
     insertNotification(deps.db, {
       ts: Date.now(),
@@ -303,13 +303,13 @@ export function evaluateWeeklyPoolOnce(deps: PoolAlertEvaluatorDeps): void {
 
 /**
  * Wire the pool-weekly evaluator to rate-limit updates. Same gating as
- * `startPoolAlertEvaluator`: no-op outside round-robin, skip when the
+ * `startPoolAlertEvaluator`: no-op outside Auto mode, skip when the
  * updated account is excluded from the pool.
  */
 export function startWeeklyPoolAlertEvaluator(deps: PoolAlertEvaluatorDeps): void {
   deps.rateLimitStore.onUpdate((accountId) => {
     const settings = deps.getSettings();
-    if (settings.switchingMode !== 'round-robin') return;
+    if (settings.switchingMode !== 'auto') return;
     if (settings.poolExcludedIds.includes(accountId)) return;
     evaluateWeeklyPoolOnce(deps);
   });
@@ -327,7 +327,7 @@ export function startSonnetAlertEvaluator(deps: AlertEvaluatorDeps): void {
     const sonnet = deps.rateLimitStore.getAll(accountId).find((w) => w.name === SONNET_WINDOW);
     if (!sonnet || sonnet.utilization == null) return;
 
-    if (isExcludedInRoundRobin(deps.getSettings, accountId)) return;
+    if (isExcludedFromAutoPool(deps.getSettings, accountId)) return;
 
     const alerts = listAlerts(deps.db, { scope: 'account-sonnet', accountId }).filter(
       (a) => a.enabled,
@@ -395,7 +395,7 @@ export function startWeeklyAlertEvaluator(deps: AlertEvaluatorDeps): void {
     const weekly = deps.rateLimitStore.getAll(accountId).find((w) => w.name === WEEKLY_WINDOW);
     if (!weekly || weekly.utilization == null) return;
 
-    if (isExcludedInRoundRobin(deps.getSettings, accountId)) return;
+    if (isExcludedFromAutoPool(deps.getSettings, accountId)) return;
 
     const alerts = listAlerts(deps.db, { scope: 'account-weekly', accountId }).filter(
       (a) => a.enabled,

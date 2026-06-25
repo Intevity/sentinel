@@ -494,33 +494,33 @@ interface UsageViewProps {
    *  omits from rate-limit headers until Sonnet usage actually starts, but
    *  the user still wants to see it (at 0%) in the UI. */
   activeAccount: OAuthAccount | null;
-  /** Every known account. Piped in from App.tsx (useDaemon) so the round-robin
+  /** Every known account. Piped in from App.tsx (useDaemon) so the Auto-switching
    *  pool view can render a row per account without spinning up a second copy
    *  of useAccounts (which doesn't auto-fetch on mount). */
   accounts: AccountInfo[];
   /** View-scope override from the per-tab AccountViewPicker. Behavior:
    *   - `undefined`: default (follows the active account in single-account mode,
-   *                  renders the pool view in round-robin mode)
+   *                  renders the pool view in Auto mode)
    *   - `'__pool__'`: force pool view regardless of mode
    *   - any other string: treat as a specific accountId to inspect, rendering
-   *                       the single-account view even in round-robin mode */
+   *                       the single-account view even in Auto mode */
   viewAccountId?: string | undefined;
 }
 
 export default function UsageView(props: UsageViewProps): React.ReactElement {
   const { settings } = useSettings();
-  const isRoundRobin = settings?.switchingMode === 'round-robin';
+  const isAuto = settings?.switchingMode === 'auto';
   const { viewAccountId } = props;
 
   // Explicit pool selection always wins.
   if (viewAccountId === '__pool__') {
-    return <RoundRobinUsageView accounts={props.accounts} />;
+    return <AutoPoolUsageView accounts={props.accounts} />;
   }
   // In RR mode with no explicit pick, default to the pool. An explicit
   // account id (non-pool) falls through to the single-account view below so
   // the user can drill into any account even while rotation is on.
-  if (isRoundRobin && viewAccountId === undefined) {
-    return <RoundRobinUsageView accounts={props.accounts} />;
+  if (isAuto && viewAccountId === undefined) {
+    return <AutoPoolUsageView accounts={props.accounts} />;
   }
   return <SingleAccountUsageView {...props} />;
 }
@@ -794,7 +794,7 @@ function pauseReasonLabel(reason: PauseReason): string {
   }
 }
 
-// Threshold ladder shared by every round-robin meter (bar + pct text color).
+// Threshold ladder shared by every Auto-pool meter (bar + pct text color).
 function meterColors(pct: number | null): { bar: string; text: string } {
   if (pct == null) return { bar: 'bg-[#8E8E93]', text: 'text-muted' };
   if (pct >= 90) return { bar: 'bg-ios-red', text: 'text-ios-red' };
@@ -858,7 +858,7 @@ function PoolMeterBlock({
   );
 }
 
-/** One row in a per-account round-robin card: account label, reset pill,
+/** One row in a per-account Auto-pool card: account label, reset pill,
  *  percent, and a bar. Null `util` renders "–" + no bar + no pill. Excluded
  *  accounts are dimmed and tagged with an "Excluded" pill. */
 function PoolAccountRow({
@@ -915,7 +915,7 @@ function PoolAccountRow({
 }
 
 /**
- * Round-robin mode pool view.
+ * Auto-switching pool view.
  *
  * When the proxy rotates tokens per-request, the "active account" concept
  * loses meaning for Usage — every request's response headers belong to a
@@ -930,7 +930,7 @@ function PoolAccountRow({
  * We never call `get_rate_limits` here — that endpoint is scoped to the
  * single active account and would be stale for everything else in the pool.
  */
-function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.ReactElement {
+function AutoPoolUsageView({ accounts }: { accounts: AccountInfo[] }): React.ReactElement {
   const { byAccount, refetch } = useAllRateLimits();
   const { settings } = useSettings();
   const paused = usePausedAccounts();
@@ -996,7 +996,7 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
         <div className="flex items-center gap-2">
           <span className="section-label">Usage</span>
           <span className="text-[9px] font-semibold text-ios-blue bg-ios-blue/10 px-1.5 py-0.5 rounded-full uppercase tracking-wider">
-            Round-robin
+            Auto pool
           </span>
           <InfoTooltip text={USAGE_VARIANCE_NOTE} placement="bottom" />
         </div>
@@ -1043,8 +1043,8 @@ function RoundRobinUsageView({ accounts }: { accounts: AccountInfo[] }): React.R
               totalAccounts={poolSize}
             />
             <p className="text-[10px] text-muted leading-snug">
-              Averages across every account in the round-robin pool. Accounts with no data yet for a
-              given window are excluded from that window&apos;s average.
+              Averages across every account in the Auto-switching pool. Accounts with no data yet
+              for a given window are excluded from that window&apos;s average.
             </p>
             {autoExcludedRows.length > 0 && (
               <div className="flex items-start gap-1.5">

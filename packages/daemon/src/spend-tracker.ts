@@ -117,7 +117,7 @@ export interface SpendTrackerDeps {
  *      `account_unpaused` + writes a notification row.
  *
  * The paused set is exposed to `TokenRotator` via `getPausedIds()` so
- * round-robin skips paused accounts. The proxy consults the same accessor
+ * Auto switching skips paused accounts. The proxy consults the same accessor
  * in `off` mode to short-circuit requests with a 503 + Retry-After.
  */
 export class SpendTracker {

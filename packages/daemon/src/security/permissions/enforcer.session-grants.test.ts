@@ -33,7 +33,6 @@ function defaultSettings(over: Partial<Settings> = {}): Settings {
     budgetWeeklyUsdByAccount: {},
     budgetWeeklyUsdGlobal: null,
     overageBufferPct: 5,
-    roundRobinStrategy: 'balance',
     backgroundProbeIntervalSec: 300,
     telemetryRetentionDays: 30,
     dataRetentionDays: 365,

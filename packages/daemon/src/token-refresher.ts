@@ -21,7 +21,7 @@ export interface TokenRefresherDeps {
   activeToken: ActiveToken;
   activeAccountId: ActiveAccountId;
   ipcServer: IpcServer;
-  /** Round-robin pool cache. Structural type so this module doesn't import
+  /** Auto-switching pool cache. Structural type so this module doesn't import
    *  TokenRotator (avoids a circular dep with index.ts). `refresh()` must be
    *  called after every successful token rotation or the pool will keep
    *  handing out the pre-refresh token and requests will 401. */
@@ -130,7 +130,7 @@ export async function refreshIfNeeded(
     writeSentinelCredentials(accountId, updated);
 
     // Invariant: Sentinel's keychain now has the new token; the rotator pool
-    // must reflect it before the next pick() or round-robin will keep
+    // must reflect it before the next pick() or Auto routing will keep
     // serving the pre-refresh token and 401. Invalidate unconditionally —
     // the pool covers every non-excluded account, not just the active one.
     deps.tokenRotator.refresh();

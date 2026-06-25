@@ -620,7 +620,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // Shared correlation table: proxy writes Anthropic's `request-id` → per-
   // request Sentinel key on each upstream response; OtelReceiver reads it
   // when an `api_request`/`api_error` event arrives carrying the same id.
-  // Required for correct OTEL attribution in round-robin mode.
+  // Required for correct OTEL attribution in Auto switching mode.
   const requestAccountMap = new RequestAccountMap();
   const rateLimitStore = new RateLimitStore();
 
@@ -721,12 +721,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
   otelEmitter.attachToIpc(ipcServer);
   otelEmitter.start();
 
-  // Round-robin token pool. Only consulted when switchingMode === 'round-robin'.
+  // Auto-switching token pool. Only consulted when switchingMode === 'auto'.
   // The excluded-ids getter reads the live in-memory settings so pool-membership
   // toggles take effect on the next `tokenRotator.refresh()` (called from the
-  // update_settings handler). The strategy getter is read on every `pick()` so
-  // toggling the sub-strategy in Settings takes effect for the next request
-  // without a restart or refresh.
+  // update_settings handler).
   // Sentinel-side paused set — populated by SpendTracker once it's wired in
   // (stage 4). For now it's an empty reference so existing pick() callsites
   // keep working. Replacing the reference in-place keeps the rotator's live
@@ -738,7 +736,6 @@ export async function startDaemon(): Promise<DaemonHandle> {
     rateLimitStore,
     activeAccountId,
     () => new Set(currentSettings.poolExcludedIds),
-    () => currentSettings.roundRobinStrategy,
     () => new Set(currentSettings.overageEnabledIds),
     () => getPausedAccountIds(),
     () => currentSettings.overageBufferPct,
@@ -1773,7 +1770,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
         const prev = currentSettings;
         const next = writeSettings(msg.settings);
         currentSettings = next;
-        // Mode flipping to round-robin may need a fresh token pool (e.g. new
+        // Mode flipping to Auto may need a fresh token pool (e.g. new
         // account was just added). Cheap to refresh unconditionally.
         tokenRotator.refresh();
         // Budget field changes should re-evaluate paused state + alerts
@@ -2302,7 +2299,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
                 accountId: null,
                 type: 'usage_alert',
                 title: 'Sentinel: pool at 75% (synthetic)',
-                body: 'Round-robin pool has used 75.0% of its 5-hour window on average. TEST SCENARIO — `pnpm alerts:test usage-pool`',
+                body: 'Auto pool has used 75.0% of its 5-hour window on average. TEST SCENARIO — `pnpm alerts:test usage-pool`',
               });
               break;
             }
@@ -3226,7 +3223,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
   });
 
   // Evaluate user-created per-account alerts on every rate-limit update.
-  // `getSettings` enables the round-robin exclusion guard inside the
+  // `getSettings` enables the Auto-pool exclusion guard inside the
   // per-account + Sonnet evaluators: rate-limit headers can still arrive for
   // excluded accounts (via background probes that run immediately post-reset,
   // or via claude.ai usage-store sync) and without this guard the evaluator
@@ -3255,9 +3252,9 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // versa, so this is deliberately a separate evaluator/scope.
   startWeeklyAlertEvaluator(alertEvaluatorDeps);
 
-  // Pool-wide alerts (round-robin only). No-ops outside round-robin mode.
+  // Pool-wide alerts (Auto mode only). No-ops outside Auto mode.
   // Also called eagerly from the update_settings handler when the user
-  // changes pool membership or switches into round-robin, so the new pool's
+  // changes pool membership or switches into Auto, so the new pool's
   // utilization is checked without waiting for the next rate-limit update.
   const poolAlertDeps = { ...alertEvaluatorDeps, getSettings };
   startPoolAlertEvaluator(poolAlertDeps);
@@ -3757,7 +3754,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
   const inFlightAuthRefresh = new Set<string>();
 
   // Create HTTP proxy server. The tokenProvider returns a rotated credential
-  // only when the user has opted into round-robin mode; otherwise the proxy
+  // only when the user has opted into Auto switching; otherwise the proxy
   // falls back to the shared activeToken/activeAccountId refs (original flow).
   const httpServer = createProxyServer(
     {
@@ -3776,7 +3773,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
       // files own the assertions.
       /* v8 ignore start */
       tokenProvider: (ctx) => {
-        if (currentSettings.switchingMode !== 'round-robin') return null;
+        if (currentSettings.switchingMode !== 'auto') return null;
         return tokenRotator.pick(ctx);
       },
       getPausedAccountIds: () => spendTracker.getPausedIds(),
@@ -3995,7 +3992,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // Claude Desktop, direct API) even when Claude Code isn't driving them.
   //
   // `shouldSkipProbe` pauses probing on accounts the user has excluded from
-  // the round-robin pool. Each probe is a real `POST /v1/messages` that
+  // the Auto-switching pool. Each probe is a real `POST /v1/messages` that
   // consumes ~1 output token on the target account — probing an excluded
   // account keeps its 5h utilization climbing from Sentinel traffic, which
   // is exactly the signal the user wanted to stop. The exception: once the
@@ -4003,13 +4000,13 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // Anthropic's side, so one probe runs to capture fresh numbers (util ≈ 0,
   // new reset ~5h ahead) for the dashboard. The next tick sees a future
   // reset again and skips — net effect: one probe per excluded account per
-  // 5h window. Outside round-robin mode the predicate never short-circuits.
+  // 5h window. Outside Auto mode the predicate never short-circuits.
   usageProber = startUsageProber({
     db,
     ipcServer,
     getIntervalSec: () => currentSettings.backgroundProbeIntervalSec,
     shouldSkipProbe: (accountId: string): boolean => {
-      if (currentSettings.switchingMode !== 'round-robin') return false;
+      if (currentSettings.switchingMode !== 'auto') return false;
       if (!currentSettings.poolExcludedIds.includes(accountId)) return false;
       const w = rateLimitStore.getAll(accountId).find((x) => x.name === 'unified-5h');
       // No stored reset → let the first probe happen so we have a baseline.

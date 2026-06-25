@@ -86,6 +86,16 @@ export interface AccountSwitchedMessage {
   to: OAuthAccount;
 }
 
+/** Broadcast in Auto switching mode when the account the rotator is routing
+ *  requests through changes. `accountId` is the Sentinel key
+ *  (orgUuid||accountUuid). The header subscribes so it can always show the
+ *  account currently serving requests, not a generic "auto" indicator.
+ *  Earliest-reset is sticky, so this fires on target change — not per request. */
+export interface RoutedAccountChangedMessage {
+  type: 'routed_account_changed';
+  accountId: string;
+}
+
 /** Broadcast after per-account metadata is persisted (currently: avatar color).
  *  UI instances listen for this and refetch the accounts list so any color dot
  *  or avatar redraws consistently across open windows. */
@@ -178,7 +188,8 @@ export interface OtelDriftStateMessage {
 /** Broadcast when a user-configured usage alert crosses its threshold. The
  *  frontend subscribes and fires a native OS notification.
  *
- *  `scope === 'pool'` indicates a round-robin pool-wide alert; `accountId` is
+ *  `scope === 'pool'` indicates a pool-wide alert across the Auto-switching
+ *  pool; `accountId` is
  *  null in that case and `utilization` is the mean across pool members.
  *  `scope === 'budget'` carries the observed spend + cap as extra fields so
  *  the UI can render specific dollar figures without another round-trip. */
@@ -525,6 +536,7 @@ export type DaemonToAppMessage =
   | SonnetSaturationExitedMessage
   | UsageUpdateMessage
   | AccountSwitchedMessage
+  | RoutedAccountChangedMessage
   | AccountUpdatedMessage
   | LoginCompleteMessage
   | RateLimitsUpdatedMessage

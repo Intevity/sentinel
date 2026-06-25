@@ -107,7 +107,7 @@ describe('TokenRotator integration (real headers → store → rotator)', () => 
         rateLimitStore,
         // Per-request override: use the caller-supplied x-seed-account header
         // to pick which account's scenario we're populating. The real daemon
-        // does this via its round-robin rotator; this test uses a fixed map.
+        // does this via its Auto-switching rotator; this test uses a fixed map.
         tokenProvider: () => null,
       },
       async (_req, res) => {
@@ -179,7 +179,6 @@ describe('TokenRotator integration (real headers → store → rotator)', () => 
       rateLimitStore,
       { value: 'acct-fresh' },
       () => excluded,
-      () => 'balance',
       // Opt acct-overage in so it's eligible for the overage tier at all;
       // the rotator still must only pick from fresh while fresh has room.
       () => new Set(['acct-overage']),
@@ -211,7 +210,6 @@ describe('TokenRotator integration (real headers → store → rotator)', () => 
       rateLimitStore,
       { value: 'acct-warning' },
       () => excluded,
-      () => 'balance',
       () => new Set(['acct-warning']),
       () => new Set(),
       () => 10,
@@ -232,7 +230,6 @@ describe('TokenRotator integration (real headers → store → rotator)', () => 
       rateLimitStore,
       { value: 'acct-sonnet-saturation' },
       () => excluded,
-      () => 'balance',
       () => new Set(), // not opted into overage
       () => new Set(),
       () => 10,
@@ -259,7 +256,6 @@ describe('TokenRotator integration (real headers → store → rotator)', () => 
       rateLimitStore,
       { value: 'acct-overage-disabled' },
       () => excluded,
-      () => 'balance',
       () => new Set(['acct-overage-disabled']), // opted in — should not matter
       () => new Set(),
       () => 10,

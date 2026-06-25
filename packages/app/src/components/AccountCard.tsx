@@ -55,12 +55,12 @@ interface AccountCardProps {
   /** Click handler for the expired-sign-in banner. The parent opens the
    *  `claude setup-token` terminal so the user can re-authenticate. */
   onReauth?: (id: string) => void;
-  /** When true, the card is rendered in round-robin mode. Manual switching
+  /** When true, the card is rendered in Auto mode. Manual switching
    *  is replaced by an Include/Exclude pool-membership action. */
-  isRoundRobin?: boolean;
-  /** Round-robin pool membership. True = participates in rotation, gets the
+  isAuto?: boolean;
+  /** Auto-switching pool membership. True = participates in rotation, gets the
    *  blue-highlighted "Active" treatment. False = muted card with "Excluded"
-   *  label. Meaningless unless `isRoundRobin` is true. */
+   *  label. Meaningless unless `isAuto` is true. */
   inPool?: boolean;
   /** When false and `inPool` is true, the Exclude action is disabled to
    *  prevent the last pool member from being excluded. */
@@ -85,7 +85,7 @@ export default function AccountCard({
   refreshing,
   needsReauth,
   onReauth,
-  isRoundRobin,
+  isAuto,
   inPool,
   canExclude,
   onTogglePool,
@@ -122,10 +122,10 @@ export default function AccountCard({
     !isTeam && !!extraUsage && extraUsage.isEnabled && extraUsage.limitUsd > 0;
   const individualOverageDisabled = !isTeam && !!extraUsage && !extraUsage.isEnabled;
   // Shared status derivation with the AccountViewPicker dropdown so the two
-  // stay in lock-step (round-robin pool members → "Active", excluded → muted).
+  // stay in lock-step (Auto pool members → "Active", excluded → muted).
   const status = getAccountStatus({
     isActive: account.isActive,
-    switchingMode: isRoundRobin ? 'round-robin' : 'off',
+    switchingMode: isAuto ? 'auto' : 'off',
     inPool: inPool ?? false,
   });
   const highlight = status === 'active';
@@ -176,9 +176,9 @@ export default function AccountCard({
   // ── Primary action for the bottom-right of the action row ──
   // Non-RR non-active → Switch pill (blue). RR excluded → Include pill (blue,
   // primary CTA). RR included → Exclude link (gray, de-emphasized). RR
-  // included + last pool member → disabled Exclude. Non-RR active → none.
+  // included + last pool member → disabled Exclude. Non-Auto active → none.
   let primaryAction: React.ReactNode = null;
-  if (isRoundRobin) {
+  if (isAuto) {
     if (inPool) {
       const disabled = canExclude === false;
       primaryAction = (
@@ -187,9 +187,7 @@ export default function AccountCard({
           disabled={disabled}
           className="text-[11px] font-medium text-muted hover:text-ios-red disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           title={
-            disabled
-              ? 'At least one account must stay in the pool'
-              : 'Exclude from round-robin rotation'
+            disabled ? 'At least one account must stay in the pool' : 'Exclude from Auto switching'
           }
         >
           Exclude
@@ -201,7 +199,7 @@ export default function AccountCard({
           onClick={() => onTogglePool?.(account.id, true)}
           className="text-[11px] font-semibold text-white bg-ios-blue hover:opacity-90
                      active:scale-95 px-2.5 py-1 rounded-full transition-all duration-150"
-          title="Include in round-robin rotation"
+          title="Include in Auto switching"
         >
           Include
         </button>

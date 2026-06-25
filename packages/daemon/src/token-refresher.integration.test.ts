@@ -193,7 +193,7 @@ describe('token-refresher integration (real refresh path)', () => {
     });
 
     it('invalidates the rotator pool after a successful refresh of an inactive account', async () => {
-      // Regression: round-robin pool kept serving the pre-refresh token on the
+      // Regression: Auto-switching pool kept serving the pre-refresh token on the
       // non-active account until the daemon was restarted, causing 401s.
       const h = setup();
       writeSentinelCredentials('acct-1', makeCreds({ expiresAt: Date.now() + 5 * 60 * 1000 }));

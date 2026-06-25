@@ -113,7 +113,7 @@ describe('settings', () => {
     });
 
     it('accepts both valid switchingMode values', () => {
-      for (const mode of ['off', 'round-robin'] as const) {
+      for (const mode of ['off', 'auto'] as const) {
         writeRawWithSig(
           path,
           JSON.stringify({ ...DEFAULT_SETTINGS, switchingMode: mode }),
@@ -128,25 +128,18 @@ describe('settings', () => {
       expect(loadSettings(path).switchingMode).toBe(DEFAULT_SETTINGS.switchingMode);
     });
 
-    it('defaults roundRobinStrategy to "balance"', () => {
-      expect(loadSettings(path).roundRobinStrategy).toBe('balance');
-    });
-
-    it('accepts both valid roundRobinStrategy values', () => {
-      for (const strategy of ['balance', 'earliest-reset'] as const) {
-        writeRawWithSig(
-          path,
-          JSON.stringify({ ...DEFAULT_SETTINGS, roundRobinStrategy: strategy }),
-        );
-        expect(loadSettings(path).roundRobinStrategy).toBe(strategy);
-      }
-    });
-
-    it('falls back to default roundRobinStrategy when the value is garbage', () => {
-      writeRawWithSig(path, JSON.stringify({ roundRobinStrategy: 'other' }), 'utf-8');
-      expect(loadSettings(path).roundRobinStrategy).toBe(DEFAULT_SETTINGS.roundRobinStrategy);
-      writeRawWithSig(path, JSON.stringify({ roundRobinStrategy: 42 }), 'utf-8');
-      expect(loadSettings(path).roundRobinStrategy).toBe(DEFAULT_SETTINGS.roundRobinStrategy);
+    it('migrates the legacy "round-robin" switchingMode to "auto" and drops roundRobinStrategy', () => {
+      // Beta users had switchingMode:'round-robin' (+ a roundRobinStrategy) on
+      // disk before the rename. Loading must recover their rotation setting as
+      // 'auto' with no data loss, and the retired strategy field is ignored.
+      writeRawWithSig(
+        path,
+        JSON.stringify({ switchingMode: 'round-robin', roundRobinStrategy: 'balance' }),
+        'utf-8',
+      );
+      const got = loadSettings(path);
+      expect(got.switchingMode).toBe('auto');
+      expect((got as unknown as Record<string, unknown>).roundRobinStrategy).toBeUndefined();
     });
 
     it('accepts all valid logLevel values', () => {
@@ -477,7 +470,7 @@ describe('settings', () => {
       const wanted = {
         ...DEFAULT_SETTINGS,
         launchAtLogin: false,
-        switchingMode: 'round-robin' as const,
+        switchingMode: 'auto' as const,
         alertSoundName: 'Glass',
         autoUpdate: true,
         poolExcludedIds: [],
@@ -518,8 +511,8 @@ describe('settings', () => {
     });
 
     it('starts from defaults when no file exists', () => {
-      const got = updateSettings({ switchingMode: 'round-robin' }, path);
-      expect(got.switchingMode).toBe('round-robin');
+      const got = updateSettings({ switchingMode: 'auto' }, path);
+      expect(got.switchingMode).toBe('auto');
       expect(got.launchAtLogin).toBe(DEFAULT_SETTINGS.launchAtLogin);
     });
 
@@ -599,10 +592,10 @@ describe('settings', () => {
 
     it('persists across calls', () => {
       updateSettings({ launchAtLogin: false }, path);
-      updateSettings({ switchingMode: 'round-robin' }, path);
+      updateSettings({ switchingMode: 'auto' }, path);
       const got = loadSettings(path);
       expect(got.launchAtLogin).toBe(false);
-      expect(got.switchingMode).toBe('round-robin');
+      expect(got.switchingMode).toBe('auto');
     });
 
     it('round-trips securityContextVerbosity and coerces unknown values to the default', () => {

@@ -223,12 +223,12 @@ describe('IPC — settings', () => {
     ctx = await startTestDaemon();
     const r = await ctx.request({
       type: 'update_settings',
-      settings: { switchingMode: 'round-robin' },
+      settings: { switchingMode: 'auto' },
     });
     expect(r.success).toBe(true);
     await ctx.waitForBroadcast((m) => m.type === 'settings_changed');
     const after = await ctx.request<{ switchingMode: string }>({ type: 'get_settings' });
-    expect(after.data?.switchingMode).toBe('round-robin');
+    expect(after.data?.switchingMode).toBe('auto');
   });
 });
 

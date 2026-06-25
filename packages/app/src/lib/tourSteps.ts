@@ -14,7 +14,7 @@ import {
 import {
   WelcomeIllustration,
   AccountsIllustration,
-  RoundRobinIllustration,
+  AutoSwitchIllustration,
   SecurityIllustration,
   AlertsIllustration,
   BudgetIllustration,
@@ -92,12 +92,12 @@ export const TOUR_STEPS: TourStep[] = [
   {
     targetId: 'switching-mode',
     tab: 'accounts',
-    title: 'Round-robin across your pool',
-    body: 'Flip on round-robin and Sentinel rotates the OAuth token on every request. Balance drains accounts evenly so they all hit reset together; Earliest reset drains the soonest-resetting account first to use up fresh quota.',
+    title: 'Automatic account switching',
+    body: 'Switch Account Switching to Auto and Sentinel routes each request to the enrolled account whose 5-hour limit resets soonest, using up quota that is about to refresh. The header always shows the account currently serving your requests.',
     placement: 'auto',
     icon: Shuffle,
     accent: 'teal',
-    illustration: RoundRobinIllustration,
+    illustration: AutoSwitchIllustration,
     track: 'core',
   },
   {
