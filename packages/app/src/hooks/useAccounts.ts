@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { AccountInfo } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
+import { subscribeDemoMode } from '../lib/demoMode.js';
 
 interface UseAccountsResult {
   accounts: AccountInfo[];
@@ -150,6 +151,10 @@ export function useAccounts(): UseAccountsResult {
       unlisten?.();
     };
   }, [refreshAccounts]);
+
+  // Toggling demo mode (dev-only) re-fetches so the account list/dropdowns
+  // re-render with masked (or restored) emails immediately, without a restart.
+  useEffect(() => subscribeDemoMode(() => void refreshAccounts()), [refreshAccounts]);
 
   const refreshToken = useCallback(
     async (

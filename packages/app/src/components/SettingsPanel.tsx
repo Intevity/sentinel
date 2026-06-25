@@ -26,6 +26,7 @@ import { useDaemon } from '../hooks/useDaemon.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { useAccounts } from '../hooks/useAccounts.js';
 import { accountColor } from '../lib/accountColor.js';
+import { isDemoModeEnabled, setDemoModeEnabled } from '../lib/demoMode.js';
 import { planLabel } from '../lib/plan.js';
 import AccountColorDot from './AccountColorDot.js';
 import OverlayPanel from './OverlayPanel.js';
@@ -141,6 +142,14 @@ export default function SettingsPanel({
     }
     return 'general';
   });
+
+  // Demo mode is a hidden, dev-build-only tool for recording marketing content:
+  // it masks every account's email/display name in the UI. `__APP_VERSION__` is
+  // 'dev' for untagged local `pnpm build:app` builds and a real version for
+  // tagged CI releases (see Footer.tsx), so the toggle never ships. The flag is
+  // frontend-only (localStorage) — it never touches the daemon.
+  const isDevBuild = __APP_VERSION__ === 'dev';
+  const [demoMode, setDemoMode] = useState(isDemoModeEnabled);
 
   // Second-level sub-tab state for the Security and Data tabs. Both group
   // their long section lists into sub-tabs so no single scroll path overflows
@@ -533,6 +542,20 @@ export default function SettingsPanel({
                   description="Start Sentinel automatically when you sign in. Recommended so Claude Code stays routed through the proxy."
                   checked={settings.launchAtLogin}
                   onChange={setLaunch}
+                />
+              </Section>
+            )}
+
+            {activeTab === 'general' && isDevBuild && (
+              <Section title="Developer">
+                <ToggleRow
+                  label="Demo mode"
+                  description="Mask every account's email, name, and organization in the UI (e.g. sentinel-demo-1@intevity.com) for screen recordings. Display-only — your real account, metrics, and switching are unaffected. Dev builds only."
+                  checked={demoMode}
+                  onChange={(v) => {
+                    setDemoModeEnabled(v);
+                    setDemoMode(v);
+                  }}
                 />
               </Section>
             )}
