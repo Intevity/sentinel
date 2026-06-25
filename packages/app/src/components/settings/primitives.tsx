@@ -1,5 +1,5 @@
 import React, { useId, useState } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, Search, X } from 'lucide-react';
 
 /**
  * Shared building-block components for settings UIs. Extracted from
@@ -31,6 +31,43 @@ export function Section(props: { title: string; children: React.ReactNode }): Re
       <div className="rounded-2xl bg-white dark:bg-[#1E1E1E] shadow-card overflow-hidden divide-y divide-black/5 dark:divide-white/5">
         {props.children}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Consistent search field for the settings sub-tab panels (detectors,
+ * allowlist, permission bypasses, rules). A leading magnifier, generous
+ * padding, an ios-blue focus ring, and a clear button when non-empty —
+ * so every searchable list in Settings looks and behaves the same.
+ */
+export function SearchInput(props: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  ariaLabel?: string;
+}): React.ReactElement {
+  return (
+    <div className="relative">
+      <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted" />
+      <input
+        type="text"
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        placeholder={props.placeholder}
+        aria-label={props.ariaLabel ?? props.placeholder}
+        className="w-full text-[12px] rounded-lg bg-black/[0.04] dark:bg-white/[0.06] pl-8 pr-8 py-2 text-black dark:text-white placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ios-blue/40 transition-shadow"
+      />
+      {props.value && (
+        <button
+          type="button"
+          onClick={() => props.onChange('')}
+          aria-label="Clear search"
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-black dark:hover:text-white transition-colors"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      )}
     </div>
   );
 }

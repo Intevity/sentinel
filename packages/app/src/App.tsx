@@ -33,9 +33,6 @@ import ActivationBanner from './components/ActivationBanner.js';
 import HeaderMenu from './components/HeaderMenu.js';
 import PersistenceBanner from './components/PersistenceBanner.js';
 import SettingsPanel from './components/SettingsPanel.js';
-import SecurityRulesOverlay, {
-  type SecurityOverlayTab,
-} from './components/SecurityRulesOverlay.js';
 import SecurityPanel from './components/SecurityPanel.js';
 import SecuritySetupWizard from './components/SecuritySetupWizard.js';
 import Tour from './components/Tour.js';
@@ -87,11 +84,6 @@ export default function App(): React.ReactElement {
   // activeTab='security' in the notify-event listener below.
   const [securityExpandEventId, setSecurityExpandEventId] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Tool-permission rules editor. Lifted to App level so the overlay has its
-  // own positioning context (inside SettingsPanel it pinned to the top of the
-  // Settings scroll area and appeared off-screen when the user was scrolled
-  // down). Also reachable directly via the Shield icon in the header.
-  const [rulesOpen, setRulesOpen] = useState(false);
   // Deep-link target inside the Settings panel. When set before opening,
   // SettingsPanel scrolls to the matching element id and flashes it.
   const [settingsScrollTarget, setSettingsScrollTarget] = useState<string | null>(null);
@@ -109,12 +101,8 @@ export default function App(): React.ReactElement {
     refetch,
   } = useDaemon();
   const { recentErrors, recentEntries, hasUnseenErrors, markErrorsSeen } = useDaemonErrors();
-  const { settings, update: updateSettings } = useSettings();
+  const { settings } = useSettings();
   useThemeEffect(settings?.theme ?? null);
-  // Which tab the SecurityRulesOverlay opens on. Header-shield click opens
-  // 'rules' by default; Settings' "Manage allowlist…" button flips this to
-  // 'allowlist' before opening the overlay.
-  const [securityOverlayTab, setSecurityOverlayTab] = useState<SecurityOverlayTab>('rules');
   // Mount the app-global native-notification listener. Must live here (not
   // in a per-tab component) so banners fire on any tab and while the
   // window is hidden in the tray.
@@ -233,7 +221,7 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     if (!settings) return;
     if (tourOpen) return;
-    if (settingsOpen || rulesOpen) return;
+    if (settingsOpen) return;
     if (tourForceOpen) {
       tourClosedThisSession.current = false;
       setTourOpen(true);
@@ -243,15 +231,7 @@ export default function App(): React.ReactElement {
     if (!connected) return;
     if (settings.tourCompleted) return;
     setTourOpen(true);
-  }, [
-    settings?.tourCompleted,
-    tourForceOpen,
-    tourOpen,
-    connected,
-    settingsOpen,
-    rulesOpen,
-    settings,
-  ]);
+  }, [settings?.tourCompleted, tourForceOpen, tourOpen, connected, settingsOpen, settings]);
 
   // First-run security setup wizard. Opens once per install (tracked via
   // settings.securitySetupCompleted) after the user has added at least one
@@ -409,10 +389,7 @@ export default function App(): React.ReactElement {
               </span>
             )}
             <button
-              onClick={() => {
-                setSecurityOverlayTab('rules');
-                setRulesOpen(true);
-              }}
+              onClick={() => openSettingsAt('tool-permissions-toggle')}
               className="inline-flex items-center justify-center hover:opacity-80 transition-opacity transform-gpu p-0.5 -m-0.5 flex-shrink-0 leading-none"
               aria-label="Security"
               data-tour-id="tour-permissions"
@@ -448,31 +425,6 @@ export default function App(): React.ReactElement {
               onRunSetupWizard={() => {
                 setSettingsOpen(false);
                 setSettingsScrollTarget(null);
-                setWizardForceOpen(true);
-              }}
-              onManageRules={() => {
-                setSettingsOpen(false);
-                setSettingsScrollTarget(null);
-                setSecurityOverlayTab('rules');
-                setRulesOpen(true);
-              }}
-              onManageAllowlist={() => {
-                setSettingsOpen(false);
-                setSettingsScrollTarget(null);
-                setSecurityOverlayTab('allowlist');
-                setRulesOpen(true);
-              }}
-            />
-          )}
-          {rulesOpen && !settingsOpen && (
-            <SecurityRulesOverlay
-              onClose={() => setRulesOpen(false)}
-              measureRef={overlayRef}
-              initialTab={securityOverlayTab}
-              settings={settings}
-              updateSettings={updateSettings}
-              onRunSetupWizard={() => {
-                setRulesOpen(false);
                 setWizardForceOpen(true);
               }}
             />
@@ -800,10 +752,6 @@ export default function App(): React.ReactElement {
                               onRequestOpenSettings={openSettingsAt}
                               autoExpandEventId={securityExpandEventId}
                               onAutoExpandHandled={() => setSecurityExpandEventId(null)}
-                              onManageIsolation={() => {
-                                setSecurityOverlayTab('isolation');
-                                setRulesOpen(true);
-                              }}
                             />
                           </>
                         );

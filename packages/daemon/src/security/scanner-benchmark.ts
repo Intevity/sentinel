@@ -160,6 +160,8 @@ function benchSettings(): Settings {
     codeModeSkillInstalled: false,
     mcpDisabledStashes: [],
     optimizeSubTab: 'subagents',
+    securitySubTab: 'scanning',
+    dataSubTab: 'retention',
   };
 }
 

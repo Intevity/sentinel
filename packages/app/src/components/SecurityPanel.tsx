@@ -28,21 +28,12 @@ import type {
 import { useSecurityEvents } from '../hooks/useSecurityEvents.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { useAutoModeStatus } from '../hooks/useAutoModeStatus.js';
-import { useSandboxStatus } from '../hooks/useSandboxStatus.js';
-import { usePermissionRules } from '../hooks/usePermissionRules.js';
 import { usePendingSecurityBlocks } from '../hooks/usePendingSecurityBlocks.js';
 import LiveSecurityRow from './LiveSecurityRow.js';
 import SecurityStatusPill from './SecurityStatusPill.js';
 import HighlightedSnippet from './HighlightedSnippet.js';
-import {
-  QuickSegmented,
-  QuickChipToggle,
-  Switch,
-  SettingsCard,
-  SettingsRow,
-} from './settings/primitives.js';
+import { QuickToggle } from './settings/primitives.js';
 import InfoTooltip from './InfoTooltip.js';
-import { describeScanSummary } from '../lib/securityScanSummary.js';
 import {
   buildEventCopyText,
   COPY_DETAILS_LABEL,
@@ -99,8 +90,6 @@ interface SecurityPanelProps {
   /** Called once the auto-expand has been applied so the parent can
    *  clear its state and not re-expand on subsequent renders. */
   onAutoExpandHandled?: () => void;
-  /** Opens the Security overlay on the Isolation tab (the card's Configure link). */
-  onManageIsolation?: () => void;
 }
 
 const SEVERITY_META: Record<
@@ -250,11 +239,9 @@ export default function SecurityPanel({
   onRequestOpenSettings,
   autoExpandEventId,
   onAutoExpandHandled,
-  onManageIsolation,
 }: SecurityPanelProps): React.ReactElement {
   const { settings, update } = useSettings();
   const autoMode = useAutoModeStatus();
-  const { capability: sandboxCapability } = useSandboxStatus();
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
   const [kindFilter, setKindFilter] = useState<KindFilter>('all');
   const [includeWeakSignals, setIncludeWeakSignals] = useState(false);
@@ -475,12 +462,6 @@ export default function SecurityPanel({
   const scannerOnly = scannerOnlyForFilter;
   const permissionsOnly = permissionsOnlyForFilter;
 
-  // Pull permission rules for the status strip's rule count. Hook
-  // always runs (mustn't be gated on bothOff) to keep hook order
-  // stable across renders.
-  const { rules: permissionRules } = usePermissionRules();
-  const enabledRuleCount = permissionRules.filter((r) => r.enabled).length;
-
   // Fully-disabled short circuit: if the user has turned BOTH features
   // off, the panel has nothing useful to show — render a single card
   // with both enable-actions and a deep link to the relevant settings
@@ -569,187 +550,38 @@ export default function SecurityPanel({
         </div>
       </div>
 
-      {/* Scanning card — labeled, collapsible, visually distinct from the
-          filter pills below. Collapsed by default with a one-line summary
-          in the header so state is visible at a glance. Writes flow through
-          useSettings().update, same path as the full SettingsPanel. */}
+      {/* Compact quick-toggles. The detailed scanning / tool-permission /
+          isolation config now lives in the Settings overlay's Security
+          sub-tabs (the single source of truth); this row is just fast on/off
+          access from the live dashboard, with a link into the full settings. */}
       {settings && (
-        <SettingsCard title="Scanning" summary={describeScanSummary(settings)} defaultOpen={false}>
-          <SettingsRow
-            label="Security scanning"
-            description="Inspect prompts, files, and tool calls for risks."
-          >
-            <Switch
-              label="Security scanning"
-              checked={settings.securityScanEnabled}
-              onChange={(v) => void update({ securityScanEnabled: v }).catch(() => undefined)}
-            />
-          </SettingsRow>
-          <SettingsRow
-            label="Tool permissions"
-            description={
-              settings.toolPermissionsEnabled
-                ? `${enabledRuleCount} rule${enabledRuleCount === 1 ? '' : 's'} enforced`
-                : 'Allow/deny rules not applied'
+        <div className="flex flex-wrap items-center gap-1.5 px-1 py-1">
+          <QuickToggle
+            label="Scanning"
+            checked={settings.securityScanEnabled}
+            onChange={(v) => void update({ securityScanEnabled: v }).catch(() => undefined)}
+          />
+          <QuickToggle
+            label="Tool perms"
+            checked={settings.toolPermissionsEnabled}
+            onChange={(v) => void update({ toolPermissionsEnabled: v }).catch(() => undefined)}
+          />
+          <QuickToggle
+            label="Isolation"
+            checked={settings.isolationPolicy.enabled}
+            onChange={(v) =>
+              void update({
+                isolationPolicy: { ...settings.isolationPolicy, enabled: v },
+              }).catch(() => undefined)
             }
+          />
+          <button
+            type="button"
+            onClick={() => onRequestOpenSettings?.('security-enable-toggle')}
+            className="ml-auto text-[11px] font-medium text-ios-blue hover:underline"
           >
-            <Switch
-              label="Tool permissions"
-              checked={settings.toolPermissionsEnabled}
-              onChange={(v) => void update({ toolPermissionsEnabled: v }).catch(() => undefined)}
-            />
-          </SettingsRow>
-          {settings.securityScanEnabled && (
-            <>
-              <SettingsRow
-                label="When a risk is detected"
-                description="Observe records findings; Block stops the outbound request."
-              >
-                <QuickSegmented
-                  ariaLabel="Enforcement mode"
-                  value={
-                    (settings.securityEnforcementMode ?? 'observe') as
-                      | 'observe'
-                      | 'block_high'
-                      | 'block_medium_high'
-                  }
-                  onChange={(v) =>
-                    void update({ securityEnforcementMode: v }).catch(() => undefined)
-                  }
-                  options={[
-                    { value: 'observe', label: 'Observe', title: 'Record findings; never block' },
-                    {
-                      value: 'block_high',
-                      label: 'HIGH',
-                      title: 'Block only HIGH-severity findings',
-                    },
-                    {
-                      value: 'block_medium_high',
-                      label: 'MED+HIGH',
-                      title: 'Block MEDIUM and HIGH findings',
-                    },
-                  ]}
-                />
-              </SettingsRow>
-              <SettingsRow
-                label="Scan for"
-                description="Categories inspected on every outbound request."
-              >
-                <div className="flex flex-wrap gap-1 justify-end">
-                  <QuickChipToggle
-                    label="Secrets"
-                    active={settings.securityScanSecrets}
-                    onChange={(v) => void update({ securityScanSecrets: v }).catch(() => undefined)}
-                    title="Scan for API keys, tokens, private keys"
-                  />
-                  <QuickChipToggle
-                    label="Injection"
-                    active={settings.securityScanInjection}
-                    onChange={(v) =>
-                      void update({ securityScanInjection: v }).catch(() => undefined)
-                    }
-                    title="Heuristic prompt-injection detection"
-                  />
-                  <QuickChipToggle
-                    label="Tool-use"
-                    active={settings.securityScanToolUse}
-                    onChange={(v) => void update({ securityScanToolUse: v }).catch(() => undefined)}
-                    title="Inspect proposed Bash / Write / WebFetch tool calls"
-                  />
-                </div>
-              </SettingsRow>
-            </>
-          )}
-        </SettingsCard>
-      )}
-
-      {settings && (
-        <div data-tour-id="tour-isolation">
-          <SettingsCard
-            title="Isolation"
-            summary={
-              settings.isolationPolicy.enabled ? 'On' : 'Off — sandbox risky commands'
-            }
-            defaultOpen={false}
-          >
-            <SettingsRow
-              label="OS-level sandbox isolation"
-              description="Run commands and code-mode MCP servers under an OS sandbox with filesystem + network limits. Optional; off by default."
-            >
-              <Switch
-                label="OS-level sandbox isolation"
-                checked={settings.isolationPolicy.enabled}
-                onChange={(v) =>
-                  void update({
-                    isolationPolicy: { ...settings.isolationPolicy, enabled: v },
-                  }).catch(() => undefined)
-                }
-              />
-            </SettingsRow>
-            {settings.isolationPolicy.enabled && (
-              <>
-                <SettingsRow
-                  label="Sync to Claude Code's sandbox"
-                  description="Write this policy into ~/.claude/settings.json so Claude Code's own native sandbox enforces it."
-                >
-                  <Switch
-                    label="Sync to Claude Code's sandbox"
-                    checked={settings.isolationPolicy.syncToClaudeCode}
-                    onChange={(v) =>
-                      void update({
-                        isolationPolicy: {
-                          ...settings.isolationPolicy,
-                          syncToClaudeCode: v,
-                        },
-                      }).catch(() => undefined)
-                    }
-                  />
-                </SettingsRow>
-                <SettingsRow
-                  label="Sandbox code-mode MCP servers"
-                  description="Wrap Sentinel's own code-mode MCP child processes in the sandbox."
-                >
-                  <Switch
-                    label="Sandbox code-mode MCP servers"
-                    checked={settings.isolationPolicy.enforceCodeMode}
-                    onChange={(v) =>
-                      void update({
-                        isolationPolicy: {
-                          ...settings.isolationPolicy,
-                          enforceCodeMode: v,
-                        },
-                      }).catch(() => undefined)
-                    }
-                  />
-                </SettingsRow>
-                {sandboxCapability && (
-                  <div className="px-3 py-2 text-[11px] text-muted">
-                    Sandbox capability:{' '}
-                    <span
-                      className={`font-semibold ${
-                        sandboxCapability.capability === 'unavailable'
-                          ? 'text-ios-red'
-                          : 'text-black dark:text-white'
-                      }`}
-                    >
-                      {sandboxCapability.capability}
-                    </span>
-                    {sandboxCapability.reasons.map((r, i) => (
-                      <div key={i} className="text-[10px] text-ios-orange">
-                        {r}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <button
-                  onClick={() => onManageIsolation?.()}
-                  className="w-full text-left px-3 py-2.5 text-[13px] font-medium text-ios-blue hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors"
-                >
-                  Configure domains &amp; paths…
-                </button>
-              </>
-            )}
-          </SettingsCard>
+            Configure…
+          </button>
         </div>
       )}
 

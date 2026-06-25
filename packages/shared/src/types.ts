@@ -236,6 +236,20 @@ export type OptimizeRangePreset =
  *  so the user's last section survives daemon restarts. */
 export type OptimizeSubTab = 'subagents' | 'compression' | 'context';
 
+/** Which sub-tab of the Settings › Security tab is active. The detailed
+ *  security config is grouped into four buckets so no single scroll path
+ *  overflows the tray window: content scanning, tool-permission gating,
+ *  OS-level isolation, and Claude Code sync. Persisted in
+ *  {@link Settings.securitySubTab} so the user's last section survives
+ *  daemon restarts. */
+export type SecuritySubTab = 'scanning' | 'permissions' | 'isolation' | 'sync';
+
+/** Which sub-tab of the Settings › Data tab is active. Groups the
+ *  data-handling config into lifecycle (usage sync + retention), feature
+ *  data (optimize + compression), and telemetry (request logging + OTEL).
+ *  Persisted in {@link Settings.dataSubTab}. */
+export type DataSubTab = 'retention' | 'features' | 'telemetry';
+
 /**
  * Aggressiveness tier for in-flight tool_result compression.
  *
@@ -761,6 +775,14 @@ export interface Settings {
    *  context). Defaults to 'subagents'. Persisted so the user's last
    *  section survives daemon restarts. */
   optimizeSubTab: OptimizeSubTab;
+  /** Active sub-tab on the Settings › Security tab (scanning / permissions /
+   *  isolation / sync). Defaults to 'scanning'. Persisted so the user's last
+   *  section survives daemon restarts. */
+  securitySubTab: SecuritySubTab;
+  /** Active sub-tab on the Settings › Data tab (retention / features /
+   *  telemetry). Defaults to 'retention'. Persisted so the user's last
+   *  section survives daemon restarts. */
+  dataSubTab: DataSubTab;
 
   // ─── tool_result compression ───────────────────────────────────────
   /** Master switch for in-flight tool_result compression. Opt-in; default

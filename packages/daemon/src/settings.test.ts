@@ -1141,6 +1141,60 @@ describe('settings', () => {
     });
   });
 
+  describe('securitySubTab', () => {
+    it('defaults to scanning', () => {
+      expect(DEFAULT_SETTINGS.securitySubTab).toBe('scanning');
+      expect(loadSettings(path).securitySubTab).toBe('scanning');
+    });
+
+    it('round-trips every valid value', () => {
+      for (const tab of ['scanning', 'permissions', 'isolation', 'sync'] as const) {
+        writeRawWithSig(path, JSON.stringify({ securitySubTab: tab }));
+        expect(loadSettings(path).securitySubTab).toBe(tab);
+      }
+    });
+
+    it('falls back to default when the value is unknown', () => {
+      writeRawWithSig(path, JSON.stringify({ securitySubTab: 'firewall' }));
+      expect(loadSettings(path).securitySubTab).toBe('scanning');
+    });
+
+    it('falls back to default when the value is not a string', () => {
+      writeRawWithSig(path, JSON.stringify({ securitySubTab: 3 }));
+      expect(loadSettings(path).securitySubTab).toBe('scanning');
+    });
+
+    it('updateSettings persists a new securitySubTab selection', () => {
+      const next = updateSettings({ securitySubTab: 'permissions' }, path);
+      expect(next.securitySubTab).toBe('permissions');
+      expect(loadSettings(path).securitySubTab).toBe('permissions');
+    });
+  });
+
+  describe('dataSubTab', () => {
+    it('defaults to retention', () => {
+      expect(DEFAULT_SETTINGS.dataSubTab).toBe('retention');
+      expect(loadSettings(path).dataSubTab).toBe('retention');
+    });
+
+    it('round-trips every valid value', () => {
+      for (const tab of ['retention', 'features', 'telemetry'] as const) {
+        writeRawWithSig(path, JSON.stringify({ dataSubTab: tab }));
+        expect(loadSettings(path).dataSubTab).toBe(tab);
+      }
+    });
+
+    it('falls back to default when the value is unknown', () => {
+      writeRawWithSig(path, JSON.stringify({ dataSubTab: 'exports' }));
+      expect(loadSettings(path).dataSubTab).toBe('retention');
+    });
+
+    it('falls back to default when the value is not a string', () => {
+      writeRawWithSig(path, JSON.stringify({ dataSubTab: false }));
+      expect(loadSettings(path).dataSubTab).toBe('retention');
+    });
+  });
+
   describe('dataRetentionDays', () => {
     it('defaults to 365 (1 year) when the file is missing', () => {
       expect(loadSettings(path).dataRetentionDays).toBe(365);

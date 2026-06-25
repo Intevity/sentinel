@@ -27,6 +27,8 @@ import type {
   McpInstallRecord,
   CodeModeMigration,
   OptimizeSubTab,
+  SecuritySubTab,
+  DataSubTab,
   IsolationPolicy,
 } from '@sentinel/shared';
 import {
@@ -139,6 +141,8 @@ export const DEFAULT_SETTINGS: Settings = {
   optimizeRange: 'all',
   metricsRange: '1w',
   optimizeSubTab: 'subagents',
+  securitySubTab: 'scanning',
+  dataSubTab: 'retention',
   compressionEnabled: false,
   compressionLevel: 'conservative',
   compressionMaxBodyKb: 4096,
@@ -224,6 +228,13 @@ const VALID_COMPRESSION_LEVELS: readonly CompressionLevel[] = [
 ];
 const VALID_MCP_SCOPES: readonly McpInstallScope[] = ['user', 'local', 'project'];
 const VALID_OPTIMIZE_SUB_TABS: readonly OptimizeSubTab[] = ['subagents', 'compression', 'context'];
+const VALID_SECURITY_SUB_TABS: readonly SecuritySubTab[] = [
+  'scanning',
+  'permissions',
+  'isolation',
+  'sync',
+];
+const VALID_DATA_SUB_TABS: readonly DataSubTab[] = ['retention', 'features', 'telemetry'];
 
 /** Coerce an arbitrary value into a clean McpInstallRecord[], dropping any
  *  malformed entries. `user`-scope records carry a null directory; `local`
@@ -778,6 +789,18 @@ function coerce(raw: unknown): Settings {
     VALID_OPTIMIZE_SUB_TABS.includes(obj['optimizeSubTab'] as OptimizeSubTab)
   ) {
     next.optimizeSubTab = obj['optimizeSubTab'] as OptimizeSubTab;
+  }
+  if (
+    typeof obj['securitySubTab'] === 'string' &&
+    VALID_SECURITY_SUB_TABS.includes(obj['securitySubTab'] as SecuritySubTab)
+  ) {
+    next.securitySubTab = obj['securitySubTab'] as SecuritySubTab;
+  }
+  if (
+    typeof obj['dataSubTab'] === 'string' &&
+    VALID_DATA_SUB_TABS.includes(obj['dataSubTab'] as DataSubTab)
+  ) {
+    next.dataSubTab = obj['dataSubTab'] as DataSubTab;
   }
   if (typeof obj['compressionEnabled'] === 'boolean') {
     next.compressionEnabled = obj['compressionEnabled'];

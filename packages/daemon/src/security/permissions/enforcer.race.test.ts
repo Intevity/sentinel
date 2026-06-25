@@ -114,6 +114,8 @@ function defaultSettings(over: Partial<Settings> = {}): Settings {
     codeModeSkillInstalled: false,
     mcpDisabledStashes: [],
     optimizeSubTab: 'subagents',
+    securitySubTab: 'scanning',
+    dataSubTab: 'retention',
     ...over,
   };
 }
