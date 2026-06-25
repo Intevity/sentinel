@@ -11,11 +11,8 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import type { IncomingHttpHeaders } from 'http';
 import type {
-  ActiveClaudeSession,
   AutoModeStatus,
   PermissionRule,
   Settings,
@@ -71,30 +68,15 @@ export interface PermissionsEnforcerDeps {
    *  block triggers a snapshot of the most-recent session's tool-use
    *  buffer for that account into `incident_replays`. */
   incidentReplay?: import('../incident-replay.js').IncidentReplayRecorder;
-  /** Override for the live process-count scan. Production leaves this
-   *  unset and the enforcer uses {@link countClaudeCodeProcesses}. Tests
-   *  inject a stub so the prune cycle is deterministic instead of
-   *  racing a real `pgrep` subprocess. */
-  countProcesses?: () => Promise<number | null>;
 }
 
-/** How long a header-based auto-mode detection keeps the legacy freshness
- *  indicator active after the last qualifying request. This is now a
- *  fallback for requests where we couldn't extract a session_id — the
- *  primary path uses per-session tracking which persists across the gap
- *  between requests. */
+/** How long a header-based auto-mode detection keeps the banner active after
+ *  the most recent qualifying request. Claude Code makes no request between
+ *  turns (the model is thinking, the user is reading), so we hold the
+ *  "active" state for this window after the last auto-mode request rather
+ *  than flickering off mid-session. Activation is instant; deactivation
+ *  trails the last auto-mode request by this much. */
 export const AUTO_MODE_FRESHNESS_MS = 60_000;
-
-/** A session is considered dead after this long without any request, even
- *  if the process-scan somehow keeps reporting it alive. Sanity belt
- *  against a broken `pgrep` / PowerShell-CIM call leaking sessions across
- *  daemon restarts are handled separately (in-memory state). */
-export const SESSION_HARD_TIMEOUT_MS = 4 * 60 * 60 * 1000;
-
-/** Cadence of the process-count scan that prunes dead sessions. Only runs
- *  when at least one session is tracked — avoids spawning subprocesses on
- *  an idle host. */
-export const PROCESS_POLL_INTERVAL_MS = 30_000;
 
 export interface PermissionsEnforcer {
   /** True when the feature is enabled in settings. The proxy uses this to
@@ -171,21 +153,13 @@ export interface PermissionsEnforcer {
   /** Inspect a request purely for status-tracking. Unlike
    *  `isSkippedForAutoMode`, this runs unconditionally (even when the
    *  feature is disabled) so the UI can still surface "Claude Code is in
-   *  auto mode" even if Sentinel's rules aren't installed.
-   *
-   *  `sessionInfo` should be the `{ sessionId, accountUuid }` pair
-   *  extracted from the request body via {@link extractSessionInfo}; pass
-   *  `null` when the request has no parseable session metadata (classifier
-   *  sub-calls, count_tokens, etc.) — the legacy timestamp path still
-   *  fires for header-detected auto-mode in that case. */
-  observeRequest(
-    headers: IncomingHttpHeaders,
-    sessionInfo?: { sessionId: string; accountUuid: string | null } | null,
-  ): void;
-  /** Live auto-mode status used by the UI to show a "Sentinel standing down"
-   *  banner. Combines the manual settings toggle with header-based detection
-   *  (the latter with a 60 s freshness window so a bursty conversation
-   *  doesn't flicker the indicator between requests). */
+   *  auto mode" even if Sentinel's rules aren't installed. Header-based
+   *  detection drives the freshness window; no per-session state is kept. */
+  observeRequest(headers: IncomingHttpHeaders): void;
+  /** Live auto-mode status used by the UI to show the "Claude Code is in
+   *  auto mode" banner. Combines the manual settings toggle with header-based
+   *  detection (held active for a 60 s freshness window so a bursty
+   *  conversation doesn't flicker the indicator between requests). */
   getAutoModeStatus(): AutoModeStatus;
   /** Clear any pending deactivation timer. Called at daemon shutdown so
    *  lingering timers don't keep the event loop alive. */
@@ -291,85 +265,6 @@ export function extractCwd(body: Buffer): string | null {
   }
 }
 
-const execAsync = promisify(exec);
-
-/**
- * Count currently-running Claude Code processes across platforms.
- *
- * Claude Code ships through several install channels and the canonical
- * binary name / path differs across them, so we union two pgrep probes:
- *
- *   1. `pgrep -x claude` (exact command name) — catches the macOS Claude
- *      desktop bundled binary at
- *      `~/Library/Application Support/Claude/claude-code/<ver>/claude.app/Contents/MacOS/claude`
- *      and the global npm shim, both of which present as a process named
- *      `claude` with no path in the argv.
- *   2. `pgrep -f "@anthropic-ai/claude-code"` (full command line) —
- *      catches `npx @anthropic-ai/claude-code` invocations and the rare
- *      package-path-in-argv form.
- *
- * Returns `null` if the scan itself failed — the caller treats that as
- * "don't prune by process count this round" rather than "zero processes
- * running". A successful scan that simply matched nothing returns 0 so
- * the prune cycle can drain stale tracked sessions.
- *
- * The Unix path deliberately does NOT use `pgrep -c`: that flag is
- * Linux-only. BSD `pgrep` (macOS) prints a usage error and exits 2,
- * which the historical implementation silently swallowed — so on every
- * macOS install pruning was permanently skipped.
- */
-export async function countClaudeCodeProcesses(): Promise<number | null> {
-  if (process.platform === 'win32') {
-    try {
-      // PowerShell CIM: union on either the executable name being
-      // `claude.exe` (the bundled binary) or the command line including
-      // the npm package path. .Count short-circuits the zero case.
-      const { stdout } = await execAsync(
-        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'claude.exe' -or $_.CommandLine -like '*@anthropic-ai/claude-code*' }).Count"`,
-        { timeout: 5_000 },
-      );
-      const n = parseInt(stdout.trim(), 10);
-      return Number.isFinite(n) && n >= 0 ? n : null;
-    } catch {
-      return null;
-    }
-  }
-  // Run both pgrep probes, union the PID sets so a process matching
-  // both patterns isn't double-counted. We accept "no matches" (exit
-  // 1 with empty stdout) from either probe as a real zero; any other
-  // failure on EITHER probe abandons the round so we don't prune
-  // based on partial data.
-  const [byName, byArgv] = await Promise.all([
-    runPgrep('-x', 'claude'),
-    runPgrep('-f', '@anthropic-ai/claude-code'),
-  ]);
-  if (byName === null || byArgv === null) return null;
-  const pids = new Set<string>();
-  for (const pid of byName) pids.add(pid);
-  for (const pid of byArgv) pids.add(pid);
-  return pids.size;
-}
-
-/** Internal helper: run one pgrep invocation and return its PID list,
- *  null on real failure, empty set on no-match. */
-async function runPgrep(flag: string, pattern: string): Promise<Set<string> | null> {
-  try {
-    const { stdout } = await execAsync(`pgrep ${flag} ${JSON.stringify(pattern)}`, {
-      timeout: 5_000,
-    });
-    return new Set(
-      stdout
-        .split('\n')
-        .map((l) => l.trim())
-        .filter((l) => /^\d+$/.test(l)),
-    );
-  } catch (err) {
-    const e = err as { code?: number; stdout?: string };
-    if (e?.code === 1 && (e.stdout ?? '').trim() === '') return new Set();
-    return null;
-  }
-}
-
 const TOOL_BLOCKED_DETECTOR = 'tool_permission_blocked';
 
 function settingsView(s: Settings): EvaluatorSettingsView {
@@ -406,33 +301,22 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
 
   // ── Auto-mode state ────────────────────────────────────────────────
   //
-  // Three complementary trackers power the UI's banner:
-  //
-  //  1. `sessions` — per-session map keyed by `session_id` (extracted from
-  //     metadata.user_id on /v1/messages requests). The primary truth
-  //     source. Each session remembers its most recent mode so the banner
-  //     can count "1 of 3 sessions in auto mode".
-  //
-  //  2. `lastHeaderDetectedAt` + `deactivateTimer` — legacy fallback for
-  //     requests that can't be attributed to a session (no parseable
-  //     metadata). Pure 60 s freshness window.
-  //
-  //  3. `lastProcessCount` — last observed count of claude-code OS
-  //     processes, refreshed every 30 s while at least one session is
-  //     tracked. Drives session pruning: when tracked > running, we drop
-  //     the oldest sessions (FIFO heuristic: least-recently-seen dies
-  //     first) until the counts match.
+  // The banner is driven by a single, provable signal: an auto-mode beta
+  // header was seen on a /v1/messages request. `lastHeaderDetectedAt`
+  // records when, and `deactivateTimer` flips the banner off once the 60 s
+  // freshness window elapses with no further auto-mode request. We don't
+  // try to count concurrent sessions or scan OS processes — neither can be
+  // known accurately from the proxy (sessions never announce start/end),
+  // so any such count would be a guess. The manual settings toggle is the
+  // other input, handled directly in computeStatus.
   //
   // `lastBroadcast*` holds the last snapshot we pushed to the UI so we
-  // only emit `permissions_status` on edges (activate/deactivate/count-
-  // change) rather than per request.
-  const sessions = new Map<string, ActiveClaudeSession>();
+  // only emit `permissions_status` on edges (activate / deactivate /
+  // source-change / fresh detection) rather than spuriously.
   // Sprint 9: per-session cwd cache. Stable across the session's
   // lifetime (Claude Code's cwd doesn't change mid-session). Keyed by
   // session_id so the rule editor's recent-cwd autocomplete and the
   // evaluator's project_scope check can share one source of truth.
-  // Bounded by the auto-mode session map's pruning logic — when the
-  // session is dropped, this entry is dropped too.
   const sessionCwds = new Map<string, string>();
   // Recent-cwd ring for the rule editor's autocomplete dropdown.
   // Most-recent first; deduplicated; capped at 20.
@@ -446,12 +330,9 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
   };
   let lastHeaderDetectedAt: number | null = null;
   let deactivateTimer: ReturnType<typeof setTimeout> | null = null;
-  let processPollTimer: ReturnType<typeof setInterval> | null = null;
-  let lastProcessCount: number | null = null;
   let lastBroadcastActive = false;
   let lastBroadcastSource: 'manual' | 'headers' | null = null;
-  let lastBroadcastActiveSessions = 0;
-  let lastBroadcastAutoModeSessions = 0;
+  let lastBroadcastDetectedAt: number | null = null;
 
   const getCompiled = (): { rules: PermissionRule[]; compiled: CompiledRuleSet } => {
     if (cached && !cached.invalidated) return cached;
@@ -475,138 +356,42 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
 
   const isEnabled = (): boolean => deps.getSettings().toolPermissionsEnabled;
 
-  const snapshotSessions = (): ActiveClaudeSession[] => {
-    // Most-recent first so the UI's expandable list is naturally ordered.
-    return [...sessions.values()].sort((a, b) => b.lastSeenAt - a.lastSeenAt);
-  };
-
   const computeStatus = (now = Date.now()): AutoModeStatus => {
     const s = deps.getSettings();
-    const sessionList = snapshotSessions();
-    const activeSessions = sessionList.length;
-    const autoModeSessions = sessionList.filter((x) => x.autoMode).length;
 
     // Manual override trumps everything.
     if (s.toolPermissionAutoModeActive) {
-      return {
-        active: true,
-        source: 'manual',
-        lastDetectedAt: lastHeaderDetectedAt,
-        activeSessions,
-        autoModeSessions,
-        processCount: lastProcessCount,
-        sessions: sessionList,
-      };
+      return { active: true, source: 'manual', lastDetectedAt: lastHeaderDetectedAt };
     }
-    // Per-session is the primary signal once any session is known.
-    if (autoModeSessions > 0) {
-      return {
-        active: true,
-        source: 'headers',
-        lastDetectedAt: lastHeaderDetectedAt,
-        activeSessions,
-        autoModeSessions,
-        processCount: lastProcessCount,
-        sessions: sessionList,
-      };
-    }
-    // Legacy fallback: header-detected request whose session_id we
-    // couldn't parse. Pure timestamp freshness.
+    // Header-based detection: active while we're inside the freshness window
+    // after the most recent auto-mode request.
     if (lastHeaderDetectedAt !== null && now - lastHeaderDetectedAt < AUTO_MODE_FRESHNESS_MS) {
-      return {
-        active: true,
-        source: 'headers',
-        lastDetectedAt: lastHeaderDetectedAt,
-        activeSessions,
-        autoModeSessions,
-        processCount: lastProcessCount,
-        sessions: sessionList,
-      };
+      return { active: true, source: 'headers', lastDetectedAt: lastHeaderDetectedAt };
     }
-    return {
-      active: false,
-      source: null,
-      lastDetectedAt: lastHeaderDetectedAt,
-      activeSessions,
-      autoModeSessions,
-      processCount: lastProcessCount,
-      sessions: sessionList,
-    };
+    return { active: false, source: null, lastDetectedAt: lastHeaderDetectedAt };
   };
 
   const broadcastStatusIfChanged = (): void => {
     const status = computeStatus();
-    // Edge detection: broadcast only when one of the aggregate fields the
-    // UI renders from has actually changed.
+    // Edge detection: broadcast on activate / deactivate / source-change, and
+    // on a fresh detection (lastDetectedAt advanced) so the UI's "detected
+    // Ns ago" stays real-time. In practice Claude Code makes a handful of
+    // requests per minute, so this is a trickle of tiny IPC messages.
     if (
       status.active === lastBroadcastActive &&
       status.source === lastBroadcastSource &&
-      status.activeSessions === lastBroadcastActiveSessions &&
-      status.autoModeSessions === lastBroadcastAutoModeSessions
+      status.lastDetectedAt === lastBroadcastDetectedAt
     ) {
       return;
     }
     lastBroadcastActive = status.active;
     lastBroadcastSource = status.source;
-    lastBroadcastActiveSessions = status.activeSessions;
-    lastBroadcastAutoModeSessions = status.autoModeSessions;
+    lastBroadcastDetectedAt = status.lastDetectedAt;
     try {
       deps.ipcServer.broadcast({ type: 'permissions_status', status });
     } catch (err) {
       console.error('[Permissions] status broadcast failed:', err);
     }
-  };
-
-  /** Remove sessions we haven't seen a request from in hours — sanity belt
-   *  against a broken process scan leaking tracked sessions forever. */
-  const pruneByHardTimeout = (now = Date.now()): void => {
-    for (const [id, s] of sessions) {
-      if (now - s.lastSeenAt > SESSION_HARD_TIMEOUT_MS) sessions.delete(id);
-    }
-  };
-
-  /** When the OS reports fewer Claude Code processes than we have tracked
-   *  sessions, the delta is sessions whose host exited. We can't map PID →
-   *  session_id, so use FIFO on `lastSeenAt` (oldest = most likely dead). */
-  const pruneToProcessCount = (count: number): void => {
-    if (sessions.size <= count) return;
-    const toRemove = sessions.size - count;
-    const sorted = [...sessions.values()].sort((a, b) => a.lastSeenAt - b.lastSeenAt);
-    for (let i = 0; i < toRemove && i < sorted.length; i++) {
-      const session = sorted[i];
-      if (session) sessions.delete(session.sessionId);
-    }
-  };
-
-  const stopProcessPoll = (): void => {
-    if (processPollTimer) {
-      clearInterval(processPollTimer);
-      processPollTimer = null;
-    }
-  };
-
-  const countProcessesFn = deps.countProcesses ?? countClaudeCodeProcesses;
-  const runProcessPoll = async (): Promise<void> => {
-    const count = await countProcessesFn();
-    if (count !== null) {
-      lastProcessCount = count;
-      pruneToProcessCount(count);
-    }
-    pruneByHardTimeout();
-    broadcastStatusIfChanged();
-    if (sessions.size === 0) stopProcessPoll();
-  };
-
-  const ensureProcessPoll = (): void => {
-    if (processPollTimer) return;
-    if (sessions.size === 0) return;
-    processPollTimer = setInterval(() => {
-      void runProcessPoll();
-    }, PROCESS_POLL_INTERVAL_MS);
-    if (typeof processPollTimer.unref === 'function') processPollTimer.unref();
-    // Kick off the first scan immediately so we don't wait 30 s for the
-    // first prune / processCount update after a new session appears.
-    void runProcessPoll();
   };
 
   const scheduleDeactivation = (): void => {
@@ -627,35 +412,11 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
     broadcastStatusIfChanged();
   };
 
-  const observeRequest = (
-    headers: IncomingHttpHeaders,
-    sessionInfo?: { sessionId: string; accountUuid: string | null } | null,
-  ): void => {
-    const autoMode = detectAutoModeFromHeaders(headers);
-    const now = Date.now();
-
-    if (sessionInfo) {
-      const existing = sessions.get(sessionInfo.sessionId);
-      sessions.set(sessionInfo.sessionId, {
-        sessionId: sessionInfo.sessionId,
-        accountUuid: sessionInfo.accountUuid ?? existing?.accountUuid ?? null,
-        autoMode,
-        lastSeenAt: now,
-      });
-      ensureProcessPoll();
-    }
-
-    if (autoMode) {
-      // Legacy freshness window doubles as a backstop when session info
-      // was missing — the status still flips "active" within the next
-      // 60 s.
-      markHeaderDetection();
-    } else {
-      // Non-auto request may have downgraded a previously-auto session:
-      // `sessions.set` above already flipped its flag to false. Broadcast
-      // the new aggregate if it dropped.
-      broadcastStatusIfChanged();
-    }
+  const observeRequest = (headers: IncomingHttpHeaders): void => {
+    // The only thing we record is "an auto-mode request was just seen". A
+    // non-auto request changes nothing: the freshness window from the last
+    // auto-mode request still governs deactivation.
+    if (detectAutoModeFromHeaders(headers)) markHeaderDetection();
   };
 
   const isSkippedForAutoMode = (headers?: IncomingHttpHeaders): boolean => {
@@ -673,7 +434,6 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
       clearTimeout(deactivateTimer);
       deactivateTimer = null;
     }
-    stopProcessPoll();
   };
 
   const onSettingsChanged = (): void => {

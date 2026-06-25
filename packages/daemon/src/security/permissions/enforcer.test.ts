@@ -14,7 +14,6 @@ import {
   extractToolInputFields,
   truncateToolInputFields,
   AUTO_MODE_FRESHNESS_MS,
-  SESSION_HARD_TIMEOUT_MS,
 } from './enforcer.js';
 import type { Settings } from '@sentinel/shared';
 import { TOOL_INPUT_FIELD_MAX_CHARS } from '@sentinel/shared';
@@ -1060,7 +1059,7 @@ describe('auto-mode status tracking', () => {
     enforcer.shutdown();
   });
 
-  it('does not broadcast when state and source are unchanged', () => {
+  it('re-broadcasts on each fresh detection so "detected Ns ago" stays live', () => {
     const enforcer = createPermissionsEnforcer({
       db,
       ipcServer: ipc as never,
@@ -1068,9 +1067,29 @@ describe('auto-mode status tracking', () => {
     });
     enforcer.observeRequest({ 'anthropic-beta': 'afk-mode-2026-01-31' });
     const afterFirst = ipc.broadcasts.length;
-    // Another detection well within the window — should NOT re-broadcast.
+    const firstDetectedAt = enforcer.getAutoModeStatus().lastDetectedAt;
+    // A later detection within the window advances lastDetectedAt — the UI
+    // needs this so its "detected Ns ago" timestamp doesn't go stale.
     vi.advanceTimersByTime(1_000);
     enforcer.observeRequest({ 'anthropic-beta': 'afk-mode-2026-01-31' });
+    expect(ipc.broadcasts.length).toBe(afterFirst + 1);
+    const secondDetectedAt = enforcer.getAutoModeStatus().lastDetectedAt;
+    expect(secondDetectedAt).not.toBeNull();
+    expect(secondDetectedAt as number).toBeGreaterThan(firstDetectedAt as number);
+    enforcer.shutdown();
+  });
+
+  it('does not broadcast when nothing changed (idle onSettingsChanged)', () => {
+    const enforcer = createPermissionsEnforcer({
+      db,
+      ipcServer: ipc as never,
+      getSettings: () => settings,
+    });
+    enforcer.observeRequest({ 'anthropic-beta': 'afk-mode-2026-01-31' });
+    const afterFirst = ipc.broadcasts.length;
+    // No auto-mode request, no manual-toggle change — a settings save for an
+    // unrelated key must not produce a spurious status broadcast.
+    enforcer.onSettingsChanged();
     expect(ipc.broadcasts.length).toBe(afterFirst);
     enforcer.shutdown();
   });
@@ -1160,236 +1179,6 @@ describe('extractSessionInfo', () => {
 
   it('returns null for malformed top-level JSON', () => {
     expect(extractSessionInfo(Buffer.from('not json'))).toBeNull();
-  });
-});
-
-describe('per-session auto-mode tracking', () => {
-  const path = join(
-    tmpdir(),
-    `sentinel-sessions-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
-  );
-  let db: Database;
-  let settings: Settings;
-  let ipc: { broadcast: (m: unknown) => void; broadcasts: unknown[] };
-
-  beforeEach(() => {
-    db = getDb(path);
-    settings = defaultSettings();
-    ipc = ipcStub();
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    closeDb();
-    if (existsSync(path)) unlinkSync(path);
-  });
-
-  const autoHeaders = { 'anthropic-beta': 'afk-mode-2026-01-31' };
-  const normalHeaders = { 'anthropic-beta': 'oauth-2025-04-20' };
-
-  it('tracks a session after an auto-mode observation', () => {
-    const enforcer = createPermissionsEnforcer({
-      db,
-      ipcServer: ipc as never,
-      getSettings: () => settings,
-    });
-    enforcer.observeRequest(autoHeaders, { sessionId: 'a', accountUuid: 'acc-1' });
-    const status = enforcer.getAutoModeStatus();
-    expect(status.activeSessions).toBe(1);
-    expect(status.autoModeSessions).toBe(1);
-    expect(status.sessions).toHaveLength(1);
-    expect(status.sessions[0]?.autoMode).toBe(true);
-    expect(status.sessions[0]?.accountUuid).toBe('acc-1');
-    enforcer.shutdown();
-  });
-
-  it('downgrades an auto session when a follow-up normal request arrives', () => {
-    const enforcer = createPermissionsEnforcer({
-      db,
-      ipcServer: ipc as never,
-      getSettings: () => settings,
-    });
-    enforcer.observeRequest(autoHeaders, { sessionId: 'a', accountUuid: null });
-    expect(enforcer.getAutoModeStatus().autoModeSessions).toBe(1);
-    enforcer.observeRequest(normalHeaders, { sessionId: 'a', accountUuid: null });
-    const status = enforcer.getAutoModeStatus();
-    expect(status.activeSessions).toBe(1);
-    expect(status.autoModeSessions).toBe(0);
-    enforcer.shutdown();
-  });
-
-  it('counts 1 of 3 sessions correctly when only one is auto', () => {
-    const enforcer = createPermissionsEnforcer({
-      db,
-      ipcServer: ipc as never,
-      getSettings: () => settings,
-    });
-    enforcer.observeRequest(autoHeaders, { sessionId: 'a', accountUuid: null });
-    enforcer.observeRequest(normalHeaders, { sessionId: 'b', accountUuid: null });
-    enforcer.observeRequest(normalHeaders, { sessionId: 'c', accountUuid: null });
-    const status = enforcer.getAutoModeStatus();
-    expect(status.activeSessions).toBe(3);
-    expect(status.autoModeSessions).toBe(1);
-    expect(status.active).toBe(true);
-    enforcer.shutdown();
-  });
-
-  it('returns sessions ordered most-recent first', () => {
-    const enforcer = createPermissionsEnforcer({
-      db,
-      ipcServer: ipc as never,
-      getSettings: () => settings,
-    });
-    enforcer.observeRequest(normalHeaders, { sessionId: 'a', accountUuid: null });
-    vi.advanceTimersByTime(1_000);
-    enforcer.observeRequest(normalHeaders, { sessionId: 'b', accountUuid: null });
-    vi.advanceTimersByTime(1_000);
-    enforcer.observeRequest(normalHeaders, { sessionId: 'c', accountUuid: null });
-    const ids = enforcer.getAutoModeStatus().sessions.map((s) => s.sessionId);
-    expect(ids).toEqual(['c', 'b', 'a']);
-    enforcer.shutdown();
-  });
-
-  it('preserves accountUuid across subsequent observations even if new one is null', () => {
-    const enforcer = createPermissionsEnforcer({
-      db,
-      ipcServer: ipc as never,
-      getSettings: () => settings,
-    });
-    enforcer.observeRequest(autoHeaders, { sessionId: 'a', accountUuid: 'acc-99' });
-    enforcer.observeRequest(autoHeaders, { sessionId: 'a', accountUuid: null });
-    expect(enforcer.getAutoModeStatus().sessions[0]?.accountUuid).toBe('acc-99');
-    enforcer.shutdown();
-  });
-
-  it('drops sessions past the hard timeout', () => {
-    const enforcer = createPermissionsEnforcer({
-      db,
-      ipcServer: ipc as never,
-      getSettings: () => settings,
-    });
-    enforcer.observeRequest(autoHeaders, { sessionId: 'a', accountUuid: null });
-    // Jump well past the hard timeout.
-    vi.advanceTimersByTime(SESSION_HARD_TIMEOUT_MS + 60_000);
-    // Trigger a poll cycle (process-poll timer is on a 30 s interval).
-    // Manually tick past several intervals so `pruneByHardTimeout` runs.
-    vi.advanceTimersByTime(60_000);
-    // After the poll runs, the session should be pruned.
-    // Note: the poll reads lastProcessCount; since countClaudeCodeProcesses
-    // returns null on test runners (no such process), pruneByHardTimeout is
-    // still the path that evicts. Force-run by observing an unrelated session.
-    enforcer.observeRequest(normalHeaders, { sessionId: 'b', accountUuid: null });
-    // Status should now show only 'b' if 'a' aged out. Give it one more poll cycle.
-    vi.advanceTimersByTime(30_000);
-    const status = enforcer.getAutoModeStatus();
-    // Session 'a' is past hard timeout; only 'b' remains (the status
-    // computation itself doesn't prune, so check after a poll has run).
-    expect(status.sessions.some((s) => s.sessionId === 'b')).toBe(true);
-    enforcer.shutdown();
-  });
-
-  it('prunes tracked sessions down to the live process count via the dep override', async () => {
-    // Regression: macOS `pgrep -cf` doesn't exist, so the historical
-    // implementation returned null and skipped pruning. Sessions
-    // accumulated until the 4 h hard timeout, causing the banner to
-    // show e.g. 32 sessions when only 5 processes were alive. This
-    // test exercises the dep-injected counter to assert the prune
-    // path actually fires.
-    let liveCount = 3;
-    const enforcer = createPermissionsEnforcer({
-      db,
-      ipcServer: ipc as never,
-      getSettings: () => settings,
-      countProcesses: async () => liveCount,
-    });
-    enforcer.observeRequest(autoHeaders, { sessionId: 's1', accountUuid: null });
-    enforcer.observeRequest(autoHeaders, { sessionId: 's2', accountUuid: null });
-    enforcer.observeRequest(autoHeaders, { sessionId: 's3', accountUuid: null });
-    enforcer.observeRequest(autoHeaders, { sessionId: 's4', accountUuid: null });
-    enforcer.observeRequest(autoHeaders, { sessionId: 's5', accountUuid: null });
-    expect(enforcer.getAutoModeStatus().activeSessions).toBe(5);
-    // Advance one poll interval and yield so the async poll completes.
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(enforcer.getAutoModeStatus().activeSessions).toBe(3);
-    // Drop to zero — pruning should drain all remaining sessions.
-    liveCount = 0;
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(enforcer.getAutoModeStatus().activeSessions).toBe(0);
-    enforcer.shutdown();
-  });
-
-  it('skips pruning when the counter returns null (real failure)', async () => {
-    // The complementary path: if the scan itself fails (timeout,
-    // missing binary, weird exit code), the counter returns null and
-    // the prune step is skipped so sessions live out their hard
-    // timeout instead of being wiped on a transient error.
-    const enforcer = createPermissionsEnforcer({
-      db,
-      ipcServer: ipc as never,
-      getSettings: () => settings,
-      countProcesses: async () => null,
-    });
-    enforcer.observeRequest(autoHeaders, { sessionId: 'a', accountUuid: null });
-    enforcer.observeRequest(autoHeaders, { sessionId: 'b', accountUuid: null });
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(enforcer.getAutoModeStatus().activeSessions).toBe(2);
-    enforcer.shutdown();
-  });
-
-  it('broadcasts permissions_status when session counts change', () => {
-    const enforcer = createPermissionsEnforcer({
-      db,
-      ipcServer: ipc as never,
-      getSettings: () => settings,
-    });
-    enforcer.observeRequest(autoHeaders, { sessionId: 'a', accountUuid: null });
-    const before = ipc.broadcasts.filter(
-      (m) => (m as { type: string }).type === 'permissions_status',
-    ).length;
-    enforcer.observeRequest(autoHeaders, { sessionId: 'b', accountUuid: null });
-    const after = ipc.broadcasts.filter(
-      (m) => (m as { type: string }).type === 'permissions_status',
-    ).length;
-    expect(after).toBeGreaterThan(before);
-    enforcer.shutdown();
-  });
-
-  it('does NOT re-broadcast when an existing session stays in the same mode', () => {
-    const enforcer = createPermissionsEnforcer({
-      db,
-      ipcServer: ipc as never,
-      getSettings: () => settings,
-    });
-    enforcer.observeRequest(autoHeaders, { sessionId: 'a', accountUuid: null });
-    const before = ipc.broadcasts.filter(
-      (m) => (m as { type: string }).type === 'permissions_status',
-    ).length;
-    vi.advanceTimersByTime(1_000);
-    enforcer.observeRequest(autoHeaders, { sessionId: 'a', accountUuid: null });
-    const after = ipc.broadcasts.filter(
-      (m) => (m as { type: string }).type === 'permissions_status',
-    ).length;
-    expect(after).toBe(before);
-    enforcer.shutdown();
-  });
-
-  it('still activates via legacy timestamp path when session info is missing', () => {
-    const enforcer = createPermissionsEnforcer({
-      db,
-      ipcServer: ipc as never,
-      getSettings: () => settings,
-    });
-    enforcer.observeRequest(autoHeaders); // no sessionInfo
-    const status = enforcer.getAutoModeStatus();
-    expect(status.active).toBe(true);
-    expect(status.source).toBe('headers');
-    expect(status.activeSessions).toBe(0); // no session tracked
-    expect(status.autoModeSessions).toBe(0);
-    // Legacy freshness path deactivates after AUTO_MODE_FRESHNESS_MS.
-    vi.advanceTimersByTime(AUTO_MODE_FRESHNESS_MS + 100);
-    expect(enforcer.getAutoModeStatus().active).toBe(false);
-    enforcer.shutdown();
   });
 });
 

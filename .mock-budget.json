@@ -25,7 +25,6 @@
   "packages/daemon/src/proxy.test.ts": 7,
   "packages/daemon/src/rate-limit-store.integration.test.ts": 3,
   "packages/daemon/src/rate-limit-store.test.ts": 4,
-  "packages/daemon/src/security/permissions/enforcer.process-count.test.ts": 2,
   "packages/daemon/src/security/permissions/enforcer.test.ts": 3,
   "packages/daemon/src/security/permissions/pending.race.test.ts": 5,
   "packages/daemon/src/security/permissions/pending.size-cap.test.ts": 6,

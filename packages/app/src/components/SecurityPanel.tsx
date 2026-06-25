@@ -813,54 +813,30 @@ function formatAgo(ts: number, now: number = Date.now()): string {
 }
 
 function buildBannerCopy(status: AutoModeStatus, skipInAutoMode: boolean): { headline: string } {
-  const { activeSessions, autoModeSessions, source } = status;
-  const sessionsLabel = (n: number): string => `${n} session${n === 1 ? '' : 's'}`;
+  const manual = status.source === 'manual';
 
   // When enforcement is NOT being skipped, the banner is informational: we
-  // detected auto mode but Sentinel is still gating tool calls. The
-  // explanatory paragraph below the headline covers the "still enforcing"
-  // semantics, so the headline alone carries the state.
+  // detected auto mode but Sentinel is still gating tool calls. When skipping,
+  // Sentinel is standing down. Either way the headline carries the state and
+  // the paragraph below spells out the enforcement semantics.
   if (!skipInAutoMode) {
-    if (source === 'manual' && autoModeSessions === 0) {
-      return { headline: 'Auto mode · manual override' };
-    }
-    if (autoModeSessions > 0 && autoModeSessions < activeSessions) {
-      return {
-        headline: `Auto mode detected · ${autoModeSessions} of ${activeSessions} sessions`,
-      };
-    }
-    if (autoModeSessions === 1 && activeSessions === 1) {
-      return { headline: 'Auto mode detected' };
-    }
-    if (autoModeSessions > 0 && autoModeSessions === activeSessions) {
-      return { headline: `Auto mode · ${sessionsLabel(autoModeSessions)}` };
-    }
-    return { headline: 'Auto mode active' };
+    return { headline: manual ? 'Auto mode · manual override' : 'Auto mode detected' };
   }
-
-  // Skipping path — Sentinel is standing down on auto-mode sessions.
-  if (source === 'manual' && autoModeSessions === 0) {
-    return { headline: 'Auto mode · manual override' };
-  }
-  if (autoModeSessions === 1 && activeSessions === 1) {
-    return { headline: 'Auto mode · Sentinel standing down' };
-  }
-  if (autoModeSessions > 0 && autoModeSessions < activeSessions) {
-    return { headline: `Auto mode · ${autoModeSessions} of ${activeSessions} sessions` };
-  }
-  if (autoModeSessions > 0 && autoModeSessions === activeSessions) {
-    return { headline: `Auto mode · ${sessionsLabel(autoModeSessions)}` };
-  }
-  return { headline: 'Auto mode active' };
+  return {
+    headline: manual ? 'Auto mode · manual override' : 'Auto mode · Sentinel standing down',
+  };
 }
 
 /**
- * Inline banner that appears when Claude Code is in auto mode — either
- * because the user flipped the manual override in Settings or because the
- * daemon observed auto-mode beta headers on a recent request. The pulsing
- * icon and slide-in entrance make the bypass state easy to notice at a
- * glance. Copy adapts to the session count so parallel sessions read
- * correctly ("1 of 3 sessions"). Click to expand → per-session breakdown.
+ * Inline banner shown while Claude Code is in auto mode — either because the
+ * user flipped the manual override in Settings or because the daemon saw an
+ * auto-mode beta header on a request within the freshness window. The pulsing
+ * dot and slide-in entrance make the bypass state easy to notice at a glance.
+ *
+ * Deliberately a single state, not a session/process tally: the proxy can't
+ * know how many Claude Code sessions are running (they never announce their
+ * start or end), so the honest signal is "auto mode is active" plus when it
+ * was last detected.
  */
 function AutoModeBanner({
   status,
@@ -869,9 +845,7 @@ function AutoModeBanner({
   status: AutoModeStatus;
   skipInAutoMode: boolean;
 }): React.ReactElement {
-  const [expanded, setExpanded] = useState(false);
   const copy = buildBannerCopy(status, skipInAutoMode);
-  const hasSessions = status.sessions.length > 0;
 
   // Two visual treatments:
   //   - skipping (Sentinel standing down): calm blue/purple gradient — the
@@ -883,17 +857,23 @@ function AutoModeBanner({
     ? {
         cardBg: 'bg-gradient-to-r from-ios-purple/15 via-ios-blue/10 to-ios-blue/5',
         cardBorder: 'border-ios-blue/20',
-        cardDivider: 'border-ios-blue/15',
         dot: 'bg-ios-blue',
         icon: 'text-ios-blue',
       }
     : {
         cardBg: 'bg-gradient-to-r from-ios-orange/15 via-ios-orange/8 to-ios-orange/5',
         cardBorder: 'border-ios-orange/25',
-        cardDivider: 'border-ios-orange/20',
         dot: 'bg-ios-orange',
         icon: 'text-ios-orange',
       };
+
+  // "detected Ns ago" only for header-based detection (a manual override has
+  // no meaningful detection time). The daemon re-broadcasts on every fresh
+  // auto-mode request, so this refreshes while a session is actively working.
+  const detectedAgo =
+    status.source === 'headers' && status.lastDetectedAt !== null
+      ? formatAgo(status.lastDetectedAt)
+      : null;
 
   return (
     <AnimatePresence initial={false}>
@@ -907,22 +887,9 @@ function AutoModeBanner({
           className="overflow-hidden"
         >
           <div className={`px-3 py-2 mb-2 rounded-xl border ${accent.cardBg} ${accent.cardBorder}`}>
-            <button
-              type="button"
-              onClick={() => hasSessions && setExpanded((v) => !v)}
-              disabled={!hasSessions}
-              className="flex items-start gap-2 w-full text-left disabled:cursor-default"
-              aria-expanded={hasSessions ? expanded : undefined}
-              title={
-                hasSessions
-                  ? expanded
-                    ? 'Hide session details'
-                    : 'Show session details'
-                  : undefined
-              }
-            >
+            <div className="flex items-start gap-2">
               <div className="flex-1 min-w-0">
-                <p className="text-[11px] font-semibold text-black dark:text-white leading-tight flex items-center gap-1.5">
+                <p className="text-[11px] font-semibold text-black dark:text-white leading-tight flex items-center gap-1.5 flex-wrap">
                   <span
                     aria-hidden
                     className="relative inline-flex items-center justify-center flex-shrink-0"
@@ -933,66 +900,19 @@ function AutoModeBanner({
                     <span className={`relative inline-block w-2 h-2 rounded-full ${accent.dot}`} />
                   </span>
                   <span className="whitespace-nowrap">{copy.headline}</span>
+                  {detectedAgo && (
+                    <span className={`font-normal text-[10px] ${accent.icon}`}>
+                      · detected {detectedAgo}
+                    </span>
+                  )}
                 </p>
                 <p className="text-[10.5px] text-muted leading-snug mt-0.5">
                   {skipInAutoMode
                     ? 'Sentinel is standing down on auto-mode sessions. Rule enforcement still applies to other sessions.'
-                    : 'Sentinel is still enforcing rules on every session. Turn on "Skip enforcement in auto mode" in Settings if you want Sentinel to defer to Claude Code\u2019s classifier.'}
+                    : 'Sentinel is still enforcing rules on every session. Turn on "Skip enforcement in auto mode" in Settings if you want Sentinel to defer to Claude Code’s classifier.'}
                 </p>
               </div>
-              {hasSessions &&
-                (expanded ? (
-                  <ChevronDown size={11} strokeWidth={2.5} className="text-muted mt-1" />
-                ) : (
-                  <ChevronRight size={11} strokeWidth={2.5} className="text-muted mt-1" />
-                ))}
-            </button>
-
-            <AnimatePresence initial={false}>
-              {hasSessions && expanded && (
-                <motion.div
-                  key="sessions"
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{
-                    height: { duration: 0.26, ease: [0.22, 1, 0.36, 1] },
-                    opacity: { duration: 0.18, ease: 'easeOut' },
-                  }}
-                  className="overflow-hidden"
-                >
-                  <div className={`mt-2 pt-2 border-t ${accent.cardDivider} space-y-1.5`}>
-                    {status.sessions.map((s) => (
-                      <div key={s.sessionId} className="flex items-center gap-2 text-[10.5px]">
-                        <span
-                          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                            s.autoMode ? accent.dot : 'bg-muted/60'
-                          }`}
-                        />
-                        <span
-                          className={`font-semibold tabular-nums ${s.autoMode ? accent.icon : 'text-muted'}`}
-                        >
-                          {s.autoMode ? 'AUTO' : 'normal'}
-                        </span>
-                        <span
-                          className="text-muted font-mono truncate flex-1 min-w-0"
-                          title={s.sessionId}
-                        >
-                          {s.sessionId.slice(0, 8)}…
-                        </span>
-                        <span className="text-muted flex-shrink-0">{formatAgo(s.lastSeenAt)}</span>
-                      </div>
-                    ))}
-                    {status.processCount !== null && (
-                      <p className="text-[10px] text-muted pt-1 italic">
-                        {status.processCount} claude-code{' '}
-                        {status.processCount === 1 ? 'process' : 'processes'} running
-                      </p>
-                    )}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            </div>
           </div>
         </motion.div>
       )}

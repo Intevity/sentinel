@@ -999,11 +999,9 @@ async function proxyToAnthropic(
   // Auto-mode observation — always runs so the UI's "Claude Code is in auto
   // mode" indicator stays live even when Sentinel's own rule enforcement is
   // turned off. Scoped to /v1/messages POST (actual conversation requests),
-  // not count_tokens or probes.
-  //
-  // We extract the session identifier from `metadata.user_id` in the body so
-  // the enforcer can track one entry per Claude Code session — critical when
-  // the user runs multiple sessions in parallel (e.g. 1 auto + 4 normal).
+  // not count_tokens or probes. The enforcer only reads the auto-mode beta
+  // headers here; session identity (from the body) is handled separately on
+  // the enforcement path below.
   if (
     permissionsEnforcer &&
     req.method === 'POST' &&
@@ -1011,8 +1009,7 @@ async function proxyToAnthropic(
     !req.url.includes('count_tokens') &&
     !String(req.headers['user-agent'] ?? '').includes('sentinel-probe')
   ) {
-    const sessionInfo = extractSessionInfo(body);
-    permissionsEnforcer.observeRequest(req.headers, sessionInfo);
+    permissionsEnforcer.observeRequest(req.headers);
   }
 
   // Tool permission enforcement — request side. Whole-tool deny rules strip

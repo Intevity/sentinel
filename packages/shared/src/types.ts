@@ -1508,58 +1508,30 @@ export interface PermissionRuleInput {
 }
 
 /**
- * Per-session snapshot included in {@link AutoModeStatus.sessions}. The
- * daemon tracks one entry per Claude Code `session_id` seen on the proxy
- * (extracted from `metadata.user_id` on each `/v1/messages` request).
- */
-export interface ActiveClaudeSession {
-  sessionId: string;
-  accountUuid: string | null;
-  /** True if the most recent request from this session carried auto-mode
-   *  beta flags. Flips to false on a non-auto request without ending the
-   *  session. */
-  autoMode: boolean;
-  /** Unix ms of the last request observed from this session. */
-  lastSeenAt: number;
-}
-
-/**
- * Live auto-mode status surfaced to the UI. The daemon computes `active` by
- * combining:
- *   - the manual settings toggle (`toolPermissionAutoModeActive`), AND
+ * Live auto-mode status surfaced to the UI. The daemon derives `active` from
+ * the only two signals it can know with certainty:
+ *   - the manual settings toggle (`toolPermissionAutoModeActive`), OR
  *   - header-based detection of Claude Code's `afk-mode` / `advisor-tool`
- *     beta flags on `/v1/messages` requests (with a ~60 s freshness window), AND
- *   - per-session tracking that persists a session's mode until either the
- *     next non-auto request downgrades it or the Claude Code process exits
- *     (detected via cross-platform process scan).
+ *     beta flags on `/v1/messages` requests, held active for a ~60 s freshness
+ *     window after the most recent auto-mode request.
  *
- * Used by the Security tab to render a "Sentinel is standing down" banner
- * when auto mode is active — with accurate counts when the user is running
- * multiple Claude Code sessions in parallel.
+ * This is deliberately a boolean + timestamp, not a session/process tally:
+ * Claude Code sessions never announce their start or end to the proxy, so any
+ * "N sessions / N processes" count is an unverifiable estimate. The honest,
+ * accurate statement Sentinel can make is "an auto-mode request was seen
+ * within the last 60 s" — activation is instant, deactivation trails the last
+ * request by the freshness window.
+ *
+ * Used by the Security tab to render the "Claude Code is in auto mode" banner.
  */
 export interface AutoModeStatus {
   active: boolean;
   /** What triggered `active`. `null` when `active === false`. */
   source: 'manual' | 'headers' | null;
   /** Unix ms of the most recent header-based detection. Null when we've
-   *  never seen one during this daemon session. Useful for showing
-   *  "detected 3s ago" style timestamps. */
+   *  never seen one during this daemon session. Drives the UI's
+   *  "detected 3s ago" timestamp. */
   lastDetectedAt: number | null;
-  /** Total number of Claude Code sessions currently tracked (recently seen
-   *  on the proxy and not yet pruned by the process scan). */
-  activeSessions: number;
-  /** Subset of `activeSessions` whose latest request carried auto-mode
-   *  beta flags. `active === true` requires `autoModeSessions > 0` OR the
-   *  manual override OR the legacy freshness window. */
-  autoModeSessions: number;
-  /** Count of `claude-code` OS processes observed on the last process
-   *  scan. `null` when the scan has never run or always fails on this host
-   *  (locked-down Windows, sandboxed runtime, etc.) — the UI then degrades
-   *  gracefully to time-based freshness only. */
-  processCount: number | null;
-  /** Full session breakdown for the UI's expandable details view. Ordered
-   *  most-recent first. Empty when no sessions are tracked. */
-  sessions: ActiveClaudeSession[];
 }
 
 /** Sound choices exposed in Settings on macOS. Values map to macOS system
