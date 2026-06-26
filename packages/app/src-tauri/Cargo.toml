@@ -2,7 +2,7 @@
 name = "sentinel"
 version = "0.1.0"
 description = "Sentinel — multi-account manager and overage alerts for Claude Code"
-authors = ["Jeff Wooden"]
+authors = ["Intevity"]
 license = "MIT"
 repository = "https://github.com/Intevity/sentinel"
 edition = "2021"

@@ -114,7 +114,7 @@ export const TOUR_STEPS: TourStep[] = [
   {
     targetId: 'tab-security',
     title: 'Security and permission rules',
-    body: 'Sentinel inspects outbound requests and responses for secrets, prompt injection, and risky tool calls: observe only, or block on high or medium severity. Mute findings you want to ignore; give a recurring block an Always allow. You can also allow or deny specific Claude Code tools by name and arguments, synced both ways with settings.json. Every block holds the request up to 60 seconds and appears as a pinned row here with Approve (once, for session, or always) and Deny.',
+    body: 'Sentinel inspects outbound requests and responses for secrets, prompt injection, and risky tool calls: observe only, or block on high or medium severity. Mute findings you want to ignore; give a recurring block an Always allow. You can also allow or deny specific Claude Code tools by name and arguments, synced both ways with settings.json. Every block holds the request up to 60 seconds by default and appears as a pinned row here with Approve (once, for session, or always) and Deny.',
     placement: 'bottom',
     icon: ShieldCheck,
     accent: 'red',
