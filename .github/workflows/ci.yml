@@ -43,8 +43,41 @@ jobs:
       - name: Lint commit messages (release notes are generated from them)
         run: node scripts/commit-lint.mjs "origin/${{ github.base_ref }}" HEAD
 
+  # Skip the heavy app build/test + Playwright jobs when a PR only touches the
+  # marketing site (packages/site/**) or docs — those never affect the app, so
+  # rebuilding and testing it just burns CI minutes. commit-lint above still
+  # runs on every PR, so release-note hygiene is never skipped, and
+  # deploy-site.yml handles the site's own publish on merge.
+  changes:
+    name: Detect changed areas
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The base..HEAD diff needs more than the default shallow checkout.
+          fetch-depth: 0
+      - id: filter
+        name: Did anything outside the marketing site change?
+        run: |
+          base="origin/${{ github.base_ref }}"
+          changed="$(git diff --name-only "$base"...HEAD)"
+          echo "Changed files:"; echo "$changed"
+          # App jobs run only when a file OUTSIDE site/docs changed. Mirrors the
+          # doc globs in the workflow-level paths-ignore above.
+          if echo "$changed" | grep -vE '^(packages/site/|docs/|LICENSE$|\.gitignore$|CHANGELOG\.md$|.*\.md$)' | grep -q .; then
+            echo "app=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "app=false" >> "$GITHUB_OUTPUT"
+          fi
+
   lint-test:
     name: Quality Checks
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -151,8 +184,8 @@ jobs:
     name: Playwright E2E
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: lint-test
-    if: github.event_name == 'pull_request'
+    needs: [changes, lint-test]
+    if: needs.changes.outputs.app == 'true'
 
     steps:
       - uses: actions/checkout@v4
