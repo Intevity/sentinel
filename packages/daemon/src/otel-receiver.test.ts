@@ -267,6 +267,47 @@ describe('OtelReceiver', () => {
       expect(events[0]?.durationMs).toBe(3200);
     });
 
+    it('fires the onApiRequestEvent callback once per api_request, never for other events', async () => {
+      const onApiRequest = vi.fn();
+      const tracked = new OtelReceiver(
+        db,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        onApiRequest,
+      );
+      const mk = (eventName: string) => ({
+        attributes: [
+          { key: 'event.name', value: { stringValue: eventName } },
+          { key: 'user.account_uuid', value: { stringValue: 'acc-cb-1' } },
+          { key: 'model', value: { stringValue: 'claude-opus-4' } },
+        ],
+      });
+      const payload = {
+        resourceLogs: [
+          {
+            scopeLogs: [
+              {
+                logRecords: [
+                  mk(OTEL_LOG_API_REQUEST),
+                  mk('claude_code.user_prompt'),
+                  mk(OTEL_LOG_API_REQUEST),
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const out = mockRes();
+      await tracked.handleLogs(makeRequest(payload, '/v1/logs'), out.res);
+      expect(out.code).toBe(200);
+      // Two api_request events → callback fired twice; the user_prompt event
+      // (which the capture-health path must ignore) did not add a third.
+      expect(onApiRequest).toHaveBeenCalledTimes(2);
+    });
+
     it('ignores non-api_request log events', async () => {
       const payload = {
         resourceLogs: [

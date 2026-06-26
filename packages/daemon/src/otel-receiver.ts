@@ -205,6 +205,12 @@ export class OtelReceiver {
      *  endpoint AFTER local persist + the 200 response. Fire-and-forget;
      *  a hung upstream cannot stall Claude Code's exporter. */
     private readonly forwarder?: ReceiverForwarder,
+    /** Invoked once per ingested `api_request` log event — proof of real
+     *  Claude Code activity arriving via OTEL. Wired in index.ts to the
+     *  capture-health tracker so the daemon can compare OTEL activity
+     *  against real proxy traffic and detect an overridden ANTHROPIC_BASE_URL.
+     *  Fire-and-forget. */
+    private readonly onApiRequestEvent?: () => void,
   ) {}
 
   /** Register a callback invoked after every batch that persisted at least
@@ -437,6 +443,7 @@ export class OtelReceiver {
 
     switch (eventName) {
       case EVENT_API_REQUEST: {
+        this.onApiRequestEvent?.();
         this.insertUsage({
           ts,
           accountId,

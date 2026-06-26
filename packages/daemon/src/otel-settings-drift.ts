@@ -31,6 +31,11 @@ export interface ObservedOtelEnv {
   telemetryEnabled: boolean;
   protocol: string | null;
   headers: string | null;
+  /** `ANTHROPIC_BASE_URL` — the proxy base URL, NOT an OTEL key.
+   *  `classifyDrift` ignores it (metrics-flow classification stays scoped
+   *  to OTEL); it's surfaced only so the capture-health check can report
+   *  what the settings file says the proxy base URL is. */
+  baseUrl: string | null;
 }
 
 /** Read `~/.claude/settings.json`, extract the OTEL env block, classify,
@@ -149,6 +154,7 @@ function emptyObserved(): ObservedOtelEnv {
     telemetryEnabled: false,
     protocol: null,
     headers: null,
+    baseUrl: null,
   };
 }
 
@@ -166,6 +172,7 @@ function readObserved(env: Record<string, unknown>): ObservedOtelEnv {
     telemetryEnabled,
     protocol: str('OTEL_EXPORTER_OTLP_PROTOCOL'),
     headers: str(OTEL_HEADERS_KEY),
+    baseUrl: str('ANTHROPIC_BASE_URL'),
   };
 }
 
