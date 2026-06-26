@@ -224,6 +224,75 @@
   }
 }
 
+/* Ion-engine thruster: a pulsating plasma plume beneath the mascot, as if it
+   were firing a small rocket to sustain the float. Two layers so the motions
+   don't collide on `transform`: the outer wrapper rides the SAME float as the
+   mascot (so the plume stays glued to the head as it bobs), while the inner
+   flame swells (scale) and flickers (opacity) on its own faster cadence. */
+.mascot-thruster {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 36px); /* nozzle tucks just under the head's lower edge */
+  z-index: 1; /* behind the head (z-2), so the head overlaps the plume top */
+  width: 32px;
+  height: 56px;
+  margin-left: -16px;
+  transform-origin: 50% 0%;
+  pointer-events: none;
+  animation: mascot-float 5s ease-in-out infinite;
+  will-change: transform;
+}
+.mascot-thruster-flame {
+  position: absolute;
+  inset: 0;
+  border-radius: 50% 50% 48% 48% / 22% 22% 78% 78%;
+  background: linear-gradient(
+    to bottom,
+    rgba(224, 244, 255, 0.95) 0%,
+    rgba(120, 200, 255, 0.9) 22%,
+    rgba(0, 122, 255, 0.78) 52%,
+    rgba(94, 92, 230, 0) 100%
+  );
+  box-shadow: 0 6px 18px 1px rgba(0, 122, 255, 0.4);
+  filter: blur(2.5px);
+  transform-origin: 50% 0%;
+  animation:
+    thruster-fire 2.5s ease-in-out infinite,
+    thruster-flicker 0.32s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+/* Hot inner core — a brighter, narrower jet for the "ion" intensity. */
+.mascot-thruster-flame::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 13px;
+  height: 60%;
+  margin-left: -6.5px;
+  border-radius: 50% 50% 50% 50% / 26% 26% 74% 74%;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.95), rgba(150, 210, 255, 0) 100%);
+  filter: blur(1.5px);
+}
+@keyframes thruster-fire {
+  0%,
+  100% {
+    transform: scaleY(0.82) scaleX(0.95);
+  }
+  50% {
+    transform: scaleY(1.14) scaleX(1.05);
+  }
+}
+@keyframes thruster-flicker {
+  0%,
+  100% {
+    opacity: 0.82;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 /* Ambient wash drifting behind the whole hero. */
 .hero-gradient::before {
   content: '';
@@ -269,6 +338,8 @@
   .mascot-img,
   .mascot-glow,
   .mascot-ring,
+  .mascot-thruster,
+  .mascot-thruster-flame,
   .hero-gradient::before {
     animation: none;
   }
@@ -277,6 +348,11 @@
   }
   .mascot-ring {
     display: none;
+  }
+  /* Keep a calm, steady plume (no flicker) so the composition still reads. */
+  .mascot-thruster-flame {
+    opacity: 0.62;
+    transform: scaleY(0.92);
   }
   .hero-rise {
     opacity: 1;
