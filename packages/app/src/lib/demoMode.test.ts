@@ -177,7 +177,11 @@ describe('maskOAuthAccount', () => {
     setDemoModeEnabled(true);
     maskAccounts([acct({ id: 'org-a', createdAt: 1000 })]);
     const masked = maskOAuthAccount(
-      oauth({ organizationUuid: 'ghost-org', accountUuid: 'ghost-uuid', emailAddress: 'leak@corp.com' }),
+      oauth({
+        organizationUuid: 'ghost-org',
+        accountUuid: 'ghost-uuid',
+        emailAddress: 'leak@corp.com',
+      }),
     );
     expect(masked.emailAddress).toBe('sentinel-demo@intevity.com');
     expect(masked.displayName).toBe('Sentinel Demo');
@@ -188,7 +192,9 @@ describe('maskOAuthAccount', () => {
   it('uses accountUuid when organizationUuid is empty', () => {
     setDemoModeEnabled(true);
     // id === accountUuid when there is no org (sentinelKey rule).
-    maskAccounts([acct({ id: 'uuid-solo', accountUuid: 'uuid-solo', orgUuid: '', createdAt: 500 })]);
+    maskAccounts([
+      acct({ id: 'uuid-solo', accountUuid: 'uuid-solo', orgUuid: '', createdAt: 500 }),
+    ]);
     const masked = maskOAuthAccount(oauth({ organizationUuid: '', accountUuid: 'uuid-solo' }));
     expect(masked.emailAddress).toBe('sentinel-demo-1@intevity.com');
   });

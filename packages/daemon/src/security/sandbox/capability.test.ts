@@ -46,7 +46,10 @@ describe('computeCapability', () => {
     });
 
     it('warns (but stays full) when seccomp is missing', () => {
-      const s = computeCapability('linux', probe({ bubblewrap: true, socat: true, seccomp: false }));
+      const s = computeCapability(
+        'linux',
+        probe({ bubblewrap: true, socat: true, seccomp: false }),
+      );
       expect(s.capability).toBe('full');
       expect(s.reasons.join(' ')).toMatch(/seccomp/);
     });

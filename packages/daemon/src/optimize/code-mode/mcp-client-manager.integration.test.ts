@@ -280,13 +280,11 @@ describe('mcp-client-manager (Leg B sandbox wrapping)', () => {
   it('invokes wrapStdioCommand with the resolved command/args/env and uses a pass-through wrapper', async () => {
     const script = writeFakeMcpStdioScript();
     cleanupScript = script.cleanup;
-    const wrap = vi.fn(
-      async (command: string, args: string[], env: Record<string, string>) => ({
-        command,
-        args,
-        env,
-      }),
-    );
+    const wrap = vi.fn(async (command: string, args: string[], env: Record<string, string>) => ({
+      command,
+      args,
+      env,
+    }));
     manager = createMcpClientManager({
       resolveEntry: (server) =>
         server === 'fakestdio' ? { command: process.execPath, args: [script.path] } : undefined,

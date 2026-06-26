@@ -314,7 +314,13 @@
     radial-gradient(56% 60% at 50% 42%, rgba(0, 122, 255, 0.11), transparent 72%),
     radial-gradient(38% 50% at 68% 36%, rgba(94, 92, 230, 0.09), transparent 72%);
   /* Soft-fade the band's top and bottom so the glow has no hard edge. */
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, #000 64%, transparent 100%);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    #000 18%,
+    #000 64%,
+    transparent 100%
+  );
   mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, #000 64%, transparent 100%);
   animation: section-aurora 22s ease-in-out infinite alternate;
   will-change: transform, opacity;

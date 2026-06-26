@@ -22,7 +22,10 @@ function makeIpcStub(): IpcServer {
 }
 
 function tmpRoot(): string {
-  return join(tmpdir(), `sentinel-sandbox-sync-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  return join(
+    tmpdir(),
+    `sentinel-sandbox-sync-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
 }
 
 function basePolicy(overrides: Partial<IsolationPolicy> = {}): IsolationPolicy {
@@ -92,7 +95,12 @@ describe('sandbox-sync', () => {
       );
       policy = basePolicy({
         network: { allowedDomains: ['b.com', 'a.com'], deniedDomains: ['evil.test'] },
-        filesystem: { allowWrite: ['/srv', '/opt'], denyWrite: [], denyRead: ['~/'], allowRead: ['.'] },
+        filesystem: {
+          allowWrite: ['/srv', '/opt'],
+          denyWrite: [],
+          denyRead: ['~/'],
+          allowRead: ['.'],
+        },
         credentials: { files: ['~/.ssh'], envVars: ['TOKEN'] },
       });
       await engine.pushNow();
@@ -103,7 +111,12 @@ describe('sandbox-sync', () => {
       expect(file['sandbox']).toEqual({
         enabled: true,
         network: { allowedDomains: ['a.com', 'b.com'], deniedDomains: ['evil.test'] },
-        filesystem: { allowWrite: ['/opt', '/srv'], denyWrite: [], denyRead: ['~/'], allowRead: ['.'] },
+        filesystem: {
+          allowWrite: ['/opt', '/srv'],
+          denyWrite: [],
+          denyRead: ['~/'],
+          allowRead: ['.'],
+        },
         credentials: {
           files: [{ path: '~/.ssh', mode: 'deny' }],
           envVars: [{ name: 'TOKEN', mode: 'deny' }],
@@ -113,7 +126,12 @@ describe('sandbox-sync', () => {
 
     it('writes the claudeCode passthrough keys when set', async () => {
       policy = basePolicy({
-        claudeCode: { failIfUnavailable: true, allowUnsandboxedCommands: false, excludedCommands: ['docker *'], allowAppleEvents: true },
+        claudeCode: {
+          failIfUnavailable: true,
+          allowUnsandboxedCommands: false,
+          excludedCommands: ['docker *'],
+          allowAppleEvents: true,
+        },
       });
       await engine.pushNow();
       const sb = readSandbox(settingsPath);
@@ -175,9 +193,9 @@ describe('sandbox-sync', () => {
       await engine.pullNow('export');
       // Policy unchanged; file overwritten with the policy.
       expect(policy.network.allowedDomains).toEqual(['frompolicy.com']);
-      expect((readSandbox(settingsPath)['network'] as Record<string, unknown>)['allowedDomains']).toEqual([
-        'frompolicy.com',
-      ]);
+      expect(
+        (readSandbox(settingsPath)['network'] as Record<string, unknown>)['allowedDomains'],
+      ).toEqual(['frompolicy.com']);
     });
 
     it('treats a missing file as empty content (merge keeps policy intact)', async () => {
@@ -204,7 +222,9 @@ describe('sandbox-sync', () => {
       });
       expect(engine.getStatus().active).toBe(true);
       // Marker persisted so the next start takes the steady-state path.
-      const row = db.prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?').get('sandbox_initial_import_v1');
+      const row = db
+        .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+        .get('sandbox_initial_import_v1');
       expect(row).toBeTruthy();
     });
 
@@ -216,9 +236,9 @@ describe('sandbox-sync', () => {
       policy = basePolicy({ network: { allowedDomains: ['policy.com'], deniedDomains: [] } });
       await engine.start({ initialMode: 'export' });
       expect(policy.network.allowedDomains).toEqual(['policy.com']); // not unioned with file.com
-      expect((readSandbox(settingsPath)['network'] as Record<string, unknown>)['allowedDomains']).toEqual([
-        'policy.com',
-      ]);
+      expect(
+        (readSandbox(settingsPath)['network'] as Record<string, unknown>)['allowedDomains'],
+      ).toEqual(['policy.com']);
     });
 
     it('is idempotent — a second start while active is a no-op', async () => {
@@ -292,9 +312,13 @@ describe('sandbox-sync', () => {
     it('swallows a throwing broadcast without failing the operation', async () => {
       const throwingEngine = createSandboxSyncEngine({
         db,
-        ipcServer: { start() {}, stop() {}, broadcast: () => {
-          throw new Error('boom');
-        } } as unknown as IpcServer,
+        ipcServer: {
+          start() {},
+          stop() {},
+          broadcast: () => {
+            throw new Error('boom');
+          },
+        } as unknown as IpcServer,
         getPolicy: () => policy,
         setPolicy: (p) => {
           policy = p;

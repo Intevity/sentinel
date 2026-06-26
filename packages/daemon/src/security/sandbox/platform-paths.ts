@@ -47,8 +47,7 @@ export function resolvePlatformPaths(deps: ResolvePlatformPathsDeps = {}): Sandb
     deps.envSeccompPath !== undefined ? deps.envSeccompPath : process.env['SENTINEL_SECCOMP_PATH'];
   if (envPath && exists(envPath)) return { seccompApplyPath: envPath };
 
-  const packaged =
-    deps.packaged ?? Boolean((process as unknown as { pkg?: unknown }).pkg);
+  const packaged = deps.packaged ?? Boolean((process as unknown as { pkg?: unknown }).pkg);
   if (packaged) {
     const execPath = deps.execPath ?? process.execPath;
     const beside = join(dirname(execPath), 'sandbox-bins', 'apply-seccomp');

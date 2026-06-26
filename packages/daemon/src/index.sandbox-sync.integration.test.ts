@@ -53,7 +53,10 @@ describe('sandbox-sync (Leg A) daemon integration', () => {
     const sawPush = await waitFor(() => readSandboxBlock(ctx!.claudeSettingsPath) !== undefined);
     expect(sawPush).toBe(true);
 
-    const file = JSON.parse(readFileSync(ctx.claudeSettingsPath, 'utf8')) as Record<string, unknown>;
+    const file = JSON.parse(readFileSync(ctx.claudeSettingsPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
     expect(file['model']).toBe('opus'); // unrelated key preserved
     const sb = file['sandbox'] as Record<string, unknown>;
     expect(sb['enabled']).toBe(true);
@@ -66,7 +69,9 @@ describe('sandbox-sync (Leg A) daemon integration', () => {
   });
 
   it('reports the sandbox capability (Leg B) for the host platform', async () => {
-    ctx = await startTestDaemon({ settings: { isolationPolicy: policy({ enforceCodeMode: false }) } });
+    ctx = await startTestDaemon({
+      settings: { isolationPolicy: policy({ enforceCodeMode: false }) },
+    });
     const cap = await ctx.request<SandboxStatus>({ type: 'get_sandbox_capability' });
     expect(cap.success).toBe(true);
     expect(cap.data?.platform).toBe(process.platform);
@@ -94,9 +99,7 @@ describe('sandbox-sync (Leg A) daemon integration', () => {
     });
     expect(updated.success).toBe(true);
 
-    const sawActive = await waitFor(
-      () => readSandboxBlock(ctx!.claudeSettingsPath) !== undefined,
-    );
+    const sawActive = await waitFor(() => readSandboxBlock(ctx!.claudeSettingsPath) !== undefined);
     expect(sawActive).toBe(true);
     const status = await ctx.request<ClaudeSyncStatus>({ type: 'get_sandbox_status' });
     expect(status.data?.active).toBe(true);
@@ -126,7 +129,9 @@ describe('sandbox-sync (Leg A) daemon integration', () => {
     await ctx.request<Settings>({
       type: 'update_settings',
       settings: {
-        isolationPolicy: policy({ network: { allowedDomains: ['changed.com'], deniedDomains: [] } }),
+        isolationPolicy: policy({
+          network: { allowedDomains: ['changed.com'], deniedDomains: [] },
+        }),
       },
     });
     const sawChange = await waitFor(() => {

@@ -30,7 +30,7 @@ keep the name, or change the `poster` field if you prefer a `.png`/`.jpg`).
 | File           | Feature       | What to show                                                                                                                                |
 | -------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `security.mp4` | Security      | The Security tab: a secret or risky Bash call gets flagged; expand an alert to show severity, category, and provenance; block a HIGH event. |
-| `accounts.mp4` | Multi-account | The Accounts tab: add an account, switch the active account, and turn Account Switching to Auto.                                             |
+| `accounts.mp4` | Multi-account | The Accounts tab: add an account, switch the active account, and turn Account Switching to Auto.                                            |
 | `usage.mp4`    | Usage & caps  | Usage view: pool-wide vs per-account, the live reset countdowns, and setting an overage spend cap.                                          |
 | `alerts.mp4`   | Alerts        | Alerts tab: set a threshold, trigger the notification, and open the alert history.                                                          |
 | `metrics.mp4`  | Metrics       | Metrics tab: the real cost, token counts, and cache hit rate breakdown over a date range.                                                   |
@@ -46,14 +46,14 @@ sub-feature). Until recorded, each card shows its branded poster placeholder wit
 "Demo video coming soon" badge. Set `hasVideo: true` on the matching entry in
 `pillars.ts` (not `features.ts`) once the `.mp4` lands here. Same capture settings as above.
 
-| File              | Pillar        | What to show                                                                                  |
-| ----------------- | ------------- | --------------------------------------------------------------------------------------------- |
-| `switching.mp4`   | Multi-account | Flip Account Switching to Auto; watch the header reroute to the account resetting soonest.    |
-| `pool.mp4`        | Multi-account | The pooled Accounts view: several plans side by side with live utilization and reset timers.  |
-| `caps.mp4`        | Multi-account | Set a 7-day spend cap; show an account pausing from rotation when it crosses the cap.          |
-| `scanning.mp4`    | Security      | A secret or risky Bash call flagged in flight; expand the finding to show severity and source. |
-| `rules.mp4`       | Security      | Add a per-tool allow/deny rule; show it syncing into Claude Code, and an `ask` rule prompting. |
-| `sandbox.mp4`     | Security      | Toggle sandbox isolation on; show a command confined to the allowed paths and domains.        |
-| `subagents.mp4`   | Optimization  | The Subagents tab: install a curated subagent; show realized vs potential savings.            |
+| File              | Pillar        | What to show                                                                                       |
+| ----------------- | ------------- | -------------------------------------------------------------------------------------------------- |
+| `switching.mp4`   | Multi-account | Flip Account Switching to Auto; watch the header reroute to the account resetting soonest.         |
+| `pool.mp4`        | Multi-account | The pooled Accounts view: several plans side by side with live utilization and reset timers.       |
+| `caps.mp4`        | Multi-account | Set a 7-day spend cap; show an account pausing from rotation when it crosses the cap.              |
+| `scanning.mp4`    | Security      | A secret or risky Bash call flagged in flight; expand the finding to show severity and source.     |
+| `rules.mp4`       | Security      | Add a per-tool allow/deny rule; show it syncing into Claude Code, and an `ask` rule prompting.     |
+| `sandbox.mp4`     | Security      | Toggle sandbox isolation on; show a command confined to the allowed paths and domains.             |
+| `subagents.mp4`   | Optimization  | The Subagents tab: install a curated subagent; show realized vs potential savings.                 |
 | `compression.mp4` | Optimization  | The Compression tab: before/after tokens on a tool result, plus a reversible-retrieval round-trip. |
-| `codemode.mp4`    | Optimization  | The Context tab: bridge an MCP server; show its tool definitions leaving the request context. |
+| `codemode.mp4`    | Optimization  | The Context tab: bridge an MCP server; show its tool definitions leaving the request context.      |

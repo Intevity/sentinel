@@ -188,7 +188,12 @@ describe('fromClaudeCodeSandboxBlock', () => {
       fromClaudeCodeSandboxBlock({
         enabled: true,
         network: { allowedDomains: ['example.com'], deniedDomains: ['evil.test'] },
-        filesystem: { allowWrite: ['~/.kube'], denyWrite: ['/etc'], denyRead: ['~/'], allowRead: ['.'] },
+        filesystem: {
+          allowWrite: ['~/.kube'],
+          denyWrite: ['/etc'],
+          denyRead: ['~/'],
+          allowRead: ['.'],
+        },
         credentials: {
           files: [{ path: '~/.aws/credentials', mode: 'deny' }],
           envVars: [{ name: 'GITHUB_TOKEN', mode: 'deny' }],
@@ -197,7 +202,12 @@ describe('fromClaudeCodeSandboxBlock', () => {
     ).toEqual({
       claudeCodeEnabled: true,
       network: { allowedDomains: ['example.com'], deniedDomains: ['evil.test'] },
-      filesystem: { allowWrite: ['~/.kube'], denyWrite: ['/etc'], denyRead: ['~/'], allowRead: ['.'] },
+      filesystem: {
+        allowWrite: ['~/.kube'],
+        denyWrite: ['/etc'],
+        denyRead: ['~/'],
+        allowRead: ['.'],
+      },
       credentials: { files: ['~/.aws/credentials'], envVars: ['GITHUB_TOKEN'] },
     });
   });
@@ -220,13 +230,21 @@ describe('fromClaudeCodeSandboxBlock', () => {
       credentials: { files: 'nope', envVars: 42 },
     });
     expect(parsed.network).toEqual({ allowedDomains: [], deniedDomains: [] });
-    expect(parsed.filesystem).toEqual({ allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] });
+    expect(parsed.filesystem).toEqual({
+      allowWrite: [],
+      denyWrite: [],
+      denyRead: [],
+      allowRead: [],
+    });
     expect(parsed.credentials).toEqual({ files: [], envVars: [] });
   });
 
   it('filters invalid domains on import', () => {
     const parsed = fromClaudeCodeSandboxBlock({
-      network: { allowedDomains: ['ok.com', '*.com', 'https://bad'], deniedDomains: ['x.test', '  '] },
+      network: {
+        allowedDomains: ['ok.com', '*.com', 'https://bad'],
+        deniedDomains: ['x.test', '  '],
+      },
     });
     expect(parsed.network.allowedDomains).toEqual(['ok.com']);
     expect(parsed.network.deniedDomains).toEqual(['x.test']);

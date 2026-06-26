@@ -101,7 +101,9 @@ export function subscribeDemoMode(cb: () => void): () => void {
 let indexById = new Map<string, number>();
 
 function rebuildIndex(accounts: AccountInfo[]): void {
-  const sorted = [...accounts].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  const sorted = [...accounts].sort(
+    (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id),
+  );
   const next = new Map<string, number>();
   sorted.forEach((a, i) => next.set(a.id, i + 1));
   indexById = next;

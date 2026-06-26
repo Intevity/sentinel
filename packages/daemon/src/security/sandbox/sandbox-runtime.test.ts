@@ -44,9 +44,10 @@ function fakeManager(): SandboxManagerLike & {
   };
 }
 
-function make(
-  overrides: Partial<SandboxRuntimeDeps> & { policy?: IsolationPolicy } = {},
-): { rt: ReturnType<typeof createSandboxRuntime>; manager: ReturnType<typeof fakeManager> } {
+function make(overrides: Partial<SandboxRuntimeDeps> & { policy?: IsolationPolicy } = {}): {
+  rt: ReturnType<typeof createSandboxRuntime>;
+  manager: ReturnType<typeof fakeManager>;
+} {
   const manager = fakeManager();
   let current = overrides.policy ?? policy();
   const rt = createSandboxRuntime({

@@ -209,8 +209,12 @@ export function fromClaudeCodeSandboxBlock(raw: unknown): ParsedSandboxContent {
   const net = o['network'];
   if (net && typeof net === 'object') {
     const n = net as Record<string, unknown>;
-    content.network.allowedDomains = cleanStringArray(n['allowedDomains']).filter(isValidSandboxDomain);
-    content.network.deniedDomains = cleanStringArray(n['deniedDomains']).filter(isValidSandboxDomain);
+    content.network.allowedDomains = cleanStringArray(n['allowedDomains']).filter(
+      isValidSandboxDomain,
+    );
+    content.network.deniedDomains = cleanStringArray(n['deniedDomains']).filter(
+      isValidSandboxDomain,
+    );
   }
 
   const fs = o['filesystem'];
@@ -230,14 +234,16 @@ export function fromClaudeCodeSandboxBlock(raw: unknown): ParsedSandboxContent {
   }
 
   const passthrough: NonNullable<IsolationPolicy['claudeCode']> = {};
-  if (typeof o['failIfUnavailable'] === 'boolean') passthrough.failIfUnavailable = o['failIfUnavailable'];
+  if (typeof o['failIfUnavailable'] === 'boolean')
+    passthrough.failIfUnavailable = o['failIfUnavailable'];
   if (typeof o['allowUnsandboxedCommands'] === 'boolean') {
     passthrough.allowUnsandboxedCommands = o['allowUnsandboxedCommands'];
   }
   if (Array.isArray(o['excludedCommands'])) {
     passthrough.excludedCommands = cleanStringArray(o['excludedCommands']);
   }
-  if (typeof o['allowAppleEvents'] === 'boolean') passthrough.allowAppleEvents = o['allowAppleEvents'];
+  if (typeof o['allowAppleEvents'] === 'boolean')
+    passthrough.allowAppleEvents = o['allowAppleEvents'];
   if (Object.keys(passthrough).length > 0) content.claudeCode = passthrough;
 
   return content;
@@ -288,7 +294,10 @@ export function applyPulledSandboxContent(
             deniedDomains: [...parsed.network.deniedDomains],
           }
         : {
-            allowedDomains: unionList(current.network.allowedDomains, parsed.network.allowedDomains),
+            allowedDomains: unionList(
+              current.network.allowedDomains,
+              parsed.network.allowedDomains,
+            ),
             deniedDomains: unionList(current.network.deniedDomains, parsed.network.deniedDomains),
           },
     filesystem:

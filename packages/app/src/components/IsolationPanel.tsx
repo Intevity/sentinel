@@ -38,7 +38,9 @@ function StringListEditor(props: {
   };
   return (
     <div className="px-3 py-2">
-      <div className="text-[11px] font-semibold text-black dark:text-white mb-1.5">{props.label}</div>
+      <div className="text-[11px] font-semibold text-black dark:text-white mb-1.5">
+        {props.label}
+      </div>
       <div className="flex flex-wrap gap-1.5 mb-1.5">
         {props.items.length === 0 && <span className="text-[11px] text-muted">None</span>}
         {props.items.map((item) => (
@@ -89,12 +91,27 @@ function FirstEnableSandboxModal(props: {
   onConfirm: (mode: 'merge' | 'import' | 'export') => void;
 }): React.ReactElement {
   const choices: Array<{ mode: 'merge' | 'import' | 'export'; label: string; desc: string }> = [
-    { mode: 'merge', label: 'Merge', desc: "Combine this policy with any existing sandbox block in Claude Code's settings." },
-    { mode: 'import', label: 'Import from Claude Code', desc: "Replace this policy's content with the existing settings.json sandbox block." },
-    { mode: 'export', label: 'Export to Claude Code', desc: 'Overwrite the settings.json sandbox block with this policy.' },
+    {
+      mode: 'merge',
+      label: 'Merge',
+      desc: "Combine this policy with any existing sandbox block in Claude Code's settings.",
+    },
+    {
+      mode: 'import',
+      label: 'Import from Claude Code',
+      desc: "Replace this policy's content with the existing settings.json sandbox block.",
+    },
+    {
+      mode: 'export',
+      label: 'Export to Claude Code',
+      desc: 'Overwrite the settings.json sandbox block with this policy.',
+    },
   ];
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={props.onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={props.onClose}
+    >
       <div
         className="w-[340px] rounded-2xl bg-white dark:bg-neutral-900 p-4 shadow-xl"
         onClick={(e) => e.stopPropagation()}

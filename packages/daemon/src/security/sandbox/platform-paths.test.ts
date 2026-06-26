@@ -32,8 +32,7 @@ describe('resolvePlatformPaths', () => {
       packaged: true,
       execPath: '/Applications/Sentinel.app/Contents/MacOS/sentinel-daemon',
       envSeccompPath: undefined,
-      exists: (p) =>
-        p === '/Applications/Sentinel.app/Contents/MacOS/sandbox-bins/apply-seccomp',
+      exists: (p) => p === '/Applications/Sentinel.app/Contents/MacOS/sandbox-bins/apply-seccomp',
     });
     expect(out).toEqual({
       seccompApplyPath: '/Applications/Sentinel.app/Contents/MacOS/sandbox-bins/apply-seccomp',
