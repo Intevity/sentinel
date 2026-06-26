@@ -1,0 +1,32 @@
+/* Brand overrides for the Starlight docs theme, so the docs at /sentinel/docs/
+   match the marketing site: iOS-blue accent, dark-first, the system font stack
+   ported from src/styles/global.css (and the app's own index.css).
+
+   Starlight is dark-first: `:root` holds the dark palette and
+   `:root[data-theme='light']` the light one. We only override the accent ramp
+   and a couple of brand touches; Starlight's neutral grays are left intact so
+   the docs keep good contrast and accessibility out of the box. */
+
+:root {
+  /* iOS-blue accent ramp (dark theme). */
+  --sl-color-accent-low: #00203f;
+  --sl-color-accent: #0067d6;
+  --sl-color-accent-high: #b3d4ff;
+
+  /* Match the marketing site's font stack. */
+  --sl-font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+}
+
+:root[data-theme='light'] {
+  /* iOS-blue accent ramp (light theme). */
+  --sl-color-accent-low: #cfe2ff;
+  --sl-color-accent: #0073e6;
+  --sl-color-accent-high: #002a5c;
+}
+
+/* The hero CTA on the marketing site uses a soft blue glow; echo a restrained
+   version on the docs masthead title so the two surfaces feel related. */
+.site-title {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}

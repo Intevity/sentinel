@@ -1,0 +1,42 @@
+---
+title: Set up the sandbox
+description: Enable OS-level isolation for Claude Code's commands and configure the paths and domains they're allowed to reach.
+sidebar:
+  order: 4
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The sandbox limits which files and network domains Claude Code's commands can reach. It's off by
+default.
+
+<Steps>
+
+1. **Check support.** Open **Settings → Security**. Sentinel detects whether your OS supports
+   sandboxing (full filesystem + network on macOS/Linux; network-only on Windows) and reflects that
+   in the panel.
+
+2. **Enable isolation** with the sandbox toggle.
+
+3. **Add allowed paths.** List the directories Claude Code may read and write — typically your
+   project roots and any scratch directories your workflow uses.
+
+4. **Add allowed domains.** List the network destinations commands may reach — your package
+   registry, your APIs, and anything your build needs.
+
+5. **Run a representative task** and widen the allowlists if something legitimate is blocked.
+
+</Steps>
+
+<Aside type="tip" title="Start a little permissive, then tighten">
+  It's easier to start with the paths and domains your normal workflow needs and remove what you
+  don't use than to debug a too-tight sandbox mid-task. The rules sync into Claude Code's own
+  sandbox config, so enforcement is consistent across both surfaces.
+</Aside>
+
+## What it protects
+
+A correctly configured sandbox means a command that tries to read credentials outside your project,
+or exfiltrate data to an unlisted domain, is stopped by the OS — a layer below Sentinel's own
+[permission rules](/sentinel/docs/features/permission-rules/) and
+[security scanning](/sentinel/docs/features/security-scanning/). The three work together.

@@ -1,0 +1,68 @@
+---
+title: Permission rules & Claude Code sync
+description: Allow / deny / ask rules that Sentinel keeps in lockstep with Claude Code's settings.json, with ask rules held in Sentinel for a single approval surface.
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Permission rules decide what Claude Code is allowed to run. Sentinel keeps a **rule database that
+is the source of truth** and mirrors it into Claude Code's own `~/.claude/settings.json`, so the two
+never drift.
+
+![The Permission Rules panel in the Security tab](/sentinel/screenshots/permission-rules.png)
+
+## The allow / deny / ask model
+
+Each rule has a **raw** text that uniquely identifies it (for example `Bash(rm -rf *)` or
+`WebFetch(*.example.com)`) and a decision bucket:
+
+- **allow** — let it run silently.
+- **deny** — block it.
+- **ask** — hold it for approval.
+
+Moving a rule between buckets updates the same rule (keyed on its raw text); it never creates a
+duplicate.
+
+<Aside type="note" title="ask rules are Sentinel-only by design">
+  Sentinel pushes only **allow** and **deny** rules into `settings.json`. **ask** rules stay in
+  Sentinel and surface as a pending-block banner in the tray UI. That keeps a single approval
+  surface — so you're not approving the same command twice (once in Claude Code's own prompt, once
+  in Sentinel) and remote-approval integrations have one place to hook.
+</Aside>
+
+## Syncing with Claude Code
+
+When **Claude Code sync** is enabled (`claudeCodeSyncEnabled`), Sentinel keeps the rule DB and
+`settings.json` in lockstep:
+
+- **Push** fires after every local change (a UI edit or an IPC mutation). It writes the DB's
+  allow/deny state to `settings.json`, preserving every non-permissions key already in the file.
+- **Pull** fires when the file changes on disk (debounced). It imports the file's rules, collapses
+  duplicates by raw text, and — when the same raw appears in multiple buckets — applies
+  **most-restrictive-wins** (deny > ask > allow).
+
+### Merge vs import
+
+- **Merge mode** (default) updates existing rows' decisions from the file but preserves each rule's
+  ownership (`source`), so rules you created in the UI keep their UI ownership. Orphan cleanup only
+  removes file-originated rules that disappear from the file.
+- **Import mode** ("file wins") flips ownership to Claude Code on every matched allow/deny rule.
+  This backs the one-time upgrade migration and the **Import from Claude Code settings.json** button.
+
+You can hand-edit `settings.json` while the daemon is running — the watcher picks it up, pulls with
+merge semantics, then pushes back. The UI is still the better path: it's atomic and can't produce
+ambiguous states.
+
+## Permission bypasses
+
+Per-account, per-tool **bypasses** let you exempt specific tool/pattern combinations from rules when
+you need a temporary escape hatch. These are tracked separately and broadcast to the UI when they
+change.
+
+## Related
+
+- [Security scanning](/sentinel/docs/features/security-scanning/) — content-based detection that
+  complements rule-based permissions.
+- [Sync permissions with Claude Code](/sentinel/docs/guides/permission-sync/) — a step-by-step guide.

@@ -1,0 +1,56 @@
+---
+title: Releases
+description: How release notes are generated from commit messages, the commit format CI enforces, and what a tagged release does.
+sidebar:
+  order: 6
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Commit messages drive release notes
+
+GitHub release notes are produced mechanically by `scripts/release-notes.mjs` (pure git parsing —
+no LLM). Every non-merge commit subject between two tags becomes one bullet, grouped by type, and
+body lines starting with `- ` become sub-bullets. CI enforces the shape on every PR (the
+`commit-lint` job). Write every commit as if it will be read on the release page — because it will:
+
+```
+<type>(<scope>): <imperative summary that reads as a release-note bullet>
+
+- one body bullet per distinct feature / fix / behavior change
+- keep each bullet to one line
+```
+
+- **type**: `feat | fix | perf | refactor | docs | test | ci | build | chore | style | revert`
+- Subject ≤ 120 chars and must stand alone.
+- A squash-merged PR should enumerate each change as a `- ` body bullet — that's where per-feature
+  granularity comes from.
+- Trailers (`Co-Authored-By`, …) go after a blank line and never leak into notes.
+
+Preview the notes an upcoming tag would get:
+
+```sh
+node scripts/release-notes.mjs HEAD
+```
+
+## Tagged releases
+
+Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`. The pipeline builds the app (with
+the daemon sidecar embedded) for all platforms in parallel and **signs + notarizes the macOS
+bundle**.
+
+Notarization is **decoupled** from the expensive macOS runner so Apple's notary queue can't burn CI
+minutes: the macOS legs sign and submit without waiting, then exit. A short `notarize-wait` job
+catches the fast case; if Apple's queue is slow, a scheduled `notarize-poll` workflow finalizes the
+release whenever Apple completes. Finalizing staples the ticket into the artifacts, promotes the
+GitHub release (with the generated notes), and mirrors updater artifacts for every platform.
+
+<Aside type="note" title="Signing is mandatory for macOS releases">
+  The macOS legs fail fast if any Apple secret is missing — a release can never ship unsigned,
+  because an unsigned macOS bundle can't be auto-updated. Windows signing (Azure Trusted Signing) is
+  optional: set the variables and the Windows artifacts are Authenticode-signed; leave them unset
+  and the Windows leg builds unsigned (how a fork degrades).
+</Aside>
+
+The site (this docs site included) deploys separately via `.github/workflows/deploy-site.yml`, gated
+by the `SITE_DEPLOY_ENABLED` repository variable.

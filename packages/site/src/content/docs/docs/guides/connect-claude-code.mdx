@@ -1,0 +1,48 @@
+---
+title: Connect Claude Code
+description: Point Claude Code at the Sentinel proxy so every request flows through the daemon.
+sidebar:
+  order: 1
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Claude Code routes through Sentinel by reading `ANTHROPIC_BASE_URL` from its settings. Activation
+sets this for you.
+
+<Steps>
+
+1. Open Sentinel and click **Activate Sentinel**. This writes the following into
+   `~/.claude/settings.json`:
+
+   ```json
+   {
+     "env": {
+       "ANTHROPIC_BASE_URL": "http://localhost:47284"
+     }
+   }
+   ```
+
+   (plus OTEL telemetry variables that power the [Metrics](/sentinel/docs/features/metrics/) tab).
+
+2. **Restart Claude Code** so it re-reads its settings.
+
+3. Run any command and confirm it passes through the daemon:
+
+   ```sh
+   tail -f ~/.sentinel/daemon.log
+   ```
+
+</Steps>
+
+<Aside type="caution" title="Proxy not intercepting requests?">
+  Verify `~/.claude/settings.json` contains `ANTHROPIC_BASE_URL=http://localhost:47284`. If it's
+  missing, click **Activate Sentinel** again, then restart Claude Code. See
+  [Troubleshooting](/sentinel/docs/reference/troubleshooting/).
+</Aside>
+
+## Deactivating
+
+Use the **⋯ menu → Uninstall Sentinel…** (or the activation toggle) to remove the variables and
+send Claude Code back to calling `api.anthropic.com` directly. The change is written atomically and
+takes effect the next time Claude Code starts.

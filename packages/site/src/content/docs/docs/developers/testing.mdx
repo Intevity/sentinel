@@ -1,0 +1,63 @@
+---
+title: Testing
+description: How Sentinel's test suite runs against real listeners (not mocks), the coverage thresholds CI enforces, and the mock budget.
+sidebar:
+  order: 4
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Running tests
+
+```sh
+pnpm test                          # full suite with coverage (the canonical signal)
+pnpm exec vitest run <path-glob>   # a single file or directory
+pnpm mock:budget                   # verify no mock-floor regressions (runs in CI)
+```
+
+<Aside type="caution" title="Use pnpm test, not bare vitest">
+  `pnpm test` runs with coverage and is the completion signal. `vitest run` without `--coverage`
+  will pass changes that break the CI coverage gate.
+</Aside>
+
+## Coverage thresholds
+
+CI enforces, and fails on regression of:
+
+- **Lines / functions / statements ≥ 95%**
+- **Branches ≥ 93%**
+
+Configured in `vitest.config.ts`. If coverage regresses, write the missing test — don't lower the
+threshold, exclude files, or sprinkle `/* v8 ignore */` to hit the number. Ignores are reserved for
+genuinely CI-unreachable code, each with an inline justification.
+
+## Test against real code, not mocks
+
+HTTP, OAuth, keychain, and DB paths run against **real listeners** via the fake-Anthropic harness
+(`packages/test-harness/src/fake-anthropic.ts`). Wire-shape drift fails a contract test loudly
+rather than being silently absorbed by a stale mock. The seams new tests use at these boundaries:
+
+| Boundary          | Seam                                                                                 |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| HTTP to Anthropic | `startFakeAnthropic()` + `ANTHROPIC_UPSTREAM_URL` (or the proxy/daemon test helpers) |
+| OAuth             | `OAUTH_TOKEN_URL`, `OAUTH_AUTH_URL` pointed at the fake                              |
+| Keychain          | `SENTINEL_TEST_KEYCHAIN_FILE` + the test-keychain write helpers                      |
+| Settings          | `SENTINEL_TEST_SETTINGS_FILE`                                                        |
+| SQLite            | `SENTINEL_TEST_DB_FILE`, `SENTINEL_TEST_REQUEST_LOG_DB_FILE`                         |
+| IPC / port        | `SENTINEL_TEST_IPC_SOCKET`, `SENTINEL_TEST_DAEMON_PORT`                              |
+
+Production defaults are unchanged when these env vars are unset.
+
+## The mock budget
+
+`.mock-budget.json` locks today's floor of mock sites. A PR that raises a file's count — or adds
+mocks to a previously-clean file — fails CI unless it runs `pnpm mock:budget:update` with a written
+justification in the PR body. Mocking `https`/`http`, `global.fetch`, or our own daemon modules is
+specifically prohibited; use the harness and env seams instead.
+
+## Tests must fail on regression
+
+Every test needs at least one assertion that fails when the feature breaks — a specific value,
+shape, or error message. `toBeDefined()` / `toBeTruthy()` alone, `resolves.not.toThrow()` without
+asserting the value, and `toHaveBeenCalled()` without `toHaveBeenCalledWith(...)` are not enough on
+their own.

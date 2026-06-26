@@ -1,0 +1,41 @@
+---
+title: Privacy & security model
+description: How Sentinel keeps your data on your machine — localhost-only proxy, OS keychain credentials, redacted findings, and no telemetry.
+sidebar:
+  order: 4
+---
+
+Sentinel is built to add safety without adding exposure. The whole system runs on your machine.
+
+## Network
+
+- The proxy listens only on **`127.0.0.1:47284`** — it is never bound to a public interface.
+- The only outbound traffic is the Claude Code requests you make, forwarded to Anthropic
+  unmodified. There is **no telemetry** and no analytics phone-home.
+- OTel telemetry (used by the [Metrics](/sentinel/docs/features/metrics/) tab) is received and
+  stored locally.
+
+## Credentials
+
+- Credentials for inactive accounts are stored in the **OS keychain** — Keychain on macOS,
+  Credential Manager on Windows, libsecret on Linux — under the service name `Sentinel-credentials`.
+- The daemon **never logs credential values**. Only metadata (email, account UUID) is stored in the
+  local SQLite database.
+- Writes to `~/.claude.json` and `~/.claude/settings.json` use **atomic rename**, so a crash can't
+  leave a half-written settings file.
+
+## Inter-process communication
+
+- The app and daemon talk over a Unix domain socket (named pipe on Windows) created with `0600`
+  permissions — owner read/write only.
+
+## Security findings
+
+- Event history stores **redacted fingerprints only** — never the original secret text.
+- A per-finding hash drives deduplication, so the same finding doesn't flood your history.
+
+## What stays on your machine
+
+Everything: usage history, rate-limit cache, security events, metrics, and settings all live under
+`~/.sentinel/` and in your OS keychain. Uninstalling can wipe them
+([Installation → Uninstall](/sentinel/docs/getting-started/installation/#uninstall)).

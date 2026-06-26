@@ -1,0 +1,52 @@
+---
+title: Token optimization
+description: Cut token cost three ways — curated subagents on cheaper models, reversible payload compression, and MCP code execution — with realized and potential savings shown for each.
+sidebar:
+  order: 7
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The **Optimize** tab is Sentinel's toolkit for cutting the token cost of Claude Code. It works three
+ways, and shows both **realized** and **potential** savings for each so you can see what's already
+helping and what's left on the table.
+
+![The Optimize dashboard with realized and potential savings](/sentinel/screenshots/optimize-dashboard.png)
+
+## 1. Curated subagents
+
+A library of pre-built subagents — most pinned to a cheaper model — that the analyzer recommends
+installing into `~/.claude/agents/`. Routine work like file reads, log parsing, and test-output
+triage then runs on the cheaper model and returns a **digest** instead of raw output, so your main
+context stays small and cheap.
+
+## 2. Reversible compression
+
+Oversized `tool_result` payloads quietly fill your context window. Sentinel trims them at one of
+three levels — **Conservative**, **Moderate**, or **Aggressive**.
+
+<Aside type="note" title="Nothing is lost in reversible mode">
+  In reversible mode, Sentinel stores the original payload and leaves a marker. Claude can pull the
+  full content back on demand with the `mcp__sentinel__retrieve` tool — so compression never costs
+  you information, only context budget.
+</Aside>
+
+![The compression panel showing trimmed payloads](/sentinel/screenshots/compression-panel.png)
+
+## 3. MCP code execution
+
+Your MCP servers' tool definitions ride along in **every** request's context, which adds up fast.
+Code-execution mode bridges those servers through a loopback endpoint, so their definitions stop
+being injected into each request. It's **loopback-only**, with a per-server allowlist you control.
+
+## Reading the savings
+
+Each technique reports:
+
+- **Realized savings** — tokens you've already avoided spending.
+- **Potential savings** — what you'd save by adopting the analyzer's remaining recommendations.
+
+## Related
+
+- [Reduce token costs](/sentinel/docs/guides/reduce-token-costs/) — a walkthrough of the Optimize tab.
+- [Metrics](/sentinel/docs/features/metrics/) — measure the impact in real cost and token numbers.

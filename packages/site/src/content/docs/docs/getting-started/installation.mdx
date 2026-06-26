@@ -1,0 +1,116 @@
+---
+title: Installation
+description: Download and install Sentinel on macOS, Windows, or Linux. The daemon is bundled — there is nothing else to install.
+sidebar:
+  order: 2
+---
+
+import { Aside, Tabs, TabItem, Steps } from '@astrojs/starlight/components';
+
+Grab the latest installer from the
+**[Releases page](https://github.com/Intevity/sentinel/releases/latest)**, or pick your platform
+directly. The daemon is bundled inside the app — there is nothing else to install.
+
+| Platform                          | Format        |
+| --------------------------------- | ------------- |
+| **macOS** — Apple Silicon (M1–M5) | `.dmg`        |
+| **macOS** — Intel                 | `.dmg`        |
+| **Windows** 10/11                 | `.msi` / NSIS |
+| **Linux** (Debian/Ubuntu)         | `.deb`        |
+| **Linux** (Fedora/RHEL)           | `.rpm`        |
+| **Linux** (portable)              | `.AppImage`   |
+
+## Prerequisites
+
+- macOS 12+, Windows 10+, or a Linux distribution with the libraries listed below.
+- [Claude Code](https://claude.com/claude-code) installed.
+- Node.js 24+ is required by Claude Code itself; the Sentinel daemon ships its own runtime, so you
+  do **not** need Node installed for Sentinel.
+
+## Install
+
+<Tabs syncKey="os">
+  <TabItem label="macOS">
+    Open the `.dmg` and drag **Sentinel** to your Applications folder.
+
+    <Aside type="tip" title="Release builds are signed and notarized">
+    Official macOS releases are signed with a Developer ID certificate and notarized by Apple, so
+    they open with a normal double-click — no "unidentified developer" prompt and no `xattr`
+    workaround. (If you build from source locally, your build is only ad-hoc signed; right-click →
+    **Open** once to launch it.)
+    </Aside>
+
+    ![Sentinel's first-launch activation banner](/sentinel/screenshots/first-launch.png)
+
+  </TabItem>
+
+<TabItem label="Windows">
+  Run the `.msi` or the NSIS `-setup.exe`. Released builds are Authenticode-signed.
+</TabItem>
+
+  <TabItem label="Linux">
+    Install the `.deb`/`.rpm` for your distro, or run the portable `.AppImage`.
+
+    **Required system libraries** — `webkit2gtk-4.1` powers the app window and `libsecret` is the
+    keychain backend used to store credentials:
+
+    | Distro | Command                                              |
+    | ------ | ---------------------------------------------------- |
+    | Arch   | `sudo pacman -S webkit2gtk-4.1 libsecret`            |
+    | Debian | `sudo apt install libwebkit2gtk-4.1-0 libsecret-1-0` |
+    | Fedora | `sudo dnf install webkit2gtk4.1 libsecret`           |
+
+    **Wayland** is supported natively — no manual configuration. The app detects Wayland at
+    startup and disables WebKit's DMA-BUF renderer, which triggers a protocol error (`EPROTO`) on
+    some compositors.
+
+  </TabItem>
+</Tabs>
+
+## First launch
+
+<Steps>
+
+1. **Launch Sentinel** from your Applications folder (or Start menu / app launcher). The tray icon
+   appears in the menu bar / system tray, and the daemon starts automatically.
+
+2. **Click "Activate Sentinel"** in the banner that appears on first launch. This writes
+   `ANTHROPIC_BASE_URL=http://localhost:47284` plus OTEL environment variables into
+   `~/.claude/settings.json` — the only required setup step.
+
+3. **Restart Claude Code.** From this point on, every Claude Code session routes through the
+   Sentinel proxy.
+
+4. **Enroll accounts** via the tray app → **Add Account**, then follow the OAuth flow. In the
+   browser consent page, make sure you're signed in to the org you want to add — the token is
+   scoped to whichever org claude.ai is currently showing.
+
+</Steps>
+
+The [quick start](/sentinel/docs/getting-started/quick-start/) walks through these steps in more
+detail.
+
+## Verify the daemon is running
+
+The daemon exposes a health endpoint on its proxy port:
+
+```sh
+curl http://localhost:47284/health
+# {"status":"ok","pid":12345}
+```
+
+If this errors or times out, the daemon is not running — relaunch the app, or check
+`~/.sentinel/daemon.log`. The in-app **⋯ menu** also shows live pid and uptime.
+
+## Uninstall
+
+Open the tray app → **⋯ menu → Uninstall Sentinel…**. The dialog lets you choose whether to also
+delete local data (usage history, rate-limit cache, keychain credentials). Uninstalling:
+
+- Removes the Sentinel environment variables from `~/.claude/settings.json`, so Claude Code goes
+  back to calling `api.anthropic.com` directly.
+- Optionally wipes `~/.sentinel/` and every `Sentinel-credentials` keychain entry.
+- Shuts the daemon down and quits the app.
+
+The app itself remains in `/Applications` (or your install location) — trash it normally to remove
+the binaries too.

@@ -1,0 +1,63 @@
+---
+title: Debugging
+description: Where the daemon logs live, how to check its health and IPC socket, and how to open the docked DevTools inspector on each platform.
+sidebar:
+  order: 5
+---
+
+## Daemon logs
+
+The daemon writes timestamped logs to `~/.sentinel/daemon.log` — the first place to look for OAuth
+failures, switch errors, proxy problems, and IPC events.
+
+```sh
+tail -f ~/.sentinel/daemon.log     # stream in real time
+tail -100 ~/.sentinel/daemon.log   # last 100 lines
+grep '\[OAuth\]' ~/.sentinel/daemon.log
+grep 'ERROR'     ~/.sentinel/daemon.log
+```
+
+The file appends across restarts and is never truncated automatically. Rotate it manually if it
+grows large: `> ~/.sentinel/daemon.log`.
+
+## Health & IPC socket
+
+```sh
+curl http://localhost:47284/health     # {"status":"ok","pid":12345}
+ls -la ~/.sentinel/daemon.sock          # the IPC socket (0600)
+```
+
+If the health endpoint errors, the daemon isn't running. If the socket is missing while the app is
+running, the daemon failed to start — check the log.
+
+You can send IPC messages to the running daemon without disturbing it:
+
+```sh
+node scripts/ipc.mjs '{"type":"get_settings"}'
+node scripts/ipc.mjs '{"type":"refresh_accounts"}'
+```
+
+## Frontend DevTools
+
+Click the **`dev` version badge** in the app footer to toggle the platform's native web inspector,
+docked inside the Sentinel window:
+
+- **macOS** — Safari Web Inspector (WKWebView).
+- **Windows** — Edge DevTools (WebView2 / Chromium).
+- **Linux** — WebKitGTK Inspector.
+
+The window grows to make room while DevTools is open and restores its tray size when you close it.
+All three give you Console, Network, Elements, and Sources with breakpoints.
+
+### claude.ai login webview
+
+The Connect claude.ai window is always inspectable — right-click → **Inspect**. Use the Network tab
+to see the exact failing request and response body when login fails, and the Console tab for the
+injected cookie-poll script's logs.
+
+## Debugging the daemon binary
+
+The daemon is the same Node process whether bundled or run standalone. To run it directly during
+development, build it (`pnpm --filter @sentinel/daemon run build`) and launch the compiled entry, or
+use the sidecar binary the app build produces. See
+[Building from source](/sentinel/docs/developers/building/).

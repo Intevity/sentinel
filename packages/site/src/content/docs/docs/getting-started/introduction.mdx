@@ -1,0 +1,73 @@
+---
+title: Introduction
+description: What Sentinel is, how it sits between Claude Code and Anthropic, and the architecture at a glance.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Sentinel is an open-source **Claude Code companion**. It runs as a small tray app with a bundled
+local daemon, and it inserts itself transparently between Claude Code and Anthropic's API so it
+can add capabilities Claude Code doesn't ship on its own:
+
+- **In-flight security scanning** for secrets, PII, prompt injection, and risky tool use.
+- **Permission rules** that push allow/deny decisions into Claude Code and hold risky actions for approval.
+- **Sandbox isolation** that limits which files and network domains Claude Code's commands can reach.
+- **Multi-account routing** across the Claude accounts you own (Pro, Max, Team, Enterprise).
+- **Token optimization** — curated subagents, reversible payload compression, and MCP code-execution.
+- **Usage visibility, overage detection, spend caps, and alerts.**
+
+<Aside type="note" title="Sentinel manages accounts you already own">
+  Sentinel is a control panel for *your* Claude subscriptions. It does not bypass billing, share
+  accounts you don't control, or circumvent Anthropic's rate limits — it routes among the accounts
+  you've enrolled and surfaces information the Claude Code CLI doesn't.
+</Aside>
+
+## How it fits with Claude Code
+
+Claude Code reads `ANTHROPIC_BASE_URL` from `~/.claude/settings.json`. When you **activate
+Sentinel**, the app points that variable at the local daemon (`http://localhost:47284`). From then
+on, every Claude Code request flows through the daemon, which inspects it, optionally rewrites the
+active credential, scans the response, and forwards it to Anthropic unchanged.
+
+```
+Claude Code  ──→  localhost:47284  ──→  api.anthropic.com
+                  (sentinel daemon)
+                        │
+                        │  Unix socket / named pipe
+                        ▼
+                  Sentinel App
+                  (Tauri v2 tray app)
+```
+
+## The two pieces
+
+- **App** (`packages/app`) — a Tauri v2 desktop tray application. It bundles and supervises the
+  daemon as a sidecar process and patches `~/.claude/settings.json` on activation so Claude Code
+  routes through the proxy. The UI is where you manage accounts, review security findings, tune
+  settings, and read usage.
+- **Daemon** (`packages/daemon`) — a Node.js HTTP reverse proxy, OTLP telemetry receiver, MCP
+  server, and SQLite store, compiled into a single self-contained binary embedded inside the app
+  bundle. It does the actual proxying, scanning, credential rotation, and bookkeeping.
+
+The two talk over a Unix domain socket (named pipe on Windows) created with owner-only
+permissions. Nothing listens on a public network interface.
+
+## Privacy posture
+
+- The proxy binds to `127.0.0.1:47284` only — never exposed to the network.
+- Credentials for inactive accounts are stored in the OS keychain (Keychain on macOS, Credential
+  Manager on Windows, libsecret on Linux), never in plain files.
+- The daemon never logs credential values; security event history stores **redacted fingerprints
+  only**, never the original secret text.
+- There is **no telemetry**. The only outbound traffic is the Claude Code requests you make,
+  forwarded to Anthropic.
+
+See [Privacy & security](/sentinel/docs/reference/privacy-security/) for the full model.
+
+## Next steps
+
+- [Install Sentinel](/sentinel/docs/getting-started/installation/) on your platform.
+- Follow the [quick start](/sentinel/docs/getting-started/quick-start/) to activate the proxy and
+  enroll an account.

@@ -1,0 +1,68 @@
+---
+title: Troubleshooting & FAQ
+description: Fixes for the most common Sentinel issues — switching, account enrollment, the proxy, login, and the menu bar icon.
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Start with the daemon log — it records OAuth failures, switch errors, proxy problems, and IPC
+events:
+
+```sh
+tail -f ~/.sentinel/daemon.log
+```
+
+## "No credentials stored for this account" when switching
+
+The daemon stores credentials per account UUID the first time you sync. Open the app and click
+**Sync** while each account is active in Claude Code (one at a time) to capture its token. After
+syncing every account, switching works without re-login.
+
+## Add Account completes but shows a blue "already added" notice
+
+The OAuth consent page returned a token for an org you already have. This happens when your
+claude.ai browser session is signed in to a different org than the one you wanted. Open claude.ai,
+use the org selector (top-left sidebar) to switch to the org you want, then click **Add Account**
+again.
+
+## Add Account completes in the browser but the app says "Login failed or was cancelled"
+
+Check the daemon log for an `[OAuth]` error after the callback:
+
+- **`Token exchange failed (400)`** — the authorization code expired (the flow took too long). Try
+  again.
+- **`security: SecKeychainItemAdd` error** (macOS) — the OS denied a keychain write. Check
+  **System Settings → Privacy & Security → Keychain**.
+
+## Proxy not intercepting Claude Code requests
+
+Verify `~/.claude/settings.json` contains `ANTHROPIC_BASE_URL=http://localhost:47284`. If it's
+missing, click **Activate Sentinel** in the app, then restart Claude Code.
+
+## "Continue with Google" doesn't work in the Connect claude.ai window
+
+Google blocks sign-in inside embedded webviews. Use **email / magic-link / Apple** login in the
+Connect window instead.
+
+## App icon missing from the menu bar (macOS)
+
+macOS hides menu bar icons when the bar is full. Drag to reveal, or hold ⌘ and drag the icon to
+reorder/uncover it.
+
+## The daemon isn't running
+
+The health endpoint is the quickest check:
+
+```sh
+curl http://localhost:47284/health
+# {"status":"ok","pid":12345}
+```
+
+If it errors or times out, relaunch the app and check the log for a startup crash.
+
+<Aside type="tip" title="Still stuck?">
+  Open an issue with the relevant lines from `~/.sentinel/daemon.log` (credential values are never
+  logged) at [github.com/Intevity/sentinel/issues](https://github.com/Intevity/sentinel/issues).
+</Aside>

@@ -1,0 +1,43 @@
+---
+title: Sync permissions with Claude Code
+description: Keep Sentinel's permission rules and Claude Code's settings.json in lockstep, and import rules you already have.
+sidebar:
+  order: 3
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Sentinel's rule database is the source of truth for permissions; `~/.claude/settings.json` is a
+mirror. With sync on, edits flow both ways automatically.
+
+<Steps>
+
+1. **Enable sync.** In **Settings**, turn on **Claude Code sync** (`claudeCodeSyncEnabled`).
+
+2. **Import what you already have.** Click **Import from Claude Code settings.json** to pull your
+   existing allow/deny rules into Sentinel. This runs in _import mode_ — the file wins for any rule
+   that exists in both.
+
+3. **Manage rules in the UI.** Add allow/deny/ask rules in the **Security → Permission Rules** panel.
+   Allow and deny rules are pushed to `settings.json`; ask rules stay in Sentinel.
+
+</Steps>
+
+## How the two stay in sync
+
+- **You edit in Sentinel** → a _push_ writes the allow/deny state to `settings.json`, preserving
+  every other key in the file.
+- **You hand-edit `settings.json`** → a debounced _pull_ imports the change with merge semantics,
+  then pushes back a normalized file.
+
+<Aside type="note" title="ask rules migrate to Sentinel">
+  If you add an `ask` rule directly to `settings.json`, the next pull imports it into Sentinel and
+  the following push strips it from the file — `ask` lives in Sentinel only, so approvals have a
+  single surface. See [Permission rules](/sentinel/docs/features/permission-rules/).
+</Aside>
+
+## Conflicts and duplicates
+
+If the same rule appears in multiple buckets in the file, the most restrictive wins
+(**deny > ask > allow**). Duplicate file entries for the same raw text are collapsed. The UI is the
+safer path — it's atomic and can't produce ambiguous states.

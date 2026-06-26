@@ -1,0 +1,54 @@
+---
+title: Alerts, overage & spend caps
+description: Threshold alerts, overage detection, per-account and global spend caps, and a unified notification history — every important transition captured in one timeline.
+sidebar:
+  order: 8
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Sentinel watches your usage and spend and tells you when something crosses a line. The **Alerts**
+tab is both where you configure thresholds and where every notification lands.
+
+![The Alerts tab with configured thresholds and notification history](/sentinel/screenshots/alerts-tab.png)
+
+## Overage detection
+
+Anthropic returns `anthropic-ratelimit-unified-overage-*` headers when a session enters overage
+budget. The daemon inspects every forwarded response and tracks an overage state machine per
+account. The moment an account transitions into overage, Sentinel writes an event and fires a native
+OS notification — the response is forwarded to Claude Code unmodified, so the proxy stays
+transparent.
+
+## User-configurable alerts
+
+Set a **percentage threshold** on the 5-hour window and get notified when it trips:
+
+- **Per-account** alerts, or **pool-wide** alerts in Auto mode.
+- A **notification sound per alert type** that you pick.
+- Deduped per window, so you're warned once, not repeatedly.
+
+<Aside type="note" title="Choose what fires">
+  Which transitions raise an OS notification — usage thresholds, overage, security findings above a
+  severity — is configurable in **Settings → Notifications**.
+</Aside>
+
+## Spend caps
+
+Set a per-account or global **overage budget cap**. Sentinel pauses any account whose spend crosses
+its cap until the next rolling-window reset, and [Auto mode](/sentinel/docs/features/accounts/) skips
+paused accounts — so billing stays bounded without you babysitting it.
+
+## Notification history
+
+Every overage transition, account switch, threshold trigger, and security finding is captured in one
+scrollable timeline. Click a security notification to jump straight to the expanded event in the
+Security tab.
+
+![The notification history timeline](/sentinel/screenshots/notification-history.png)
+
+## Related
+
+- [Usage & rate limits](/sentinel/docs/features/usage/) — the windows these alerts watch.
+- [Security scanning](/sentinel/docs/features/security-scanning/) — findings are mirrored into this
+  timeline.

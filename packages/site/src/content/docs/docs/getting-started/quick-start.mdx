@@ -1,0 +1,64 @@
+---
+title: Quick start
+description: Activate the Sentinel proxy, point Claude Code at it, and enroll your first account in about five minutes.
+sidebar:
+  order: 3
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+This walkthrough gets you from a fresh install to a working setup: Claude Code routing through
+Sentinel, with at least one account enrolled.
+
+<Steps>
+
+1. **Open Sentinel.** The tray icon appears in your menu bar / system tray and the daemon starts
+   automatically. Click the icon to open the window.
+
+2. **Activate the proxy.** Click **Activate Sentinel** in the banner. This writes
+   `ANTHROPIC_BASE_URL=http://localhost:47284` (plus OTEL telemetry variables) into
+   `~/.claude/settings.json`.
+
+   ![The activation banner in the Sentinel window](/sentinel/screenshots/activation-banner.png)
+
+3. **Restart Claude Code** so it picks up the new base URL. Every session now flows through the
+   daemon.
+
+4. **Add your first account.** Go to the **Accounts** tab → **Add Account** and complete the OAuth
+   flow in the browser. Sign in to the org you want to enroll before approving — the token is
+   scoped to whichever org claude.ai is currently showing.
+
+   ![The Accounts tab listing enrolled accounts](/sentinel/screenshots/accounts-tab.png)
+
+5. **(Optional) Enroll more accounts and turn on routing.** Repeat **Add Account** for each Claude
+   subscription you own. To let Sentinel pick the active account automatically, open
+   **Settings → switching mode** and choose **Auto**. See
+   [Multi-account routing](/sentinel/docs/features/accounts/).
+
+</Steps>
+
+## Confirm it's working
+
+Run any Claude Code command, then check the daemon log — you should see the request pass through:
+
+```sh
+tail -f ~/.sentinel/daemon.log
+```
+
+The **Usage** tab in the app will also begin showing live rate-limit windows for the active
+account.
+
+<Aside type="caution" title="Missing credentials when switching?">
+  The daemon captures an account's credentials the first time it's synced. If switching reports "No
+  credentials stored for this account," open each account in Claude Code one at a time and click
+  **Sync** in Sentinel to capture its token. See
+  [Troubleshooting](/sentinel/docs/reference/troubleshooting/).
+</Aside>
+
+## Where to go next
+
+- Explore what Sentinel does, one feature at a time, starting with
+  [Accounts & routing](/sentinel/docs/features/accounts/).
+- Lock down what Claude Code can run with [Permission rules](/sentinel/docs/features/permission-rules/)
+  and [Sandbox isolation](/sentinel/docs/features/sandbox/).
+- Cut token cost on the [Optimize](/sentinel/docs/features/optimization/) page.
