@@ -1,0 +1,93 @@
+---
+title: Building from source
+description: Prerequisites and commands to build Sentinel locally, plus the difference between the dev loop and a signed release build.
+sidebar:
+  order: 2
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Prerequisites
+
+- pnpm 9+
+- Rust stable (install via [rustup](https://rustup.rs))
+- Node.js 24+
+- **macOS**: Xcode Command Line Tools (`xcode-select --install`)
+- **Linux**: `libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf`
+- **Windows**: Visual Studio Build Tools with the "Desktop development with C++" workload
+
+## Setup
+
+```sh
+git clone https://github.com/Intevity/sentinel
+cd sentinel
+pnpm install
+```
+
+`pnpm install` compiles the `better-sqlite3` native addon and `esbuild` for your platform.
+
+## The dev loop
+
+For local iteration, use **`pnpm build:app`** — one command on any OS. It detects your platform,
+builds your changes **unsigned** (no `~/.tauri/*.key` password prompt), and launches the result.
+
+```sh
+pnpm build:app
+```
+
+| OS          | What it does                                                                             |
+| ----------- | ---------------------------------------------------------------------------------------- |
+| **macOS**   | Builds the `.app`, replaces `/Applications/Sentinel.app`, re-signs ad-hoc, and opens it. |
+| **Linux**   | Builds an unsigned `.AppImage` and launches it.                                          |
+| **Windows** | Builds the unsigned NSIS `-setup.exe` and launches the installer.                        |
+
+<Aside type="caution" title="macOS: quit Sentinel first">
+  The macOS install path refuses to swap a running app — quit it from the tray first. Preview the
+  per-OS plan without building via `node scripts/build-app.mjs --dry-run` (add
+  `--platform=linux|win32|darwin`).
+</Aside>
+
+### Why macOS needs the re-sign dance
+
+Only macOS needs the install-and-re-sign step: copying a bundle over an existing one leaves
+Gatekeeper's signature cache stale, which silently SIGKILLs the first child the app spawns (the
+daemon sidecar). Re-signing ad-hoc clears the cache. The `build:app` script handles this; don't
+`cp -R` a build over the installed app by hand.
+
+### Hot-reload inner loop
+
+For fast frontend iteration, run Tauri's dev server. It doesn't build the sidecar, so build the
+daemon binary once first:
+
+```sh
+pnpm --filter @sentinel/daemon run build
+pnpm --filter @sentinel/daemon run build:sidecar
+pnpm --filter @sentinel/app run tauri:dev
+```
+
+If you only changed daemon TypeScript, rebuild just the daemon and swap the binary in the installed
+bundle — no full app rebuild needed.
+
+## Signed release build
+
+`pnpm build:app:release` runs the full `tauri build` (all bundle targets + signed updater
+artifacts) and **prompts for the updater key password**. CI does this via tauri-action; you rarely
+need it locally — and don't use it for the dev loop, since it blocks on the key prompt.
+
+## Artifacts
+
+A full build lands in `packages/app/src-tauri/target/release/bundle/`:
+
+| Platform | Output                       |
+| -------- | ---------------------------- |
+| macOS    | `macos/Sentinel.app`, `.dmg` |
+| Linux    | `.deb`, `.rpm`, `.AppImage`  |
+| Windows  | `.msi`, NSIS installer       |
+
+## Build the marketing site & docs
+
+```sh
+pnpm --filter @sentinel/site dev       # local dev server
+pnpm --filter @sentinel/site build     # static build (incl. Starlight docs + search index)
+pnpm --filter @sentinel/site preview    # preview the production build
+```

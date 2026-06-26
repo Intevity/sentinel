@@ -1,0 +1,40 @@
+---
+title: Set up round-robin across accounts
+description: Enroll multiple accounts and let Sentinel route to whichever one has capacity, so you stop switching by hand.
+sidebar:
+  order: 2
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+If you own more than one Claude subscription, Sentinel can move the active account automatically so
+you're always on capacity that's about to refresh.
+
+<Steps>
+
+1. **Enroll each account** from the **Accounts** tab → **Add Account**. Sign in to the correct org
+   before approving each OAuth flow.
+
+2. **Sync each account once.** Open each account in Claude Code and click **Sync** in Sentinel so the
+   daemon captures its credentials. Switching needs a stored credential per account.
+
+3. **Turn on Auto.** Open **Settings → switching mode** and choose **Auto**.
+
+4. **(Optional) Choose a strategy.** The default `earliest-reset` strategy targets the account whose
+   5-hour window resets soonest. Set it via `roundRobinStrategy` in Settings.
+
+5. **(Optional) Exclude accounts.** Keep a specific account out of rotation (for example, a work
+   account) by adding it to `poolExcludedIds` in Settings.
+
+</Steps>
+
+## What happens during a switch
+
+Each switch rewrites the active OAuth credential that Claude Code reads. The header always shows the
+account currently serving requests, so you can see at a glance who's active. Accounts paused by a
+[spend cap](/sentinel/docs/features/alerts/#spend-caps) are skipped until their window resets.
+
+## Watch it work
+
+The **Usage** tab can show a **pool view** that aggregates every pooled account, so you see combined
+headroom instead of per-account windows. See [Usage & rate limits](/sentinel/docs/features/usage/).

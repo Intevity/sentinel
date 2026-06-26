@@ -1,0 +1,37 @@
+---
+title: Reduce token costs
+description: Use the Optimize tab to install cheaper subagents, compress oversized payloads, and stop MCP tool definitions from riding along in every request.
+sidebar:
+  order: 5
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+The **Optimize** tab estimates where your tokens go and offers three levers. Apply them in order of
+impact.
+
+<Steps>
+
+1. **Install recommended subagents.** The analyzer suggests curated subagents (most pinned to a
+   cheaper model) for routine work — file reads, log parsing, test triage. Accept the
+   recommendations to install them into `~/.claude/agents/`, and that work returns a digest on a
+   cheaper model instead of raw output on your main model.
+
+2. **Turn on reversible compression.** Pick a level — **Conservative**, **Moderate**, or
+   **Aggressive**. Oversized `tool_result` payloads get trimmed; the original is stored so Claude can
+   pull it back with `mcp__sentinel__retrieve` if it's ever needed.
+
+3. **Enable MCP code execution.** Bridge your MCP servers through the loopback endpoint so their tool
+   definitions stop being injected into every request's context. Add the servers you want bridged to
+   the per-server allowlist.
+
+</Steps>
+
+## Measure the impact
+
+Each lever shows **realized** vs **potential** savings on the Optimize tab. To see the effect in real
+money and tokens, watch the [Metrics](/sentinel/docs/features/metrics/) tab over a few days before
+and after — cache hit rate and per-model cost are the numbers to compare.
+
+For the full description of each technique, see
+[Token optimization](/sentinel/docs/features/optimization/).

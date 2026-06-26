@@ -1,0 +1,51 @@
+---
+title: Sandbox isolation
+description: Optional OS-level isolation for the commands Claude Code runs, limiting the files and network domains they can reach. Off by default; one toggle to enable.
+sidebar:
+  order: 4
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Sandbox isolation adds an **OS-level** boundary around the commands Claude Code (and Sentinel's
+own code-execution MCP bridge) run — limiting which files they can touch and which network domains
+they can reach. It's built on Anthropic's sandbox-runtime and integrates with Claude Code's own
+sandbox configuration.
+
+![The sandbox isolation panel in the Security tab](/sentinel/screenshots/sandbox-isolation.png)
+
+## What's isolated, per platform
+
+| Platform | Isolation                                 |
+| -------- | ----------------------------------------- |
+| macOS    | Full filesystem **and** network isolation |
+| Linux    | Full filesystem **and** network isolation |
+| Windows  | Network isolation only                    |
+
+## Enabling it
+
+The sandbox is **off by default**. Turn it on with a single toggle in **Settings → Security**, then
+fine-tune:
+
+- **Allowed paths** — the directories Claude Code's commands may read and write.
+- **Allowed domains** — the network destinations they may reach.
+
+The rules you configure sync into Claude Code's own sandbox configuration, so enforcement is
+consistent whether a command originates from Claude Code directly or through Sentinel's bridge.
+
+<Aside type="caution" title="Start permissive, then tighten">
+  If you enable the sandbox and a workflow suddenly can't reach a path or domain it needs, add it to
+  the allowlist. The [sandbox setup guide](/sentinel/docs/guides/sandbox-setup/) covers a sensible
+  starting configuration.
+</Aside>
+
+## Capability detection
+
+Sentinel checks whether the host actually supports sandboxing before offering enforcement, so the
+UI reflects what your OS can do rather than promising isolation it can't deliver.
+
+## Related
+
+- [Set up the sandbox](/sentinel/docs/guides/sandbox-setup/) — a guided walkthrough.
+- [Permission rules](/sentinel/docs/features/permission-rules/) — rule-based control that pairs with
+  OS-level isolation.

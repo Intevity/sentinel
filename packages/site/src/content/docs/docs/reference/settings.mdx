@@ -1,0 +1,91 @@
+---
+title: Settings reference
+description: The Sentinel settings that matter day to day, grouped by area, with defaults.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Settings live in `~/.sentinel/settings.json` and are edited through the app's **Settings** panel.
+This page documents the settings you're most likely to touch, grouped by area, with their defaults.
+
+![The Settings panel](/sentinel/screenshots/settings-panel.png)
+
+<Aside type="note" title="Edit in the app">
+  The app writes settings atomically and validates them. Hand-editing the JSON works, but the panel
+  is the safer path. A handful of advanced/internal keys exist beyond those listed here; the panel
+  surfaces the ones meant for everyday use.
+</Aside>
+
+## General
+
+| Setting         | Default    | What it does                                         |
+| --------------- | ---------- | ---------------------------------------------------- |
+| `launchAtLogin` | `true`     | Start Sentinel automatically when you log in.        |
+| `theme`         | `'system'` | UI theme: `system`, `light`, or `dark`.              |
+| `autoUpdate`    | `false`    | Automatically install signed updates when available. |
+
+## Account routing
+
+| Setting           | Default | What it does                                                                               |
+| ----------------- | ------- | ------------------------------------------------------------------------------------------ |
+| `switchingMode`   | `'off'` | `off` (manual) or `auto` (round-robin). See [Accounts](/sentinel/docs/features/accounts/). |
+| `poolExcludedIds` | `[]`    | Account IDs to keep out of Auto rotation.                                                  |
+
+## Spend & overage
+
+| Setting                    | Default | What it does                                        |
+| -------------------------- | ------- | --------------------------------------------------- |
+| `overageEnabledIds`        | `[]`    | Accounts allowed to spend into overage.             |
+| `budgetWeeklyUsdByAccount` | `{}`    | Per-account weekly overage cap (USD).               |
+| `budgetWeeklyUsdGlobal`    | `null`  | Global weekly overage cap (USD).                    |
+| `overageBufferPct`         | `5`     | Headroom percentage before a cap pauses an account. |
+| `overageOsNotify`          | `true`  | Fire an OS notification on overage transitions.     |
+
+## Security
+
+| Setting                     | Default  | What it does                                                    |
+| --------------------------- | -------- | --------------------------------------------------------------- |
+| `securityScanEnabled`       | `true`   | Master switch for in-flight scanning.                           |
+| `securityEnforcementMode`   | `null`   | `null` (observe), block HIGH, or block MEDIUM+HIGH.             |
+| `securityScanSecrets`       | `true`   | Detect API keys, tokens, and private keys.                      |
+| `securityScanInjection`     | `false`  | Detect prompt injection in tool results / fetched content.      |
+| `securityScanToolUse`       | `true`   | Flag risky `Bash` / `Write` / `WebFetch` calls.                 |
+| `securityApproveHoldSec`    | `60`     | Seconds a held action waits for approve/deny before timing out. |
+| `securityOsNotifyThreshold` | `'high'` | Minimum severity that fires an OS notification.                 |
+| `claudeCodeSyncEnabled`     | `false`  | Keep permission rules in sync with `~/.claude/settings.json`.   |
+| `toolPermissionsEnabled`    | `false`  | Enforce permission rules.                                       |
+
+## Sandbox isolation
+
+`isolationPolicy` is an object (default **disabled**) controlling OS-level isolation:
+
+| Field                                                            | What it does                                         |
+| ---------------------------------------------------------------- | ---------------------------------------------------- |
+| `enabled`                                                        | Turn the sandbox on.                                 |
+| `syncToClaudeCode`                                               | Mirror the policy into Claude Code's sandbox config. |
+| `network.allowedDomains` / `deniedDomains`                       | Network destinations commands may / may not reach.   |
+| `filesystem.allowRead` / `allowWrite` / `denyRead` / `denyWrite` | Path access rules.                                   |
+
+See [Sandbox isolation](/sentinel/docs/features/sandbox/).
+
+## Optimization
+
+| Setting                       | Default          | What it does                                              |
+| ----------------------------- | ---------------- | --------------------------------------------------------- |
+| `compressionEnabled`          | `false`          | Trim oversized `tool_result` payloads.                    |
+| `compressionLevel`            | `'conservative'` | `conservative`, `moderate`, or `aggressive`.              |
+| `compressionRetrievalEnabled` | `false`          | Keep originals retrievable via `mcp__sentinel__retrieve`. |
+| `codeModeEnabled`             | `false`          | Bridge MCP servers through the loopback endpoint.         |
+
+## Notifications & data
+
+| Setting                      | Default   | What it does                               |
+| ---------------------------- | --------- | ------------------------------------------ |
+| `alertSoundName`             | `'Glass'` | Sound played for alerts.                   |
+| `telemetryRetentionDays`     | `30`      | How long OTel telemetry is kept.           |
+| `securityEventRetentionDays` | `30`      | How long security findings are kept.       |
+| `dataRetentionDays`          | `365`     | General data retention.                    |
+| `requestLoggingEnabled`      | `false`   | Capture request logs (advanced/debugging). |
+| `logLevel`                   | `'info'`  | Daemon log verbosity.                      |

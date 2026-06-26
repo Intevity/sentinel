@@ -1,0 +1,39 @@
+---
+title: Track overage spend
+description: Connect claude.ai so Sentinel can track overage budget, and set caps that pause accounts before billing runs away.
+sidebar:
+  order: 6
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Sentinel detects overage from the rate-limit headers Anthropic returns, and can connect to claude.ai
+to track overage budget in detail.
+
+<Steps>
+
+1. **Connect claude.ai.** Open **Settings → Overage spend tracking → Connect claude.ai** and sign in
+   inside the login window.
+
+2. **Set a spend cap.** Configure a per-account or global overage budget cap. When an account's spend
+   crosses the cap, Sentinel pauses it until the next rolling-window reset; Auto mode routes around
+   paused accounts.
+
+3. **Choose your notifications.** In **Settings → Notifications**, enable OS notifications for overage
+   transitions so you hear about them immediately.
+
+</Steps>
+
+<Aside type="note" title="Use email or Apple login in the Connect window">
+  "Continue with Google" doesn't work inside embedded webviews — Google blocks them. Use email /
+  magic-link / Apple login in the Connect claude.ai window instead. If login fails, see
+  [Troubleshooting](/sentinel/docs/reference/troubleshooting/).
+</Aside>
+
+## How detection works
+
+Claude Code routes through the daemon, which inspects each response for
+`anthropic-ratelimit-unified-overage-status: active` and the matching reset header. A per-account
+state machine fires an event and a native OS notification when an account first enters overage — and
+the response is forwarded to Claude Code unchanged. See
+[Alerts, overage & spend caps](/sentinel/docs/features/alerts/).

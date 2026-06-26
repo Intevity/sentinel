@@ -1,0 +1,38 @@
+---
+title: Metrics
+description: Accurate cost, tokens, cache hit rate, and per-model breakdowns from OTel telemetry — real numbers, unlike Claude Code's $0 stats for subscription users.
+sidebar:
+  order: 6
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The **Metrics** tab gives you real analytics on what your Claude Code usage actually costs — cost,
+token counts, cache hit rate, and per-model breakdowns over 7-, 14-, and 30-day windows.
+
+![The Metrics dashboard with cost, tokens, and per-model breakdowns](/sentinel/screenshots/metrics-dashboard.png)
+
+## Where the data comes from
+
+When you activate Sentinel, it also configures Claude Code to emit **OpenTelemetry (OTel)**
+telemetry to the daemon's local OTLP receiver. The daemon aggregates those spans into the metrics
+you see.
+
+<Aside type="tip" title="These numbers are real">
+  Claude Code's own `~/.claude/stats-cache.json` reports **$0** for subscription (Pro/Max) users,
+  because there's no per-request invoice. Sentinel computes cost from actual token usage and model
+  pricing, so the Metrics tab shows meaningful figures even on subscription plans.
+</Aside>
+
+## What you can see
+
+- **Cost** over the selected window, with a per-model breakdown.
+- **Tokens** — input, output, and cache reads/writes.
+- **Cache hit rate** — how much of your context is being served from prompt cache.
+- **Time ranges** — switch between 7, 14, and 30 days.
+
+## Telemetry stays local
+
+The OTLP receiver listens on localhost only. Telemetry is stored in the local SQLite database and
+never leaves your machine. Advanced users can optionally forward OTel to their own exporter; that's
+covered under [Settings](/sentinel/docs/reference/settings/).

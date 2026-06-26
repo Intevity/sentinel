@@ -1,0 +1,41 @@
+---
+title: Contributing
+description: How to set up, make a change, and open a PR that passes CI.
+sidebar:
+  order: 7
+---
+
+Contributions are welcome. The short version:
+
+1. **Fork and clone**, then `pnpm install` (see
+   [Building from source](/sentinel/docs/developers/building/)).
+2. **Make your change.** Match the style of the surrounding code.
+3. **Run the checks** before opening a PR:
+
+   ```sh
+   pnpm typecheck
+   pnpm lint
+   pnpm test        # full suite with coverage — the canonical signal
+   ```
+
+4. **Write commits as release-note bullets** in the enforced conventional-commit format (CI's
+   `commit-lint` job checks this). See [Releases](/sentinel/docs/developers/releases/).
+5. **Open a PR** against `main`.
+
+## What CI checks
+
+- Type-check, lint, and the full test suite with coverage (lines/functions/statements ≥ 95%,
+  branches ≥ 93%).
+- The **mock budget** (`pnpm mock:budget`) — new mocks need justification. Prefer the fake-Anthropic
+  harness and env seams; see [Testing](/sentinel/docs/developers/testing/).
+- Commit-message shape.
+
+## Editing these docs
+
+This documentation lives in `packages/site/src/content/docs/docs/` as Markdown/MDX. Run the site
+locally with `pnpm --filter @sentinel/site dev` and visit `/sentinel/docs/`. Each page has an
+**Edit page** link in the footer that points at its source on GitHub.
+
+Screenshots referenced by the docs are tracked in
+[`documentation/SCREENSHOTS.md`](https://github.com/Intevity/sentinel/blob/main/documentation/SCREENSHOTS.md);
+drop real captures into `packages/site/public/screenshots/` using the filenames listed there.

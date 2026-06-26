@@ -25,6 +25,12 @@ const repo = 'https://github.com/Intevity/sentinel';
       >
         Download
       </a>
+      <a
+        href={`${base.replace(/\/$/, '')}/docs/`}
+        class="hidden rounded-full px-3 py-2 text-sm font-medium text-foreground/70 transition hover:text-foreground sm:inline-flex"
+      >
+        Docs
+      </a>
       <a href={repo} class="btn-ghost px-4 py-2" rel="noopener" target="_blank">
         <Icon name="github" size={16} />
         GitHub

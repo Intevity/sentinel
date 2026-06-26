@@ -1,0 +1,54 @@
+---
+title: Project structure
+description: A file-level map of the Sentinel monorepo — daemon, app, shared types, and site.
+sidebar:
+  order: 3
+---
+
+Sentinel is a pnpm monorepo (`packages/*`).
+
+```
+sentinel/
+├── packages/
+│   ├── daemon/src/            # Node.js daemon
+│   │   ├── index.ts           # startup, IPC handlers, performSwitch()
+│   │   ├── proxy.ts           # HTTP reverse proxy + overage header inspection
+│   │   ├── otel-receiver.ts   # OTLP telemetry receiver
+│   │   ├── ipc.ts             # Unix-socket IPC server/client
+│   │   ├── db.ts              # SQLite schema + queries
+│   │   ├── accounts.ts        # OS keychain read/write (CC + Sentinel stores)
+│   │   ├── claude-state.ts    # ~/.claude.json read/write
+│   │   ├── oauth.ts           # PKCE login flow
+│   │   ├── settings.ts        # ~/.sentinel/settings.json
+│   │   ├── token-rotator.ts   # round-robin account/token selector
+│   │   ├── alerts.ts          # user-configured alert evaluator
+│   │   └── security/
+│   │       ├── permissions/   # claude-sync.ts: settings.json mirror
+│   │       └── sandbox/       # OS-level isolation policy
+│   ├── app/                   # Tauri desktop app
+│   │   ├── src/               # React frontend (Accounts / Security / Alerts /
+│   │   │                      #   Usage / Optimize / Metrics / Logs tabs)
+│   │   └── src-tauri/src/
+│   │       ├── main.rs         # Tauri entry + window events + plugin registration
+│   │       ├── daemon.rs       # sidecar spawn logic (spawns once, no auto-restart)
+│   │       ├── ipc.rs          # Unix-socket bridge to the daemon
+│   │       ├── settings_patch.rs  # activate / deactivate Sentinel
+│   │       └── tray.rs         # system tray menu
+│   ├── shared/src/            # Shared TypeScript types (IPC message contracts)
+│   ├── site/                  # Astro marketing site + Starlight docs (this site)
+│   └── test-harness/src/      # fake-Anthropic harness for real-listener tests
+└── scripts/                   # build-app.mjs, ipc.mjs, release-notes.mjs, …
+```
+
+## The packages
+
+- **`@sentinel/daemon`** — the proxy/MCP/telemetry/store process. Compiled to a self-contained
+  binary embedded in the app.
+- **`@sentinel/app`** — the Tauri tray app (React + Rust).
+- **`@sentinel/shared`** — typed IPC message contracts shared between app and daemon.
+- **`@sentinel/site`** — this Astro site: the marketing landing page plus the Starlight docs at
+  `/docs/`.
+- **`@sentinel/test-harness`** — the fake-Anthropic HTTP harness used so tests run against real
+  listeners instead of mocks.
+
+For how the pieces interact at runtime, see [Architecture](/sentinel/docs/developers/architecture/).

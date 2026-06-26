@@ -1,0 +1,65 @@
+---
+title: Security scanning
+description: In-flight detectors for secrets, PII, prompt injection, and risky tool use, with three enforcement modes and an optional approve/deny hold.
+sidebar:
+  order: 2
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Because every Claude Code request flows through the daemon, Sentinel can scan it **in flight** —
+before it reaches Anthropic, and again on the way back. The **Security** tab is where you review
+findings, tune detectors, and approve or deny held actions.
+
+![The Security tab with live findings and detector controls](/sentinel/screenshots/security-tab.png)
+
+## What it detects
+
+- **Secrets** — API keys, tokens, and private keys (matched by shape and known prefixes).
+- **PII** — personally identifiable information in prompts and tool payloads.
+- **Prompt injection** — instructions embedded in tool results or fetched content that try to
+  redirect the model.
+- **Risky tool use** — `Bash`, `Write`, and `WebFetch` calls, with sub-command matching so you can
+  be specific about what's risky.
+
+<Aside type="note" title="Findings never store the secret">
+  Security event history stores **redacted fingerprints only** — never the original secret text. A
+  per-finding `match_hash` also drives deduplication so the same finding doesn't spam your history.
+</Aside>
+
+## Enforcement modes
+
+Choose how aggressively Sentinel acts on findings in **Settings → Security**:
+
+- **Observe** — record findings, don't block anything.
+- **Block HIGH** — block only high-severity findings.
+- **Block MEDIUM + HIGH** — block medium- and high-severity findings.
+
+### The approve/deny hold
+
+With **Hold blocked requests for approval** enabled, a blocked action doesn't just fail — it pauses
+and surfaces a **pending-block banner** in the Security tab with **Approve** and **Deny** buttons
+and a countdown. This gives a single, auditable surface for risky actions (and one hook point for
+future remote-approval integrations like Slack). When a hold is waiting and you're on another tab,
+the Security tab shows a red dot.
+
+## Detector tuning & allowlist
+
+- **Detector tuning** lets you adjust sensitivity per detector category.
+- The **allowlist** suppresses known-safe matches (with a reason and who added it), so legitimate
+  patterns stop generating noise.
+
+## Setup wizard
+
+A first-run **security setup wizard** walks you through choosing an enforcement mode and the hold
+behavior so you don't have to discover the settings yourself.
+
+![The security setup wizard](/sentinel/screenshots/security-setup-wizard.png)
+
+## Related
+
+- [Permission rules](/sentinel/docs/features/permission-rules/) — allow/deny/ask rules that push
+  into Claude Code.
+- [Sandbox isolation](/sentinel/docs/features/sandbox/) — OS-level limits on files and network.
+- Every finding is mirrored into the [Alerts](/sentinel/docs/features/alerts/) timeline and can fire
+  an OS notification when it clears your configured severity threshold.

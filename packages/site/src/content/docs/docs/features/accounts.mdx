@@ -1,0 +1,66 @@
+---
+title: Accounts & multi-account routing
+description: Enroll the Claude accounts you own and choose how Sentinel uses them — manual switching, or automatic round-robin that favors the account whose window resets soonest.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The **Accounts** tab is home base. It lists every Claude account you've enrolled (Pro, Max, Team,
+Enterprise), shows which one is currently serving requests, and lets you switch, tag, pause, or
+remove them.
+
+![The Accounts tab showing enrolled accounts and the active account in the header](/sentinel/screenshots/accounts-tab.png)
+
+## Enrolling accounts
+
+Click **Add Account** and complete the OAuth flow in your browser. The token is scoped to whichever
+org claude.ai is currently showing, so switch to the right org **before** approving. You can enroll
+as many accounts as you own.
+
+Each enrolled account stores metadata Sentinel uses throughout the UI: email, display name, account
+UUID, subscription type, org UUID and name, rate-limit tier, and your organization/workspace roles.
+You can assign a **color tag** to each account to tell them apart at a glance.
+
+<Aside type="note" title="Credentials live in the OS keychain">
+  Inactive-account credentials are stored under the `Sentinel-credentials` service in your OS
+  keychain — never in a plain file. Switching accounts rewrites the active OAuth credential that
+  Claude Code reads.
+</Aside>
+
+## Switching modes
+
+Open **Settings** and pick a **switching mode**:
+
+- **Off** — you manage the active account by hand from the Accounts tab. The header always shows
+  which account is active.
+- **Auto** — Sentinel moves the active account for you, so you're not switching manually as windows
+  fill up. Each switch safely rewrites the active OAuth credential, and the header always reflects
+  the account currently serving requests.
+
+### How Auto chooses (round-robin)
+
+In Auto mode, Sentinel selects from a **pool** of your enrolled accounts. The default strategy,
+**earliest-reset**, hard-targets the account whose 5-hour rate-limit window resets soonest — keeping
+you on capacity that's about to refresh rather than capacity you've already spent.
+
+- **Pool exclusions** — exclude specific accounts from Auto routing (for example, a work account you
+  only want used manually) via `poolExcludedIds` in Settings.
+- **Paused accounts are skipped** — if [spend caps](/sentinel/docs/features/alerts/#spend-caps)
+  pause an account, Auto routes around it until its window resets.
+
+![Switching the active account from the Accounts header](/sentinel/screenshots/account-switcher.png)
+
+## Account lifecycle
+
+- **Sync** — capture or refresh an account's credentials from Claude Code.
+- **Pause / unpause** — temporarily take an account out of rotation.
+- **Remove** — soft-delete an account (it moves to a removed list and can be restored).
+- **Purge** — hard-delete an account and all data associated with it.
+
+## Pool view
+
+In Auto mode the **Usage** tab can aggregate every pooled account into a single pool view, so you
+see combined headroom rather than juggling per-account windows. See
+[Usage & rate limits](/sentinel/docs/features/usage/).

@@ -1,0 +1,68 @@
+---
+title: Architecture
+description: How the Tauri app, the daemon sidecar, and the reverse proxy fit together, and how the app and daemon communicate.
+sidebar:
+  order: 1
+---
+
+Sentinel is a monorepo with two shipping pieces — a Tauri desktop app and a Node.js daemon — plus
+shared types and a marketing site.
+
+```
+Claude Code  ──→  localhost:47284  ──→  api.anthropic.com
+                  (sentinel daemon)
+                        │
+                        │  Unix socket / named pipe
+                        ▼
+                  Sentinel App
+                  (Tauri v2 tray app)
+```
+
+## The app (`packages/app`)
+
+A **Tauri v2** desktop tray application with a React frontend and a Rust backend.
+
+- **Bundles and supervises the daemon** as a sidecar process. It spawns the daemon once on startup
+  and does not auto-restart it — so the daemon's lifetime is tied to the app session.
+- **Patches `~/.claude/settings.json`** on activation so Claude Code routes through the proxy
+  (`ANTHROPIC_BASE_URL`), and unpatches it on uninstall.
+- Hosts the UI: Accounts, Security, Alerts, Usage, Optimize, Metrics, and Logs tabs, plus the
+  Settings panel.
+
+The Rust side (`src-tauri/src/`) handles the system tray, the IPC bridge to the daemon, the sidecar
+spawn logic, window events, and the activate/deactivate settings patch.
+
+## The daemon (`packages/daemon`)
+
+A **Node.js** process compiled into a single self-contained binary (via `@yao-pkg/pkg`) and embedded
+inside the app bundle. It is:
+
+- an **HTTP reverse proxy** that forwards Claude Code's requests to Anthropic, selecting the active
+  account's token per request and inspecting overage headers on responses;
+- an **OTLP telemetry receiver** that aggregates the metrics powering the Metrics tab;
+- an **MCP server** (used by the optimization features, e.g. `mcp__sentinel__retrieve`);
+- a **SQLite store** for accounts, rate limits, alerts, notifications, permission rules, security
+  events, and request logs.
+
+## How the two communicate
+
+The app and daemon talk over a **Unix domain socket** (named pipe on Windows) created with
+owner-only permissions. Messages are typed (`packages/shared`):
+
+- **App → Daemon**: account operations, settings reads/writes, alert CRUD, sync triggers, and admin
+  commands.
+- **Daemon → App** (broadcasts): account switches, rate-limit/usage updates, overage transitions,
+  alert triggers, security events, sync status, and settings changes — which the UI turns into live
+  updates and native notifications.
+
+## Request lifecycle
+
+1. Claude Code sends a request to `localhost:47284`.
+2. The proxy selects the active account's token (or, in Auto mode, the rotator picks one) and
+   forwards it to `api.anthropic.com`.
+3. Detectors scan the request and response in flight; findings are persisted (redacted) and may
+   block or hold the action.
+4. The response's rate-limit and overage headers update the SQLite store and trigger broadcasts.
+5. The response is forwarded back to Claude Code **unmodified** — the proxy is transparent.
+
+See [Project structure](/sentinel/docs/developers/project-structure/) for the file-level map.

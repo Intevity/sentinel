@@ -1,0 +1,66 @@
+---
+title: Sentinel documentation
+description: An open-source Claude Code companion — security scanning, sandbox isolation, multi-account routing, token optimization, and usage alerts, all running on your own machine.
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+**Sentinel** is an open-source companion for [Claude Code](https://claude.com/claude-code):
+a tray app and a bundled local daemon that sit between Claude Code and Anthropic's API.
+From one control panel you can scan and sandbox every request, enforce permission rules,
+route across the Claude accounts you own, cut wasted tokens, and catch overage spend before
+it runs away — all without your data ever leaving your machine.
+
+<CardGrid>
+  <Card title="Runs locally" icon="laptop">
+    The proxy listens only on `127.0.0.1`. No telemetry, no cloud — credentials live in your OS
+    keychain.
+  </Card>
+  <Card title="Transparent to Claude Code" icon="puzzle">
+    One activation writes `ANTHROPIC_BASE_URL` into Claude Code's settings. Everything else is
+    pass-through.
+  </Card>
+  <Card title="Cross-platform" icon="seti:html">
+    macOS, Windows, and Linux. A single Tauri tray app with an embedded daemon sidecar.
+  </Card>
+  <Card title="Open source" icon="github">
+    MIT licensed. Build it from source or grab a signed, notarized release.
+  </Card>
+</CardGrid>
+
+## Start here
+
+<CardGrid>
+  <LinkCard
+    title="Introduction"
+    description="What Sentinel is, how it fits with Claude Code, and the architecture at a glance."
+    href="/sentinel/docs/getting-started/introduction/"
+  />
+  <LinkCard
+    title="Installation"
+    description="Download and install on macOS, Windows, or Linux."
+    href="/sentinel/docs/getting-started/installation/"
+  />
+  <LinkCard
+    title="Quick start"
+    description="Activate the proxy, point Claude Code at it, and enroll your first account."
+    href="/sentinel/docs/getting-started/quick-start/"
+  />
+  <LinkCard
+    title="Features"
+    description="A page for everything Sentinel does, mapped to the tabs in the app."
+    href="/sentinel/docs/features/accounts/"
+  />
+</CardGrid>
+
+## What's in these docs
+
+- **Getting Started** — install, first launch, and a five-minute quick start.
+- **Features** — one page per capability: accounts & routing, security scanning, permission
+  rules, sandbox isolation, usage, metrics, token optimization, and alerts.
+- **Guides** — task-oriented how-tos (connect Claude Code, set up round-robin, sync permissions,
+  enable the sandbox, reduce token costs, track overage).
+- **Reference** — the settings catalog, tray & window behavior, troubleshooting, and the
+  privacy & security model.
+- **Developers** — architecture, building from source, project layout, testing, debugging, and
+  the release process.
