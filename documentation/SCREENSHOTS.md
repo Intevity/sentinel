@@ -48,7 +48,6 @@ They're served at `/sentinel/screenshots/<name>.png` and referenced from the MDX
 | `optimize-dashboard.png`    | 1080×1256        | **Optimize** tab showing realized vs potential savings.                                    | Features → Token optimization    |
 | `compression-panel.png`     | 1080×1256        | The compression panel within Optimize, showing trimmed payloads.                           | Features → Token optimization    |
 | `alerts-tab.png`            | 1080×1256        | **Alerts** tab with a configured threshold (run `pnpm alerts:test usage-account`).         | Features → Alerts                |
-| `notification-history.png`  | 1080×1256        | The notification-history timeline with a few entries.                                      | Features → Alerts                |
 | `settings-panel.png`        | 1080×1256        | The **Settings** panel (top section is fine).                                              | Reference → Settings             |
 | `tray-menu.png`             | 760×900          | The system tray / menu-bar dropdown menu open.                                             | Reference → Tray & window        |
 
