@@ -208,7 +208,7 @@ describe('get_metrics_summary scopes', () => {
       days: 7,
       accountIds: [id],
       scopeKind: 'pool',
-      scopeLabel: 'Round-robin pool',
+      scopeLabel: 'Auto pool',
     });
     expect(r.success).toBe(true);
   });

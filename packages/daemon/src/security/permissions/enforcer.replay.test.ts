@@ -27,7 +27,6 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     budgetWeeklyUsdByAccount: {},
     budgetWeeklyUsdGlobal: null,
     overageBufferPct: 5,
-    roundRobinStrategy: 'balance',
     backgroundProbeIntervalSec: 300,
     telemetryRetentionDays: 30,
     dataRetentionDays: 365,
@@ -57,6 +56,14 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     securityMuteScanSkipped: false,
     lastScanBenchmark: null,
     claudeCodeSyncEnabled: false,
+    isolationPolicy: {
+      enabled: false,
+      syncToClaudeCode: false,
+      enforceCodeMode: false,
+      network: { allowedDomains: [], deniedDomains: [] },
+      filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] },
+      credentials: { files: [], envVars: [] },
+    },
     securityIncidentReplay: true,
     logLevel: 'info',
     requestLoggingEnabled: false,
@@ -96,6 +103,8 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     codeModeSkillInstalled: false,
     mcpDisabledStashes: [],
     optimizeSubTab: 'subagents',
+    securitySubTab: 'scanning',
+    dataSubTab: 'retention',
     ...overrides,
   };
 }

@@ -109,7 +109,7 @@ export interface ActiveAccountId {
 }
 
 /** Per-request credential selection used by the proxy. Returned by either the
- *  active-account fallback or the round-robin rotator. */
+ *  active-account fallback or the rotator. */
 export interface TokenSelection {
   token: string;
   accountId: string;
@@ -126,7 +126,7 @@ interface ProxyOptions {
   /** When set, rate limit headers are parsed and stored per account after each request. */
   rateLimitStore?: RateLimitStore;
   /** When set, overrides the activeToken/activeAccountId pair on a per-request
-   *  basis — used for round-robin mode. Returning null falls back to the
+   *  basis — used for Auto mode. Returning null falls back to the
    *  activeToken/activeAccountId refs. `ctx.isSonnet` lets the rotator fold
    *  Sonnet-saturated accounts into the overage tier on Sonnet requests so
    *  the pool doesn't silently spill into overage when `unified-7d_sonnet`
@@ -205,7 +205,7 @@ interface ProxyOptions {
   codeModeHandler?: CodeModeHttpHandler;
   /** Short-lived table mapping Anthropic `request-id` → per-request Sentinel
    *  key. Populated here on every upstream response that carries the header,
-   *  consumed by OtelReceiver so round-robin-routed OTEL events land on the
+   *  consumed by OtelReceiver so Auto-routed OTEL events land on the
    *  account whose token was actually used (not the one Claude Code is
    *  signed in as). */
   requestAccountMap?: RequestAccountMap;
@@ -462,13 +462,19 @@ export function createProxyServer(
   // Tracks the last broadcast time per account to debounce rapid-fire requests
   const lastBroadcast = new Map<string, number>();
 
+  // Last account the rotator routed a request through (Auto mode). Broadcast
+  // `routed_account_changed` only when it changes — earliest-reset is sticky,
+  // so this fires on target change, not per request — so the header can show
+  // the account currently serving traffic instead of a generic indicator.
+  let lastRoutedAccountId: string | null = null;
+
   /**
    * Resolve the (token, accountId) pair for an outgoing request. Precedence:
    *   1. Per-request override via `x-sentinel-probe-token` + `x-sentinel-probe-account`
    *      — used by the background usage-probe to probe a non-active account
    *      without mutating the active-token refs. Headers are stripped before
    *      upstream forwarding so they never leak to Anthropic.
-   *   2. `tokenProvider` (round-robin mode). `ctx.isSonnet` is threaded
+   *   2. `tokenProvider` (Auto mode). `ctx.isSonnet` is threaded
    *      through so the rotator can fold Sonnet-saturated accounts into
    *      the overage tier on Sonnet requests.
    *   3. Shared `activeToken` / `activeAccountId` refs (default flow).
@@ -490,7 +496,19 @@ export function createProxyServer(
       return { token: probeToken, accountId: probeAccount };
     }
     const fromProvider = tokenProvider?.(ctx);
-    if (fromProvider) return fromProvider;
+    if (fromProvider) {
+      // Auto mode routed this request. Surface the serving account to the UI
+      // on change (probe overrides above never reach here, so the background
+      // usage-probe can't masquerade as a routing change).
+      if (fromProvider.accountId !== lastRoutedAccountId) {
+        lastRoutedAccountId = fromProvider.accountId;
+        opts.ipcServer.broadcast({
+          type: 'routed_account_changed',
+          accountId: fromProvider.accountId,
+        });
+      }
+      return fromProvider;
+    }
     if (activeToken.value) {
       return { token: activeToken.value, accountId: activeAccountId?.value ?? 'default' };
     }
@@ -538,7 +556,7 @@ export function createProxyServer(
     const perRequestAccountId = credential?.accountId ?? activeAccountId?.value;
 
     // Sentinel-side pause short-circuit. The rotator already skips paused
-    // accounts in round-robin, so this only fires in `off` mode or when
+    // accounts in Auto mode, so this only fires in `off` mode or when
     // a probe header landed on a paused account. Retry-After and error
     // type depend on the pause reason — see respondPaused for the split
     // between budget (5h reset) and weekly-rate-limit (7d reset).
@@ -552,7 +570,7 @@ export function createProxyServer(
     // at or above the overage-buffer threshold AND the account is NOT
     // opted into overage. Without this, the request would silently spill
     // into the user's monthly overage budget even when `unified-5h` still
-    // has room. The rotator applies the same gate for round-robin picks;
+    // has room. The rotator applies the same gate for Auto picks;
     // this catches single-account mode and the RR edge case where every
     // candidate is Sonnet-saturated (rotator returns null → fallback to
     // activeToken → this fires).
@@ -581,7 +599,7 @@ export function createProxyServer(
 
     // 429-retry callback. Only the messages path has a buffered body to
     // replay, so only this path offers retry. The provider picks a fresh
-    // round-robin credential excluding the account that just 429'd — when
+    // Auto-routed credential excluding the account that just 429'd — when
     // the rotator returns the same account (pool of one, or all others
     // unavailable), we skip the retry so the client sees the 429.
     const retryProvider = tokenProvider
@@ -754,7 +772,7 @@ export function createProxyServer(
 
     // Proxy Anthropic API calls — attribute rate-limit headers to the
     // specific account whose token was used for this request (matters for
-    // round-robin where that may differ from the primary active account).
+    // Auto switching where that may differ from the primary active account).
     const perRequestAccountId = credential?.accountId ?? activeAccountId?.value;
 
     // Sentinel-side pause short-circuit for non-messages paths (probes,
@@ -834,7 +852,7 @@ async function proxyToAnthropic(
   machine: OverageStateMachine,
   rateLimitStore?: RateLimitStore,
   /** Account key to attribute this request's rate-limit headers under.
-   *  Passed per-request so round-robin rotation stays correctly attributed. */
+   *  Passed per-request so Auto rotation stays correctly attributed. */
   attributionAccountId?: string,
   ipcServer?: IpcServer,
   lastBroadcast?: Map<string, number>,
@@ -845,7 +863,7 @@ async function proxyToAnthropic(
   preReadBody?: Buffer,
   /** Per-request correlation table. Populated here when the upstream response
    *  carries a `request-id` header so OtelReceiver can attribute OTEL
-   *  api_request / api_error events to the correct account in round-robin mode. */
+   *  api_request / api_error events to the correct account in Auto mode. */
   requestAccountMap?: RequestAccountMap,
   /** Fire-and-forget hook invoked when an upstream response returns 401
    *  for an identified account. See ProxyOptions.onUpstreamAuthFailure. */
@@ -999,11 +1017,9 @@ async function proxyToAnthropic(
   // Auto-mode observation — always runs so the UI's "Claude Code is in auto
   // mode" indicator stays live even when Sentinel's own rule enforcement is
   // turned off. Scoped to /v1/messages POST (actual conversation requests),
-  // not count_tokens or probes.
-  //
-  // We extract the session identifier from `metadata.user_id` in the body so
-  // the enforcer can track one entry per Claude Code session — critical when
-  // the user runs multiple sessions in parallel (e.g. 1 auto + 4 normal).
+  // not count_tokens or probes. The enforcer only reads the auto-mode beta
+  // headers here; session identity (from the body) is handled separately on
+  // the enforcement path below.
   if (
     permissionsEnforcer &&
     req.method === 'POST' &&
@@ -1011,8 +1027,7 @@ async function proxyToAnthropic(
     !req.url.includes('count_tokens') &&
     !String(req.headers['user-agent'] ?? '').includes('sentinel-probe')
   ) {
-    const sessionInfo = extractSessionInfo(body);
-    permissionsEnforcer.observeRequest(req.headers, sessionInfo);
+    permissionsEnforcer.observeRequest(req.headers);
   }
 
   // Tool permission enforcement — request side. Whole-tool deny rules strip

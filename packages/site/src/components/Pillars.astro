@@ -1,0 +1,82 @@
+---
+// Pillar deep-dives: the marketing narrative for the three features that convert
+// (multi-account, security, optimization), broken into their sub-features. Static
+// (no React); each sub-feature shows a poster placeholder with a "coming soon"
+// badge until its recording lands in public/videos/ and hasVideo is flipped.
+import Icon from './Icon.astro';
+import { pillars } from '../data/pillars';
+
+const base = import.meta.env.BASE_URL;
+const asset = (p: string) => `${base.replace(/\/$/, '')}/videos/${p.replace(/^\//, '')}`;
+---
+
+<section id="pillars" class="section has-aurora">
+  <div class="section-aurora" aria-hidden="true"></div>
+  <div class="mb-14 text-center">
+    <p class="section-label">Why Sentinel</p>
+    <h2 class="mt-3 text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
+      Three reasons it earns a spot in your menu bar
+    </h2>
+    <p class="mx-auto mt-4 max-w-2xl text-foreground/60">
+      Because one local proxy sees every request, Sentinel can manage all the accounts you own from
+      one place, guard what leaves your machine, and trim the tokens you would otherwise waste.
+    </p>
+  </div>
+
+  <div class="flex flex-col gap-20">
+    {
+      pillars.map((pillar) => (
+        <div>
+          <div class="mb-8 max-w-2xl">
+            <p class="section-label">{pillar.eyebrow}</p>
+            <h3 class="mt-3 text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
+              {pillar.title}
+            </h3>
+            <p class="mt-3 leading-relaxed text-foreground/60">{pillar.intro}</p>
+          </div>
+
+          <div class="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {pillar.subFeatures.map((sf) => (
+              <article class="glass-card flex flex-col overflow-hidden">
+                <div class="relative aspect-video w-full bg-black/40">
+                  {sf.hasVideo ? (
+                    <video
+                      class="h-full w-full object-cover"
+                      src={asset(sf.video)}
+                      poster={asset(sf.poster)}
+                      autoplay
+                      muted
+                      loop
+                      playsinline
+                    />
+                  ) : (
+                    <img
+                      class="h-full w-full object-cover"
+                      src={asset(sf.poster)}
+                      alt={`${sf.title} demo placeholder`}
+                      loading="lazy"
+                    />
+                  )}
+                  {!sf.hasVideo && (
+                    <span class="absolute bottom-2 right-2 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white/80">
+                      Demo video coming soon
+                    </span>
+                  )}
+                </div>
+
+                <div class="flex flex-col gap-2 p-6">
+                  <span class="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-ios-blue/10 text-ios-blue">
+                    <Icon name={sf.icon} size={20} />
+                  </span>
+                  <h4 class="mt-1 text-base font-semibold text-foreground">{sf.title}</h4>
+                  <p class="text-sm font-medium text-ios-blue/80">{sf.hook}</p>
+                  <p class="text-sm leading-relaxed text-foreground/60">{sf.description}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      ))
+    }
+  </div>
+</section>

@@ -10,6 +10,7 @@ import {
   AlertTriangle,
   Loader2,
   Gauge,
+  Lock,
 } from 'lucide-react';
 import {
   applyPreset,
@@ -49,7 +50,7 @@ const PROFILE_ICON_CLASS: Record<RiskProfile, string> = {
   paranoid: 'text-ios-red',
 };
 
-type Step = 'select' | 'benchmark' | 'review';
+type Step = 'select' | 'benchmark' | 'isolation' | 'review';
 
 export default function SecuritySetupWizard({
   onClose,
@@ -70,6 +71,9 @@ export default function SecuritySetupWizard({
   // reapplying an old result from a different machine.
   const [benchResult, setBenchResult] = useState<SecurityBenchmarkResult | null>(null);
   const scanBench = useScanBenchmark();
+  // Opt-in for the OS-level sandbox. Default OFF — the wizard only educates and
+  // offers a one-click enable; nothing auto-enables it.
+  const [isolationOptIn, setIsolationOptIn] = useState(false);
 
   const useRecommendation = async (): Promise<void> => {
     if (!benchResult) return;
@@ -84,7 +88,7 @@ export default function SecuritySetupWizard({
     } catch {
       /* non-fatal — user can retune from Settings later */
     }
-    setStep('review');
+    setStep('isolation');
   };
 
   const apply = async (): Promise<void> => {
@@ -92,6 +96,23 @@ export default function SecuritySetupWizard({
     setError(null);
     try {
       await applyPreset(choice);
+      if (isolationOptIn) {
+        // Opt-in only — never auto-enabled. update_settings is a patch merge,
+        // so this preserves the preset write above.
+        await sendToSentinel({
+          type: 'update_settings',
+          settings: {
+            isolationPolicy: {
+              enabled: true,
+              syncToClaudeCode: true,
+              enforceCodeMode: true,
+              network: { allowedDomains: [], deniedDomains: [] },
+              filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] },
+              credentials: { files: [], envVars: [] },
+            },
+          },
+        });
+      }
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -348,7 +369,7 @@ export default function SecuritySetupWizard({
               </button>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setStep('review')}
+                  onClick={() => setStep('isolation')}
                   disabled={applying || scanBench.running}
                   className="text-[11px] font-medium text-muted hover:text-black dark:hover:text-white transition-colors disabled:opacity-40"
                 >
@@ -364,6 +385,60 @@ export default function SecuritySetupWizard({
                   </button>
                 )}
               </div>
+            </div>
+          </div>
+        )}
+
+        {step === 'isolation' && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Lock size={16} className="text-ios-blue" />
+              <span className="text-[13px] font-semibold text-black dark:text-white">
+                Optional: OS-level sandbox
+              </span>
+            </div>
+            <p className="text-[11px] text-muted leading-relaxed">
+              Sentinel can run Claude Code&apos;s commands and its own code-mode MCP servers inside
+              an OS sandbox that limits filesystem and network access. It&apos;s optional and off by
+              default — you can fine-tune the allowed domains and paths later in Security →
+              Isolation.
+            </p>
+            <button
+              type="button"
+              onClick={() => setIsolationOptIn((v) => !v)}
+              className="w-full flex items-center justify-between rounded-lg border border-black/10 dark:border-white/15 px-3 py-2.5 hover:border-ios-blue transition-colors"
+            >
+              <span className="text-[12px] font-medium text-black dark:text-white">
+                Enable sandbox isolation
+              </span>
+              <span
+                className={`text-[11px] font-semibold ${
+                  isolationOptIn ? 'text-ios-green' : 'text-muted'
+                }`}
+              >
+                {isolationOptIn ? 'On' : 'Off'}
+              </span>
+            </button>
+            <p className="text-[10px] text-muted">
+              Requires platform support (macOS &amp; Linux; Windows is network-only). Where the
+              sandbox isn&apos;t available, commands run unsandboxed and Sentinel shows why.
+            </p>
+            <div className="flex items-center justify-between pt-1">
+              <button
+                onClick={() => setStep('benchmark')}
+                disabled={applying}
+                className="text-[11px] font-medium text-muted hover:text-black dark:hover:text-white transition-colors disabled:opacity-40 inline-flex items-center gap-1"
+              >
+                <ArrowLeft size={12} />
+                Back
+              </button>
+              <button
+                onClick={() => setStep('review')}
+                disabled={applying}
+                className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-ios-blue text-white hover:bg-ios-blue/90 active:scale-95 transition-all disabled:opacity-40"
+              >
+                Next
+              </button>
             </div>
           </div>
         )}
@@ -430,7 +505,7 @@ export default function SecuritySetupWizard({
 
             <div className="flex items-center justify-between gap-2 mt-4">
               <button
-                onClick={() => setStep('benchmark')}
+                onClick={() => setStep('isolation')}
                 disabled={applying}
                 className="text-[11px] font-medium text-muted hover:text-black dark:hover:text-white transition-colors disabled:opacity-40 inline-flex items-center gap-1"
               >

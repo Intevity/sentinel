@@ -342,15 +342,15 @@ describe('lifecycle — refresh_accounts (no auto-create)', () => {
 // ─── update_settings cascades ────────────────────────────────────────────────
 
 describe('lifecycle — update_settings cascades', () => {
-  it('toggling switchingMode to round-robin refreshes the rotator pool', async () => {
+  it('toggling switchingMode to auto refreshes the rotator pool', async () => {
     ctx = await startTestDaemon();
     const r = await ctx.request({
       type: 'update_settings',
-      settings: { switchingMode: 'round-robin' },
+      settings: { switchingMode: 'auto' },
     });
     expect(r.success).toBe(true);
     const after = await ctx.request<{ switchingMode: string }>({ type: 'get_settings' });
-    expect(after.data?.switchingMode).toBe('round-robin');
+    expect(after.data?.switchingMode).toBe('auto');
   });
 
   it('updating logLevel propagates to the logger singleton', async () => {

@@ -169,24 +169,13 @@ export interface ClaudeState {
 
 /**
  * One of two mutually exclusive account-switching behaviors.
- *   off         — no automatic switching; user manages accounts manually
- *   round-robin — proxy rotates OAuth tokens per request across accounts,
- *                 tuned by `roundRobinStrategy` (balance or earliest-reset)
+ *   off  — no automatic switching; user manages accounts manually
+ *   auto — proxy routes each request to the enrolled account whose 5-hour
+ *          window resets soonest (the "earliest-reset" engine), so quota
+ *          that's about to refresh gets used first. Rotation resumes only
+ *          when that account blocks or its window rolls over.
  */
-export type SwitchingMode = 'off' | 'round-robin';
-
-/**
- * Sub-strategy for round-robin rotation.
- *   balance        — prefer the account with the lowest unified-5h utilization
- *                    (1% tie band + cursor for fair rotation). Drains the pool
- *                    evenly — the classic round-robin behavior.
- *   earliest-reset — hard-target the non-blocked pool account whose 5-hour
- *                    window resets soonest. Accounts without reset data are
- *                    deprioritized. Maximizes usage of the headroom that is
- *                    about to be reclaimed anyway; rotation resumes only when
- *                    the target blocks or its window rolls over.
- */
-export type RoundRobinStrategy = 'balance' | 'earliest-reset';
+export type SwitchingMode = 'off' | 'auto';
 
 /** Which chart the Optimize dashboard renders above the curated subagent
  *  list. The user toggles between these via the segmented control in the
@@ -235,6 +224,20 @@ export type OptimizeRangePreset =
  *  costs + code execution). Persisted in {@link Settings.optimizeSubTab}
  *  so the user's last section survives daemon restarts. */
 export type OptimizeSubTab = 'subagents' | 'compression' | 'context';
+
+/** Which sub-tab of the Settings › Security tab is active. The detailed
+ *  security config is grouped into four buckets so no single scroll path
+ *  overflows the tray window: content scanning, tool-permission gating,
+ *  OS-level isolation, and Claude Code sync. Persisted in
+ *  {@link Settings.securitySubTab} so the user's last section survives
+ *  daemon restarts. */
+export type SecuritySubTab = 'scanning' | 'permissions' | 'isolation' | 'sync';
+
+/** Which sub-tab of the Settings › Data tab is active. Groups the
+ *  data-handling config into lifecycle (usage sync + retention), feature
+ *  data (optimize + compression), and telemetry (request logging + OTEL).
+ *  Persisted in {@link Settings.dataSubTab}. */
+export type DataSubTab = 'retention' | 'features' | 'telemetry';
 
 /**
  * Aggressiveness tier for in-flight tool_result compression.
@@ -303,6 +306,101 @@ export interface CodeModeMigration {
   baselineServerRequests?: number;
 }
 
+// ─── OS-level sandbox / isolation ──────────────────────────────────────
+
+/**
+ * Canonical, platform-neutral description of an OS-level isolation policy.
+ *
+ * This is Sentinel's single source of truth for sandboxing. It is intentionally
+ * a *third* schema — narrower than either enforcement target — and is projected
+ * onto each by a pure mapper (see `security/sandbox/policy-map.ts`):
+ *
+ *  - **Leg A** — `toClaudeCodeSandboxBlock()` writes the `sandbox` block of
+ *    `~/.claude/settings.json`, so Claude Code's *own* native sandbox uses it.
+ *  - **Leg B** — `toSandboxRuntimeConfig()` produces the config handed to
+ *    `@anthropic-ai/sandbox-runtime` to wrap Sentinel's code-mode MCP children.
+ *
+ * Filesystem paths use the sandbox prefix convention (NOT the `//abs` form used
+ * by permission rules): `/abs` is absolute, `~/` is home-relative, `./` or a
+ * bare path is project/relative. Network entries are bare domains or a single
+ * `*.domain.tld` wildcard — the canonical layer rejects protocols, paths,
+ * ports, and overly-broad wildcards (`*.com`) so any Sentinel-valid policy is
+ * always valid for the package's stricter validator too.
+ */
+export interface IsolationPolicy {
+  /** Master switch. Off by default — the whole feature ships dark. */
+  enabled: boolean;
+  /** Leg A: mirror this policy into `~/.claude/settings.json#/sandbox`. */
+  syncToClaudeCode: boolean;
+  /** Leg B: wrap Sentinel's own code-mode stdio MCP children in the sandbox. */
+  enforceCodeMode: boolean;
+  network: {
+    /** Bare domain or `*.domain.tld`. Empty = no domains pre-allowed. */
+    allowedDomains: string[];
+    /** Blocked even when an `allowedDomains` wildcard would otherwise permit. */
+    deniedDomains: string[];
+  };
+  filesystem: {
+    /** Paths writable inside the sandbox beyond the default cwd + tempdir. */
+    allowWrite: string[];
+    /** Paths denied for write (takes precedence over allowWrite). */
+    denyWrite: string[];
+    /** Paths denied for read (read is otherwise allowed by default). */
+    denyRead: string[];
+    /** Re-allow reads of specific paths inside a denyRead region. */
+    allowRead: string[];
+  };
+  credentials: {
+    /** Credential files denied for read inside the sandbox. Mode is always
+     *  `deny` (the only value Claude Code supports), so the canonical model
+     *  stores just the path; the mapper re-adds `mode: "deny"`. */
+    files: string[];
+    /** Environment variable names unset before each sandboxed command. */
+    envVars: string[];
+  };
+  /** Leg-A-only passthrough: knobs Claude Code's native sandbox honors but the
+   *  package config has no equivalent for. Omitted entirely when unset (kept
+   *  undefined under exactOptionalPropertyTypes). */
+  claudeCode?: {
+    /** Make a missing dependency a hard failure for Claude Code rather than a
+     *  warn-and-fall-back. Sentinel leaves this false to honor its own
+     *  degrade-and-surface posture. */
+    failIfUnavailable?: boolean;
+    /** When false, Claude Code's `dangerouslyDisableSandbox` escape hatch is
+     *  ignored (strict mode). */
+    allowUnsandboxedCommands?: boolean;
+    /** Commands Claude Code runs OUTSIDE the sandbox (e.g. `docker *`). */
+    excludedCommands?: string[];
+    /** macOS only: lift the default Apple Events block. Weakens isolation;
+     *  deferred from the v1 editor. */
+    allowAppleEvents?: boolean;
+  };
+}
+
+/** How much isolation the current host can actually enforce. */
+export type SandboxCapability = 'full' | 'network-only' | 'unavailable';
+
+/** Presence of one host dependency the sandbox relies on. */
+export interface SandboxDependency {
+  /** e.g. 'sandbox-exec', 'ripgrep', 'bubblewrap', 'socat', 'seccomp', 'srt-win'. */
+  name: string;
+  present: boolean;
+}
+
+/**
+ * Live, per-platform sandbox readiness, surfaced to the UI so users see why a
+ * policy is degraded (e.g. "install bubblewrap + socat") rather than silently
+ * running unsandboxed. Computed by `security/sandbox/capability.ts` (Phase 1+).
+ */
+export interface SandboxStatus {
+  /** `process.platform` value: 'darwin' | 'linux' | 'win32' | … */
+  platform: string;
+  capability: SandboxCapability;
+  /** Human-readable reasons for anything less than `full`. */
+  reasons: string[];
+  dependencies: SandboxDependency[];
+}
+
 /**
  * Persistent user preferences stored at ~/.sentinel/settings.json.
  */
@@ -333,10 +431,10 @@ export interface Settings {
    *  Anthropic API regardless of this setting. Origin only; trailing path
    *  is stripped on save. `null` (default) routes to the canonical API. */
   alternateApiUrl: string | null;
-  /** Sentinel account IDs excluded from round-robin rotation. Empty means
+  /** Sentinel account IDs excluded from the Auto-switching pool. Empty means
    *  every enrolled account rotates (opt-out model) — preserves the
-   *  original "RR just works" behavior and auto-enrolls newly added
-   *  accounts. Ignored unless `switchingMode === 'round-robin'`. */
+   *  original "just works" behavior and auto-enrolls newly added
+   *  accounts. Ignored unless `switchingMode === 'auto'`. */
   poolExcludedIds: string[];
   /** Default state of the "Private window" checkbox in the per-account
    *  Re-authenticate banner on the Accounts page. Sticky across cards and
@@ -349,7 +447,7 @@ export interface Settings {
    *  budget when their subscription quota is exhausted. Opt-IN — an account
    *  NOT on this list is treated as "never spend overage". Default [].
    *
-   *  Round-robin mode: the `TokenRotator` refuses to pick an account whose
+   *  Auto mode: the `TokenRotator` refuses to pick an account whose
    *  next request would consume overage (5h window saturated with overage
    *  status `allowed`, or overage `in_use === true`) unless the account is
    *  on this list.
@@ -360,7 +458,7 @@ export interface Settings {
   /** Per-account weekly (rolling 7-day) spend cap in USD. When set and the
    *  account's cost_usd sum over the trailing 7 days meets or exceeds this
    *  value, Sentinel pauses the account — it becomes unpickable in
-   *  round-robin and the proxy returns 503 with a Retry-After header in
+   *  Auto mode and the proxy returns 503 with a Retry-After header in
    *  `off` mode. Overrides Anthropic's server-side overage grant. Clears on
    *  the next unified-5h rollover if spend has aged out of the window.
    *  0 or missing = no cap. Keyed by Sentinel id (not accountUuid). */
@@ -369,18 +467,15 @@ export interface Settings {
    *  When the summed rolling-7d spend crosses this value, every enrolled
    *  account is paused until its 5h window resets. Null = no global cap. */
   budgetWeeklyUsdGlobal: number | null;
-  /** Safety margin keeping round-robin from picking an account whose next
+  /** Safety margin keeping Auto switching from picking an account whose next
    *  request might spill into Anthropic overage. The rotator excludes any
    *  account whose unified-5h utilization is ≥ (1 − overageBufferPct/100).
    *  Defends against the race where an account at 98% util absorbs a 4%
    *  request and burns 2% overage the user didn't opt into. Integer range
    *  `[0, 50]`. Default 5 (= cut-off at 95% util). 0 = only cut off at
    *  full saturation (legacy pre-buffer behavior). Ignored unless
-   *  `switchingMode === 'round-robin'`. */
+   *  `switchingMode === 'auto'`. */
   overageBufferPct: number;
-  /** Which rotation strategy the round-robin token rotator uses.
-   *  Ignored unless `switchingMode === 'round-robin'`. Default `'balance'`. */
-  roundRobinStrategy: RoundRobinStrategy;
   /** Seconds between background probes of each non-active account's
    *  rate-limit state. Keeps the Usage tab in sync with claude.ai / other
    *  Anthropic surfaces when Claude Code isn't actively driving the
@@ -543,6 +638,15 @@ export interface Settings {
    *  merge direction via a modal to avoid data loss. */
   claudeCodeSyncEnabled: boolean;
 
+  // ─── OS-level sandbox / isolation ──────────────────────────────────
+  /** OS-level isolation policy (Sentinel's sandbox feature). The single
+   *  source of truth projected onto both Claude Code's native sandbox
+   *  (`~/.claude/settings.json#/sandbox`, Leg A) and
+   *  `@anthropic-ai/sandbox-runtime` for code-mode children (Leg B). Off by
+   *  default — the feature ships dark and users opt in after a dependency
+   *  check. See {@link IsolationPolicy}. */
+  isolationPolicy: IsolationPolicy;
+
   /** Minimum severity written to daemon.log and streamed to the in-app Logs
    *  tab. `debug` is opt-in; noisy subsystems emit DEBUG only for deep
    *  troubleshooting. Default `info`. Applied live via `update_settings` —
@@ -657,6 +761,14 @@ export interface Settings {
    *  context). Defaults to 'subagents'. Persisted so the user's last
    *  section survives daemon restarts. */
   optimizeSubTab: OptimizeSubTab;
+  /** Active sub-tab on the Settings › Security tab (scanning / permissions /
+   *  isolation / sync). Defaults to 'scanning'. Persisted so the user's last
+   *  section survives daemon restarts. */
+  securitySubTab: SecuritySubTab;
+  /** Active sub-tab on the Settings › Data tab (retention / features /
+   *  telemetry). Defaults to 'retention'. Persisted so the user's last
+   *  section survives daemon restarts. */
+  dataSubTab: DataSubTab;
 
   // ─── tool_result compression ───────────────────────────────────────
   /** Master switch for in-flight tool_result compression. Opt-in; default
@@ -1382,58 +1494,30 @@ export interface PermissionRuleInput {
 }
 
 /**
- * Per-session snapshot included in {@link AutoModeStatus.sessions}. The
- * daemon tracks one entry per Claude Code `session_id` seen on the proxy
- * (extracted from `metadata.user_id` on each `/v1/messages` request).
- */
-export interface ActiveClaudeSession {
-  sessionId: string;
-  accountUuid: string | null;
-  /** True if the most recent request from this session carried auto-mode
-   *  beta flags. Flips to false on a non-auto request without ending the
-   *  session. */
-  autoMode: boolean;
-  /** Unix ms of the last request observed from this session. */
-  lastSeenAt: number;
-}
-
-/**
- * Live auto-mode status surfaced to the UI. The daemon computes `active` by
- * combining:
- *   - the manual settings toggle (`toolPermissionAutoModeActive`), AND
+ * Live auto-mode status surfaced to the UI. The daemon derives `active` from
+ * the only two signals it can know with certainty:
+ *   - the manual settings toggle (`toolPermissionAutoModeActive`), OR
  *   - header-based detection of Claude Code's `afk-mode` / `advisor-tool`
- *     beta flags on `/v1/messages` requests (with a ~60 s freshness window), AND
- *   - per-session tracking that persists a session's mode until either the
- *     next non-auto request downgrades it or the Claude Code process exits
- *     (detected via cross-platform process scan).
+ *     beta flags on `/v1/messages` requests, held active for a ~60 s freshness
+ *     window after the most recent auto-mode request.
  *
- * Used by the Security tab to render a "Sentinel is standing down" banner
- * when auto mode is active — with accurate counts when the user is running
- * multiple Claude Code sessions in parallel.
+ * This is deliberately a boolean + timestamp, not a session/process tally:
+ * Claude Code sessions never announce their start or end to the proxy, so any
+ * "N sessions / N processes" count is an unverifiable estimate. The honest,
+ * accurate statement Sentinel can make is "an auto-mode request was seen
+ * within the last 60 s" — activation is instant, deactivation trails the last
+ * request by the freshness window.
+ *
+ * Used by the Security tab to render the "Claude Code is in auto mode" banner.
  */
 export interface AutoModeStatus {
   active: boolean;
   /** What triggered `active`. `null` when `active === false`. */
   source: 'manual' | 'headers' | null;
   /** Unix ms of the most recent header-based detection. Null when we've
-   *  never seen one during this daemon session. Useful for showing
-   *  "detected 3s ago" style timestamps. */
+   *  never seen one during this daemon session. Drives the UI's
+   *  "detected 3s ago" timestamp. */
   lastDetectedAt: number | null;
-  /** Total number of Claude Code sessions currently tracked (recently seen
-   *  on the proxy and not yet pruned by the process scan). */
-  activeSessions: number;
-  /** Subset of `activeSessions` whose latest request carried auto-mode
-   *  beta flags. `active === true` requires `autoModeSessions > 0` OR the
-   *  manual override OR the legacy freshness window. */
-  autoModeSessions: number;
-  /** Count of `claude-code` OS processes observed on the last process
-   *  scan. `null` when the scan has never run or always fails on this host
-   *  (locked-down Windows, sandboxed runtime, etc.) — the UI then degrades
-   *  gracefully to time-based freshness only. */
-  processCount: number | null;
-  /** Full session breakdown for the UI's expandable details view. Ordered
-   *  most-recent first. Empty when no sessions are tracked. */
-  sessions: ActiveClaudeSession[];
 }
 
 /** Sound choices exposed in Settings on macOS. Values map to macOS system
@@ -1489,10 +1573,10 @@ export const ALERT_SOUNDS_WINDOWS: ReadonlyArray<{ label: string; value: string 
  *                    Parallel to `account-sonnet` but reads the general
  *                    7-day window; users frequently want distinct
  *                    thresholds for the two weekly quotas.
- *   pool           — round-robin only; fires on the mean unified-5h
+ *   pool           — Auto mode only; fires on the mean unified-5h
  *                    utilization across every pool member (accounts not
  *                    in `poolExcludedIds`).
- *   pool-weekly    — round-robin only; fires on the mean unified-7d
+ *   pool-weekly    — Auto mode only; fires on the mean unified-7d
  *                    utilization across every pool member. Catches the
  *                    case where every pool account is drifting toward
  *                    weekly cap simultaneously so rotation alone can't

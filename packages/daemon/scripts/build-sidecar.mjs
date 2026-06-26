@@ -183,6 +183,42 @@ execSync(`pkg "${BUNDLE_PATH}" --target ${pkgTarget} --output "${output}" --comp
   stdio: 'inherit',
 });
 
+// ── Step 2b: ship the sandbox helper binary for the target OS/arch beside the
+// sidecar. The sandbox (Leg B) executes these native ELF/PE helpers at runtime,
+// so they must live on the real filesystem — a pkg snapshot cannot exec an
+// embedded binary. The daemon resolves them via SENTINEL_SECCOMP_PATH or the
+// `<execDir>/sandbox-bins/` location (security/sandbox/platform-paths.ts).
+// Best-effort: a copy failure warns but never fails the build (the sandbox then
+// degrades — seccomp becomes a warning rather than a hard failure).
+// NOTE: the Tauri bundle must ship `binaries/sandbox-bins/` alongside the
+// sidecar (bundle.resources) for this to reach installed apps.
+try {
+  const arch = targetArch === 'arm64' ? 'arm64' : 'x64';
+  let vendorRel = null;
+  let destName = null;
+  if (triple.includes('linux')) {
+    vendorRel = `dist/vendor/seccomp/${arch}/apply-seccomp`;
+    destName = 'apply-seccomp';
+  } else if (triple.includes('windows')) {
+    vendorRel = `dist/vendor/srt-win/${arch}/srt-win.exe`;
+    destName = 'srt-win.exe';
+  }
+  if (vendorRel) {
+    const sandboxPkgJson = req.resolve('@anthropic-ai/sandbox-runtime/package.json');
+    const vendorSrc = join(dirname(sandboxPkgJson), vendorRel);
+    const destDir = join(BINARIES_DIR, 'sandbox-bins');
+    mkdirSync(destDir, { recursive: true });
+    const dest = join(destDir, destName);
+    copyFileSync(vendorSrc, dest);
+    if (process.platform !== 'win32') execSync(`chmod +x "${dest}"`);
+    console.log(`[build-sidecar] Copied sandbox helper: ${vendorSrc} → ${dest}`);
+  }
+} catch (err) {
+  console.warn(
+    `[build-sidecar] Could not copy sandbox helper binary (sandbox will degrade): ${err?.message ?? err}`,
+  );
+}
+
 // ── Step 3 (macOS release only): sign the sidecar with the hardened runtime +
 // JIT entitlements BEFORE `tauri build` seals it into the .app.
 //

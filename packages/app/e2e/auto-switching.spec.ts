@@ -1,11 +1,11 @@
 /**
- * Flow 4 — Round-robin toggle.
+ * Flow 4 — Auto account-switching toggle.
  *
- * Flip the switching-mode segmented control from Manual to Round-robin.
+ * Flip the switching-mode segmented control from Manual to Auto.
  * Verify:
- *   - `settings_changed` broadcast fires with switchingMode='round-robin'.
+ *   - `settings_changed` broadcast fires with switchingMode='auto'.
  *   - Persisted settings (`get_settings` IPC) reflect the new mode.
- *   - Header pill "Round-Robin · Balance" appears.
+ *   - The Auto segment becomes the selected option in the UI.
  */
 
 import { test, expect } from '@playwright/test';
@@ -44,7 +44,7 @@ test.afterAll(async () => {
   await daemon?.stop();
 });
 
-test('Toggle switching-mode to round-robin end-to-end', async ({ page }) => {
+test('Toggle switching-mode to Auto end-to-end', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#root')).toBeVisible();
   await expect(page.getByText(ACCT_A.email).first()).toBeVisible({ timeout: 5000 });
@@ -53,13 +53,13 @@ test('Toggle switching-mode to round-robin end-to-end', async ({ page }) => {
   // Listen before clicking so there's no race against the broadcast.
   const settingsChanged = daemon.waitForBroadcast(
     'settings_changed',
-    (msg) => msg.settings.switchingMode === 'round-robin',
+    (msg) => msg.settings.switchingMode === 'auto',
   );
 
-  // QuickSegmented emits a radio role per option. Click the Round-robin one.
-  await page.getByRole('radio', { name: 'Round-robin' }).click();
+  // QuickSegmented emits a radio role per option. Click the Auto one.
+  await page.getByRole('radio', { name: 'Auto' }).click();
   const broadcast = await settingsChanged;
-  expect(broadcast.settings.switchingMode).toBe('round-robin');
+  expect(broadcast.settings.switchingMode).toBe('auto');
 
   // Persisted state: get_settings round-trip confirms the write.
   const res = await fetch(daemon.bridgeUrl, {
@@ -68,8 +68,8 @@ test('Toggle switching-mode to round-robin end-to-end', async ({ page }) => {
     body: JSON.stringify({ type: 'get_settings' }),
   });
   const payload = (await res.json()) as { data?: Settings };
-  expect(payload.data?.switchingMode).toBe('round-robin');
+  expect(payload.data?.switchingMode).toBe('auto');
 
-  // UI reflects the new mode in the header pill.
-  await expect(page.getByText(/Round-Robin/i).first()).toBeVisible({ timeout: 5000 });
+  // UI reflects the new mode: the Auto segment is now the selected option.
+  await expect(page.getByRole('radio', { name: 'Auto' })).toBeChecked({ timeout: 5000 });
 });

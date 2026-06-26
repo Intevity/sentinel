@@ -46,10 +46,10 @@ describe('startDaemon — bring-up', () => {
   });
 
   it('honors the tmp settings file via SENTINEL_TEST_SETTINGS_FILE', async () => {
-    ctx = await startTestDaemon({ settings: { switchingMode: 'round-robin' } });
+    ctx = await startTestDaemon({ settings: { switchingMode: 'auto' } });
     const resp = await ctx.request<{ switchingMode: string }>({ type: 'get_settings' });
     expect(resp.success).toBe(true);
-    expect(resp.data?.switchingMode).toBe('round-robin');
+    expect(resp.data?.switchingMode).toBe('auto');
   });
 
   it('snaps persisted range presets onto each page retention ladder at boot', async () => {

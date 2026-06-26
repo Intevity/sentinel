@@ -57,7 +57,6 @@ function benchSettings(overrides: Partial<Settings> = {}): Settings {
     budgetWeeklyUsdByAccount: {},
     budgetWeeklyUsdGlobal: null,
     overageBufferPct: 10,
-    roundRobinStrategy: 'balance',
     backgroundProbeIntervalSec: 300,
     telemetryRetentionDays: 30,
     dataRetentionDays: 365,
@@ -89,6 +88,14 @@ function benchSettings(overrides: Partial<Settings> = {}): Settings {
     securityMuteScanSkipped: true,
     lastScanBenchmark: null,
     claudeCodeSyncEnabled: false,
+    isolationPolicy: {
+      enabled: false,
+      syncToClaudeCode: false,
+      enforceCodeMode: false,
+      network: { allowedDomains: [], deniedDomains: [] },
+      filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] },
+      credentials: { files: [], envVars: [] },
+    },
     securityIncidentReplay: false,
     logLevel: 'info',
     requestLoggingEnabled: false,
@@ -128,6 +135,8 @@ function benchSettings(overrides: Partial<Settings> = {}): Settings {
     codeModeSkillInstalled: false,
     mcpDisabledStashes: [],
     optimizeSubTab: 'subagents',
+    securitySubTab: 'scanning',
+    dataSubTab: 'retention',
     ...overrides,
   };
 }

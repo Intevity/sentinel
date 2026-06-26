@@ -1,14 +1,15 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Loader2, Volume2, Trash2, RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
 import type {
   SwitchingMode,
-  RoundRobinStrategy,
   SecurityEnforcementMode,
   SecurityOsNotifyThreshold,
   PermissionDecision,
   ThemePreference,
   CompressionLevel,
+  SecuritySubTab,
+  DataSubTab,
 } from '@sentinel/shared';
 import { ALERT_SOUNDS, ALERT_SOUNDS_WINDOWS } from '@sentinel/shared';
 import { invoke } from '@tauri-apps/api/core';
@@ -24,10 +25,22 @@ import { useDaemon } from '../hooks/useDaemon.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { useAccounts } from '../hooks/useAccounts.js';
 import { accountColor } from '../lib/accountColor.js';
+import { isDemoModeEnabled, setDemoModeEnabled } from '../lib/demoMode.js';
 import { planLabel } from '../lib/plan.js';
 import AccountColorDot from './AccountColorDot.js';
 import OverlayPanel from './OverlayPanel.js';
-import { Section, ToggleRow, RadioRow, SettingsCard } from './settings/primitives.js';
+import {
+  Section,
+  ToggleRow,
+  RadioRow,
+  SettingsCard,
+  QuickSegmented,
+  SearchInput,
+} from './settings/primitives.js';
+import IsolationPanel from './IsolationPanel.js';
+import AllowlistPanel from './AllowlistPanel.js';
+import PermissionRulesPanel from './PermissionRulesPanel.js';
+import { filterBypasses } from '../lib/bypassFilter.js';
 
 /** WebView2's user agent carries "Windows NT"; WKWebView (macOS) and
  *  WebKitGTK (Linux) don't. Picks which alert-sound list the Settings
@@ -53,12 +66,19 @@ function displayedSound(stored: string | null): string {
  */
 type SettingsTabId = 'general' | 'accounts' | 'security' | 'data';
 
-const ANCHOR_TO_TAB: Record<string, SettingsTabId> = {
+/** Maps a deep-link anchor id to its top-level tab and, for the Security and
+ *  Data tabs, the sub-tab the anchor lives in so the auto-scroll effect can
+ *  select the right sub-tab before scrolling. */
+const ANCHOR_TO_TAB: Record<
+  string,
+  { tab: SettingsTabId; securitySub?: SecuritySubTab; dataSub?: DataSubTab }
+> = {
   // Security tab anchors
-  'security-enable-toggle': 'security',
-  'security-enforcement-heading': 'security',
-  'tool-permissions-toggle': 'security',
-  'oversized-threshold-slider': 'security',
+  'security-enable-toggle': { tab: 'security', securitySub: 'scanning' },
+  'security-enforcement-heading': { tab: 'security', securitySub: 'scanning' },
+  'tool-permissions-toggle': { tab: 'security', securitySub: 'permissions' },
+  'oversized-threshold-slider': { tab: 'security', securitySub: 'scanning' },
+  'isolation-enable-toggle': { tab: 'security', securitySub: 'isolation' },
 };
 
 const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string }> = [
@@ -94,16 +114,6 @@ interface SettingsPanelProps {
    *  by the parent so the replay button in the Security tab can reopen
    *  the wizard without tripping over `securitySetupCompleted`. */
   onRunSetupWizard?: () => void;
-  /** Close the panel and open the Tool-permission-rules editor. Provided
-   *  by the parent so the rules editor renders at App level (outside the
-   *  Settings scroll container) — otherwise the editor positions itself
-   *  to the top of the scroll area and appears off-screen when the user
-   *  is scrolled down to the Security tab. */
-  onManageRules?: () => void;
-  /** Close the panel and open the security overlay on the Allowlist tab.
-   *  Symmetric with onManageRules — lets the Allowlist section act as a
-   *  deep-link rather than rendering its entries inline. */
-  onManageAllowlist?: () => void;
 }
 
 /**
@@ -116,8 +126,6 @@ export default function SettingsPanel({
   measureRef,
   initialScrollTarget,
   onRunSetupWizard,
-  onManageRules,
-  onManageAllowlist,
 }: SettingsPanelProps): React.ReactElement {
   const { settings, loading, error, update } = useSettings();
   const { accounts } = useDaemon();
@@ -129,10 +137,45 @@ export default function SettingsPanel({
   // specific tab.
   const [activeTab, setActiveTab] = useState<SettingsTabId>(() => {
     if (initialScrollTarget && ANCHOR_TO_TAB[initialScrollTarget]) {
-      return ANCHOR_TO_TAB[initialScrollTarget]!;
+      return ANCHOR_TO_TAB[initialScrollTarget]!.tab;
     }
     return 'general';
   });
+
+  // Demo mode is a hidden, dev-build-only tool for recording marketing content:
+  // it masks every account's email/display name in the UI. `__APP_VERSION__` is
+  // 'dev' for untagged local `pnpm build:app` builds and a real version for
+  // tagged CI releases (see Footer.tsx), so the toggle never ships. The flag is
+  // frontend-only (localStorage) — it never touches the daemon.
+  const isDevBuild = __APP_VERSION__ === 'dev';
+  const [demoMode, setDemoMode] = useState(isDemoModeEnabled);
+
+  // Second-level sub-tab state for the Security and Data tabs. Both group
+  // their long section lists into sub-tabs so no single scroll path overflows
+  // the tray window. Seeded from a deep-link anchor if one targets a sub-tab,
+  // otherwise hydrated from persisted settings (see effect below). Persisted
+  // on change so the user's last section survives daemon restarts.
+  const anchorTarget = initialScrollTarget ? ANCHOR_TO_TAB[initialScrollTarget] : undefined;
+  const [securitySubTab, setSecuritySubTab] = useState<SecuritySubTab>(
+    anchorTarget?.securitySub ?? 'scanning',
+  );
+  const [dataSubTab, setDataSubTab] = useState<DataSubTab>(anchorTarget?.dataSub ?? 'retention');
+  const hydratedSubTabs = useRef(false);
+  useEffect(() => {
+    if (hydratedSubTabs.current || !settings) return;
+    hydratedSubTabs.current = true;
+    if (!anchorTarget?.securitySub) setSecuritySubTab(settings.securitySubTab);
+    if (!anchorTarget?.dataSub) setDataSubTab(settings.dataSubTab);
+  }, [settings, anchorTarget]);
+
+  const setSecuritySubTabPersist = (next: SecuritySubTab): void => {
+    setSecuritySubTab(next);
+    void update({ securitySubTab: next }).catch(() => undefined);
+  };
+  const setDataSubTabPersist = (next: DataSubTab): void => {
+    setDataSubTab(next);
+    void update({ dataSubTab: next }).catch(() => undefined);
+  };
 
   // Deep-link scroll. Wait for the panel slide-in animation to settle
   // (~220 ms) before scrolling, otherwise scrollIntoView calculates against
@@ -140,8 +183,12 @@ export default function SettingsPanel({
   // belongs to a different tab, switch to it first.
   useEffect(() => {
     if (!initialScrollTarget) return;
-    const targetTab = ANCHOR_TO_TAB[initialScrollTarget];
-    if (targetTab && targetTab !== activeTab) setActiveTab(targetTab);
+    const target = ANCHOR_TO_TAB[initialScrollTarget];
+    if (target) {
+      if (target.tab !== activeTab) setActiveTab(target.tab);
+      if (target.securitySub) setSecuritySubTab(target.securitySub);
+      if (target.dataSub) setDataSubTab(target.dataSub);
+    }
     const handle = window.setTimeout(() => {
       const el = document.getElementById(initialScrollTarget);
       if (!el) return;
@@ -165,10 +212,6 @@ export default function SettingsPanel({
 
   const setMode = (mode: SwitchingMode): void => {
     void update({ switchingMode: mode }).catch(() => undefined);
-  };
-
-  const setRoundRobinStrategy = (strategy: RoundRobinStrategy): void => {
-    void update({ roundRobinStrategy: strategy }).catch(() => undefined);
   };
 
   const setAlertSound = (value: string | null): void => {
@@ -458,6 +501,35 @@ export default function SettingsPanel({
 
         {!loading && settings && (
           <>
+            {activeTab === 'security' && (
+              <div className="px-1 pb-1 flex justify-center">
+                <QuickSegmented
+                  ariaLabel="Security settings sections"
+                  value={securitySubTab}
+                  onChange={setSecuritySubTabPersist}
+                  options={[
+                    { value: 'scanning', label: 'Scanning' },
+                    { value: 'permissions', label: 'Permissions' },
+                    { value: 'isolation', label: 'Isolation' },
+                    { value: 'sync', label: 'Sync' },
+                  ]}
+                />
+              </div>
+            )}
+            {activeTab === 'data' && (
+              <div className="px-1 pb-1 flex justify-center">
+                <QuickSegmented
+                  ariaLabel="Data settings sections"
+                  value={dataSubTab}
+                  onChange={setDataSubTabPersist}
+                  options={[
+                    { value: 'retention', label: 'Retention' },
+                    { value: 'features', label: 'Features' },
+                    { value: 'telemetry', label: 'Telemetry' },
+                  ]}
+                />
+              </div>
+            )}
             {activeTab === 'general' && (
               <Section title="General">
                 <ToggleRow
@@ -465,6 +537,20 @@ export default function SettingsPanel({
                   description="Start Sentinel automatically when you sign in. Recommended so Claude Code stays routed through the proxy."
                   checked={settings.launchAtLogin}
                   onChange={setLaunch}
+                />
+              </Section>
+            )}
+
+            {activeTab === 'general' && isDevBuild && (
+              <Section title="Developer">
+                <ToggleRow
+                  label="Demo mode"
+                  description="Mask every account's email, name, and organization in the UI (e.g. sentinel-demo-1@intevity.com) for screen recordings. Display-only — your real account, metrics, and switching are unaffected. Dev builds only."
+                  checked={demoMode}
+                  onChange={(v) => {
+                    setDemoModeEnabled(v);
+                    setDemoMode(v);
+                  }}
                 />
               </Section>
             )}
@@ -529,34 +615,15 @@ export default function SettingsPanel({
                   onChange={() => setMode('off')}
                 />
                 <RadioRow
-                  label="Round-Robin"
-                  description="Rotate the OAuth token on every API request so usage drains across all accounts."
-                  checked={settings.switchingMode === 'round-robin'}
-                  onChange={() => setMode('round-robin')}
+                  label="Auto"
+                  description="Sentinel routes each request to the enrolled account whose 5-hour limit resets soonest, reclaiming headroom you'd lose anyway. Rotation resumes when it blocks or rolls over."
+                  checked={settings.switchingMode === 'auto'}
+                  onChange={() => setMode('auto')}
                 />
-                {settings.switchingMode === 'round-robin' && accounts.length > 0 && (
+                {settings.switchingMode === 'auto' && accounts.length > 0 && (
                   <PoolMemberPreview accounts={accounts} excludedIds={settings.poolExcludedIds} />
                 )}
-                {settings.switchingMode === 'round-robin' && (
-                  <div className="px-3 pb-3 pt-1">
-                    <p className="text-[11px] text-muted mb-1.5">Rotation strategy</p>
-                    <div className="rounded-xl bg-black/[0.02] dark:bg-white/[0.03] divide-y divide-black/5 dark:divide-white/5">
-                      <RadioRow
-                        label="Balance"
-                        description="Route each request to the lowest-utilization account, keeping the pool within ~1%. Best when you want to spread wear evenly."
-                        checked={settings.roundRobinStrategy === 'balance'}
-                        onChange={() => setRoundRobinStrategy('balance')}
-                      />
-                      <RadioRow
-                        label="Earliest reset"
-                        description="Pin traffic to the account whose 5-hour window resets soonest, reclaiming headroom you'd lose anyway. Rotation resumes when it blocks or rolls over."
-                        checked={settings.roundRobinStrategy === 'earliest-reset'}
-                        onChange={() => setRoundRobinStrategy('earliest-reset')}
-                      />
-                    </div>
-                  </div>
-                )}
-                {settings.switchingMode === 'round-robin' && (
+                {settings.switchingMode === 'auto' && (
                   <div className="px-3 pb-3 pt-1">
                     <div className="flex items-center justify-between mb-1">
                       <p className="text-[11px] text-muted">Overage safety buffer</p>
@@ -565,10 +632,10 @@ export default function SettingsPanel({
                       </span>
                     </div>
                     <p className="text-[10px] text-muted/80 leading-snug mb-2">
-                      Round-robin stops picking an account once its 5-hour (or Sonnet 7-day)
-                      utilization reaches {100 - settings.overageBufferPct}%. A larger buffer
-                      protects against a single large request pushing you into overage; a smaller
-                      one squeezes more pool throughput.
+                      Auto stops picking an account once its 5-hour (or Sonnet 7-day) utilization
+                      reaches {100 - settings.overageBufferPct}%. A larger buffer protects against a
+                      single large request pushing you into overage; a smaller one squeezes more
+                      pool throughput.
                     </p>
                     <input
                       type="range"
@@ -649,7 +716,7 @@ export default function SettingsPanel({
               </Section>
             )}
 
-            {activeTab === 'data' && (
+            {activeTab === 'data' && dataSubTab === 'retention' && (
               <Section title="Usage sync">
                 <div className="px-3 py-2.5">
                   <div className="flex items-center justify-between text-[13px] mb-0.5">
@@ -684,7 +751,7 @@ export default function SettingsPanel({
               </Section>
             )}
 
-            {activeTab === 'data' && (
+            {activeTab === 'data' && dataSubTab === 'retention' && (
               <Section title="Data retention">
                 <div className="px-3 py-2.5">
                   <div className="flex items-center justify-between text-[13px] mb-0.5">
@@ -749,7 +816,7 @@ export default function SettingsPanel({
               </Section>
             )}
 
-            {activeTab === 'data' && (
+            {activeTab === 'data' && dataSubTab === 'telemetry' && (
               <Section title="Request logging">
                 <ToggleRow
                   label="Capture API request/response bodies"
@@ -859,7 +926,7 @@ export default function SettingsPanel({
               </Section>
             )}
 
-            {activeTab === 'data' && (
+            {activeTab === 'data' && dataSubTab === 'features' && (
               <Section title="Optimize">
                 <div className="px-3 py-2.5">
                   <p className="text-[11px] text-muted leading-snug">
@@ -895,7 +962,7 @@ export default function SettingsPanel({
               </Section>
             )}
 
-            {activeTab === 'data' && (
+            {activeTab === 'data' && dataSubTab === 'features' && (
               <Section title="Compression">
                 <div className="px-3 py-2.5">
                   <p className="text-[11px] text-muted leading-snug">
@@ -963,7 +1030,7 @@ export default function SettingsPanel({
               </Section>
             )}
 
-            {activeTab === 'data' && (
+            {activeTab === 'data' && dataSubTab === 'telemetry' && (
               <Section title="External OTEL forwarding">
                 <div className="px-3 py-2.5">
                   <p className="text-[11px] text-muted leading-snug">
@@ -1101,7 +1168,7 @@ export default function SettingsPanel({
               </SettingsCard>
             )}
 
-            {activeTab === 'security' && onRunSetupWizard && (
+            {activeTab === 'security' && securitySubTab === 'scanning' && onRunSetupWizard && (
               <Section title="Setup wizard">
                 <div className="px-3 py-2.5 flex items-start justify-between gap-3">
                   <div className="flex-1 min-w-0">
@@ -1123,7 +1190,7 @@ export default function SettingsPanel({
               </Section>
             )}
 
-            {activeTab === 'security' && (
+            {activeTab === 'security' && securitySubTab === 'scanning' && (
               <Section title="Security scanning">
                 <div id="security-enable-toggle">
                   <ToggleRow
@@ -1299,88 +1366,80 @@ export default function SettingsPanel({
               </Section>
             )}
 
-            {activeTab === 'security' && settings.securityScanEnabled && (
-              <Section title="Allowlist">
-                <div className="px-3 pt-2.5 pb-1">
-                  <p className="text-[10px] text-muted leading-snug mb-2">
-                    Matches you&apos;ve chosen to always allow. Added by clicking
-                    <span className="font-semibold"> Always allow</span> on a finding in the
-                    Security tab.
-                  </p>
-                </div>
-                <button
-                  onClick={() => onManageAllowlist?.()}
-                  className="w-full text-left px-3 py-2.5 text-[13px] font-medium text-ios-blue hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors"
-                >
-                  Manage allowlist…
-                </button>
-              </Section>
-            )}
+            {activeTab === 'security' &&
+              securitySubTab === 'scanning' &&
+              settings.securityScanEnabled && (
+                <Section title="Allowlist">
+                  <AllowlistPanel />
+                </Section>
+              )}
 
-            {activeTab === 'security' && settings.securityScanEnabled && (
-              <Section title="Oversized request scanning">
-                <TuneForSystemSubsection bench={settings.lastScanBenchmark} />
-                <div id="oversized-threshold-slider" className="px-3 pt-2.5 pb-1">
-                  <div className="flex items-center justify-between mb-1">
-                    <p className="text-[12px] font-medium text-black dark:text-white">
-                      Deferred-scan threshold
+            {activeTab === 'security' &&
+              securitySubTab === 'scanning' &&
+              settings.securityScanEnabled && (
+                <Section title="Oversized request scanning">
+                  <TuneForSystemSubsection bench={settings.lastScanBenchmark} />
+                  <div id="oversized-threshold-slider" className="px-3 pt-2.5 pb-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-[12px] font-medium text-black dark:text-white">
+                        Deferred-scan threshold
+                      </p>
+                      <span className="text-[11px] font-semibold tabular-nums text-ios-blue">
+                        {settings.securityOversizedThresholdMb} MB
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={16}
+                      step={1}
+                      value={settings.securityOversizedThresholdMb}
+                      onChange={(e) => setOversizedThresholdMb(Number(e.target.value))}
+                      className="w-full accent-ios-blue"
+                      aria-label="Deferred-scan threshold in megabytes"
+                    />
+                    <p className="text-[10px] text-muted leading-snug mt-1.5">
+                      Requests larger than this are scanned asynchronously off the proxy&apos;s hot
+                      path; detection still runs, but block-on-match doesn&apos;t. Raise it if you
+                      get noisy
+                      <code className="text-[9.5px] font-mono bg-muted/10 px-1 mx-0.5 rounded">
+                        Scan Deferred
+                      </code>
+                      alerts on normal-sized requests; lower it to push smaller payloads through the
+                      full synchronous gate.
                     </p>
-                    <span className="text-[11px] font-semibold tabular-nums text-ios-blue">
-                      {settings.securityOversizedThresholdMb} MB
-                    </span>
                   </div>
-                  <input
-                    type="range"
-                    min={1}
-                    max={16}
-                    step={1}
-                    value={settings.securityOversizedThresholdMb}
-                    onChange={(e) => setOversizedThresholdMb(Number(e.target.value))}
-                    className="w-full accent-ios-blue"
-                    aria-label="Deferred-scan threshold in megabytes"
+                  <ToggleRow
+                    label="Scan large requests synchronously"
+                    description="Run the full block-decision gate on bodies above the threshold. Adds latency to large requests but catches block-mode violations inline. When off (default), oversized bodies are scanned async and you see a Scan Deferred telemetry event."
+                    checked={settings.securityScanOversizedSync}
+                    onChange={setScanOversizedSync}
                   />
-                  <p className="text-[10px] text-muted leading-snug mt-1.5">
-                    Requests larger than this are scanned asynchronously off the proxy&apos;s hot
-                    path; detection still runs, but block-on-match doesn&apos;t. Raise it if you get
-                    noisy
-                    <code className="text-[9.5px] font-mono bg-muted/10 px-1 mx-0.5 rounded">
-                      Scan Deferred
-                    </code>
-                    alerts on normal-sized requests; lower it to push smaller payloads through the
-                    full synchronous gate.
-                  </p>
-                </div>
-                <ToggleRow
-                  label="Scan large requests synchronously"
-                  description="Run the full block-decision gate on bodies above the threshold. Adds latency to large requests but catches block-mode violations inline. When off (default), oversized bodies are scanned async and you see a Scan Deferred telemetry event."
-                  checked={settings.securityScanOversizedSync}
-                  onChange={setScanOversizedSync}
-                />
-                <div className="px-3 pt-2.5 pb-1">
-                  <p className="text-[11px] text-muted mb-1">Mute telemetry events</p>
-                </div>
-                <ToggleRow
-                  label="Scan Deferred"
-                  description="Hide informational alerts fired when a request exceeds the threshold above. Muting doesn't change scanning behaviour; it only suppresses the telemetry notice."
-                  checked={settings.securityMuteScanDeferred}
-                  onChange={setMuteScanDeferred}
-                />
-                <ToggleRow
-                  label="Scan Truncated"
-                  description="Hide alerts fired when an SSE response tap fills its 2 MB buffer. Detection still runs on the portion that fit."
-                  checked={settings.securityMuteScanTruncated}
-                  onChange={setMuteScanTruncated}
-                />
-                <ToggleRow
-                  label="Scan Skipped"
-                  description="Hide alerts fired when a body can't be parsed (e.g. non-UTF-8 encoding). Nothing to scan in that case; the alert is purely informational."
-                  checked={settings.securityMuteScanSkipped}
-                  onChange={setMuteScanSkipped}
-                />
-              </Section>
-            )}
+                  <div className="px-3 pt-2.5 pb-1">
+                    <p className="text-[11px] text-muted mb-1">Mute telemetry events</p>
+                  </div>
+                  <ToggleRow
+                    label="Scan Deferred"
+                    description="Hide informational alerts fired when a request exceeds the threshold above. Muting doesn't change scanning behaviour; it only suppresses the telemetry notice."
+                    checked={settings.securityMuteScanDeferred}
+                    onChange={setMuteScanDeferred}
+                  />
+                  <ToggleRow
+                    label="Scan Truncated"
+                    description="Hide alerts fired when an SSE response tap fills its 2 MB buffer. Detection still runs on the portion that fit."
+                    checked={settings.securityMuteScanTruncated}
+                    onChange={setMuteScanTruncated}
+                  />
+                  <ToggleRow
+                    label="Scan Skipped"
+                    description="Hide alerts fired when a body can't be parsed (e.g. non-UTF-8 encoding). Nothing to scan in that case; the alert is purely informational."
+                    checked={settings.securityMuteScanSkipped}
+                    onChange={setMuteScanSkipped}
+                  />
+                </Section>
+              )}
 
-            {activeTab === 'security' && (
+            {activeTab === 'security' && securitySubTab === 'permissions' && (
               <Section title="Tool permissions">
                 <div id="tool-permissions-toggle">
                   <ToggleRow
@@ -1409,12 +1468,6 @@ export default function SettingsPanel({
                       checked={settings.toolPermissionDefaultAction === 'deny'}
                       onChange={() => setToolPermissionDefaultAction('deny')}
                     />
-                    <button
-                      onClick={() => onManageRules?.()}
-                      className="w-full text-left px-3 py-2.5 text-[13px] font-medium text-ios-blue hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors"
-                    >
-                      Manage rules…
-                    </button>
                     <div className="px-3 pt-2.5 pb-1">
                       <p className="text-[11px] text-muted mb-1">Auto mode bypass</p>
                     </div>
@@ -1435,25 +1488,44 @@ export default function SettingsPanel({
               </Section>
             )}
 
-            {activeTab === 'security' && settings.toolPermissionsEnabled && (
-              <Section title="Permission bypasses">
-                <div className="px-3 pt-2 pb-1.5 text-[11px] text-muted leading-snug">
-                  Per-rule allow-through, recorded when you tick{' '}
-                  <span className="font-semibold">Always allow this exact input</span> on a tool-use
-                  approval banner. Remove an entry to re-trigger the banner next time that exact
-                  tool call appears.
-                </div>
-                <BypassesManager />
-              </Section>
+            {activeTab === 'security' &&
+              securitySubTab === 'permissions' &&
+              settings.toolPermissionsEnabled && (
+                <Section title="Tool permission rules">
+                  <div className="p-3 space-y-3">
+                    <PermissionRulesPanel />
+                  </div>
+                </Section>
+              )}
+
+            {activeTab === 'security' &&
+              securitySubTab === 'permissions' &&
+              settings.toolPermissionsEnabled && (
+                <Section title="Permission bypasses">
+                  <div className="px-3 pt-2 pb-1.5 text-[11px] text-muted leading-snug">
+                    Per-rule allow-through, recorded when you tick{' '}
+                    <span className="font-semibold">Always allow this exact input</span> on a
+                    tool-use approval banner. Remove an entry to re-trigger the banner next time
+                    that exact tool call appears.
+                  </div>
+                  <BypassesManager />
+                </Section>
+              )}
+
+            {activeTab === 'security' &&
+              securitySubTab === 'scanning' &&
+              settings.securityScanEnabled && (
+                <Section title="Detectors">
+                  <DetectorTuning settings={settings} onUpdate={update} />
+                </Section>
+              )}
+            {activeTab === 'security' && securitySubTab === 'isolation' && (
+              <div id="isolation-enable-toggle">
+                <IsolationPanel settings={settings} updateSettings={update} />
+              </div>
             )}
 
-            {activeTab === 'security' && settings.securityScanEnabled && (
-              <Section title="Detectors">
-                <DetectorTuning settings={settings} onUpdate={update} />
-              </Section>
-            )}
-
-            {activeTab === 'security' && (
+            {activeTab === 'security' && securitySubTab === 'sync' && (
               <Section title="Claude Code sync">
                 <ClaudeCodeSyncSubsection
                   enabled={settings.claudeCodeSyncEnabled}
@@ -1907,25 +1979,34 @@ function formatAgo(ts: number): string {
 
 function BypassesManager(): React.ReactElement {
   const { entries, loading, error, remove } = usePermissionBypasses();
+  const [search, setSearch] = useState('');
+  const visible = useMemo(() => filterBypasses(entries, search), [entries, search]);
   if (loading) {
-    return <div className="px-3 py-3 text-[11px] text-muted">Loading…</div>;
+    return <p className="text-[12px] text-muted px-3 py-3">Loading…</p>;
   }
   if (error) {
-    return <div className="px-3 py-3 text-[11px] text-ios-red">{error}</div>;
+    return <p className="text-[12px] text-rose-500 px-3 py-3">{error}</p>;
   }
   if (entries.length === 0) {
     return (
-      <div className="px-3 py-3 text-[11px] text-muted">
+      <p className="text-[12px] text-muted px-3 py-3 leading-relaxed">
         No bypasses yet. Pick <span className="font-semibold">Always</span> on a pending tool-use
         banner to add one: it silences every future tool call matching the same rule.
-      </div>
+      </p>
     );
   }
   return (
-    <div className="divide-y divide-black/5 dark:divide-white/5">
-      {entries.map((entry) => (
-        <BypassesRow key={entry.id} entry={entry} onRemove={() => remove(entry.id)} />
-      ))}
+    <div className="p-3 space-y-2">
+      <SearchInput value={search} onChange={setSearch} placeholder="Search tool, input, or note" />
+      {visible.length === 0 ? (
+        <p className="text-[12px] text-muted py-2">No bypasses match your search.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {visible.map((entry) => (
+            <BypassesRow key={entry.id} entry={entry} onRemove={() => remove(entry.id)} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1971,7 +2052,7 @@ function BypassesRow({
 }
 
 /**
- * Read-only preview of the round-robin pool membership. Each enrolled
+ * Read-only preview of the Auto-switching pool membership. Each enrolled
  * account is rendered as a colored chip (avatar color + truncated email);
  * accounts in `excludedIds` are drawn muted and struck-through so the user
  * can see at a glance which accounts will rotate.
@@ -2066,9 +2147,9 @@ function ClaudeAiConnectionRow({
               Allow spending overage
             </p>
             <p className="text-[10px] text-muted leading-snug">
-              Round-robin picks this account for new requests after its 5-hour quota is exhausted,
-              and lets Sonnet requests through once the Sonnet 7-day quota is spent. Off: Sentinel
-              refuses either spillover with a 503.
+              Auto picks this account for new requests after its 5-hour quota is exhausted, and lets
+              Sonnet requests through once the Sonnet 7-day quota is spent. Off: Sentinel refuses
+              either spillover with a 503.
             </p>
           </div>
           <input

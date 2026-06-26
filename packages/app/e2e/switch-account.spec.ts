@@ -61,9 +61,12 @@ test('Switch pill on inactive card flips active account end-to-end', async ({ pa
   );
 
   // B is inactive → its card's primary action is the "Switch" button.
-  // Alice's card has no "Switch" button (she's already active), so a
-  // plain `getByRole('button', { name: 'Switch' })` resolves unambiguously.
-  await page.getByRole('button', { name: 'Switch' }).click();
+  // Alice's card has no "Switch" button (she's already active). Use
+  // exact: true so the match doesn't also resolve the "How account
+  // switching works" info button — its accessible name contains
+  // "switching", which a default (substring) name match would catch,
+  // tripping strict mode.
+  await page.getByRole('button', { name: 'Switch', exact: true }).click();
   const switchedMsg = await switched;
   expect(switchedMsg.to.accountUuid).toBe(ACCT_B.id);
 

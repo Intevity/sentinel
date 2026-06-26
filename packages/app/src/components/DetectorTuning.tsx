@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import type { DetectorStatsRow, DetectorTier, Settings } from '@sentinel/shared';
 import { useDetectorStats } from '../hooks/useDetectorStats.js';
+import { SearchInput } from './settings/primitives.js';
 
 interface DetectorTuningProps {
   settings: Settings;
@@ -72,13 +73,7 @@ export function DetectorTuning({ settings, onUpdate }: DetectorTuningProps): Rea
         for noise reduction.
       </div>
       <div className="px-3 pb-2">
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search detector id"
-          className="w-full text-[12px] px-2 py-1 rounded bg-muted/10 placeholder-muted focus:outline-none focus:bg-muted/20"
-        />
+        <SearchInput value={search} onChange={setSearch} placeholder="Search detector id" />
       </div>
       <div className="divide-y divide-black/5 dark:divide-white/5">
         {filtered.map((row) => (

@@ -113,7 +113,7 @@ describe('settings', () => {
     });
 
     it('accepts both valid switchingMode values', () => {
-      for (const mode of ['off', 'round-robin'] as const) {
+      for (const mode of ['off', 'auto'] as const) {
         writeRawWithSig(
           path,
           JSON.stringify({ ...DEFAULT_SETTINGS, switchingMode: mode }),
@@ -128,25 +128,18 @@ describe('settings', () => {
       expect(loadSettings(path).switchingMode).toBe(DEFAULT_SETTINGS.switchingMode);
     });
 
-    it('defaults roundRobinStrategy to "balance"', () => {
-      expect(loadSettings(path).roundRobinStrategy).toBe('balance');
-    });
-
-    it('accepts both valid roundRobinStrategy values', () => {
-      for (const strategy of ['balance', 'earliest-reset'] as const) {
-        writeRawWithSig(
-          path,
-          JSON.stringify({ ...DEFAULT_SETTINGS, roundRobinStrategy: strategy }),
-        );
-        expect(loadSettings(path).roundRobinStrategy).toBe(strategy);
-      }
-    });
-
-    it('falls back to default roundRobinStrategy when the value is garbage', () => {
-      writeRawWithSig(path, JSON.stringify({ roundRobinStrategy: 'other' }), 'utf-8');
-      expect(loadSettings(path).roundRobinStrategy).toBe(DEFAULT_SETTINGS.roundRobinStrategy);
-      writeRawWithSig(path, JSON.stringify({ roundRobinStrategy: 42 }), 'utf-8');
-      expect(loadSettings(path).roundRobinStrategy).toBe(DEFAULT_SETTINGS.roundRobinStrategy);
+    it('migrates the legacy "round-robin" switchingMode to "auto" and drops roundRobinStrategy', () => {
+      // Beta users had switchingMode:'round-robin' (+ a roundRobinStrategy) on
+      // disk before the rename. Loading must recover their rotation setting as
+      // 'auto' with no data loss, and the retired strategy field is ignored.
+      writeRawWithSig(
+        path,
+        JSON.stringify({ switchingMode: 'round-robin', roundRobinStrategy: 'balance' }),
+        'utf-8',
+      );
+      const got = loadSettings(path);
+      expect(got.switchingMode).toBe('auto');
+      expect((got as unknown as Record<string, unknown>).roundRobinStrategy).toBeUndefined();
     });
 
     it('accepts all valid logLevel values', () => {
@@ -477,7 +470,7 @@ describe('settings', () => {
       const wanted = {
         ...DEFAULT_SETTINGS,
         launchAtLogin: false,
-        switchingMode: 'round-robin' as const,
+        switchingMode: 'auto' as const,
         alertSoundName: 'Glass',
         autoUpdate: true,
         poolExcludedIds: [],
@@ -518,8 +511,8 @@ describe('settings', () => {
     });
 
     it('starts from defaults when no file exists', () => {
-      const got = updateSettings({ switchingMode: 'round-robin' }, path);
-      expect(got.switchingMode).toBe('round-robin');
+      const got = updateSettings({ switchingMode: 'auto' }, path);
+      expect(got.switchingMode).toBe('auto');
       expect(got.launchAtLogin).toBe(DEFAULT_SETTINGS.launchAtLogin);
     });
 
@@ -599,10 +592,10 @@ describe('settings', () => {
 
     it('persists across calls', () => {
       updateSettings({ launchAtLogin: false }, path);
-      updateSettings({ switchingMode: 'round-robin' }, path);
+      updateSettings({ switchingMode: 'auto' }, path);
       const got = loadSettings(path);
       expect(got.launchAtLogin).toBe(false);
-      expect(got.switchingMode).toBe('round-robin');
+      expect(got.switchingMode).toBe('auto');
     });
 
     it('round-trips securityContextVerbosity and coerces unknown values to the default', () => {
@@ -1045,6 +1038,86 @@ describe('settings', () => {
     });
   });
 
+  describe('isolationPolicy', () => {
+    it('defaults to a fully-disabled policy with empty arrays', () => {
+      expect(DEFAULT_SETTINGS.isolationPolicy).toEqual({
+        enabled: false,
+        syncToClaudeCode: false,
+        enforceCodeMode: false,
+        network: { allowedDomains: [], deniedDomains: [] },
+        filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] },
+        credentials: { files: [], envVars: [] },
+      });
+      expect(loadSettings(path).isolationPolicy).toEqual(DEFAULT_SETTINGS.isolationPolicy);
+    });
+
+    it('round-trips a fully-populated policy', () => {
+      const policy = {
+        enabled: true,
+        syncToClaudeCode: true,
+        enforceCodeMode: true,
+        network: { allowedDomains: ['example.com', '*.npmjs.org'], deniedDomains: ['evil.test'] },
+        filesystem: {
+          allowWrite: ['~/.kube'],
+          denyWrite: ['/etc'],
+          denyRead: ['~/'],
+          allowRead: ['.'],
+        },
+        credentials: { files: ['~/.aws/credentials'], envVars: ['GITHUB_TOKEN'] },
+        claudeCode: { failIfUnavailable: true, excludedCommands: ['docker *'] },
+      };
+      const next = updateSettings({ isolationPolicy: policy }, path);
+      expect(next.isolationPolicy).toEqual(policy);
+      expect(loadSettings(path).isolationPolicy).toEqual(policy);
+    });
+
+    it('filters invalid domains and drops empty path/env entries', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          isolationPolicy: {
+            enabled: true,
+            network: {
+              allowedDomains: ['ok.com', 'https://bad.com', '*.com', '  ', 42],
+              deniedDomains: ['evil.test', 'has space'],
+            },
+            filesystem: { allowWrite: ['/good', '', '  ', 7] },
+            credentials: { files: ['~/.ssh', ''], envVars: ['TOKEN', '   '] },
+          },
+        }),
+      );
+      const got = loadSettings(path).isolationPolicy;
+      expect(got.enabled).toBe(true);
+      expect(got.network.allowedDomains).toEqual(['ok.com']);
+      expect(got.network.deniedDomains).toEqual(['evil.test']);
+      expect(got.filesystem.allowWrite).toEqual(['/good']);
+      expect(got.credentials.files).toEqual(['~/.ssh']);
+      expect(got.credentials.envVars).toEqual(['TOKEN']);
+    });
+
+    it('keeps only valid claudeCode passthrough keys and omits the block when none are valid', () => {
+      writeRawWithSig(
+        path,
+        JSON.stringify({
+          isolationPolicy: { claudeCode: { failIfUnavailable: true, allowAppleEvents: 'nope' } },
+        }),
+      );
+      const kept = loadSettings(path).isolationPolicy;
+      expect(kept.claudeCode).toEqual({ failIfUnavailable: true });
+
+      writeRawWithSig(
+        path,
+        JSON.stringify({ isolationPolicy: { claudeCode: { bogus: 1, allowAppleEvents: 5 } } }),
+      );
+      expect('claudeCode' in loadSettings(path).isolationPolicy).toBe(false);
+    });
+
+    it('falls back to the default policy when isolationPolicy is not an object', () => {
+      writeRawWithSig(path, JSON.stringify({ isolationPolicy: 'nope' }));
+      expect(loadSettings(path).isolationPolicy).toEqual(DEFAULT_SETTINGS.isolationPolicy);
+    });
+  });
+
   describe('optimizeSubTab', () => {
     it('defaults to subagents', () => {
       expect(DEFAULT_SETTINGS.optimizeSubTab).toBe('subagents');
@@ -1058,6 +1131,60 @@ describe('settings', () => {
       }
       writeRawWithSig(path, JSON.stringify({ optimizeSubTab: 'charts' }));
       expect(loadSettings(path).optimizeSubTab).toBe('subagents');
+    });
+  });
+
+  describe('securitySubTab', () => {
+    it('defaults to scanning', () => {
+      expect(DEFAULT_SETTINGS.securitySubTab).toBe('scanning');
+      expect(loadSettings(path).securitySubTab).toBe('scanning');
+    });
+
+    it('round-trips every valid value', () => {
+      for (const tab of ['scanning', 'permissions', 'isolation', 'sync'] as const) {
+        writeRawWithSig(path, JSON.stringify({ securitySubTab: tab }));
+        expect(loadSettings(path).securitySubTab).toBe(tab);
+      }
+    });
+
+    it('falls back to default when the value is unknown', () => {
+      writeRawWithSig(path, JSON.stringify({ securitySubTab: 'firewall' }));
+      expect(loadSettings(path).securitySubTab).toBe('scanning');
+    });
+
+    it('falls back to default when the value is not a string', () => {
+      writeRawWithSig(path, JSON.stringify({ securitySubTab: 3 }));
+      expect(loadSettings(path).securitySubTab).toBe('scanning');
+    });
+
+    it('updateSettings persists a new securitySubTab selection', () => {
+      const next = updateSettings({ securitySubTab: 'permissions' }, path);
+      expect(next.securitySubTab).toBe('permissions');
+      expect(loadSettings(path).securitySubTab).toBe('permissions');
+    });
+  });
+
+  describe('dataSubTab', () => {
+    it('defaults to retention', () => {
+      expect(DEFAULT_SETTINGS.dataSubTab).toBe('retention');
+      expect(loadSettings(path).dataSubTab).toBe('retention');
+    });
+
+    it('round-trips every valid value', () => {
+      for (const tab of ['retention', 'features', 'telemetry'] as const) {
+        writeRawWithSig(path, JSON.stringify({ dataSubTab: tab }));
+        expect(loadSettings(path).dataSubTab).toBe(tab);
+      }
+    });
+
+    it('falls back to default when the value is unknown', () => {
+      writeRawWithSig(path, JSON.stringify({ dataSubTab: 'exports' }));
+      expect(loadSettings(path).dataSubTab).toBe('retention');
+    });
+
+    it('falls back to default when the value is not a string', () => {
+      writeRawWithSig(path, JSON.stringify({ dataSubTab: false }));
+      expect(loadSettings(path).dataSubTab).toBe('retention');
     });
   });
 

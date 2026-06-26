@@ -922,7 +922,7 @@ describe('OtelReceiver', () => {
     });
 
     it('api_request with known request_id is attributed to the mapped account, overriding activeAccountId', async () => {
-      // Round-robin mode: Claude Code is signed in as one user but the proxy
+      // Auto mode: Claude Code is signed in as one user but the proxy
       // routed this specific request to a different account's token. The
       // request-id map records the routing decision, and the OTEL lookup
       // must honor it.

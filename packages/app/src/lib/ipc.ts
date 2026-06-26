@@ -9,6 +9,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import type { AppToDaemonMessage, DaemonToAppMessage, IpcResponse } from '@sentinel/shared';
+import { maskIpcResponse, maskDaemonBroadcast } from './demoMode.js';
 
 export type { AppToDaemonMessage, DaemonToAppMessage, IpcResponse };
 
@@ -60,9 +61,11 @@ export async function sendToSentinel<T = unknown>(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(message),
     });
-    return (await res.json()) as IpcResponse<T>;
+    // Demo mode (dev-only) masks account emails/names on the way to the UI;
+    // a no-op when disabled, and the daemon never sees the masked values.
+    return maskIpcResponse(message, (await res.json()) as IpcResponse<T>);
   }
-  return invoke<IpcResponse<T>>('ipc_send', { message });
+  return maskIpcResponse(message, await invoke<IpcResponse<T>>('ipc_send', { message }));
 }
 
 /**
@@ -78,11 +81,15 @@ export async function sendToSentinel<T = unknown>(
 export async function onDaemonMessage(
   handler: (msg: DaemonToAppMessage) => void,
 ): Promise<() => void> {
+  // Demo mode (dev-only) masks account emails/names on broadcasts (e.g. the
+  // `account_switched` that updates the header) before they reach the UI;
+  // a no-op when disabled.
+  const deliver = (msg: DaemonToAppMessage): void => handler(maskDaemonBroadcast(msg));
   if (E2E_BRIDGE_URL) {
-    return subscribeToE2EEvents(handler);
+    return subscribeToE2EEvents(deliver);
   }
   const { listen } = await import('@tauri-apps/api/event');
   return listen<DaemonToAppMessage>('daemon-message', (event) => {
-    handler(event.payload);
+    deliver(event.payload);
   });
 }

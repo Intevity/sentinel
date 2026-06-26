@@ -9,7 +9,6 @@ import {
   ScrollText,
   Loader2,
   Settings as SettingsIcon,
-  Repeat,
   HelpCircle,
 } from 'lucide-react';
 import SecurityShield from './components/SecurityShield.js';
@@ -33,9 +32,6 @@ import ActivationBanner from './components/ActivationBanner.js';
 import HeaderMenu from './components/HeaderMenu.js';
 import PersistenceBanner from './components/PersistenceBanner.js';
 import SettingsPanel from './components/SettingsPanel.js';
-import SecurityRulesOverlay, {
-  type SecurityOverlayTab,
-} from './components/SecurityRulesOverlay.js';
 import SecurityPanel from './components/SecurityPanel.js';
 import SecuritySetupWizard from './components/SecuritySetupWizard.js';
 import Tour from './components/Tour.js';
@@ -50,6 +46,7 @@ import { useAutoResizeWindow } from './hooks/useAutoResizeWindow.js';
 import { useDaemon } from './hooks/useDaemon.js';
 import { useDaemonErrors } from './hooks/useDaemonErrors.js';
 import { useSettings } from './hooks/useSettings.js';
+import { useRoutedAccount } from './hooks/useRoutedAccount.js';
 import { useThemeEffect } from './hooks/useThemeEffect.js';
 import { useNativeAlertNotifications } from './hooks/useNotifications.js';
 import { useSecurityBanner } from './hooks/useSecurityBanner.js';
@@ -87,11 +84,6 @@ export default function App(): React.ReactElement {
   // activeTab='security' in the notify-event listener below.
   const [securityExpandEventId, setSecurityExpandEventId] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Tool-permission rules editor. Lifted to App level so the overlay has its
-  // own positioning context (inside SettingsPanel it pinned to the top of the
-  // Settings scroll area and appeared off-screen when the user was scrolled
-  // down). Also reachable directly via the Shield icon in the header.
-  const [rulesOpen, setRulesOpen] = useState(false);
   // Deep-link target inside the Settings panel. When set before opening,
   // SettingsPanel scrolls to the matching element id and flashes it.
   const [settingsScrollTarget, setSettingsScrollTarget] = useState<string | null>(null);
@@ -109,12 +101,9 @@ export default function App(): React.ReactElement {
     refetch,
   } = useDaemon();
   const { recentErrors, recentEntries, hasUnseenErrors, markErrorsSeen } = useDaemonErrors();
-  const { settings, update: updateSettings } = useSettings();
+  const { settings } = useSettings();
+  const routedAccountId = useRoutedAccount();
   useThemeEffect(settings?.theme ?? null);
-  // Which tab the SecurityRulesOverlay opens on. Header-shield click opens
-  // 'rules' by default; Settings' "Manage allowlist…" button flips this to
-  // 'allowlist' before opening the overlay.
-  const [securityOverlayTab, setSecurityOverlayTab] = useState<SecurityOverlayTab>('rules');
   // Mount the app-global native-notification listener. Must live here (not
   // in a per-tab component) so banners fire on any tab and while the
   // window is hidden in the tray.
@@ -197,7 +186,7 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     if (activeTab === 'security') dismissSecurityBanner();
   }, [activeTab, dismissSecurityBanner]);
-  const isRoundRobin = settings?.switchingMode === 'round-robin';
+  const isAuto = settings?.switchingMode === 'auto';
   // Picker status props — pulled once here so every tab's AccountViewPicker
   // renders identical status pills (Active / Excluded) driven by the same
   // source of truth as AccountCard on the Accounts tab.
@@ -233,7 +222,7 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     if (!settings) return;
     if (tourOpen) return;
-    if (settingsOpen || rulesOpen) return;
+    if (settingsOpen) return;
     if (tourForceOpen) {
       tourClosedThisSession.current = false;
       setTourOpen(true);
@@ -243,15 +232,7 @@ export default function App(): React.ReactElement {
     if (!connected) return;
     if (settings.tourCompleted) return;
     setTourOpen(true);
-  }, [
-    settings?.tourCompleted,
-    tourForceOpen,
-    tourOpen,
-    connected,
-    settingsOpen,
-    rulesOpen,
-    settings,
-  ]);
+  }, [settings?.tourCompleted, tourForceOpen, tourOpen, connected, settingsOpen, settings]);
 
   // First-run security setup wizard. Opens once per install (tracked via
   // settings.securitySetupCompleted) after the user has added at least one
@@ -321,17 +302,24 @@ export default function App(): React.ReactElement {
     setMetricsView(undefined);
     setAlertsView(undefined);
     setSecurityView(undefined);
-  }, [activeAccount?.accountUuid, activeAccount?.organizationUuid, isRoundRobin]);
+  }, [activeAccount?.accountUuid, activeAccount?.organizationUuid, isAuto]);
 
-  const planBadge = activeAccount ? planLabel(activeAccount.billingType) : '';
   // Map the live OAuth active-account (carries accountUuid + orgUuid) back to
   // an enrolled AccountInfo so we can pull its user-picked color for the dot.
   // Matches the sentinel-key derivation (orgUuid when present, else accountUuid).
   const activeInfo = activeAccount
     ? accounts.find((a) => a.id === (activeAccount.organizationUuid || activeAccount.accountUuid))
     : undefined;
-  const rrStrategyLabel =
-    settings?.roundRobinStrategy === 'earliest-reset' ? 'Earliest Reset' : 'Balance';
+  // The account the header shows. In Manual mode it's the user's active
+  // account; in Auto mode it's the account the rotator is currently routing
+  // through (from the `routed_account_changed` broadcast), falling back to the
+  // active account until the first request flows so the header is never blank.
+  const routedInfo =
+    isAuto && routedAccountId ? accounts.find((a) => a.id === routedAccountId) : undefined;
+  const headerInfo = routedInfo ?? activeInfo;
+  const headerEmail = routedInfo?.email ?? activeAccount?.emailAddress ?? '';
+  const headerPlanType = routedInfo?.planType ?? activeAccount?.billingType;
+  const headerPlanBadge = headerPlanType ? planLabel(headerPlanType) : '';
 
   return (
     <MotionConfig reducedMotion="user">
@@ -372,47 +360,30 @@ export default function App(): React.ReactElement {
           {/* Flex-1 + min-w-0 lets this cluster take the remaining width and
             pass the squeeze onto the email element below (which has truncate). */}
           <div className="flex items-center gap-2 flex-1 min-w-0 justify-end">
-            {/* In round-robin mode, showing a single email is misleading
-              (requests rotate) so we hide it — the RR pill below carries
-              the signal. Otherwise show email + plan as pill, matching
-              the account-card chip style. */}
-            {activeAccount && !isRoundRobin && (
+            {/* The account currently serving requests: the user's active
+              account in Manual mode, the rotator's live target in Auto mode
+              (updates as Auto switches). Email + plan pill, matching the
+              account-card chip style. */}
+            {headerEmail && (
               <>
-                {activeInfo && <AccountColorDot color={accountColor(activeInfo)} size="xs" />}
+                {headerInfo && <AccountColorDot color={accountColor(headerInfo)} size="xs" />}
                 <span
                   className="text-[11px] text-muted truncate min-w-0"
-                  title={activeAccount.emailAddress + (planBadge ? ` (${planBadge})` : '')}
+                  title={headerEmail + (headerPlanBadge ? ` (${headerPlanBadge})` : '')}
                 >
-                  {activeAccount.emailAddress}
+                  {headerEmail}
                 </span>
-                {planBadge && (
+                {headerPlanBadge && (
                   <span
-                    className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${planColor(activeAccount.billingType)}`}
+                    className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${planColor(headerPlanType)}`}
                   >
-                    {planBadge}
+                    {headerPlanBadge}
                   </span>
                 )}
               </>
             )}
-            {/* Round-robin pill — surfaced in the header so users always know
-              their requests are rotating, even though the email above is
-              still the single "active" account in ~/.claude.json.
-              flex-shrink-0 + whitespace-nowrap keeps the pill at its
-              natural width regardless of how cramped the email gets. */}
-            {isRoundRobin && (
-              <span
-                className="inline-flex items-center gap-1 text-[9px] font-semibold text-ios-blue bg-ios-blue/10 px-1.5 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0 whitespace-nowrap"
-                title={`Round-robin is on; rotating requests using the "${rrStrategyLabel}" strategy`}
-              >
-                <Repeat size={9} strokeWidth={2.5} />
-                Round-Robin · {rrStrategyLabel}
-              </span>
-            )}
             <button
-              onClick={() => {
-                setSecurityOverlayTab('rules');
-                setRulesOpen(true);
-              }}
+              onClick={() => openSettingsAt('tool-permissions-toggle')}
               className="inline-flex items-center justify-center hover:opacity-80 transition-opacity transform-gpu p-0.5 -m-0.5 flex-shrink-0 leading-none"
               aria-label="Security"
               data-tour-id="tour-permissions"
@@ -448,31 +419,6 @@ export default function App(): React.ReactElement {
               onRunSetupWizard={() => {
                 setSettingsOpen(false);
                 setSettingsScrollTarget(null);
-                setWizardForceOpen(true);
-              }}
-              onManageRules={() => {
-                setSettingsOpen(false);
-                setSettingsScrollTarget(null);
-                setSecurityOverlayTab('rules');
-                setRulesOpen(true);
-              }}
-              onManageAllowlist={() => {
-                setSettingsOpen(false);
-                setSettingsScrollTarget(null);
-                setSecurityOverlayTab('allowlist');
-                setRulesOpen(true);
-              }}
-            />
-          )}
-          {rulesOpen && !settingsOpen && (
-            <SecurityRulesOverlay
-              onClose={() => setRulesOpen(false)}
-              measureRef={overlayRef}
-              initialTab={securityOverlayTab}
-              settings={settings}
-              updateSettings={updateSettings}
-              onRunSetupWizard={() => {
-                setRulesOpen(false);
                 setWizardForceOpen(true);
               }}
             />
@@ -661,12 +607,12 @@ export default function App(): React.ReactElement {
                           </div>
                         );
                       if (activeTab === 'usage') {
-                        const usagePoolOptions: PoolOption[] = isRoundRobin
+                        const usagePoolOptions: PoolOption[] = isAuto
                           ? [
                               {
                                 value: POOL_VIEW,
                                 primary: 'All accounts (pool)',
-                                secondary: 'Round-robin aggregate',
+                                secondary: 'Auto pool aggregate',
                               },
                             ]
                           : [];
@@ -697,9 +643,9 @@ export default function App(): React.ReactElement {
                       if (activeTab === 'metrics') {
                         // Build pool rows. "All accounts" (ignoring exclusions)
                         // is always available when ≥2 accounts are enrolled.
-                        // The RR pool row joins it when round-robin is active
-                        // AND the pool differs from the full account list
-                        // (otherwise the two rows would be duplicates).
+                        // The Auto pool row joins it when Auto switching is
+                        // active AND the pool differs from the full account
+                        // list (otherwise the two rows would be duplicates).
                         const poolMemberCount = accounts.length - pickerPoolExcludedIds.length;
                         const metricsPoolOptions: PoolOption[] = [];
                         if (accounts.length > 1) {
@@ -709,15 +655,11 @@ export default function App(): React.ReactElement {
                             secondary: `${accounts.length} accounts`,
                           });
                         }
-                        if (
-                          isRoundRobin &&
-                          poolMemberCount > 0 &&
-                          poolMemberCount < accounts.length
-                        ) {
+                        if (isAuto && poolMemberCount > 0 && poolMemberCount < accounts.length) {
                           metricsPoolOptions.push({
                             value: POOL_VIEW,
                             primary: 'All accounts (pool)',
-                            secondary: `Round-robin · ${poolMemberCount} members`,
+                            secondary: `Auto pool · ${poolMemberCount} members`,
                           });
                         }
                         // Mirror the picker's display fallback (see
@@ -829,7 +771,7 @@ export default function App(): React.ReactElement {
  * can execute. Pool membership is decided here (not in the daemon) so the
  * daemon stays ignorant of what "pool" vs. "all" means in this app's model.
  *   - ALL_VIEW   → every enrolled account id
- *   - POOL_VIEW  → enrolled accounts minus the round-robin pool exclusions
+ *   - POOL_VIEW  → enrolled accounts minus the Auto-pool exclusions
  *   - string id  → single-account pin
  *   - undefined  → follow the active account
  */

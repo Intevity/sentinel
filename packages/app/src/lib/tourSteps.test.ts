@@ -20,8 +20,8 @@ describe('TOUR_STEPS', () => {
     expect(TOUR_STEPS[0]?.title.toLowerCase()).toMatch(/welcome/);
   });
 
-  it('declares a 6-step core track ahead of the power-user track', () => {
-    expect(CORE_STEP_COUNT).toBe(6);
+  it('declares a 7-step core track ahead of the power-user track', () => {
+    expect(CORE_STEP_COUNT).toBe(7);
     for (let i = 0; i < CORE_STEP_COUNT; i++) {
       expect(TOUR_STEPS[i]?.track).toBe('core');
     }
@@ -30,13 +30,23 @@ describe('TOUR_STEPS', () => {
     }
   });
 
-  it('covers the core feature pillars: accounts, round-robin, optimize, security, alerts', () => {
+  it('covers the core feature pillars: accounts, auto-switching, optimize, security, isolation, alerts', () => {
     const coreIds = TOUR_STEPS.slice(0, CORE_STEP_COUNT).map((s) => s.targetId);
     expect(coreIds).toContain('add-account');
     expect(coreIds).toContain('switching-mode');
     expect(coreIds).toContain('tab-optimize');
     expect(coreIds).toContain('tab-security');
+    expect(coreIds).toContain('tour-isolation');
     expect(coreIds).toContain('tab-notifications');
+  });
+
+  it('places the Isolation step in the core track right after Security, on the security tab', () => {
+    const ids = TOUR_STEPS.map((s) => s.targetId);
+    expect(ids.indexOf('tour-isolation')).toBe(ids.indexOf('tab-security') + 1);
+    const iso = TOUR_STEPS.find((s) => s.targetId === 'tour-isolation');
+    expect(iso?.track).toBe('core');
+    expect(iso?.tab).toBe('security');
+    expect(iso?.body.toLowerCase()).toMatch(/sandbox/);
   });
 
   it('promotes Optimize to a core step, placed right before Security, covering subagents, compression, and context', () => {

@@ -4,7 +4,7 @@
  * Sentinel computes things Claude Code's own OTEL stream can't see:
  *   - Cache TTL breakdown (5m vs 1h cache writes — Sentinel parses
  *     responses; CC only emits flat token counts).
- *   - Per-account 5h-window usage attribution in round-robin mode
+ *   - Per-account 5h-window usage attribution in Auto mode
  *     (CC reports for whichever account it thinks is active).
  *   - Account-switch and rotation events.
  *   - Security scanner findings + counters.
@@ -59,7 +59,7 @@ export const METRIC_METADATA: Record<string, { description: string; unit: string
   },
   'sentinel.account.usage.tokens': {
     description:
-      "Per-account token usage in the rolling 5h subscription window, split by kind (input, output, cache_read, cache_create). In round-robin mode this attributes usage to the account actually drained, which Claude Code's own stream cannot see.",
+      "Per-account token usage in the rolling 5h subscription window, split by kind (input, output, cache_read, cache_create). In Auto mode this attributes usage to the account actually drained, which Claude Code's own stream cannot see.",
     unit: 'tokens',
   },
   'sentinel.account.usage.cost_usd': {

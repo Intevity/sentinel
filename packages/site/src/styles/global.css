@@ -123,3 +123,221 @@
     transition: none;
   }
 }
+
+/* --- Hero mascot animation ------------------------------------------------
+   Stacks the mascot, a breathing glow, and three orbiting "pillar" chips in a
+   single centered grid cell so each layer keeps its own transform animation. */
+.mascot-stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 208px;
+  height: 208px;
+}
+.mascot-stage > * {
+  grid-area: 1 / 1;
+}
+
+/* The mascot: a slow, gentle float. */
+.mascot-img {
+  z-index: 2;
+  filter: drop-shadow(0 10px 34px rgba(0, 122, 255, 0.42));
+  animation: mascot-float 5s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* Soft guardian glow that breathes behind the mascot. */
+.mascot-glow {
+  z-index: 0;
+  width: 168px;
+  height: 168px;
+  border-radius: 9999px;
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(0, 122, 255, 0.62) 0%,
+    rgba(94, 92, 230, 0.36) 45%,
+    rgba(94, 92, 230, 0) 72%
+  );
+  filter: blur(7px);
+  animation: mascot-pulse 6s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+/* Sonar pulse: rings ripple outward from the mascot and fade, staggered so a
+   fresh ping leaves roughly every 1.5s. */
+.mascot-sonar {
+  position: relative;
+  z-index: 1;
+}
+.mascot-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 120px;
+  height: 120px;
+  margin: -60px 0 0 -60px;
+  border-radius: 9999px;
+  border: 1.5px solid rgba(0, 122, 255, 0.5);
+  box-shadow: 0 0 12px 0 rgba(0, 122, 255, 0.25);
+  opacity: 0;
+  animation: sonar-ping 4.5s ease-out infinite;
+  will-change: transform, opacity;
+}
+.mascot-ring:nth-child(2) {
+  animation-delay: 1.5s;
+}
+.mascot-ring:nth-child(3) {
+  animation-delay: 3s;
+}
+
+@keyframes mascot-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-13px);
+  }
+}
+@keyframes mascot-pulse {
+  0%,
+  100% {
+    transform: scale(0.9);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 0.95;
+  }
+}
+@keyframes sonar-ping {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.55;
+  }
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+/* Ambient wash drifting behind the whole hero. */
+.hero-gradient::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(45% 55% at 30% 15%, rgba(0, 122, 255, 0.1), rgba(0, 122, 255, 0) 70%),
+    radial-gradient(40% 50% at 75% 10%, rgba(94, 92, 230, 0.1), rgba(94, 92, 230, 0) 70%);
+  animation: hero-aurora 16s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+@keyframes hero-aurora {
+  0% {
+    transform: translate3d(-3%, 0, 0) scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: translate3d(3%, 2%, 0) scale(1.08);
+    opacity: 1;
+  }
+}
+
+/* One-time entrance: hero copy and CTAs rise in, lightly staggered via inline delay. */
+.hero-rise {
+  opacity: 0;
+  animation: hero-rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes hero-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Reduced motion: settle everything into a calm static state. */
+@media (prefers-reduced-motion: reduce) {
+  .mascot-img,
+  .mascot-glow,
+  .mascot-ring,
+  .hero-gradient::before {
+    animation: none;
+  }
+  .mascot-glow {
+    opacity: 0.75;
+  }
+  .mascot-ring {
+    display: none;
+  }
+  .hero-rise {
+    opacity: 1;
+    transform: none;
+    animation: none;
+  }
+}
+
+/* Faint dot-grid behind the hero, masked to fade out toward the edges. Static. */
+.hero-gradient::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1.4px);
+  background-size: 24px 24px;
+  -webkit-mask-image: radial-gradient(58% 58% at 50% 38%, #000 0%, transparent 76%);
+  mask-image: radial-gradient(58% 58% at 50% 38%, #000 0%, transparent 76%);
+}
+
+/* Whisper-faint ambient glow behind a content section's heading. `isolation`
+   keeps the z-index:-1 wash behind this section's own content, not the page. */
+.has-aurora {
+  position: relative;
+  isolation: isolate;
+}
+.section-aurora {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 520px;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(56% 60% at 50% 42%, rgba(0, 122, 255, 0.11), transparent 72%),
+    radial-gradient(38% 50% at 68% 36%, rgba(94, 92, 230, 0.09), transparent 72%);
+  /* Soft-fade the band's top and bottom so the glow has no hard edge. */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    #000 18%,
+    #000 64%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, #000 64%, transparent 100%);
+  animation: section-aurora 22s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+@keyframes section-aurora {
+  0% {
+    transform: translate3d(-2%, 0, 0) scale(1);
+    opacity: 0.7;
+  }
+  100% {
+    transform: translate3d(2%, -1.5%, 0) scale(1.06);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .section-aurora {
+    animation: none;
+  }
+}

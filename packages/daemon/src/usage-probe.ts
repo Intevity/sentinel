@@ -13,7 +13,7 @@ export interface UsageProberDeps {
   /** Optional per-account gate consulted at fire time. When it returns true
    *  the probe is skipped this tick (no API call, no rate-limit-store
    *  update). Used to avoid consuming quota on accounts the user has
-   *  excluded from the round-robin pool — see the index.ts wiring for the
+   *  excluded from the Auto-switching pool — see the index.ts wiring for the
    *  "resume once the 5h window has rolled over" policy. Missing → legacy
    *  "always probe every account" behaviour. */
   shouldSkipProbe?: (accountId: string) => boolean;

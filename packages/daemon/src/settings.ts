@@ -14,7 +14,6 @@ import { dirname, join } from 'path';
 import type {
   Settings,
   SwitchingMode,
-  RoundRobinStrategy,
   SecurityEnforcementMode,
   SecurityOsNotifyThreshold,
   SecurityContextVerbosity,
@@ -27,12 +26,16 @@ import type {
   McpInstallRecord,
   CodeModeMigration,
   OptimizeSubTab,
+  SecuritySubTab,
+  DataSubTab,
+  IsolationPolicy,
 } from '@sentinel/shared';
 import {
   SECURITY_CONTEXT_WINDOW_CHARS,
   VALID_DETECTOR_TIERS,
   snapRangeToLadder,
 } from '@sentinel/shared';
+import { isValidSandboxDomain } from './security/sandbox/policy-map.js';
 import { signSettings, verifySettings } from './settings-integrity.js';
 
 /** Default settings-file path. Tests can override via
@@ -60,7 +63,6 @@ export const DEFAULT_SETTINGS: Settings = {
   budgetWeeklyUsdByAccount: {},
   budgetWeeklyUsdGlobal: null,
   overageBufferPct: 5,
-  roundRobinStrategy: 'balance',
   backgroundProbeIntervalSec: 300,
   telemetryRetentionDays: 30,
   dataRetentionDays: 365,
@@ -103,6 +105,14 @@ export const DEFAULT_SETTINGS: Settings = {
   securityMuteScanSkipped: false,
   lastScanBenchmark: null,
   claudeCodeSyncEnabled: false,
+  isolationPolicy: {
+    enabled: false,
+    syncToClaudeCode: false,
+    enforceCodeMode: false,
+    network: { allowedDomains: [], deniedDomains: [] },
+    filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] },
+    credentials: { files: [], envVars: [] },
+  },
   securityIncidentReplay: false,
   logLevel: 'info',
   requestLoggingEnabled: false,
@@ -129,6 +139,8 @@ export const DEFAULT_SETTINGS: Settings = {
   optimizeRange: 'all',
   metricsRange: '1w',
   optimizeSubTab: 'subagents',
+  securitySubTab: 'scanning',
+  dataSubTab: 'retention',
   compressionEnabled: false,
   compressionLevel: 'conservative',
   compressionMaxBodyKb: 4096,
@@ -176,8 +188,7 @@ function freshDefaults(): Settings {
   return { ...DEFAULT_SETTINGS, otelServiceInstanceId: randomUUID() };
 }
 
-const VALID_MODES: readonly SwitchingMode[] = ['off', 'round-robin'];
-const VALID_RR_STRATEGIES: readonly RoundRobinStrategy[] = ['balance', 'earliest-reset'];
+const VALID_MODES: readonly SwitchingMode[] = ['off', 'auto'];
 const VALID_ENFORCEMENT_MODES: readonly SecurityEnforcementMode[] = [
   'observe',
   'block_high',
@@ -214,6 +225,13 @@ const VALID_COMPRESSION_LEVELS: readonly CompressionLevel[] = [
 ];
 const VALID_MCP_SCOPES: readonly McpInstallScope[] = ['user', 'local', 'project'];
 const VALID_OPTIMIZE_SUB_TABS: readonly OptimizeSubTab[] = ['subagents', 'compression', 'context'];
+const VALID_SECURITY_SUB_TABS: readonly SecuritySubTab[] = [
+  'scanning',
+  'permissions',
+  'isolation',
+  'sync',
+];
+const VALID_DATA_SUB_TABS: readonly DataSubTab[] = ['retention', 'features', 'telemetry'];
 
 /** Coerce an arbitrary value into a clean McpInstallRecord[], dropping any
  *  malformed entries. `user`-scope records carry a null directory; `local`
@@ -295,6 +313,89 @@ function coerceCodeModeMigrations(raw: unknown): CodeModeMigration[] {
   return out;
 }
 
+/** Keep only non-empty, trimmed strings from an arbitrary value. Used for the
+ *  isolation policy's path / env-var / command arrays. */
+function coerceStringList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const v of raw) {
+    if (typeof v === 'string') {
+      const t = v.trim();
+      if (t !== '') out.push(t);
+    }
+  }
+  return out;
+}
+
+/**
+ * Coerce arbitrary JSON into a clean {@link IsolationPolicy}, dropping malformed
+ * entries and invalid domain patterns so what we persist is always safe to
+ * project onto both sandbox targets. Invalid domains are filtered here (the
+ * canonical boundary) using the package's stricter rules, so the UI never has
+ * to re-validate stored state. Mirrors the defensive style of
+ * `coerceCodeModeMigrations`. Never throws.
+ */
+function coerceIsolationPolicy(raw: unknown): IsolationPolicy {
+  const out: IsolationPolicy = {
+    enabled: false,
+    syncToClaudeCode: false,
+    enforceCodeMode: false,
+    network: { allowedDomains: [], deniedDomains: [] },
+    filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] },
+    credentials: { files: [], envVars: [] },
+  };
+  if (!raw || typeof raw !== 'object') return out;
+  const o = raw as Record<string, unknown>;
+
+  if (typeof o['enabled'] === 'boolean') out.enabled = o['enabled'];
+  if (typeof o['syncToClaudeCode'] === 'boolean') out.syncToClaudeCode = o['syncToClaudeCode'];
+  if (typeof o['enforceCodeMode'] === 'boolean') out.enforceCodeMode = o['enforceCodeMode'];
+
+  const net = o['network'];
+  if (net && typeof net === 'object') {
+    const n = net as Record<string, unknown>;
+    out.network.allowedDomains = coerceStringList(n['allowedDomains']).filter(isValidSandboxDomain);
+    out.network.deniedDomains = coerceStringList(n['deniedDomains']).filter(isValidSandboxDomain);
+  }
+
+  const fs = o['filesystem'];
+  if (fs && typeof fs === 'object') {
+    const f = fs as Record<string, unknown>;
+    out.filesystem.allowWrite = coerceStringList(f['allowWrite']);
+    out.filesystem.denyWrite = coerceStringList(f['denyWrite']);
+    out.filesystem.denyRead = coerceStringList(f['denyRead']);
+    out.filesystem.allowRead = coerceStringList(f['allowRead']);
+  }
+
+  const cred = o['credentials'];
+  if (cred && typeof cred === 'object') {
+    const c = cred as Record<string, unknown>;
+    out.credentials.files = coerceStringList(c['files']);
+    out.credentials.envVars = coerceStringList(c['envVars']);
+  }
+
+  const cc = o['claudeCode'];
+  if (cc && typeof cc === 'object') {
+    const c = cc as Record<string, unknown>;
+    const passthrough: NonNullable<IsolationPolicy['claudeCode']> = {};
+    if (typeof c['failIfUnavailable'] === 'boolean') {
+      passthrough.failIfUnavailable = c['failIfUnavailable'];
+    }
+    if (typeof c['allowUnsandboxedCommands'] === 'boolean') {
+      passthrough.allowUnsandboxedCommands = c['allowUnsandboxedCommands'];
+    }
+    if (Array.isArray(c['excludedCommands'])) {
+      passthrough.excludedCommands = coerceStringList(c['excludedCommands']);
+    }
+    if (typeof c['allowAppleEvents'] === 'boolean') {
+      passthrough.allowAppleEvents = c['allowAppleEvents'];
+    }
+    if (Object.keys(passthrough).length > 0) out.claudeCode = passthrough;
+  }
+
+  return out;
+}
+
 /**
  * Coerce an arbitrary value into a valid Settings object, falling back to
  * defaults for any field that is missing or invalid. Never throws — malformed
@@ -308,11 +409,14 @@ function coerce(raw: unknown): Settings {
   if (typeof obj['launchAtLogin'] === 'boolean') {
     next.launchAtLogin = obj['launchAtLogin'];
   }
-  if (
-    typeof obj['switchingMode'] === 'string' &&
-    VALID_MODES.includes(obj['switchingMode'] as SwitchingMode)
-  ) {
-    next.switchingMode = obj['switchingMode'] as SwitchingMode;
+  if (typeof obj['switchingMode'] === 'string') {
+    // Auto-migrate the pre-rename value so beta users who had rotation on
+    // keep it after the "round-robin" → "auto" rename. No data loss, no
+    // user action — the remapped value is re-persisted on the next save.
+    const mode = obj['switchingMode'] === 'round-robin' ? 'auto' : obj['switchingMode'];
+    if (VALID_MODES.includes(mode as SwitchingMode)) {
+      next.switchingMode = mode as SwitchingMode;
+    }
   }
   if (obj['alertSoundName'] === null || typeof obj['alertSoundName'] === 'string') {
     next.alertSoundName = obj['alertSoundName'] as string | null;
@@ -382,12 +486,6 @@ function coerce(raw: unknown): Settings {
     (obj['overageBufferPct'] as number) <= 50
   ) {
     next.overageBufferPct = Math.floor(obj['overageBufferPct'] as number);
-  }
-  if (
-    typeof obj['roundRobinStrategy'] === 'string' &&
-    VALID_RR_STRATEGIES.includes(obj['roundRobinStrategy'] as RoundRobinStrategy)
-  ) {
-    next.roundRobinStrategy = obj['roundRobinStrategy'] as RoundRobinStrategy;
   }
   if (typeof obj['backgroundProbeIntervalSec'] === 'number') {
     const n = Math.floor(obj['backgroundProbeIntervalSec']);
@@ -573,6 +671,7 @@ function coerce(raw: unknown): Settings {
   if (typeof obj['claudeCodeSyncEnabled'] === 'boolean') {
     next.claudeCodeSyncEnabled = obj['claudeCodeSyncEnabled'];
   }
+  next.isolationPolicy = coerceIsolationPolicy(obj['isolationPolicy']);
   if (typeof obj['securityIncidentReplay'] === 'boolean') {
     next.securityIncidentReplay = obj['securityIncidentReplay'];
   }
@@ -684,6 +783,18 @@ function coerce(raw: unknown): Settings {
     VALID_OPTIMIZE_SUB_TABS.includes(obj['optimizeSubTab'] as OptimizeSubTab)
   ) {
     next.optimizeSubTab = obj['optimizeSubTab'] as OptimizeSubTab;
+  }
+  if (
+    typeof obj['securitySubTab'] === 'string' &&
+    VALID_SECURITY_SUB_TABS.includes(obj['securitySubTab'] as SecuritySubTab)
+  ) {
+    next.securitySubTab = obj['securitySubTab'] as SecuritySubTab;
+  }
+  if (
+    typeof obj['dataSubTab'] === 'string' &&
+    VALID_DATA_SUB_TABS.includes(obj['dataSubTab'] as DataSubTab)
+  ) {
+    next.dataSubTab = obj['dataSubTab'] as DataSubTab;
   }
   if (typeof obj['compressionEnabled'] === 'boolean') {
     next.compressionEnabled = obj['compressionEnabled'];

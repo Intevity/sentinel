@@ -6,7 +6,7 @@ import { windowForRange } from '../lib/dateRange.js';
 /** Describes which accounts a metrics rollup should cover.
  *  - `active`: follow whatever Claude Code currently has bound
  *  - `account`: pin to a specific enrolled account
- *  - `pool`: aggregate across the round-robin pool (enrolled minus exclusions)
+ *  - `pool`: aggregate across the Auto-switching pool (enrolled minus exclusions)
  *  - `all`: aggregate across every enrolled account, ignoring exclusions
  *
  *  Pool membership is computed at the call site (App.tsx) and passed in as

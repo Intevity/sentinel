@@ -53,7 +53,7 @@ function updateSessionWindow(
 function rrSettings(overrides: Partial<Settings> = {}): Settings {
   return {
     ...DEFAULT_SETTINGS,
-    switchingMode: 'round-robin',
+    switchingMode: 'auto',
     ...overrides,
   };
 }
@@ -496,7 +496,7 @@ describe('startAlertEvaluator (per-account)', () => {
     expect(ipc.broadcasts).toHaveLength(0);
   });
 
-  it('stays silent for accounts excluded from the round-robin pool', () => {
+  it('stays silent for accounts excluded from the Auto pool', () => {
     const db = getDb(dbPath);
     upsertAlert(db, { scope: 'account', accountId: 'acc-a', thresholdPct: 75, enabled: true });
     const store = new RateLimitStore();
@@ -512,8 +512,8 @@ describe('startAlertEvaluator (per-account)', () => {
     expect(ipc.broadcasts).toHaveLength(0);
   });
 
-  it('still fires for excluded accounts outside round-robin mode', () => {
-    // poolExcludedIds is defined as round-robin-only: in `off` mode the
+  it('still fires for excluded accounts outside Auto mode', () => {
+    // poolExcludedIds is defined as Auto-mode-only: in `off` mode the
     // field is ignored, so a stale exclusion entry must not accidentally
     // silence legitimate alerts.
     const db = getDb(dbPath);
@@ -577,7 +577,7 @@ describe('startPoolAlertEvaluator', () => {
     expect(msg.utilization).toBeCloseTo(0.65, 2);
 
     const notifs = listNotifications(db, {});
-    expect(notifs[0]?.body).toMatch(/Round-robin pool/);
+    expect(notifs[0]?.body).toMatch(/Auto pool/);
     expect(notifs[0]?.body).toContain('2 accounts');
   });
 
@@ -603,7 +603,7 @@ describe('startPoolAlertEvaluator', () => {
     expect(ipc.broadcasts).toHaveLength(0);
   });
 
-  it('skips evaluation when switchingMode is not round-robin', () => {
+  it('skips evaluation when switchingMode is not auto', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'a');
     upsertAlert(db, { scope: 'pool', accountId: null, thresholdPct: 10, enabled: true });
@@ -739,7 +739,7 @@ describe('startPoolAlertEvaluator', () => {
     expect(ipc.broadcasts).toHaveLength(1);
   });
 
-  it('evaluatePoolOnce is a no-op when switching mode is not round-robin', () => {
+  it('evaluatePoolOnce is a no-op when switching mode is not auto', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'a');
     upsertAlert(db, { scope: 'pool', accountId: null, thresholdPct: 10, enabled: true });
@@ -1297,7 +1297,7 @@ describe('account-sonnet alerts', () => {
     expect(fires).toHaveLength(0);
   });
 
-  it('stays silent for accounts excluded from the round-robin pool', () => {
+  it('stays silent for accounts excluded from the Auto pool', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();
@@ -1327,7 +1327,7 @@ describe('account-sonnet alerts', () => {
     expect(fires).toHaveLength(0);
   });
 
-  it('still fires for excluded accounts outside round-robin mode', () => {
+  it('still fires for excluded accounts outside Auto mode', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();
@@ -1506,7 +1506,7 @@ describe('account-weekly alerts', () => {
     expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(0);
   });
 
-  it('stays silent for accounts excluded from the round-robin pool', () => {
+  it('stays silent for accounts excluded from the Auto pool', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();
@@ -1529,7 +1529,7 @@ describe('account-weekly alerts', () => {
     expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(0);
   });
 
-  it('still fires for excluded accounts outside round-robin mode', () => {
+  it('still fires for excluded accounts outside Auto mode', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();
@@ -1710,7 +1710,7 @@ describe('pool-weekly alerts', () => {
     expect(weeklyFires(ipc.broadcasts, 'pool-weekly')).toHaveLength(0);
   });
 
-  it('skips when switching mode is not round-robin', () => {
+  it('skips when switching mode is not auto', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();
@@ -1746,7 +1746,7 @@ describe('pool-weekly alerts', () => {
     expect(weeklyFires(ipc.broadcasts, 'pool-weekly')).toHaveLength(1);
   });
 
-  it('evaluateWeeklyPoolOnce is a no-op when switching mode is not round-robin', () => {
+  it('evaluateWeeklyPoolOnce is a no-op when switching mode is not auto', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();

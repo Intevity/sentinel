@@ -4,7 +4,7 @@
  * carries a `request-id` header) and read by OtelReceiver when an OTEL
  * `api_request` / `api_error` event arrives with the same id.
  *
- * Needed because in round-robin mode the proxy rotates tokens per
+ * Needed because in Auto mode the proxy rotates tokens per
  * /v1/messages call but Claude Code only knows about one signed-in user,
  * so its OTEL `user.account_uuid` is the same for every event. The
  * response-header request-id is the one piece of information both sides

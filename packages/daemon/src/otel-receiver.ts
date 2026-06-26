@@ -196,7 +196,7 @@ export class OtelReceiver {
     /** Per-request correlation table populated by the proxy. When an OTEL
      *  `api_request` / `api_error` event arrives carrying the Anthropic
      *  `request_id` attribute, the map returns the account whose token was
-     *  actually used for that request — which in round-robin mode differs
+     *  actually used for that request — which in Auto mode differs
      *  from `activeAccountId`. When no hit (or no map), we fall through to
      *  the active-account path so single-account setups still work. */
     private readonly requestAccountMap?: RequestAccountMap,
@@ -586,15 +586,15 @@ export class OtelReceiver {
   /** Resolution order:
    *   1. `request_id` attribute → proxy-recorded account for that upstream
    *      response. This is the only path that attributes correctly in
-   *      round-robin mode — Claude Code emits a single `user.account_uuid`
+   *      Auto mode — Claude Code emits a single `user.account_uuid`
    *      per session, so without the per-request handshake every event
    *      would otherwise land on `activeAccountId`.
    *   2. Active sentinel key — preserves correct per-org attribution for
-   *      non-round-robin setups and for events that don't carry a
+   *      non-Auto setups and for events that don't carry a
    *      request_id (session.count, lines_of_code, active_time, etc.).
    *      Session-level metrics describe the whole session and can't be
    *      decomposed per-token, so they stay attributed to the signed-in
-   *      account in round-robin mode by design.
+   *      account in Auto mode by design.
    *   3. `user.account_uuid` from OTEL — last-resort fallback when no
    *      active key has been set yet (daemon startup edge case). */
   private resolveAccountId(attrs: OtelAttributes): string {

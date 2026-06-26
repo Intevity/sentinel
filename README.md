@@ -1,6 +1,6 @@
 # Sentinel
 
-An open-source Claude Code companion: a tray app and bundled local daemon for in-flight security scanning, multi-account routing, usage metrics, and overage alerts.
+An open-source Claude Code companion: a tray app and bundled local daemon for in-flight security scanning, permission rules, and sandbox isolation; multi-account routing; token-cost optimization; usage metrics; and overage alerts.
 
 **Website:** https://intevity.github.io/sentinel (feature tour, demos, and downloads)
 
@@ -40,16 +40,19 @@ Grab the latest installer from the **[Releases page](https://github.com/Intevity
 
 - **Security scanning** — In-flight detectors for secrets (API keys, tokens, private keys), PII, prompt injection, and risky tool use (Bash / Write / WebFetch). Three enforcement modes (observe, block HIGH, block MEDIUM+HIGH), per-tool permission rules with sub-command matching, and an optional approve/deny hold banner. Event history stores redacted fingerprints only — never the original secret text.
 - **Permission rules** — Sentinel's rule DB is the source of truth. Allow/deny rules push into `~/.claude/settings.json` so Claude Code enforces them silently. `ask` rules stay in Sentinel only — approvals surface as a pending-block banner in the tray UI, with a single hook point for future Slack / remote-approval integrations (so you're not approving the same command twice in two different places).
-- **Multi-account routing** — Enroll unlimited Claude accounts (Pro, Max, Team, Enterprise) and pick how they're used:
-  - **Off** — manage accounts manually from the Accounts tab.
-  - **Round-Robin** — rotate the OAuth token on every API request, with two sub-strategies:
-    - **Balance** (default) — prefer the lowest-utilization account so the pool drains evenly, staying within ~1%.
-    - **Earliest reset** — pin traffic to the account whose 5-hour window rolls over soonest, reclaiming headroom you'd lose anyway; rotation resumes when it blocks or resets.
+- **Sandbox isolation** — Optional OS-level isolation for the commands Claude Code (and Sentinel's code-mode MCP servers) run, limiting which files and network domains they can reach. macOS and Linux get full filesystem and network isolation; Windows is network-only. Off by default; flip it on with one toggle in Settings → Security, then fine-tune the allowed paths and domains. The rules sync into Claude Code's own sandbox configuration.
+- **Multi-account routing** — Enroll unlimited Claude accounts (Pro, Max, Team, Enterprise) and choose how they're used:
+  - **Off** — manage accounts manually from the Accounts tab; the header shows which account is active.
+  - **Auto** — Sentinel moves the active account for you, favoring the one whose 5-hour window resets soonest so you are not switching by hand. Each switch rewrites the active OAuth credential safely, and the header always shows the account currently serving requests.
+- **Token optimization** — Cut token cost three ways, each with realized and potential savings shown on the Optimize page:
+  - **Curated subagents** — A library of pre-built subagents (most pinned to a cheaper model) that the analyzer recommends installing into `~/.claude/agents/`. Routine work like file reads, log parsing, and test-output triage runs on the cheaper model and returns a digest instead of raw output.
+  - **Reversible compression** — Trims the oversized `tool_result` payloads that quietly fill your context window (Conservative, Moderate, or Aggressive). Reversible mode stores the original so Claude can pull it back with the `mcp__sentinel__retrieve` tool, so nothing is lost.
+  - **Code execution** — Bridges your MCP servers through a loopback endpoint so their tool definitions stop riding along in every request's context. Loopback-only, with a per-server allowlist.
 - **Overage detection** — Intercepts `anthropic-ratelimit-unified-overage-*` response headers and fires a native OS notification the moment your session enters overage budget.
-- **Usage visibility** — Every rate-limit window (5-hour, weekly all-models, weekly Sonnet, overage budget) rendered with reset countdowns and color-coded urgency. On Team/Enterprise plans where admins hide per-user budgets from members, Sentinel exposes each member's own budget. Round-robin mode aggregates every account into a pool view.
-- **Spend caps** — Set a per-account or global overage budget cap. Sentinel pauses any account whose spend crosses its cap until the next rolling window reset, and round-robin skips paused accounts so billing stays bounded.
+- **Usage visibility** — Every rate-limit window (5-hour, weekly all-models, weekly Sonnet, overage budget) rendered with reset countdowns and color-coded urgency. On Team/Enterprise plans where admins hide per-user budgets from members, Sentinel exposes each member's own budget. Auto mode aggregates every account into a pool view.
+- **Spend caps** — Set a per-account or global overage budget cap. Sentinel pauses any account whose spend crosses its cap until the next rolling window reset, and Auto mode skips paused accounts so billing stays bounded.
 - **Real metrics** — OTEL telemetry gives you accurate cost, tokens, cache hit rate, and per-model breakdowns over 7/14/30-day windows. Unlike `~/.claude/stats-cache.json` (which reports `$0` for subscription users), these numbers are real.
-- **User-configurable alerts** — Set a percentage threshold on the 5-hour window (per-account or pool-wide in round-robin mode); pick your own notification sound per alert type; get a native OS notification when it trips. Deduped per window.
+- **User-configurable alerts** — Set a percentage threshold on the 5-hour window (per-account or pool-wide in Auto mode); pick your own notification sound per alert type; get a native OS notification when it trips. Deduped per window.
 - **Notification history** — Every overage transition, account switch, threshold trigger, and security finding captured in one scrollable timeline. Click a security notification to jump straight to the expanded event.
 
 ## Architecture
@@ -531,7 +534,7 @@ pnpm alerts:test <scenario>
 | Scenario           | What it fires                                                                     |
 | ------------------ | --------------------------------------------------------------------------------- |
 | `usage-account`    | Per-account 85% usage alert (`alert_triggered` + `usage_alert` notification row). |
-| `usage-pool`       | Round-robin pool-average 75% usage alert.                                         |
+| `usage-pool`       | Auto-mode pool-average 75% usage alert.                                           |
 | `usage-budget`     | Per-account weekly budget alert at 90% with `spendUsd`/`budgetUsd`.               |
 | `overage-entered`  | `overage_entered` broadcast + notification + OS notification.                     |
 | `overage-disabled` | `overage_disabled` broadcast + notification + OS notification.                    |
@@ -570,7 +573,7 @@ sentinel/
 │   │   ├── claude-state.ts    # ~/.claude.json management
 │   │   ├── oauth.ts           # PKCE login flow
 │   │   ├── settings.ts        # ~/.sentinel/settings.json
-│   │   ├── token-rotator.ts   # round-robin token selector
+│   │   ├── token-rotator.ts   # Auto-mode account/token selector
 │   │   ├── auto-switch.ts     # threshold-based auto-switch
 │   │   └── alerts.ts          # user-configured alert evaluator
 │   ├── app/                   # Tauri desktop app
@@ -700,4 +703,4 @@ The response is forwarded to Claude Code unmodified — the proxy is transparent
 
 ## License
 
-MIT © Jeff Wooden
+MIT © Intevity

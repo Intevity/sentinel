@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { OAuthAccount, AccountInfo } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
+import { subscribeDemoMode } from '../lib/demoMode.js';
 
 /**
  * Synthesize an OAuthAccount-compatible object from the AccountInfo row that
@@ -180,6 +181,10 @@ export function useDaemon(): DaemonState & { refetch: () => void } {
       clearProbeTimeout();
     };
   }, [refetch]);
+
+  // Toggling demo mode (dev-only) re-fetches so the header/avatars re-render
+  // with masked (or restored) emails immediately, without an app restart.
+  useEffect(() => subscribeDemoMode(() => void refetch()), [refetch]);
 
   // Polling: fast (500ms) while waiting for the daemon to come up, then 30s
   // once we've connected at least once. useEffect watches `initializing` so

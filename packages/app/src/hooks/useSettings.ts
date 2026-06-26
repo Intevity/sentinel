@@ -28,8 +28,8 @@ interface UseSettingsResult {
  *
  * The initial load retries every 500ms until it succeeds. Without this, the
  * App-level useSettings instance races the daemon sidecar's socket-bind at
- * startup, fails silently, and leaves downstream state (header round-robin
- * pill, Usage pool-view option) stuck on the null fallback.
+ * startup, fails silently, and leaves downstream state (header account
+ * display, Usage pool-view option) stuck on the null fallback.
  */
 export function useSettings(): UseSettingsResult {
   const [settings, setSettings] = useState<Settings | null>(null);

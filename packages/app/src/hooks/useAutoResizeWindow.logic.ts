@@ -67,8 +67,8 @@ export function computeTargetInner(inputs: ComputeTargetInputs): number {
  * Reconcile a callback-ref invocation against the currently-tracked
  * overlay element.
  *
- * The problem: `overlayRef` is shared across SettingsPanel,
- * SecurityRulesOverlay, and SecuritySetupWizard. `AnimatePresence`
+ * The problem: `overlayRef` is shared across SettingsPanel and
+ * SecuritySetupWizard. `AnimatePresence`
  * defers unmount of the exiting overlay by ~300ms, so when a user
  * clicks "Run setup wizard" from Settings:
  *   1. Wizard mounts → its ref fires with `wizardCard` → we set

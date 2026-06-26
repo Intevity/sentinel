@@ -86,6 +86,16 @@ export interface AccountSwitchedMessage {
   to: OAuthAccount;
 }
 
+/** Broadcast in Auto switching mode when the account the rotator is routing
+ *  requests through changes. `accountId` is the Sentinel key
+ *  (orgUuid||accountUuid). The header subscribes so it can always show the
+ *  account currently serving requests, not a generic "auto" indicator.
+ *  Earliest-reset is sticky, so this fires on target change — not per request. */
+export interface RoutedAccountChangedMessage {
+  type: 'routed_account_changed';
+  accountId: string;
+}
+
 /** Broadcast after per-account metadata is persisted (currently: avatar color).
  *  UI instances listen for this and refetch the accounts list so any color dot
  *  or avatar redraws consistently across open windows. */
@@ -178,7 +188,8 @@ export interface OtelDriftStateMessage {
 /** Broadcast when a user-configured usage alert crosses its threshold. The
  *  frontend subscribes and fires a native OS notification.
  *
- *  `scope === 'pool'` indicates a round-robin pool-wide alert; `accountId` is
+ *  `scope === 'pool'` indicates a pool-wide alert across the Auto-switching
+ *  pool; `accountId` is
  *  null in that case and `utilization` is the mean across pool members.
  *  `scope === 'budget'` carries the observed spend + cap as extra fields so
  *  the UI can render specific dollar figures without another round-trip. */
@@ -281,6 +292,14 @@ export interface PermissionBypassesUpdatedMessage {
  *  active state without polling. */
 export interface ClaudeSyncStatusMessage {
   type: 'claude_sync_status';
+  status: ClaudeSyncStatus;
+}
+
+/** Broadcast when the sandbox (Leg A) settings-sync engine state changes.
+ *  Mirrors `claude_sync_status` for `~/.claude/settings.json#/sandbox`; reuses
+ *  the identical active/lastPulledAt/lastPushedAt/lastError shape. */
+export interface SandboxSyncStatusMessage {
+  type: 'sandbox_sync_status';
   status: ClaudeSyncStatus;
 }
 
@@ -517,6 +536,7 @@ export type DaemonToAppMessage =
   | SonnetSaturationExitedMessage
   | UsageUpdateMessage
   | AccountSwitchedMessage
+  | RoutedAccountChangedMessage
   | AccountUpdatedMessage
   | LoginCompleteMessage
   | RateLimitsUpdatedMessage
@@ -533,6 +553,7 @@ export type DaemonToAppMessage =
   | SecurityAllowlistUpdatedMessage
   | PermissionBypassesUpdatedMessage
   | ClaudeSyncStatusMessage
+  | SandboxSyncStatusMessage
   | AgentsSyncStatusMessage
   | SubagentInstalledMessage
   | SubagentUninstalledMessage
@@ -1611,6 +1632,29 @@ export interface GetClaudeSyncStatusMessage {
   type: 'get_claude_sync_status';
 }
 
+/** Force a one-shot pull/reconcile of the sandbox policy from Claude
+ *  Code's `settings.json#/sandbox`. `mode` is honoured by first-enable
+ *  (merge/import/export); subsequent manual pulls always merge. Mirrors
+ *  `claude_sync_pull`. */
+export interface SandboxSyncPullMessage {
+  type: 'sandbox_sync_pull';
+  mode?: 'merge' | 'import' | 'export';
+}
+
+/** Read the current sandbox (Leg A) sync status without waiting for a
+ *  broadcast. Mirrors `get_claude_sync_status`. */
+export interface GetSandboxStatusMessage {
+  type: 'get_sandbox_status';
+}
+
+/** Read the current sandbox capability (Leg B): whether the host can enforce
+ *  full / network-only / no isolation, with per-dependency presence + reasons.
+ *  Drives the Isolation tab's status indicator. Response data is a
+ *  {@link SandboxStatus}. */
+export interface GetSandboxCapabilityMessage {
+  type: 'get_sandbox_capability';
+}
+
 /** Approve a held outbound block. The daemon adds the block's match to
  *  the allowlist (so subsequent identical matches are silently allowed),
  *  releases the request to flow upstream, and broadcasts
@@ -1988,6 +2032,9 @@ export type AppToDaemonMessage =
   | ClaudeSyncPullMessage
   | ClaudeSyncPushMessage
   | GetClaudeSyncStatusMessage
+  | SandboxSyncPullMessage
+  | GetSandboxStatusMessage
+  | GetSandboxCapabilityMessage
   | ApproveBlockedRequestMessage
   | DenyBlockedRequestMessage
   | ListPendingBlocksMessage

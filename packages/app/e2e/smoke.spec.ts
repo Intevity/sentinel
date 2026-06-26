@@ -9,7 +9,7 @@
  *   - React app's sendToSentinel() routes through the bridge
  *
  * Per-flow specs for add-account, switch-account, alert-trigger,
- * round-robin, and usage-metrics live in their own spec files alongside
+ * auto-switching, and usage-metrics live in their own spec files alongside
  * this one (Sprint 7 of documentation/TEST_MIGRATION_PLAN.md).
  */
 

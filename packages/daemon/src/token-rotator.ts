@@ -2,7 +2,6 @@ import type { Database } from 'better-sqlite3';
 import { listAccounts } from './db.js';
 import { readActiveCredentials, readSentinelCredentials } from './accounts.js';
 import type { RateLimitStore } from './rate-limit-store.js';
-import type { RoundRobinStrategy } from '@sentinel/shared';
 
 /** The 5-hour rolling window is the one users think of as "session limit",
  *  so the rotator evaluates rotation decisions against it exclusively. */
@@ -17,19 +16,13 @@ const OVERAGE_WINDOW = 'unified-overage';
  *  stays unaffected. */
 const SONNET_WINDOW = 'unified-7d_sonnet';
 
-/** Candidates within this much of the minimum utilization are treated as
- *  equals and cycled through via the round-robin cursor. Prevents
- *  oscillation once accounts have converged. */
-const TIE_BAND = 0.01; // 1 percentage point
-
 /** Two `unified-5h` resets within this many seconds count as the same
- *  window boundary for the earliest-reset strategy. The store has two
- *  writers for the reset value — API response headers (epoch seconds)
- *  and the claude.ai usage sync (an ISO timestamp converted to epoch
- *  seconds) — and they can disagree at second granularity for the same
- *  window. Comparing resets exactly treated every such disagreement as
- *  a real ordering change and re-targeted traffic, which is how
- *  earliest-reset degenerated into balance-style alternation. Windows
+ *  window boundary. The store has two writers for the reset value — API
+ *  response headers (epoch seconds) and the claude.ai usage sync (an ISO
+ *  timestamp converted to epoch seconds) — and they can disagree at second
+ *  granularity for the same window. Comparing resets exactly treated every
+ *  such disagreement as a real ordering change and re-targeted traffic,
+ *  degenerating the rotator into request-by-request alternation. Windows
  *  are 5 hours long; a sub-minute difference is never a reason to move. */
 const RESET_TIE_TOLERANCE_SEC = 60;
 
@@ -49,36 +42,26 @@ export interface RotatedCredential {
 }
 
 /**
- * Utilization-aware round-robin token selector used when the user's
- * `switchingMode` is `round-robin`. Holds a cached pool of
- * {accountId, token} pairs for every account whose credentials Sentinel
- * can resolve from the OS keychain.
+ * Utilization-aware token selector used when the user's `switchingMode` is
+ * `auto`. Holds a cached pool of {accountId, token} pairs for every account
+ * whose credentials Sentinel can resolve from the OS keychain.
  *
- * Two strategies, chosen live via the `getStrategy` getter:
- *
- *   balance (default) — prefer the account with the lowest `unified-5h`
- *     utilization so hot accounts drain last and cold accounts catch up.
- *     Candidates within `TIE_BAND` of the minimum rotate fairly via a
- *     cursor, keeping distribution even once accounts have converged.
- *
- *   earliest-reset — hard-target the non-blocked pool account whose
- *     `unified-5h` window resets soonest. Accounts without reset data —
- *     or whose stored reset is already in the past (an expired window
- *     whose next request would open a brand-new one) — are
- *     deprioritized. No tie band, no cursor advance: traffic sticks to
- *     one account until it blocks or its window rolls over, maximizing
- *     usage of headroom that's about to be reclaimed anyway. Once a
- *     target is chosen the rotator holds it while its reset stays within
- *     RESET_TIE_TOLERANCE_SEC of the tier minimum — neither utilization
- *     shifts nor second-level reset jitter between the store's two
- *     writers (API headers vs claude.ai sync) re-targets traffic. Only a
- *     genuinely earlier window on another account, or the target leaving
- *     the tier (blocked, paused, removed, buffer threshold), moves the
- *     pick. A target whose reset reads as unknown also holds: it is the
- *     account currently serving traffic, so its store data is the
- *     freshest, and a missing window there means a writer blink or a
- *     just-expired window — both self-correcting on its next response —
- *     not evidence that another account resets sooner.
+ * Single strategy — earliest-reset: hard-target the non-blocked pool
+ * account whose `unified-5h` window resets soonest. Accounts without reset
+ * data — or whose stored reset is already in the past (an expired window
+ * whose next request would open a brand-new one) — are deprioritized.
+ * Traffic sticks to one account until it blocks or its window rolls over,
+ * maximizing usage of headroom that's about to be reclaimed anyway. Once a
+ * target is chosen the rotator holds it while its reset stays within
+ * RESET_TIE_TOLERANCE_SEC of the tier minimum — neither utilization shifts
+ * nor second-level reset jitter between the store's two writers (API headers
+ * vs claude.ai sync) re-targets traffic. Only a genuinely earlier window on
+ * another account, or the target leaving the tier (blocked, paused, removed,
+ * buffer threshold), moves the pick. A target whose reset reads as unknown
+ * also holds: it is the account currently serving traffic, so its store data
+ * is the freshest, and a missing window there means a writer blink or a
+ * just-expired window — both self-correcting on its next response — not
+ * evidence that another account resets sooner.
  *
  * Accounts at or above the buffer threshold drop out of the fresh tier
  * regardless of whether overage is available on claude.ai. That's the
@@ -94,7 +77,6 @@ export interface RotatedCredential {
  */
 export class TokenRotator {
   private pool: RotatedCredential[] = [];
-  private cursor = 0;
   /** Sticky account for the earliest-reset strategy. When two or more
    *  accounts share the minimum reset value, the rotator picks one and
    *  stays on it until it leaves the tier (blocked, paused, removed, or
@@ -112,10 +94,6 @@ export class TokenRotator {
      *  `refresh()` so mode/settings changes take effect immediately.
      *  Defaults to an empty set — every enrolled account rotates. */
     private readonly getExcludedIds: () => ReadonlySet<string> = () => new Set(),
-    /** Live accessor for the active round-robin sub-strategy. Read on every
-     *  `pick()` so toggling the strategy in Settings takes effect for the
-     *  next request with no restart. Defaults to `'balance'`. */
-    private readonly getStrategy: () => RoundRobinStrategy = () => 'balance',
     /** Live accessor for the user's overage opt-in allow-list (Sentinel ids).
      *  Once an account crosses the buffer threshold it leaves the fresh
      *  tier; only accounts on this list (AND with overage status `allowed`)
@@ -150,8 +128,8 @@ export class TokenRotator {
     const accounts = listAccounts(this.db);
     const excluded = this.getExcludedIds();
     for (const account of accounts) {
-      // User opted this account out of round-robin — don't fetch credentials
-      // or include it in the rotation pool.
+      // User opted this account out of the Auto-switching pool — don't fetch
+      // credentials or include it in the rotation pool.
       if (excluded.has(account.id)) continue;
       // Prefer Sentinel's own per-account store; fall back to Claude Code's
       // single slot only for the currently active account (handled by
@@ -164,9 +142,6 @@ export class TokenRotator {
       }
     }
     this.pool = next;
-    // Keep cursor in-bounds after a shrink.
-    if (next.length === 0) this.cursor = 0;
-    else this.cursor = this.cursor % next.length;
   }
 
   /**
@@ -177,9 +152,9 @@ export class TokenRotator {
   }
 
   /**
-   * Return the account to bill the next request to. Behavior depends on
-   * the live strategy getter — see the class docstring for the two modes.
-   * Returns null when every account is unavailable or the pool is empty.
+   * Return the account to bill the next request to (earliest-reset — see
+   * the class docstring). Returns null when every account is unavailable or
+   * the pool is empty.
    *
    * `ctx.isSonnet` routes through the same overage gate with the Sonnet
    * 7-day window folded in: an account whose Sonnet 7d utilization is at
@@ -222,11 +197,9 @@ export class TokenRotator {
     //   overage  — next request WILL draw overage AND account is opted-in
     //
     // Accounts that would draw overage but aren't opted in are skipped
-    // entirely — they're never eligible in round-robin.
+    // entirely — they're never eligible for Auto switching.
     const fresh: { idx: number; util: number; reset: number }[] = [];
     const overage: { idx: number; util: number; reset: number }[] = [];
-    let minUtilFresh = Infinity;
-    let minUtilOverage = Infinity;
     const now = this.nowSec();
     // Set when the earliest-reset sticky account is pushed out of the
     // fresh tier solely by the Sonnet 7d gate for THIS request — its 5h
@@ -261,7 +234,6 @@ export class TokenRotator {
           overageWindow?.status === 'allowed' && overageAllowed.has(entry.accountId);
         if (!canUseOverage) continue;
         overage.push({ idx: i, util, reset });
-        if (util < minUtilOverage) minUtilOverage = util;
         continue;
       }
       // Partitioning runs in two steps. First: is this account out of the
@@ -297,95 +269,66 @@ export class TokenRotator {
           overageWindow?.status === 'allowed' && overageAllowed.has(entry.accountId);
         if (!canUseOverage) continue;
         overage.push({ idx: i, util, reset });
-        if (util < minUtilOverage) minUtilOverage = util;
       } else {
         fresh.push({ idx: i, util, reset });
-        if (util < minUtilFresh) minUtilFresh = util;
       }
     }
 
     // Prefer the fresh tier: drain pool-wide 5h quota before spilling to
-    // overage, regardless of which strategy the user picked.
+    // overage.
     const tier = fresh.length > 0 ? fresh : overage;
-    const minUtil = fresh.length > 0 ? minUtilFresh : minUtilOverage;
     if (tier.length === 0) return null;
 
-    const strategy = this.getStrategy();
-    if (strategy === 'earliest-reset') {
-      // Hard-target the account whose window rolls over soonest. For the
-      // initial pick (no sticky), tie-break by lower utilization, then by
-      // pool index. Do NOT advance the cursor — traffic sticks to the
-      // chosen account until it blocks or resets.
-      const ranked = [...tier].sort(
-        (a, b) => a.reset - b.reset || a.util - b.util || a.idx - b.idx,
-      );
-      const minReset = ranked[0]!.reset;
+    // Hard-target the account whose window rolls over soonest. For the
+    // initial pick (no sticky), tie-break by lower utilization, then by
+    // pool index. Traffic sticks to the chosen account until it blocks or
+    // resets.
+    const ranked = [...tier].sort((a, b) => a.reset - b.reset || a.util - b.util || a.idx - b.idx);
+    const minReset = ranked[0]!.reset;
 
-      if (this.earliestResetStickyId !== null) {
-        const sticky = ranked.find(
-          (r) => this.pool[r.idx]!.accountId === this.earliestResetStickyId,
-        );
-        // Hold the sticky while it is still effectively earliest. Util is
-        // intentionally NOT consulted: re-evaluating it on every pick is
-        // what caused tied accounts to alternate request-by-request as
-        // their utilizations ticked up in lockstep. Resets within
-        // RESET_TIE_TOLERANCE_SEC of the minimum count as the same window
-        // boundary — the store's two reset writers (API headers vs the
-        // claude.ai usage sync) disagree at second granularity, and the
-        // previous strict equality re-targeted traffic on every such
-        // disagreement. An unknown (+Infinity) sticky reset also holds:
-        // see the class docstring.
-        if (
-          sticky &&
-          (sticky.reset === Number.POSITIVE_INFINITY ||
-            sticky.reset <= minReset + RESET_TIE_TOLERANCE_SEC)
-        ) {
-          return this.pool[sticky.idx]!;
-        }
-        // The sticky account was pushed out of the tier by the Sonnet 7d
-        // gate for THIS request only — its 5h window still has room.
-        // Serve the request from the runner-up without re-targeting, so
-        // non-Sonnet traffic keeps draining the sticky account instead of
-        // the target flip-flopping with every model change.
-        if (!sticky && stickySonnetEjected) {
-          return this.pool[ranked[0]!.idx]!;
-        }
+    if (this.earliestResetStickyId !== null) {
+      const sticky = ranked.find((r) => this.pool[r.idx]!.accountId === this.earliestResetStickyId);
+      // Hold the sticky while it is still effectively earliest. Util is
+      // intentionally NOT consulted: re-evaluating it on every pick is
+      // what caused tied accounts to alternate request-by-request as
+      // their utilizations ticked up in lockstep. Resets within
+      // RESET_TIE_TOLERANCE_SEC of the minimum count as the same window
+      // boundary — the store's two reset writers (API headers vs the
+      // claude.ai usage sync) disagree at second granularity, and the
+      // previous strict equality re-targeted traffic on every such
+      // disagreement. An unknown (+Infinity) sticky reset also holds:
+      // see the class docstring.
+      if (
+        sticky &&
+        (sticky.reset === Number.POSITIVE_INFINITY ||
+          sticky.reset <= minReset + RESET_TIE_TOLERANCE_SEC)
+      ) {
+        return this.pool[sticky.idx]!;
       }
-
-      // Reaching here means the target is being set for the first time or
-      // moved off an account that is no longer effectively earliest — one
-      // log line per actual change, never per pick.
-      const next = ranked[0]!;
-      const nextId = this.pool[next.idx]!.accountId;
-      const resetIn =
-        next.reset === Number.POSITIVE_INFINITY
-          ? 'unknown'
-          : `${Math.round((next.reset - now) / 60)}m`;
-      console.log(
-        `[Rotator] earliest-reset target -> ${nextId} ` +
-          `(reset in ${resetIn}, util ${(next.util * 100).toFixed(0)}%)`,
-      );
-      this.earliestResetStickyId = nextId;
-      return this.pool[next.idx]!;
-    }
-
-    // balance (default): tie band around minUtil rotates fairly via cursor.
-    const tieCutoff = minUtil + TIE_BAND;
-    const banded = tier.filter((c) => c.util <= tieCutoff);
-
-    // Walk the pool starting at the cursor; take the first tier member we
-    // hit so rotation inside the band is stable and fair.
-    for (let i = 0; i < this.pool.length; i++) {
-      const idx = (this.cursor + i) % this.pool.length;
-      const hit = banded.find((c) => c.idx === idx);
-      if (hit) {
-        this.cursor = (idx + 1) % this.pool.length;
-        return this.pool[idx]!;
+      // The sticky account was pushed out of the tier by the Sonnet 7d
+      // gate for THIS request only — its 5h window still has room.
+      // Serve the request from the runner-up without re-targeting, so
+      // non-Sonnet traffic keeps draining the sticky account instead of
+      // the target flip-flopping with every model change.
+      if (!sticky && stickySonnetEjected) {
+        return this.pool[ranked[0]!.idx]!;
       }
     }
 
-    // Unreachable (tier is non-empty and the circular walk covers every
-    // index) — fall back to null for type safety.
-    return null;
+    // Reaching here means the target is being set for the first time or
+    // moved off an account that is no longer effectively earliest — one
+    // log line per actual change, never per pick.
+    const next = ranked[0]!;
+    const nextId = this.pool[next.idx]!.accountId;
+    const resetIn =
+      next.reset === Number.POSITIVE_INFINITY
+        ? 'unknown'
+        : `${Math.round((next.reset - now) / 60)}m`;
+    console.log(
+      `[Rotator] earliest-reset target -> ${nextId} ` +
+        `(reset in ${resetIn}, util ${(next.util * 100).toFixed(0)}%)`,
+    );
+    this.earliestResetStickyId = nextId;
+    return this.pool[next.idx]!;
   }
 }

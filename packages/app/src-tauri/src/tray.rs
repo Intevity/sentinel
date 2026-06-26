@@ -7,7 +7,7 @@
 ///     (via `TrayIcon::set_title` — no-op on other platforms); Windows has
 ///     no tray-title API, so the hover tooltip carries the same status text.
 ///   - The disabled status menu item carries contextual text
-///     ("jeff@… · 42%" or "Round-robin pool · 42%").
+///     ("jeff@… · 42%" or "Pool · 42%").
 ///
 /// State lives in Tauri-managed `Arc<Mutex<TrayState>>`. The IPC read loop
 /// feeds it on every daemon broadcast (`rate_limits_updated`,
@@ -39,8 +39,8 @@ pub struct TrayState {
     /// Sentinel-keyed utilization, 0.0..=1.0. `None` = account known but
     /// no data yet; missing key = account never enrolled here.
     utilizations: HashMap<String, Option<f32>>,
-    /// Sentinel account ids the user has excluded from the round-robin
-    /// pool. Must be filtered out of the RR-mode aggregate so the tray
+    /// Sentinel account ids the user has excluded from the Auto-switching
+    /// pool. Must be filtered out of the pool aggregate so the tray
     /// reflects the accounts that are actually rotating, not every
     /// enrolled account. Synced from the `poolExcludedIds` field of
     /// `settings_changed` broadcasts. Ignored in Off mode.
@@ -60,13 +60,16 @@ pub struct TrayState {
 enum SwitchingMode {
     #[default]
     Off,
-    RoundRobin,
+    Auto,
 }
 
 impl SwitchingMode {
     fn from_str(s: &str) -> Self {
         match s {
-            "round-robin" => Self::RoundRobin,
+            // The daemon emits "auto" (post-rename); "round-robin" is kept as a
+            // defensive alias in case a not-yet-restarted daemon binary still
+            // sends the old string. Anything else falls back to Off.
+            "auto" | "round-robin" => Self::Auto,
             _ => Self::Off,
         }
     }
@@ -355,7 +358,7 @@ impl TrayState {
     fn apply_paused_accounts(&mut self, paused_json: &Value) {
         // `get_paused_accounts` returns an array of
         // { accountId, reason, resetsAt } — we only need the ids for the
-        // round-robin filter. Replace (don't merge) so a freshly-cleared
+        // pool filter. Replace (don't merge) so a freshly-cleared
         // pause set doesn't leave stale ids around.
         let Some(arr) = paused_json.as_array() else {
             return;
@@ -416,7 +419,7 @@ impl TrayState {
 
 fn compute_display(state: &TrayState) -> Option<u8> {
     match state.switching_mode {
-        SwitchingMode::RoundRobin => {
+        SwitchingMode::Auto => {
             // Only accounts actually rotating contribute to the pool mean.
             // An excluded or paused account at 100% used to drag the
             // displayed % upwards even though its traffic was zero — both
@@ -477,7 +480,7 @@ fn format_status_text(state: &TrayState, pct: Option<u8>) -> String {
         None => "—".to_string(),
     };
     match state.switching_mode {
-        SwitchingMode::RoundRobin => {
+        SwitchingMode::Auto => {
             // Count only rotating members so the "pool" label agrees with
             // the percentage (which is already filtered). An excluded- or
             // paused-only view shows "Sentinel" rather than a stale
@@ -490,7 +493,7 @@ fn format_status_text(state: &TrayState, pct: Option<u8>) -> String {
             if pool_size == 0 {
                 "Sentinel".to_string()
             } else {
-                format!("Round-robin pool · {pct_str}")
+                format!("Pool · {pct_str}")
             }
         }
         SwitchingMode::Off => match &state.active_email {
@@ -604,7 +607,7 @@ mod tests {
     fn compute_mirror(s: &StateMirror) -> Option<u8> {
         // Inlined copy of compute_display's logic against StateMirror.
         match s.switching_mode {
-            SwitchingMode::RoundRobin => {
+            SwitchingMode::Auto => {
                 let known: Vec<f32> = s
                     .utilizations
                     .iter()
@@ -651,7 +654,7 @@ mod tests {
 
     #[test]
     fn compute_display_round_robin_mean() {
-        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        let mut s = StateMirror::empty(SwitchingMode::Auto);
         s.utilizations.insert("a".to_string(), Some(0.50));
         s.utilizations.insert("b".to_string(), Some(0.90));
         s.utilizations.insert("c".to_string(), None); // skipped
@@ -665,7 +668,7 @@ mod tests {
         // Reproduces the bug: user has two accounts at 12% and 100%; the
         // 100%-util one is excluded from round-robin. Pre-fix this showed
         // 56% (the mean); post-fix it shows 12%.
-        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        let mut s = StateMirror::empty(SwitchingMode::Auto);
         s.utilizations.insert("rotating".to_string(), Some(0.12));
         s.utilizations.insert("excluded".to_string(), Some(1.00));
         s.pool_excluded_ids.insert("excluded".to_string());
@@ -674,7 +677,7 @@ mod tests {
 
     #[test]
     fn compute_display_round_robin_all_excluded_returns_none() {
-        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        let mut s = StateMirror::empty(SwitchingMode::Auto);
         s.utilizations.insert("a".to_string(), Some(0.5));
         s.utilizations.insert("b".to_string(), Some(0.8));
         s.pool_excluded_ids.insert("a".to_string());
@@ -684,7 +687,7 @@ mod tests {
 
     #[test]
     fn compute_display_round_robin_all_null_returns_none() {
-        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        let mut s = StateMirror::empty(SwitchingMode::Auto);
         s.utilizations.insert("a".to_string(), None);
         s.utilizations.insert("b".to_string(), None);
         assert_eq!(compute_mirror(&s), None);
@@ -693,11 +696,32 @@ mod tests {
     #[test]
     fn switching_mode_from_str() {
         assert_eq!(SwitchingMode::from_str("off"), SwitchingMode::Off);
+        assert_eq!(SwitchingMode::from_str("auto"), SwitchingMode::Auto);
+        // "round-robin" is the pre-rename string, accepted as a defensive alias.
         assert_eq!(
             SwitchingMode::from_str("round-robin"),
-            SwitchingMode::RoundRobin
+            SwitchingMode::Auto
         );
         assert_eq!(SwitchingMode::from_str("garbage"), SwitchingMode::Off);
+    }
+
+    #[test]
+    fn auto_mode_does_not_fall_back_to_off() {
+        // Regression for the tray-shows-0% bug: the daemon renamed the pooled
+        // switching mode "round-robin" → "auto", but the tray's parser was not
+        // updated, so "auto" fell through to Off. In Off the tray shows a single
+        // account's utilization (which reads ~0% right after that account's 5h
+        // window resets) instead of the pool average. Guard the exact mapping.
+        assert_ne!(SwitchingMode::from_str("auto"), SwitchingMode::Off);
+        assert_eq!(SwitchingMode::from_str("auto"), SwitchingMode::Auto);
+
+        // And confirm compute_display routes "auto" through the pool branch:
+        // a two-account pool at 0.20 and 0.40 averages to 30%, not either
+        // single value, and never 0% just because one member is low.
+        let mut s = StateMirror::empty(SwitchingMode::Auto);
+        s.utilizations.insert("a".to_string(), Some(0.20));
+        s.utilizations.insert("b".to_string(), Some(0.40));
+        assert_eq!(compute_mirror(&s), Some(30));
     }
 
     #[test]
@@ -706,7 +730,7 @@ mod tests {
         // including it in the pool mean made the tray % look way worse than
         // the accounts the user could actually use. Filter same as
         // pool_excluded_ids: 12% + 100% (paused) → 12%, not 56%.
-        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        let mut s = StateMirror::empty(SwitchingMode::Auto);
         s.utilizations.insert("rotating".to_string(), Some(0.12));
         s.utilizations.insert("paused".to_string(), Some(1.00));
         s.paused_ids.insert("paused".to_string());
@@ -716,7 +740,7 @@ mod tests {
     #[test]
     fn compute_display_round_robin_excludes_pool_excluded_and_paused() {
         // Both filters apply: only the lone rotating account contributes.
-        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        let mut s = StateMirror::empty(SwitchingMode::Auto);
         s.utilizations.insert("rotating".to_string(), Some(0.30));
         s.utilizations.insert("manual_excl".to_string(), Some(0.95));
         s.utilizations.insert("paused".to_string(), Some(1.00));
@@ -730,7 +754,7 @@ mod tests {
         // If every known account is paused there's nothing to display.
         // Mirrors the all-excluded case so the icon goes gray rather than
         // showing an arbitrary number from a stale value.
-        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        let mut s = StateMirror::empty(SwitchingMode::Auto);
         s.utilizations.insert("a".to_string(), Some(0.5));
         s.utilizations.insert("b".to_string(), Some(0.8));
         s.paused_ids.insert("a".to_string());
@@ -743,7 +767,7 @@ mod tests {
         // The IPC payload shape: array of objects with accountId. Reason
         // and resetsAt are present in the daemon response but the tray
         // doesn't need them — only the id set drives filtering.
-        let mut s = StateMirror::empty(SwitchingMode::RoundRobin);
+        let mut s = StateMirror::empty(SwitchingMode::Auto);
         s.paused_ids.insert("stale".to_string());
         // Inline the parse logic (apply_paused_accounts is on TrayState
         // proper, not StateMirror — but the contract is "replace").

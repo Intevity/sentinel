@@ -627,7 +627,7 @@ export function getDb(
     _db.exec('ALTER TABLE security_events ADD COLUMN resolution TEXT');
   }
 
-  // Migrate alerts for the `scope` column (added for pooled round-robin
+  // Migrate alerts for the `scope` column (added for pooled Auto-switching
   // alerts). Legacy rows are per-account — back-fill 'account'. Pool rows
   // store account_id = '' because legacy tables kept NOT NULL on that column;
   // rowToAlert normalizes the empty string back to null in the TS type.

@@ -6,10 +6,6 @@ const IDLE_STATUS: AutoModeStatus = {
   active: false,
   source: null,
   lastDetectedAt: null,
-  activeSessions: 0,
-  autoModeSessions: 0,
-  processCount: null,
-  sessions: [],
 };
 
 /**

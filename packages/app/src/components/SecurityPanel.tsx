@@ -28,20 +28,12 @@ import type {
 import { useSecurityEvents } from '../hooks/useSecurityEvents.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { useAutoModeStatus } from '../hooks/useAutoModeStatus.js';
-import { usePermissionRules } from '../hooks/usePermissionRules.js';
 import { usePendingSecurityBlocks } from '../hooks/usePendingSecurityBlocks.js';
 import LiveSecurityRow from './LiveSecurityRow.js';
 import SecurityStatusPill from './SecurityStatusPill.js';
 import HighlightedSnippet from './HighlightedSnippet.js';
-import {
-  QuickSegmented,
-  QuickChipToggle,
-  Switch,
-  SettingsCard,
-  SettingsRow,
-} from './settings/primitives.js';
+import { QuickToggle } from './settings/primitives.js';
 import InfoTooltip from './InfoTooltip.js';
-import { describeScanSummary } from '../lib/securityScanSummary.js';
 import {
   buildEventCopyText,
   COPY_DETAILS_LABEL,
@@ -470,12 +462,6 @@ export default function SecurityPanel({
   const scannerOnly = scannerOnlyForFilter;
   const permissionsOnly = permissionsOnlyForFilter;
 
-  // Pull permission rules for the status strip's rule count. Hook
-  // always runs (mustn't be gated on bothOff) to keep hook order
-  // stable across renders.
-  const { rules: permissionRules } = usePermissionRules();
-  const enabledRuleCount = permissionRules.filter((r) => r.enabled).length;
-
   // Fully-disabled short circuit: if the user has turned BOTH features
   // off, the panel has nothing useful to show — render a single card
   // with both enable-actions and a deep link to the relevant settings
@@ -564,98 +550,39 @@ export default function SecurityPanel({
         </div>
       </div>
 
-      {/* Scanning card — labeled, collapsible, visually distinct from the
-          filter pills below. Collapsed by default with a one-line summary
-          in the header so state is visible at a glance. Writes flow through
-          useSettings().update, same path as the full SettingsPanel. */}
+      {/* Compact quick-toggles. The detailed scanning / tool-permission /
+          isolation config now lives in the Settings overlay's Security
+          sub-tabs (the single source of truth); this row is just fast on/off
+          access from the live dashboard, with a link into the full settings. */}
       {settings && (
-        <SettingsCard title="Scanning" summary={describeScanSummary(settings)} defaultOpen={false}>
-          <SettingsRow
-            label="Security scanning"
-            description="Inspect prompts, files, and tool calls for risks."
-          >
-            <Switch
-              label="Security scanning"
-              checked={settings.securityScanEnabled}
-              onChange={(v) => void update({ securityScanEnabled: v }).catch(() => undefined)}
-            />
-          </SettingsRow>
-          <SettingsRow
-            label="Tool permissions"
-            description={
-              settings.toolPermissionsEnabled
-                ? `${enabledRuleCount} rule${enabledRuleCount === 1 ? '' : 's'} enforced`
-                : 'Allow/deny rules not applied'
+        <div className="flex flex-wrap items-center gap-1.5 px-1 py-1">
+          <QuickToggle
+            label="Scanning"
+            checked={settings.securityScanEnabled}
+            onChange={(v) => void update({ securityScanEnabled: v }).catch(() => undefined)}
+          />
+          <QuickToggle
+            label="Tool perms"
+            checked={settings.toolPermissionsEnabled}
+            onChange={(v) => void update({ toolPermissionsEnabled: v }).catch(() => undefined)}
+          />
+          <QuickToggle
+            label="Isolation"
+            checked={settings.isolationPolicy.enabled}
+            onChange={(v) =>
+              void update({
+                isolationPolicy: { ...settings.isolationPolicy, enabled: v },
+              }).catch(() => undefined)
             }
+          />
+          <button
+            type="button"
+            onClick={() => onRequestOpenSettings?.('security-enable-toggle')}
+            className="ml-auto text-[11px] font-medium text-ios-blue hover:underline"
           >
-            <Switch
-              label="Tool permissions"
-              checked={settings.toolPermissionsEnabled}
-              onChange={(v) => void update({ toolPermissionsEnabled: v }).catch(() => undefined)}
-            />
-          </SettingsRow>
-          {settings.securityScanEnabled && (
-            <>
-              <SettingsRow
-                label="When a risk is detected"
-                description="Observe records findings; Block stops the outbound request."
-              >
-                <QuickSegmented
-                  ariaLabel="Enforcement mode"
-                  value={
-                    (settings.securityEnforcementMode ?? 'observe') as
-                      | 'observe'
-                      | 'block_high'
-                      | 'block_medium_high'
-                  }
-                  onChange={(v) =>
-                    void update({ securityEnforcementMode: v }).catch(() => undefined)
-                  }
-                  options={[
-                    { value: 'observe', label: 'Observe', title: 'Record findings; never block' },
-                    {
-                      value: 'block_high',
-                      label: 'HIGH',
-                      title: 'Block only HIGH-severity findings',
-                    },
-                    {
-                      value: 'block_medium_high',
-                      label: 'MED+HIGH',
-                      title: 'Block MEDIUM and HIGH findings',
-                    },
-                  ]}
-                />
-              </SettingsRow>
-              <SettingsRow
-                label="Scan for"
-                description="Categories inspected on every outbound request."
-              >
-                <div className="flex flex-wrap gap-1 justify-end">
-                  <QuickChipToggle
-                    label="Secrets"
-                    active={settings.securityScanSecrets}
-                    onChange={(v) => void update({ securityScanSecrets: v }).catch(() => undefined)}
-                    title="Scan for API keys, tokens, private keys"
-                  />
-                  <QuickChipToggle
-                    label="Injection"
-                    active={settings.securityScanInjection}
-                    onChange={(v) =>
-                      void update({ securityScanInjection: v }).catch(() => undefined)
-                    }
-                    title="Heuristic prompt-injection detection"
-                  />
-                  <QuickChipToggle
-                    label="Tool-use"
-                    active={settings.securityScanToolUse}
-                    onChange={(v) => void update({ securityScanToolUse: v }).catch(() => undefined)}
-                    title="Inspect proposed Bash / Write / WebFetch tool calls"
-                  />
-                </div>
-              </SettingsRow>
-            </>
-          )}
-        </SettingsCard>
+            Configure…
+          </button>
+        </div>
       )}
 
       {/* Collapsible filter section. Mirrors the Logs tab pattern: a chevron
@@ -886,54 +813,30 @@ function formatAgo(ts: number, now: number = Date.now()): string {
 }
 
 function buildBannerCopy(status: AutoModeStatus, skipInAutoMode: boolean): { headline: string } {
-  const { activeSessions, autoModeSessions, source } = status;
-  const sessionsLabel = (n: number): string => `${n} session${n === 1 ? '' : 's'}`;
+  const manual = status.source === 'manual';
 
   // When enforcement is NOT being skipped, the banner is informational: we
-  // detected auto mode but Sentinel is still gating tool calls. The
-  // explanatory paragraph below the headline covers the "still enforcing"
-  // semantics, so the headline alone carries the state.
+  // detected auto mode but Sentinel is still gating tool calls. When skipping,
+  // Sentinel is standing down. Either way the headline carries the state and
+  // the paragraph below spells out the enforcement semantics.
   if (!skipInAutoMode) {
-    if (source === 'manual' && autoModeSessions === 0) {
-      return { headline: 'Auto mode · manual override' };
-    }
-    if (autoModeSessions > 0 && autoModeSessions < activeSessions) {
-      return {
-        headline: `Auto mode detected · ${autoModeSessions} of ${activeSessions} sessions`,
-      };
-    }
-    if (autoModeSessions === 1 && activeSessions === 1) {
-      return { headline: 'Auto mode detected' };
-    }
-    if (autoModeSessions > 0 && autoModeSessions === activeSessions) {
-      return { headline: `Auto mode · ${sessionsLabel(autoModeSessions)}` };
-    }
-    return { headline: 'Auto mode active' };
+    return { headline: manual ? 'Auto mode · manual override' : 'Auto mode detected' };
   }
-
-  // Skipping path — Sentinel is standing down on auto-mode sessions.
-  if (source === 'manual' && autoModeSessions === 0) {
-    return { headline: 'Auto mode · manual override' };
-  }
-  if (autoModeSessions === 1 && activeSessions === 1) {
-    return { headline: 'Auto mode · Sentinel standing down' };
-  }
-  if (autoModeSessions > 0 && autoModeSessions < activeSessions) {
-    return { headline: `Auto mode · ${autoModeSessions} of ${activeSessions} sessions` };
-  }
-  if (autoModeSessions > 0 && autoModeSessions === activeSessions) {
-    return { headline: `Auto mode · ${sessionsLabel(autoModeSessions)}` };
-  }
-  return { headline: 'Auto mode active' };
+  return {
+    headline: manual ? 'Auto mode · manual override' : 'Auto mode · Sentinel standing down',
+  };
 }
 
 /**
- * Inline banner that appears when Claude Code is in auto mode — either
- * because the user flipped the manual override in Settings or because the
- * daemon observed auto-mode beta headers on a recent request. The pulsing
- * icon and slide-in entrance make the bypass state easy to notice at a
- * glance. Copy adapts to the session count so parallel sessions read
- * correctly ("1 of 3 sessions"). Click to expand → per-session breakdown.
+ * Inline banner shown while Claude Code is in auto mode — either because the
+ * user flipped the manual override in Settings or because the daemon saw an
+ * auto-mode beta header on a request within the freshness window. The pulsing
+ * dot and slide-in entrance make the bypass state easy to notice at a glance.
+ *
+ * Deliberately a single state, not a session/process tally: the proxy can't
+ * know how many Claude Code sessions are running (they never announce their
+ * start or end), so the honest signal is "auto mode is active" plus when it
+ * was last detected.
  */
 function AutoModeBanner({
   status,
@@ -942,9 +845,7 @@ function AutoModeBanner({
   status: AutoModeStatus;
   skipInAutoMode: boolean;
 }): React.ReactElement {
-  const [expanded, setExpanded] = useState(false);
   const copy = buildBannerCopy(status, skipInAutoMode);
-  const hasSessions = status.sessions.length > 0;
 
   // Two visual treatments:
   //   - skipping (Sentinel standing down): calm blue/purple gradient — the
@@ -956,17 +857,23 @@ function AutoModeBanner({
     ? {
         cardBg: 'bg-gradient-to-r from-ios-purple/15 via-ios-blue/10 to-ios-blue/5',
         cardBorder: 'border-ios-blue/20',
-        cardDivider: 'border-ios-blue/15',
         dot: 'bg-ios-blue',
         icon: 'text-ios-blue',
       }
     : {
         cardBg: 'bg-gradient-to-r from-ios-orange/15 via-ios-orange/8 to-ios-orange/5',
         cardBorder: 'border-ios-orange/25',
-        cardDivider: 'border-ios-orange/20',
         dot: 'bg-ios-orange',
         icon: 'text-ios-orange',
       };
+
+  // "detected Ns ago" only for header-based detection (a manual override has
+  // no meaningful detection time). The daemon re-broadcasts on every fresh
+  // auto-mode request, so this refreshes while a session is actively working.
+  const detectedAgo =
+    status.source === 'headers' && status.lastDetectedAt !== null
+      ? formatAgo(status.lastDetectedAt)
+      : null;
 
   return (
     <AnimatePresence initial={false}>
@@ -980,22 +887,9 @@ function AutoModeBanner({
           className="overflow-hidden"
         >
           <div className={`px-3 py-2 mb-2 rounded-xl border ${accent.cardBg} ${accent.cardBorder}`}>
-            <button
-              type="button"
-              onClick={() => hasSessions && setExpanded((v) => !v)}
-              disabled={!hasSessions}
-              className="flex items-start gap-2 w-full text-left disabled:cursor-default"
-              aria-expanded={hasSessions ? expanded : undefined}
-              title={
-                hasSessions
-                  ? expanded
-                    ? 'Hide session details'
-                    : 'Show session details'
-                  : undefined
-              }
-            >
+            <div className="flex items-start gap-2">
               <div className="flex-1 min-w-0">
-                <p className="text-[11px] font-semibold text-black dark:text-white leading-tight flex items-center gap-1.5">
+                <p className="text-[11px] font-semibold text-black dark:text-white leading-tight flex items-center gap-1.5 flex-wrap">
                   <span
                     aria-hidden
                     className="relative inline-flex items-center justify-center flex-shrink-0"
@@ -1006,66 +900,19 @@ function AutoModeBanner({
                     <span className={`relative inline-block w-2 h-2 rounded-full ${accent.dot}`} />
                   </span>
                   <span className="whitespace-nowrap">{copy.headline}</span>
+                  {detectedAgo && (
+                    <span className={`font-normal text-[10px] ${accent.icon}`}>
+                      · detected {detectedAgo}
+                    </span>
+                  )}
                 </p>
                 <p className="text-[10.5px] text-muted leading-snug mt-0.5">
                   {skipInAutoMode
                     ? 'Sentinel is standing down on auto-mode sessions. Rule enforcement still applies to other sessions.'
-                    : 'Sentinel is still enforcing rules on every session. Turn on "Skip enforcement in auto mode" in Settings if you want Sentinel to defer to Claude Code\u2019s classifier.'}
+                    : 'Sentinel is still enforcing rules on every session. Turn on "Skip enforcement in auto mode" in Settings if you want Sentinel to defer to Claude Code’s classifier.'}
                 </p>
               </div>
-              {hasSessions &&
-                (expanded ? (
-                  <ChevronDown size={11} strokeWidth={2.5} className="text-muted mt-1" />
-                ) : (
-                  <ChevronRight size={11} strokeWidth={2.5} className="text-muted mt-1" />
-                ))}
-            </button>
-
-            <AnimatePresence initial={false}>
-              {hasSessions && expanded && (
-                <motion.div
-                  key="sessions"
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{
-                    height: { duration: 0.26, ease: [0.22, 1, 0.36, 1] },
-                    opacity: { duration: 0.18, ease: 'easeOut' },
-                  }}
-                  className="overflow-hidden"
-                >
-                  <div className={`mt-2 pt-2 border-t ${accent.cardDivider} space-y-1.5`}>
-                    {status.sessions.map((s) => (
-                      <div key={s.sessionId} className="flex items-center gap-2 text-[10.5px]">
-                        <span
-                          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                            s.autoMode ? accent.dot : 'bg-muted/60'
-                          }`}
-                        />
-                        <span
-                          className={`font-semibold tabular-nums ${s.autoMode ? accent.icon : 'text-muted'}`}
-                        >
-                          {s.autoMode ? 'AUTO' : 'normal'}
-                        </span>
-                        <span
-                          className="text-muted font-mono truncate flex-1 min-w-0"
-                          title={s.sessionId}
-                        >
-                          {s.sessionId.slice(0, 8)}…
-                        </span>
-                        <span className="text-muted flex-shrink-0">{formatAgo(s.lastSeenAt)}</span>
-                      </div>
-                    ))}
-                    {status.processCount !== null && (
-                      <p className="text-[10px] text-muted pt-1 italic">
-                        {status.processCount} claude-code{' '}
-                        {status.processCount === 1 ? 'process' : 'processes'} running
-                      </p>
-                    )}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            </div>
           </div>
         </motion.div>
       )}

@@ -25,7 +25,7 @@ interface UseAlertsResult {
  *                                            account's unified-7d (general
  *                                            weekly) window. Independent
  *                                            threshold list from Sonnet.
- *   { scope: 'pool' }                      — pool-wide alerts (round-robin
+ *   { scope: 'pool' }                      — pool-wide alerts (Auto mode
  *                                            only); fire on mean unified-5h
  *                                            utilization across the pool.
  *   { scope: 'pool-weekly' }               — pool-wide alerts on mean

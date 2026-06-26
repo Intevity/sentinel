@@ -217,7 +217,7 @@ export interface StartProxyOpts {
    *  is exposed on the returned `StartedProxy` so tests can call
    *  `enforcer.invalidate()` after seeding rules into the db. */
   enablePermissionsEnforcer?: boolean;
-  /** When set, overrides the default tokenProvider (round-robin). The
+  /** When set, overrides the default tokenProvider (Auto switching). The
    *  helper's default tokenProvider returns null (fallback to activeToken). */
   tokenProvider?: (ctx?: { isSonnet: boolean }) => TokenSelection | null;
   /** Live accessors — wired straight into `createProxyServer`. */

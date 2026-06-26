@@ -105,7 +105,7 @@ describe('TokenRotator', () => {
     expect(rotator.pick()).toBeNull();
   });
 
-  it('rotates through accounts in deterministic order', () => {
+  it('pins to a single account when no reset data is available', () => {
     const db = getDb(dbPath);
     seed(db, 'a', 'a@x');
     seed(db, 'b', 'b@x');
@@ -114,12 +114,14 @@ describe('TokenRotator', () => {
     const rotator = new TokenRotator(db, store, { value: 'a' });
     expect(rotator.size()).toBe(3);
 
-    const picked = [rotator.pick(), rotator.pick(), rotator.pick(), rotator.pick()];
-    const ids = picked.map((p) => p?.accountId);
-    // Cycle repeats after N picks
-    expect(ids[0]).toBe(ids[3]);
-    // All three accounts seen in one cycle
-    expect(new Set(ids.slice(0, 3))).toEqual(new Set(['a', 'b', 'c']));
+    const ids = [rotator.pick(), rotator.pick(), rotator.pick(), rotator.pick()].map(
+      (p) => p?.accountId,
+    );
+    // With no rate-limit data every reset reads "unknown", so earliest-reset
+    // tie-breaks by utilization (all 0) then pool order and sticks to one
+    // account — it must NOT cycle (the old balance behavior).
+    expect(new Set(ids).size).toBe(1);
+    expect(['a', 'b', 'c']).toContain(ids[0]);
   });
 
   it('skips accounts whose rate-limit store shows blocked status', () => {
@@ -173,7 +175,7 @@ describe('TokenRotator', () => {
     });
     const rotator = new TokenRotator(db, store, { value: 'a' });
     // Every pick must land on 'b' — 'a' is skipped despite being the lower
-    // 5h utilization candidate (would otherwise win under balance strategy).
+    // 5h utilization candidate, because its 7d window is blocked.
     for (let i = 0; i < 4; i++) {
       expect(rotator.pick()?.accountId).toBe('b');
     }
@@ -196,12 +198,14 @@ describe('TokenRotator', () => {
     const rotator = new TokenRotator(db, store, { value: 'a' });
     expect(rotator.pick()?.accountId).toBe('b');
 
-    // 7d window rolls over — status flips to allowed.
+    // 7d window rolls over — status flips to allowed, re-admitting 'a'.
     store.update('a', {
       'anthropic-ratelimit-unified-7d-status': 'allowed',
       'anthropic-ratelimit-unified-7d-utilization': '0.0',
     });
-    // 'a' is now the lower-utilization candidate again — should win.
+    // Block 'b' so the only eligible account is the re-admitted 'a' — proves
+    // it rejoined the pool rather than staying excluded.
+    store.update('b', { 'anthropic-ratelimit-unified-5h-status': 'blocked' });
     expect(rotator.pick()?.accountId).toBe('a');
   });
 
@@ -223,7 +227,7 @@ describe('TokenRotator', () => {
     seed(db, 'c', 'c@x');
     const store = new RateLimitStore();
     const rotator = new TokenRotator(db, store, { value: 'a' });
-    // Advance cursor to end.
+    // Exercise a couple of picks before mutating the pool.
     rotator.pick();
     rotator.pick();
     rotator.pick();
@@ -267,7 +271,7 @@ describe('TokenRotator', () => {
     expect(rotator.pick()?.accountId).toBe('a');
   });
 
-  it('prefers the lower-utilization account until the gap closes', () => {
+  it('prefers the lower-utilization account when resets are unknown', () => {
     const db = getDb(dbPath);
     seed(db, 'a', 'a@x');
     seed(db, 'b', 'b@x');
@@ -275,19 +279,19 @@ describe('TokenRotator', () => {
     store.update('a', { 'anthropic-ratelimit-unified-5h-utilization': '0.9' });
     store.update('b', { 'anthropic-ratelimit-unified-5h-utilization': '0.26' });
     const rotator = new TokenRotator(db, store, { value: 'a' });
-    // The gap (64 points) is well outside the 1% tie band, so every pick
-    // should route to `b` until utilizations converge.
+    // Both resets read "unknown", so earliest-reset tie-breaks by utilization:
+    // `b` wins and the sticky target holds it on every pick.
     expect(rotator.pick()?.accountId).toBe('b');
     expect(rotator.pick()?.accountId).toBe('b');
     expect(rotator.pick()?.accountId).toBe('b');
   });
 
-  it('round-robins within the 1% tie band when accounts are converged', () => {
+  it('sticks to one account instead of alternating when utilizations are close', () => {
     const db = getDb(dbPath);
     seed(db, 'a', 'a@x');
     seed(db, 'b', 'b@x');
     const store = new RateLimitStore();
-    // 0.5 points apart — both inside the 1% band.
+    // 0.5 points apart, both resets unknown.
     store.update('a', { 'anthropic-ratelimit-unified-5h-utilization': '0.500' });
     store.update('b', { 'anthropic-ratelimit-unified-5h-utilization': '0.505' });
     const rotator = new TokenRotator(db, store, { value: 'a' });
@@ -297,10 +301,10 @@ describe('TokenRotator', () => {
       rotator.pick()?.accountId,
       rotator.pick()?.accountId,
     ];
-    // Both accounts must appear in any 4-pick window, and the cycle repeats.
-    expect(new Set(ids)).toEqual(new Set(['a', 'b']));
-    expect(ids[0]).toBe(ids[2]);
-    expect(ids[1]).toBe(ids[3]);
+    // earliest-reset never alternates request-by-request: it pins to the
+    // lower-utilization account ('a') and holds it.
+    expect(new Set(ids).size).toBe(1);
+    expect(ids[0]).toBe('a');
   });
 
   it('treats missing utilization as 0 so fresh accounts are preferred', () => {
@@ -325,7 +329,9 @@ describe('TokenRotator', () => {
     const rotator = new TokenRotator(db, store, { value: 'a' }, () => excluded);
     expect(rotator.size()).toBe(2);
     const ids = [rotator.pick()?.accountId, rotator.pick()?.accountId];
-    expect(new Set(ids)).toEqual(new Set(['a', 'c']));
+    // Excluded 'b' must never be picked; every pick comes from the remaining pool.
+    expect(ids).not.toContain('b');
+    ids.forEach((id) => expect(['a', 'c']).toContain(id));
   });
 
   it('returns null when every account is excluded', () => {
@@ -413,7 +419,6 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     opts: {
       active?: string;
       nowSec?: () => number;
-      strategy?: () => 'balance' | 'earliest-reset';
     } = {},
   ): TokenRotator {
     return new TokenRotator(
@@ -421,7 +426,6 @@ describe('TokenRotator (earliest-reset strategy)', () => {
       store,
       { value: opts.active ?? 'a' },
       () => new Set(),
-      opts.strategy ?? (() => 'earliest-reset'),
       () => new Set(),
       () => new Set(),
       () => 10,
@@ -586,24 +590,6 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     setResetAndUtil(store, 'a', 1_000, 0.55);
     setResetAndUtil(store, 'b', 1_000, 0.11);
     expect(rotator.pick()?.accountId).toBe('a');
-  });
-
-  it('honours live strategy changes between picks', () => {
-    const db = getDb(dbPath);
-    seed(db, 'fresh', 'f@x');
-    seed(db, 'soon', 's@x');
-    const store = new RateLimitStore();
-    // `fresh` has lower utilization (balance wants it); `soon` resets earliest (earliest-reset wants it).
-    setResetAndUtil(store, 'fresh', 9_000, 0.1);
-    setResetAndUtil(store, 'soon', 1_000, 0.8);
-
-    let strategy: 'balance' | 'earliest-reset' = 'balance';
-    const rotator = makeRotator(db, store, { active: 'fresh', strategy: () => strategy });
-    expect(rotator.pick()?.accountId).toBe('fresh');
-    strategy = 'earliest-reset';
-    expect(rotator.pick()?.accountId).toBe('soon');
-    strategy = 'balance';
-    expect(rotator.pick()?.accountId).toBe('fresh');
   });
 
   it('returns null when every account is blocked in earliest-reset mode', () => {
@@ -809,7 +795,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'fresh' },
       () => new Set(),
-      () => 'earliest-reset',
       () => new Set(['hot']), // opted in — but shouldn't matter when fresh exists
       () => new Set(),
       () => 10,
@@ -834,7 +819,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'spare' },
       () => new Set(),
-      () => 'balance',
       () => new Set(), // no overage-allowed accounts
     );
     expect(rotator.pick()?.accountId).toBe('spare');
@@ -854,7 +838,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'only' },
       () => new Set(),
-      () => 'balance',
       () => new Set(['only']),
     );
     expect(rotator.pick()?.accountId).toBe('only');
@@ -872,7 +855,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'only' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
     );
     expect(rotator.pick()).toBeNull();
@@ -894,7 +876,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'spare' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
     );
     expect(rotator.pick()?.accountId).toBe('spare');
@@ -917,7 +898,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'exhausted' },
       () => new Set(),
-      () => 'balance',
       () => new Set(), // not opted in
     );
     expect(rotator.pick()).toBeNull();
@@ -944,7 +924,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'blocked' },
       () => new Set(),
-      () => 'balance',
       () => new Set(['blocked']),
     );
     expect(rotator.pick()?.accountId).toBe('blocked');
@@ -968,7 +947,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'blocked' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
     );
     expect(rotator.pick()).toBeNull();
@@ -987,7 +965,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'active' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
       () => new Set(['paused']),
     );
@@ -1008,7 +985,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'a' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
       () => new Set(['a', 'b']),
     );
@@ -1031,7 +1007,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'fresh1' },
       () => new Set(),
-      () => 'balance',
       () => new Set(['hot']), // opted in, but fresh candidates exist
     );
     const picked = [rotator.pick(), rotator.pick(), rotator.pick(), rotator.pick()];
@@ -1060,7 +1035,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'spare' },
       () => new Set(),
-      () => 'balance',
       () => new Set(), // not opted in → must skip
       () => new Set(),
       () => 10, // default buffer
@@ -1081,7 +1055,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'below' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 10,
@@ -1103,7 +1076,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'high' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 0,
@@ -1125,7 +1097,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'low' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 50,
@@ -1148,7 +1119,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'high' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 99,
@@ -1175,7 +1145,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'capped' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 10,
@@ -1201,7 +1170,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'capped' },
       () => new Set(),
-      () => 'balance',
       () => new Set(['capped']), // opted in but overage unavailable
       () => new Set(),
       () => 10,
@@ -1226,7 +1194,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'legacy' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 10,
@@ -1265,7 +1232,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'saturated' },
       () => new Set(),
-      () => 'balance',
       () => new Set(), // nobody opted into overage
       () => new Set(),
       () => 5,
@@ -1288,7 +1254,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'hotSonnet' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 5,
@@ -1311,7 +1276,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'unprobed' },
       () => new Set(),
-      () => 'balance',
       () => new Set(),
       () => new Set(),
       () => 5,
@@ -1334,7 +1298,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'a' },
       () => new Set(),
-      () => 'balance',
       () => new Set(), // nobody opted in
       () => new Set(),
       () => 5,
@@ -1358,7 +1321,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'saturated' },
       () => new Set(),
-      () => 'balance',
       () => new Set(['saturated']), // opted into overage
       () => new Set(),
       () => 5,
@@ -1381,7 +1343,6 @@ describe('TokenRotator overage gate', () => {
       store,
       { value: 'saturated' },
       () => new Set(),
-      () => 'balance',
       () => new Set(['saturated']), // opted in, but shouldn't matter while `fresh` exists
       () => new Set(),
       () => 5,
