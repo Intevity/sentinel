@@ -1,5 +1,5 @@
 ---
-title: Set up round-robin across accounts
+title: Set up automatic account switching
 description: Enroll multiple accounts and let Sentinel route to whichever one has capacity, so you stop switching by hand.
 sidebar:
   order: 2
@@ -23,7 +23,7 @@ you're always on capacity that's about to refresh.
 4. **(Optional) Choose a strategy.** The default `earliest-reset` strategy targets the account whose
    5-hour window resets soonest. Set it via `roundRobinStrategy` in Settings.
 
-5. **(Optional) Exclude accounts.** Keep a specific account out of rotation (for example, a work
+5. **(Optional) Exclude accounts.** Keep a specific account out of the Auto pool (for example, a work
    account) by adding it to `poolExcludedIds` in Settings.
 
 </Steps>

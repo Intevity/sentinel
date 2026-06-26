@@ -1,6 +1,6 @@
 ---
 title: Accounts & multi-account routing
-description: Enroll the Claude accounts you own and choose how Sentinel uses them — manual switching, or automatic round-robin that favors the account whose window resets soonest.
+description: Enroll the Claude accounts you own and choose how Sentinel uses them — manual switching, or automatic switching that favors the account whose window resets soonest.
 sidebar:
   order: 1
 ---
@@ -39,7 +39,7 @@ Open **Settings** and pick a **switching mode**:
   fill up. Each switch safely rewrites the active OAuth credential, and the header always reflects
   the account currently serving requests.
 
-### How Auto chooses (round-robin)
+### How Auto chooses
 
 In Auto mode, Sentinel selects from a **pool** of your enrolled accounts. The default strategy,
 **earliest-reset**, hard-targets the account whose 5-hour rate-limit window resets soonest — keeping
@@ -55,7 +55,7 @@ you on capacity that's about to refresh rather than capacity you've already spen
 ## Account lifecycle
 
 - **Sync** — capture or refresh an account's credentials from Claude Code.
-- **Pause / unpause** — temporarily take an account out of rotation.
+- **Pause / unpause** — temporarily take an account out of the Auto pool.
 - **Remove** — soft-delete an account (it moves to a removed list and can be restored).
 - **Purge** — hard-delete an account and all data associated with it.
 
