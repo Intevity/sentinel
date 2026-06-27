@@ -69,8 +69,13 @@ function zoomFilter({ startF, endF, cx, cy, zmax }) {
   const pOut = `((on-${F3})/(${F4 - F3}))`;
   const S = `if(lt(on,${F1}),0,if(lt(on,${F2}),${smooth(pIn)},if(lt(on,${F3}),1,if(lt(on,${F4}),(1-${smooth(pOut)}),0))))`;
   const z = `1+${(zmax - 1).toFixed(3)}*(${S})`;
-  const x = `clip(${cx}*zoom-${W / 2},0,iw*zoom-${W})`;
-  const y = `clip(${cy}*zoom-${H / 2},0,ih*zoom-${H})`;
+  // zoompan x/y are the crop's top-left in INPUT pixel coords; the visible crop
+  // is iw/zoom × ih/zoom. To keep the focal (cx,cy) centered in the output, the
+  // crop top-left is (cx - iw/zoom/2, cy - ih/zoom/2), clamped to the frame.
+  // (The earlier cx*zoom - W/2 form assumed scaled-space and pushed the window
+  // off-center — mild at low zoom, severe past ~1.6x.)
+  const x = `clip(${cx}-iw/zoom/2,0,iw-iw/zoom)`;
+  const y = `clip(${cy}-ih/zoom/2,0,ih-ih/zoom)`;
   return `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${W}x${H}:fps=${FPS}`;
 }
 

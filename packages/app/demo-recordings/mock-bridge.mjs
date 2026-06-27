@@ -973,12 +973,14 @@ function broadcast(obj) {
 }
 
 let rampTimer = null;
-function startRamp() {
+function startRamp(from = RAMP_FROM, ms = RAMP_MS) {
   if (rampTimer) return;
+  ramp = from;
+  broadcast({ type: 'compression_metrics_updated' }); // snap to the low value first
   const t0 = Date.now();
   rampTimer = setInterval(() => {
-    const p = Math.min(1, (Date.now() - t0) / RAMP_MS);
-    ramp = RAMP_FROM + (1 - RAMP_FROM) * (1 - Math.pow(1 - p, 3));
+    const p = Math.min(1, (Date.now() - t0) / ms);
+    ramp = from + (1 - from) * (1 - Math.pow(1 - p, 3));
     broadcast({ type: 'compression_metrics_updated' });
     if (p >= 1) {
       clearInterval(rampTimer);
@@ -1069,7 +1071,23 @@ const server = createServer(async (req, res) => {
   }
 
   if (msg.type === '__demo_ramp') {
-    startRamp();
+    startRamp(
+      typeof msg.from === 'number' ? msg.from : undefined,
+      typeof msg.ms === 'number' ? msg.ms : undefined,
+    );
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+  if (msg.type === '__demo_ramp_set') {
+    // Freeze the savings totals at a fixed fraction (no timer) so a recipe can
+    // mount the panel showing a low number, then trigger __demo_ramp to climb.
+    if (rampTimer) {
+      clearInterval(rampTimer);
+      rampTimer = null;
+    }
+    ramp = typeof msg.value === 'number' ? msg.value : RAMP_FROM;
+    broadcast({ type: 'compression_metrics_updated' });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
