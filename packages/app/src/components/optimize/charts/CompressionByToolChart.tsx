@@ -2,6 +2,7 @@ import React from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import type { CompressionMetrics } from '@sentinel/shared';
 import { formatTokens } from '../../../lib/optimizeUnits.js';
+import { formatInt } from '../../../lib/format.js';
 import {
   AXIS_TICK_STYLE,
   ChartEmptyState,
@@ -33,7 +34,7 @@ export default function CompressionByToolChart({
     p: { payload?: { blocks?: number } },
   ): [string, string] => {
     const blocks = p.payload?.blocks ?? 0;
-    return [`${formatTokens(v)} · ${blocks} block${blocks === 1 ? '' : 's'}`, 'Saved'];
+    return [`${formatTokens(v)} · ${formatInt(blocks)} block${blocks === 1 ? '' : 's'}`, 'Saved'];
   };
   return (
     <ChartFrame title="Estimated tokens saved by tool" collapsible defaultOpen={false}>

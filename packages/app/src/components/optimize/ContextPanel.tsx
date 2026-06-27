@@ -12,6 +12,7 @@ import type {
 } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../../lib/ipc.js';
 import { formatTokens } from '../../lib/optimizeUnits.js';
+import { formatInt } from '../../lib/format.js';
 import { filterMcpInsights, type McpServerChipState } from '../../lib/mcpServerFilter.js';
 import { formatUsd } from './charts/shared.js';
 import { MetricTile } from './MetricTile.js';
@@ -552,7 +553,7 @@ function ServerRow({
           title="Definition tokens kept out of context: this server's definition size times the requests observed since its migration, estimated at cached rates."
         >
           Saved ~{formatTokens(realized.estTokens)} (≈{formatUsd(realized.estUsd)}) across{' '}
-          {realized.requests} request{realized.requests === 1 ? '' : 's'} since bridging
+          {formatInt(realized.requests)} request{realized.requests === 1 ? '' : 's'} since bridging
         </p>
       )}
 

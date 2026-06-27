@@ -1,15 +1,12 @@
 import React, { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { formatTokens, type SavingsUnits } from '../../../lib/optimizeUnits.js';
+import { formatUsd } from '../../../lib/format.js';
 
-/** Always show 2 decimals; preserve sign so negative values read as
- *  such. Mirrors the local `formatUsd` that previously lived in
- *  OptimizeDashboard.tsx; lifted here so every chart variant uses the
- *  exact same rendering. */
-export function formatUsd(n: number): string {
-  const sign = n < 0 ? '-' : '';
-  return `${sign}$${Math.abs(n).toFixed(2)}`;
-}
+// Currency rendering is centralized in lib/format.ts (thousands separators +
+// sign + 2 decimals). Re-exported here so the chart and panel modules that
+// already import `formatUsd` from this file keep working unchanged.
+export { formatUsd };
 
 export function valueFormatter(units: SavingsUnits): (v: number) => string {
   return units === 'cost' ? formatUsd : formatTokens;

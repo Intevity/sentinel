@@ -13,6 +13,7 @@ import { Switch } from '../settings/primitives.js';
 import InfoModal from '../InfoModal.js';
 import { useSettings } from '../../hooks/useSettings.js';
 import { formatTokens } from '../../lib/optimizeUnits.js';
+import { formatInt } from '../../lib/format.js';
 import { formatUsd } from './charts/shared.js';
 import { MetricTile } from './MetricTile.js';
 import CompressionByToolChart from './charts/CompressionByToolChart.js';
@@ -321,9 +322,9 @@ export default function CompressionPanel({
       </div>
 
       <p className="mt-2 text-[11px] text-foreground/45">
-        {t.requestsCompressed} request{t.requestsCompressed === 1 ? '' : 's'} compressed
+        {formatInt(t.requestsCompressed)} request{t.requestsCompressed === 1 ? '' : 's'} compressed
         {' · '}
-        {t.requestsSkipped} skipped
+        {formatInt(t.requestsSkipped)} skipped
       </p>
 
       {t.estTokensPotential > 0 && level !== 'aggressive' && (
@@ -351,7 +352,7 @@ export default function CompressionPanel({
                 className="flex justify-between text-[11px] text-foreground/60"
               >
                 <span>{SKIP_LABELS[e.skipReason] ?? e.skipReason}</span>
-                <span className="tabular-nums">{e.count}</span>
+                <span className="tabular-nums">{formatInt(e.count)}</span>
               </li>
             ))}
           </ul>
