@@ -1,0 +1,3 @@
+# Rendered bookend clips are build artifacts — regenerate with `node capture.mjs`.
+*.mp4
+*.webm

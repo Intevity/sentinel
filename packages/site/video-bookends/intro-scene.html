@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sentinel intro scene</title>
+    <link rel="stylesheet" href="./bookend.css" />
+    <link rel="stylesheet" href="./scenes.css" />
+    <style>
+      /* When handing off, recede the scene so the big "→ Tab" reads clean. */
+      .stage.handing .terminal,
+      .stage.handing .meter,
+      .stage.handing .chip,
+      .stage.handing .scene-kicker {
+        opacity: 0.08;
+        filter: blur(2px);
+        transition:
+          opacity 0.45s ease,
+          filter 0.45s ease;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage" id="stage">
+      <div class="bg-gradient"></div>
+      <div class="bg-aurora"></div>
+      <div class="bg-grid"></div>
+
+      <div class="scene-kicker" id="kicker"></div>
+
+      <div class="terminal" id="terminal">
+        <div class="terminal-bar">
+          <span class="dot red"></span>
+          <span class="dot yellow"></span>
+          <span class="dot green"></span>
+          <span class="terminal-title" id="ttitle">claude — zsh</span>
+        </div>
+        <div class="terminal-body" id="term"></div>
+      </div>
+
+      <div class="meter" id="meter">
+        <span class="m-label" id="m-label"></span>
+        <span class="m-value" id="m-value"></span>
+      </div>
+
+      <div class="chip" id="chip">
+        <span class="chip-badge" id="chip-badge"></span>
+        <span id="chip-text"></span>
+      </div>
+
+      <div class="wipe" id="wipe"></div>
+      <div class="handoff" id="handoff">
+        <span class="arrow">&rarr;</span>
+        <span class="to" id="handoff-to"></span>
+        <span class="mini"><span class="shield" id="handoff-shield"></span> Sentinel</span>
+      </div>
+
+      <div class="replay-hint">Reload to replay</div>
+    </div>
+
+    <script>
+      const SHIELD =
+        '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>';
+      const svg = (inner) =>
+        `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
+
+      const FLOOD = [
+        '2026-06-26T14:02:11Z INFO  pool: warming 8 connections',
+        '2026-06-26T14:02:11Z DEBUG http: GET /v1/orders 200 in 41ms',
+        '2026-06-26T14:02:12Z DEBUG cache: miss key=user:5821 region=us-east',
+        '2026-06-26T14:02:12Z WARN  retry: upstream 503, attempt 2/5 backoff=800ms',
+        '2026-06-26T14:02:13Z INFO  worker: drained 1,204 events from queue',
+        '2026-06-26T14:02:13Z DEBUG sql: SELECT * FROM ledger WHERE day=$1 (118ms)',
+        '2026-06-26T14:02:14Z INFO  deploy: image sha 9f2c1ab promoted to prod',
+        '2026-06-26T14:02:14Z DEBUG gc: pause 12ms heap=512MB/1GB',
+      ];
+
+      // Each scene is a feature-specific cold open that sets up the problem and
+      // hands off to the matching tab. Copy mirrors features.ts / pillars.ts.
+      const PATH = '~/acme-api';
+      const SCENES = {
+        // ---- carousel ----
+        security: {
+          kicker: 'Security',
+          accent: '#5e5ce6',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'submit', text: 'grep the logs for anything sensitive' },
+            { type: 'out', text: '● Bash(grep -rn "KEY" .)', cls: 'muted' },
+            { type: 'out', text: 'config.ts:14  API_KEY = "sk-ant-api03-…"', cls: 'red' },
+            { type: 'chip', text: 'Sentinel flags secrets before they leave your machine' },
+            { type: 'handoff', to: 'Security' },
+          ],
+        },
+        optimize: {
+          kicker: 'Optimize',
+          accent: '#32d74b',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'submit', text: 'refactor the payments module' },
+            { type: 'out', text: '● Read(payments/) · 18 files', cls: 'muted' },
+            { type: 'flood', n: 5 },
+            { type: 'meter', label: 'tokens this session', from: 41000, to: 212000, warn: true },
+            { type: 'chip', text: 'Sentinel cuts token cost three ways' },
+            { type: 'handoff', to: 'Optimize' },
+          ],
+        },
+        accounts: {
+          kicker: 'Multi-account',
+          accent: '#007aff',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'submit', text: 'keep going on the migration' },
+            { type: 'out', text: "⚠  You've reached your usage limit.", cls: 'red' },
+            { type: 'out', text: 'resets in 4h 12m', cls: 'muted' },
+            { type: 'chip', text: 'Sentinel keeps every account you own one click away' },
+            { type: 'handoff', to: 'Accounts' },
+          ],
+        },
+        usage: {
+          kicker: 'Usage & caps',
+          accent: '#007aff',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'out', text: '● running a long agentic task…', cls: 'muted' },
+            {
+              type: 'out',
+              text: 'anthropic-ratelimit-unified-overage-status: active',
+              cls: 'orange',
+            },
+            { type: 'meter', label: 'overage spent', from: 0, to: 18.4, unit: '$', warn: true },
+            { type: 'chip', text: 'Sentinel surfaces the overage Claude Code never shows' },
+            { type: 'handoff', to: 'Usage' },
+          ],
+        },
+        alerts: {
+          kicker: 'Alerts',
+          accent: '#ff9f0a',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'out', text: '● deep in a refactor, heads down…', cls: 'muted' },
+            { type: 'meter', label: '5-hour window', from: 61, to: 92, unit: '%', warn: true },
+            { type: 'chip', text: 'Sentinel pings you the moment you cross a threshold' },
+            { type: 'handoff', to: 'Alerts' },
+          ],
+        },
+        metrics: {
+          kicker: 'Metrics',
+          accent: '#007aff',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'submit', text: '/cost' },
+            { type: 'out', text: '⏎ Total cost: $32.59  ·  this session' },
+            { type: 'out', text: 'gone when you close the terminal', cls: 'muted' },
+            { type: 'chip', text: 'Sentinel keeps every session: cost, tokens, cache, over time' },
+            { type: 'handoff', to: 'Metrics' },
+          ],
+        },
+        // ---- multi-account pillar ----
+        switching: {
+          kicker: 'Multi-account',
+          accent: '#007aff',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'out', text: "⚠  You've reached your usage limit.", cls: 'red' },
+            { type: 'out', text: 'resets in 3h 48m', cls: 'muted' },
+            { type: 'chip', text: 'Sentinel switches to the account resetting soonest' },
+            { type: 'handoff', to: 'Auto switching' },
+          ],
+        },
+        pool: {
+          kicker: 'Multi-account',
+          accent: '#007aff',
+          beats: [
+            { type: 'prompt', text: 'claude --account ?' },
+            { type: 'out', text: 'alex@pro      limit reached', cls: 'red' },
+            { type: 'out', text: 'team@max      82% used', cls: 'orange' },
+            { type: 'out', text: 'which account has headroom?', cls: 'muted' },
+            { type: 'chip', text: 'Sentinel pools every plan into one view' },
+            { type: 'handoff', to: 'Accounts · Pool' },
+          ],
+        },
+        caps: {
+          kicker: 'Multi-account',
+          accent: '#007aff',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'out', text: '● overnight batch job running…', cls: 'muted' },
+            { type: 'meter', label: '7-day overage', from: 6.0, to: 47.0, unit: '$', warn: true },
+            { type: 'chip', text: 'Sentinel caps overage before it runs away' },
+            { type: 'handoff', to: 'Spend caps' },
+          ],
+        },
+        // ---- security pillar ----
+        scanning: {
+          kicker: 'Security',
+          accent: '#5e5ce6',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'submit', text: 'post the run summary to our webhook' },
+            { type: 'out', text: '● WebFetch(hooks.example.com)', cls: 'muted' },
+            { type: 'out', text: 'body: { email, sk-ant-api03-… }', cls: 'red' },
+            { type: 'chip', text: 'Sentinel scans every request in flight' },
+            { type: 'handoff', to: 'Security · Scanning' },
+          ],
+        },
+        rules: {
+          kicker: 'Security',
+          accent: '#5e5ce6',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'submit', text: 'clean up the build artifacts' },
+            { type: 'out', text: '● Bash(rm -rf /)', cls: 'red' },
+            { type: 'out', text: 'about to run a destructive command', cls: 'orange' },
+            { type: 'chip', text: 'Sentinel gates risky tools: allow, deny, or ask' },
+            { type: 'handoff', to: 'Permission rules' },
+          ],
+        },
+        sandbox: {
+          kicker: 'Security',
+          accent: '#5e5ce6',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'out', text: '● Bash(cat ~/.ssh/id_rsa)', cls: 'red' },
+            { type: 'out', text: 'reaching outside the project', cls: 'orange' },
+            { type: 'chip', text: 'Sentinel boxes commands in at the OS level' },
+            { type: 'handoff', to: 'Sandbox' },
+          ],
+        },
+        // ---- optimization pillar ----
+        subagents: {
+          kicker: 'Optimization',
+          accent: '#32d74b',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'submit', text: 'read these 40 log files and summarize' },
+            { type: 'out', text: '● Task(opus): reading 40 files…', cls: 'orange' },
+            { type: 'out', text: 'a frontier model for a log grep', cls: 'muted' },
+            { type: 'chip', text: 'Sentinel routes routine work to a cheaper model' },
+            { type: 'handoff', to: 'Optimize · Subagents' },
+          ],
+        },
+        compression: {
+          kicker: 'Optimization',
+          accent: '#32d74b',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'submit', text: 'summarize what changed in the last deploy' },
+            { type: 'out', text: '● Read(deploy.log)', cls: 'muted' },
+            { type: 'flood', n: 7 },
+            {
+              type: 'meter',
+              label: 'context',
+              from: 12400,
+              to: 148200,
+              unit: 'tokens',
+              warn: true,
+            },
+            { type: 'chip', text: 'Sentinel trims oversized tool output, reversibly' },
+            { type: 'handoff', to: 'Optimize · Compression' },
+          ],
+        },
+        codemode: {
+          kicker: 'Optimization',
+          accent: '#32d74b',
+          beats: [
+            { type: 'prompt', text: 'claude' },
+            { type: 'out', text: '● 12 MCP servers connected', cls: 'muted' },
+            { type: 'meter', label: 'tool defs per request', from: 0, to: 240, warn: true },
+            { type: 'chip', text: 'Sentinel moves MCP definitions out of context' },
+            { type: 'handoff', to: 'Optimize · Context' },
+          ],
+        },
+      };
+
+      // ---- engine ----
+      const P = new URLSearchParams(location.search);
+      if (P.has('capture')) document.documentElement.classList.add('capture');
+      const slug = P.get('slug') && SCENES[P.get('slug')] ? P.get('slug') : 'compression';
+      const scene = SCENES[slug];
+
+      const $ = (id) => document.getElementById(id);
+      const stage = $('stage');
+      const term = $('term');
+      stage.style.setProperty('--accent', scene.accent);
+      $('chip-badge').innerHTML = svg(SHIELD);
+      $('handoff-shield').innerHTML = svg(SHIELD);
+      $('kicker').textContent = scene.kicker;
+
+      const DUR = {
+        prompt: (b) => 280 + b.text.length * 55 + 280,
+        submit: (b) => 280 + b.text.length * 42 + 360,
+        out: () => 520,
+        flood: (b) => 150 * b.n + 260,
+        meter: () => 1350,
+        chip: () => 820,
+        handoff: () => 1500,
+      };
+
+      function typeInto(el, text, speed) {
+        el.parentElement.classList.add('caret');
+        let i = 0;
+        (function step() {
+          if (i <= text.length) {
+            el.textContent = text.slice(0, i);
+            i++;
+            setTimeout(step, speed);
+          } else {
+            el.parentElement.classList.remove('caret');
+          }
+        })();
+      }
+
+      function addLine(html, cls) {
+        const div = document.createElement('div');
+        div.className = 'line' + (cls ? ' ' + cls : '');
+        div.innerHTML = html;
+        term.appendChild(div);
+        return div;
+      }
+
+      function animateNum(el, from, to, unit, ms) {
+        const start = performance.now();
+        const fmt = (v) =>
+          unit === '$'
+            ? '$' + v.toFixed(2)
+            : unit === '%'
+              ? Math.round(v) + '%'
+              : Math.round(v).toLocaleString() + (unit ? ' ' + unit : '');
+        (function tick(now) {
+          const p = Math.min(1, (now - start) / ms);
+          const e = 1 - Math.pow(1 - p, 3);
+          el.textContent = fmt(from + (to - from) * e);
+          if (p < 1) requestAnimationFrame(tick);
+        })(start);
+      }
+
+      const run = {
+        prompt(b) {
+          const line = addLine(
+            `<span class="path">${PATH}</span> <span class="prompt-sym">❯</span> <span class="t"></span>`,
+          );
+          line.classList.add('show');
+          typeInto(line.querySelector('.t'), ' ' + b.text, 55);
+        },
+        submit(b) {
+          const line = addLine(`<span class="prompt-sym">&gt;</span> <span class="t"></span>`);
+          line.classList.add('show');
+          typeInto(line.querySelector('.t'), b.text, 42);
+        },
+        out(b) {
+          const line = addLine(b.text.replace(/&/g, '&amp;'), b.cls);
+          line.classList.add('show', 'reveal');
+        },
+        flood(b) {
+          for (let i = 0; i < b.n; i++) {
+            setTimeout(() => {
+              const line = addLine(FLOOD[i % FLOOD.length], 'flood');
+              line.classList.add('show', 'reveal');
+            }, i * 150);
+          }
+        },
+        meter(b) {
+          const m = $('meter');
+          m.classList.add('in');
+          if (b.warn) m.classList.add('warn');
+          $('m-label').textContent = b.label;
+          animateNum($('m-value'), b.from, b.to, b.unit, 1150);
+        },
+        chip(b) {
+          $('chip-text').textContent = b.text;
+          $('chip').classList.add('in');
+        },
+        handoff(b) {
+          $('wipe').classList.add('go');
+          $('handoff-to').textContent = b.to;
+          setTimeout(() => {
+            stage.classList.add('handing');
+            $('handoff').classList.add('in');
+          }, 440);
+          setTimeout(() => {
+            window.__animDone = true;
+            document.documentElement.setAttribute('data-anim-done', '1');
+          }, 1300);
+        },
+      };
+
+      // Schedule the timeline and publish the total so capture.mjs knows the length.
+      let t = 300;
+      setTimeout(() => $('kicker').classList.add('in'), 150);
+      for (const b of scene.beats) {
+        const at = t;
+        setTimeout(() => run[b.type](b), at);
+        t += DUR[b.type](b);
+      }
+      window.SENTINEL_BOOKEND = { durationMs: t + 600 };
+
+      window.addEventListener('load', () => {});
+    </script>
+  </body>
+</html>

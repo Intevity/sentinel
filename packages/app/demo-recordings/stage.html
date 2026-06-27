@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>Sentinel — desktop</title>
+    <style>
+      :root {
+        --blue: #007aff;
+        --indigo: #5e5ce6;
+        --green: #32d74b;
+        --orange: #ff9f0a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        background: #05070d;
+      }
+
+      /* ---- macOS-style desktop wallpaper ---- */
+      .wallpaper {
+        position: fixed;
+        inset: 0;
+        background:
+          radial-gradient(1200px 820px at 18% 8%, rgba(94, 92, 230, 0.38), transparent 60%),
+          radial-gradient(1100px 780px at 86% 92%, rgba(0, 122, 255, 0.34), transparent 62%),
+          radial-gradient(900px 900px at 72% 16%, rgba(50, 215, 75, 0.1), transparent 55%),
+          radial-gradient(700px 700px at 8% 88%, rgba(255, 159, 10, 0.08), transparent 55%),
+          linear-gradient(135deg, #0a0f1f 0%, #0f1932 46%, #0a1124 100%);
+      }
+      /* gentle vignette so the window's shadow has something to sit against */
+      .wallpaper::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(
+          120% 120% at 50% 42%,
+          transparent 55%,
+          rgba(0, 0, 0, 0.45) 100%
+        );
+      }
+
+      /* ---- menu bar ---- */
+      .menubar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 16px;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.92);
+        background: rgba(22, 22, 26, 0.42);
+        backdrop-filter: blur(22px) saturate(180%);
+        -webkit-backdrop-filter: blur(22px) saturate(180%);
+        border-bottom: 0.5px solid rgba(255, 255, 255, 0.08);
+        z-index: 6;
+      }
+      .mb-left {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+      }
+      .apple {
+        font-size: 15px;
+        line-height: 1;
+        opacity: 0.95;
+      }
+      .app-name {
+        font-weight: 700;
+      }
+      .mb-menu {
+        opacity: 0.82;
+        font-weight: 400;
+      }
+      .mb-right {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+      }
+      .mb-right svg {
+        display: block;
+        opacity: 0.9;
+      }
+      /* The real Sentinel tray icon (icons/tray-icon.png) rendered as a
+         blue-tinted template via CSS mask — matches how the live app tints
+         the menu-bar shield blue when utilization is healthy (<70%). */
+      .tray-shield {
+        width: 16px;
+        height: 16px;
+        display: inline-block;
+        background: #3a97ff;
+        -webkit-mask: url('/asset/tray-icon.png') center / contain no-repeat;
+        mask: url('/asset/tray-icon.png') center / contain no-repeat;
+      }
+      /* Usage % the live tray renders to the right of the shield: pooled in
+         auto mode, the active account's 5h utilization in manual. Color tracks
+         the same health thresholds the app uses to tint the shield. */
+      .tray-pct {
+        font-variant-numeric: tabular-nums;
+        font-size: 12.5px;
+        font-weight: 600;
+        margin-left: -2px;
+        color: #3a97ff;
+      }
+      .clock {
+        font-variant-numeric: tabular-nums;
+        opacity: 0.95;
+      }
+
+      /* ---- the Sentinel app window ---- */
+      .window {
+        position: absolute;
+        left: 690px; /* (1920 - 540) / 2 */
+        top: 186px;
+        width: 540px;
+        height: 628px;
+        border-radius: 12px;
+        overflow: hidden;
+        background: #111;
+        box-shadow:
+          0 0 0 0.5px rgba(255, 255, 255, 0.07),
+          0 8px 24px rgba(0, 0, 0, 0.4),
+          0 54px 110px -22px rgba(0, 0, 0, 0.72);
+      }
+      #app {
+        width: 540px;
+        height: 628px;
+        border: 0;
+        display: block;
+        background: #111;
+      }
+
+      /* ---- dock ---- */
+      .dock {
+        position: absolute;
+        left: 50%;
+        bottom: 16px;
+        transform: translateX(-50%);
+        height: 64px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        background: rgba(255, 255, 255, 0.13);
+        backdrop-filter: blur(30px) saturate(160%);
+        -webkit-backdrop-filter: blur(30px) saturate(160%);
+        border-radius: 20px;
+        border: 0.5px solid rgba(255, 255, 255, 0.18);
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.45);
+        z-index: 4;
+      }
+      .dock-icon {
+        width: 46px;
+        height: 46px;
+        border-radius: 12px;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.28),
+          0 5px 12px rgba(0, 0, 0, 0.32);
+      }
+      .i1 {
+        background: linear-gradient(160deg, #4aa8ff, #0a64d6);
+      }
+      .i2 {
+        background: linear-gradient(160deg, #4be06b, #18a83e);
+      }
+      .i3 {
+        background: linear-gradient(160deg, #ffc94b, #ff9f0a);
+      }
+      .i4 {
+        background: linear-gradient(160deg, #c46bf2, #8a39c9);
+      }
+      .i5 {
+        background: linear-gradient(160deg, #ff7b7b, #e23434);
+      }
+      .i6 {
+        background: linear-gradient(160deg, #4be0d2, #18a8a0);
+      }
+      .dock-sep {
+        width: 0.5px;
+        height: 44px;
+        background: rgba(255, 255, 255, 0.25);
+        margin: 0 4px;
+      }
+      .dock-app {
+        position: relative;
+        width: 48px;
+        height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .dock-app img {
+        width: 46px;
+        height: 46px;
+        object-fit: contain;
+        filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.35));
+      }
+      .run-dot {
+        position: absolute;
+        bottom: -10px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.85);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wallpaper"></div>
+
+    <div class="menubar">
+      <div class="mb-left">
+        <span class="apple"></span>
+        <span class="app-name">Sentinel</span>
+        <span class="mb-menu">File</span>
+        <span class="mb-menu">Edit</span>
+        <span class="mb-menu">View</span>
+        <span class="mb-menu">Window</span>
+        <span class="mb-menu">Help</span>
+      </div>
+      <div class="mb-right">
+        <span class="tray-shield" id="trayShield" title="Sentinel"></span>
+        <span class="tray-pct" id="trayPct">62%</span>
+        <!-- battery -->
+        <svg width="26" height="13" viewBox="0 0 26 13" fill="none">
+          <rect x="0.5" y="1" width="21" height="11" rx="3" stroke="white" stroke-opacity="0.9" />
+          <rect x="2" y="2.5" width="16" height="8" rx="1.5" fill="white" fill-opacity="0.9" />
+          <rect x="23" y="4.5" width="2" height="4" rx="1" fill="white" fill-opacity="0.9" />
+        </svg>
+        <!-- wifi -->
+        <svg width="17" height="13" viewBox="0 0 17 13" fill="none">
+          <path d="M8.5 11.5l2-2.4a3 3 0 00-4 0l2 2.4z" fill="white" fill-opacity="0.9" />
+          <path
+            d="M3.2 6.2a8 8 0 0110.6 0"
+            stroke="white"
+            stroke-opacity="0.9"
+            stroke-width="1.4"
+            stroke-linecap="round"
+          />
+          <path
+            d="M5.4 8.4a5 5 0 016.2 0"
+            stroke="white"
+            stroke-opacity="0.9"
+            stroke-width="1.4"
+            stroke-linecap="round"
+          />
+        </svg>
+        <!-- control center -->
+        <svg width="15" height="13" viewBox="0 0 15 13" fill="none">
+          <rect
+            x="0.6"
+            y="2.2"
+            width="13.8"
+            height="3.4"
+            rx="1.7"
+            stroke="white"
+            stroke-opacity="0.85"
+          />
+          <circle cx="4.4" cy="3.9" r="1.1" fill="white" fill-opacity="0.95" />
+          <rect
+            x="0.6"
+            y="7.4"
+            width="13.8"
+            height="3.4"
+            rx="1.7"
+            stroke="white"
+            stroke-opacity="0.85"
+          />
+          <circle cx="10.6" cy="9.1" r="1.1" fill="white" fill-opacity="0.95" />
+        </svg>
+        <span class="clock">Fri Jun 26&nbsp;&nbsp;9:41&#8239;AM</span>
+      </div>
+    </div>
+
+    <div class="window">
+      <iframe id="app" src="%%APP_URL%%" title="Sentinel"></iframe>
+    </div>
+
+    <div class="dock">
+      <span class="dock-icon i1"></span>
+      <span class="dock-icon i2"></span>
+      <span class="dock-icon i3"></span>
+      <span class="dock-icon i4"></span>
+      <span class="dock-icon i5"></span>
+      <span class="dock-icon i6"></span>
+      <span class="dock-sep"></span>
+      <span class="dock-app"
+        ><img src="/asset/mascot.png" alt="Sentinel" /><i class="run-dot"></i
+      ></span>
+    </div>
+
+    <!-- Drive the menu-bar tray usage % from the same mock bridge the app uses
+         (same origin): active account's 5h utilization in manual mode, pooled
+         average in auto. Recomputes on the broadcasts that change either. -->
+    <script>
+      (function () {
+        var pctEl = document.getElementById('trayPct');
+        var shieldEl = document.getElementById('trayShield');
+        function post(type) {
+          return fetch('/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: type }),
+          })
+            .then(function (r) {
+              return r.json();
+            })
+            .then(function (d) {
+              return d && d.data;
+            })
+            .catch(function () {
+              return null;
+            });
+        }
+        function tint(util) {
+          var c = util >= 0.9 ? '#ff453a' : util >= 0.7 ? '#ff9f0a' : '#3a97ff';
+          if (pctEl) pctEl.style.color = c;
+          if (shieldEl) shieldEl.style.background = c;
+        }
+        function fiveH(windows) {
+          if (!Array.isArray(windows)) return null;
+          var w = windows.find(function (x) {
+            return x.name === 'unified-5h';
+          });
+          return w ? w.utilization : null;
+        }
+        function recompute() {
+          Promise.all([
+            post('get_settings'),
+            post('get_accounts'),
+            post('get_all_rate_limits'),
+          ]).then(function (res) {
+            var settings = res[0] || {},
+              accounts = res[1] || [],
+              rl = res[2] || {};
+            var excluded = settings.poolExcludedIds || [];
+            var util;
+            if (settings.switchingMode === 'auto') {
+              var utils = accounts
+                .filter(function (a) {
+                  return excluded.indexOf(a.id) < 0;
+                })
+                .map(function (a) {
+                  return fiveH(rl[a.id]);
+                })
+                .filter(function (u) {
+                  return typeof u === 'number';
+                });
+              util = utils.length
+                ? utils.reduce(function (s, u) {
+                    return s + u;
+                  }, 0) / utils.length
+                : 0;
+            } else {
+              var active =
+                accounts.find(function (a) {
+                  return a.isActive;
+                }) || accounts[0];
+              util = active ? fiveH(rl[active.id]) : 0;
+              if (typeof util !== 'number') util = 0;
+            }
+            if (pctEl) pctEl.textContent = Math.round(util * 100) + '%';
+            tint(util);
+          });
+        }
+        recompute();
+        try {
+          var es = new EventSource('/events');
+          es.onmessage = function (e) {
+            try {
+              var m = JSON.parse(e.data);
+              if (
+                [
+                  'account_switched',
+                  'routed_account_changed',
+                  'settings_changed',
+                  'spend_update',
+                  'rate_limits_updated',
+                  'account_paused',
+                  'account_unpaused',
+                ].indexOf(m.type) >= 0
+              )
+                recompute();
+            } catch (x) {}
+          };
+        } catch (x) {}
+      })();
+    </script>
+  </body>
+</html>

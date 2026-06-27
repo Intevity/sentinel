@@ -1,0 +1,163 @@
+/* Contextual cold-open intros (intro-scene.html). Reuses bookend.css for the
+ * stage, ambient background, terminal chrome, .wipe, and keyframes; this file
+ * adds the scene-specific pieces: the top kicker, the "problem" meter, the
+ * Sentinel chip, and the handoff label. */
+
+.scene-kicker {
+  position: absolute;
+  top: 56px;
+  left: 64px;
+  z-index: 4;
+  font-family: var(--font-ui);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent, var(--sentinel-blue));
+  opacity: 0;
+}
+.scene-kicker.in {
+  animation: lockup-in 0.6s var(--ease-rise) forwards;
+}
+
+/* The terminal sits a touch higher so the chip/meter have room below it. */
+.stage .terminal {
+  margin-top: -40px;
+}
+
+/* Faint flooded output lines (the "huge tool result" feel). */
+.line.flood {
+  color: rgba(230, 230, 230, 0.34);
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+/* A counter pill that animates a number up — context tokens, overage $, usage %. */
+.meter {
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  bottom: 232px;
+  transform: translateX(-50%) translateY(10px);
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 14px 24px;
+  border-radius: 14px;
+  background: rgba(30, 30, 30, 0.82);
+  border: 1px solid color-mix(in srgb, var(--accent, #007aff) 36%, transparent);
+  box-shadow: 0 0 34px color-mix(in srgb, var(--accent, #007aff) 22%, transparent);
+  font-family: var(--font-ui);
+  opacity: 0;
+}
+.meter.in {
+  animation: lockup-in 0.5s var(--ease-rise) forwards;
+}
+.meter .m-label {
+  font-size: 18px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.meter .m-value {
+  font-family: var(--font-mono);
+  font-size: 40px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #ffffff;
+}
+.meter.warn .m-value {
+  color: var(--red);
+}
+.meter.warn {
+  border-color: color-mix(in srgb, var(--red) 50%, transparent);
+  box-shadow: 0 0 40px color-mix(in srgb, var(--red) 26%, transparent);
+}
+
+/* The Sentinel chip that slides in to say "I see this". */
+.chip {
+  position: absolute;
+  z-index: 6;
+  left: 50%;
+  bottom: 150px;
+  transform: translateX(-50%) translateY(16px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 22px 14px 16px;
+  border-radius: 999px;
+  background: rgba(20, 20, 22, 0.92);
+  border: 1px solid color-mix(in srgb, var(--accent, #007aff) 45%, transparent);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  font-family: var(--font-ui);
+  font-size: 22px;
+  color: #fff;
+  opacity: 0;
+}
+.chip.in {
+  animation: chip-in 0.6s var(--ease-rise) forwards;
+}
+.chip .chip-badge {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--accent, #007aff) 22%, transparent);
+  color: var(--accent, #007aff);
+}
+.chip .chip-badge svg {
+  width: 20px;
+  height: 20px;
+}
+@keyframes chip-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* Handoff: after the wipe, a "→ Tab" label parks on a clean frame that the
+ * editor cuts from straight into the screen recording. */
+.handoff {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  opacity: 0;
+  font-family: var(--font-ui);
+}
+.handoff.in {
+  animation: lockup-in 0.5s var(--ease-rise) forwards;
+}
+.handoff .arrow {
+  font-size: 56px;
+  color: var(--accent, #007aff);
+  line-height: 1;
+}
+.handoff .to {
+  font-size: 56px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #fff;
+}
+.handoff .mini {
+  position: absolute;
+  bottom: 70px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 22px;
+  color: rgba(255, 255, 255, 0.6);
+}
+.handoff .mini .shield {
+  width: 22px;
+  height: 22px;
+  color: var(--accent, #007aff);
+}
