@@ -45,8 +45,8 @@ export const pillars: Pillar[] = [
         description:
           'Turn on Auto and Sentinel moves the active account for you, favoring the one whose 5-hour window resets soonest so you are not switching by hand. The header always shows which account is in use, and each switch rewrites the active credential safely.',
         video: 'switching.mp4',
-        poster: 'switching.svg',
-        hasVideo: false,
+        poster: 'switching.jpg',
+        hasVideo: true,
       },
       {
         icon: 'users',
@@ -55,8 +55,8 @@ export const pillars: Pillar[] = [
         description:
           'Add the accounts you own and each gets a live card with utilization, plan type, and a reset countdown. One view shows them all side by side instead of a separate login per tab.',
         video: 'pool.mp4',
-        poster: 'pool.svg',
-        hasVideo: false,
+        poster: 'pool.jpg',
+        hasVideo: true,
       },
       {
         icon: 'wallet',
@@ -65,8 +65,8 @@ export const pillars: Pillar[] = [
         description:
           'Set a rolling 7-day USD cap per account or across the whole pool. A capped account pauses from rotation until its spend ages out, so paid overage stays bounded without you watching the meter.',
         video: 'caps.mp4',
-        poster: 'caps.svg',
-        hasVideo: false,
+        poster: 'caps.jpg',
+        hasVideo: true,
       },
     ],
   },
@@ -84,8 +84,8 @@ export const pillars: Pillar[] = [
         description:
           'Every prompt and response is scanned as it passes through the local proxy. Secrets, PII, prompt-injection payloads, and risky tool calls are flagged the instant they appear, and you decide whether to just watch or block by severity.',
         video: 'scanning.mp4',
-        poster: 'scanning.svg',
-        hasVideo: false,
+        poster: 'scanning.jpg',
+        hasVideo: true,
       },
       {
         icon: 'list-checks',
@@ -94,8 +94,8 @@ export const pillars: Pillar[] = [
         description:
           'Write per-tool rules by name and arguments. Allow and deny rules sync straight into Claude Code so it enforces them silently, while ask rules hold the request for your approval right in the tray.',
         video: 'rules.mp4',
-        poster: 'rules.svg',
-        hasVideo: false,
+        poster: 'rules.jpg',
+        hasVideo: true,
       },
       {
         icon: 'lock',
@@ -104,8 +104,8 @@ export const pillars: Pillar[] = [
         description:
           'Run the commands Claude Code and code-mode MCP servers issue inside an OS sandbox that limits the files and domains they can reach. Off by default; macOS and Linux get full filesystem and network isolation, Windows is network-only.',
         video: 'sandbox.mp4',
-        poster: 'sandbox.svg',
-        hasVideo: false,
+        poster: 'sandbox.jpg',
+        hasVideo: true,
       },
     ],
   },
@@ -123,8 +123,8 @@ export const pillars: Pillar[] = [
         description:
           'A library of pre-built subagents, most pinned to a cheaper model, that Sentinel recommends based on how you actually work. Routine jobs like file reads and log parsing run cheap and hand back a digest instead of raw output.',
         video: 'subagents.mp4',
-        poster: 'subagents.svg',
-        hasVideo: false,
+        poster: 'subagents.jpg',
+        hasVideo: true,
       },
       {
         icon: 'fold',
@@ -133,8 +133,8 @@ export const pillars: Pillar[] = [
         description:
           'Oversized tool results are the quiet context hog. Sentinel trims them in flight at the aggressiveness you choose, and reversible mode keeps the original a tool call away so nothing is ever lost.',
         video: 'compression.mp4',
-        poster: 'compression.svg',
-        hasVideo: false,
+        poster: 'compression.jpg',
+        hasVideo: true,
       },
       {
         icon: 'braces',
@@ -143,8 +143,8 @@ export const pillars: Pillar[] = [
         description:
           'Bridge your MCP servers through a local loopback endpoint so their tool definitions stop riding along in every request. Claude calls a small skill instead, and the definitions leave your context for good. Loopback-only, with a per-server allowlist.',
         video: 'codemode.mp4',
-        poster: 'codemode.svg',
-        hasVideo: false,
+        poster: 'codemode.jpg',
+        hasVideo: true,
       },
     ],
   },

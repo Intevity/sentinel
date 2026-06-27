@@ -28,7 +28,7 @@ const base = import.meta.env.BASE_URL;
           Pick a feature to watch a short demo. The carousel advances on its own; hover to pause.
         </p>
       </div>
-      <FeatureCarousel client:visible features={features} base={base} />
+      <FeatureCarousel client:load features={features} base={base} />
     </section>
 
     <FeatureGrid />
