@@ -1,0 +1,409 @@
+/* Branded bookend animations — shared styles.
+ *
+ * Standalone (no Tailwind / no site build). Tokens ported from the marketing
+ * site (packages/site/src/styles/global.css) so the intro/outro match the
+ * landing page: iOS blue accent, indigo secondary, #111 dark stage, system
+ * font, and the same ambient aurora + dot-grid + ease curves. Copy is kept
+ * free of em dashes per the project's UI-copy rule. */
+
+:root {
+  --sentinel-blue: #007aff;
+  --sentinel-indigo: #5e5ce6;
+  --bg: #111111;
+  --card: #1e1e1e;
+  --text: #ffffff;
+  --muted: #8e8e93;
+  --green: #32d74b;
+  --orange: #ff9f0a;
+  --red: #ff453a;
+
+  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  --font-mono: 'SF Mono', 'SFMono-Regular', ui-monospace, Menlo, Monaco, 'Cascadia Code', monospace;
+
+  /* The site's hero entrance curve. */
+  --ease-rise: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+/* 16:9 stage. The page is sized to exactly 1920x1080 so a headless capture or a
+   fullscreen browser recording fills the frame with no letterboxing. */
+.stage {
+  position: relative;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  isolation: isolate;
+}
+
+/* ---- Ambient background (mirrors .hero-gradient + dot-grid + aurora) ---- */
+
+.bg-gradient {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(60% 50% at 50% 0%, rgba(0, 122, 255, 0.18) 0%, rgba(0, 122, 255, 0) 70%),
+    radial-gradient(40% 40% at 80% 10%, rgba(94, 92, 230, 0.14) 0%, rgba(94, 92, 230, 0) 70%);
+}
+
+.bg-aurora {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(45% 55% at 30% 18%, rgba(0, 122, 255, 0.12), rgba(0, 122, 255, 0) 70%),
+    radial-gradient(40% 50% at 72% 14%, rgba(94, 92, 230, 0.12), rgba(94, 92, 230, 0) 70%);
+  animation: aurora 18s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+
+.bg-grid {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1.4px);
+  background-size: 26px 26px;
+  -webkit-mask-image: radial-gradient(60% 60% at 50% 42%, #000 0%, transparent 78%);
+  mask-image: radial-gradient(60% 60% at 50% 42%, #000 0%, transparent 78%);
+}
+
+@keyframes aurora {
+  0% {
+    transform: translate3d(-2.5%, 0, 0) scale(1);
+    opacity: 0.78;
+  }
+  100% {
+    transform: translate3d(2.5%, 1.5%, 0) scale(1.07);
+    opacity: 1;
+  }
+}
+
+/* ---- macOS terminal window (intro) ---- */
+
+.terminal {
+  position: relative;
+  z-index: 2;
+  width: 1120px;
+  height: 620px;
+  border-radius: 14px;
+  background: #0c0c0c;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 40px 120px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transform-origin: center center;
+}
+
+.terminal-bar {
+  height: 44px;
+  flex: 0 0 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  background: linear-gradient(#262626, #1d1d1d);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.5);
+}
+
+.dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+}
+.dot.red {
+  background: #ff5f57;
+}
+.dot.yellow {
+  background: #febc2e;
+}
+.dot.green {
+  background: #28c840;
+}
+
+.terminal-title {
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-right: 48px; /* balance the traffic lights so the title is centered */
+}
+
+.terminal-body {
+  flex: 1;
+  padding: 26px 30px;
+  font-family: var(--font-mono);
+  font-size: 21px;
+  line-height: 1.65;
+  color: #e6e6e6;
+  overflow: hidden;
+}
+
+.line {
+  white-space: pre-wrap;
+  opacity: 0;
+}
+.line.show {
+  opacity: 1;
+}
+.line.reveal {
+  animation: line-in 0.32s var(--ease-rise) forwards;
+}
+
+.prompt-sym {
+  color: var(--sentinel-blue);
+  font-weight: 600;
+}
+.path {
+  color: var(--sentinel-indigo);
+}
+.muted {
+  color: var(--muted);
+}
+.green {
+  color: var(--green);
+}
+.orange {
+  color: var(--orange);
+}
+.red {
+  color: var(--red);
+}
+
+/* Blinking caret appended to the line that is currently "typing". */
+.caret::after {
+  content: '';
+  display: inline-block;
+  width: 11px;
+  height: 22px;
+  margin-left: 2px;
+  background: var(--sentinel-blue);
+  transform: translateY(4px);
+  animation: caret-blink 1s steps(1) infinite;
+}
+
+@keyframes caret-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  50.01%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes line-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* A Claude Code style welcome banner inside the terminal. */
+.cc-banner {
+  margin: 4px 0 10px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: #cfcfcf;
+  font-size: 18px;
+}
+.cc-banner .spark {
+  color: var(--orange);
+}
+
+/* ---- Sentinel reveal overlay (intro) + brand lockup (intro & outro) ---- */
+
+/* A diagonal blue wipe that sweeps across before the brand lockup lands. */
+.wipe {
+  position: absolute;
+  inset: -20% -20%;
+  z-index: 5;
+  background: linear-gradient(
+    115deg,
+    transparent 0%,
+    rgba(0, 122, 255, 0) 38%,
+    rgba(0, 122, 255, 0.9) 50%,
+    rgba(94, 92, 230, 0) 62%,
+    transparent 100%
+  );
+  transform: translateX(-120%);
+  opacity: 0;
+  pointer-events: none;
+}
+.wipe.go {
+  animation: wipe 0.85s var(--ease-rise) forwards;
+}
+@keyframes wipe {
+  0% {
+    transform: translateX(-120%);
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(120%);
+    opacity: 0;
+  }
+}
+
+/* When the brand lockup arrives, the terminal recedes. */
+.terminal.recede {
+  animation: recede 0.7s var(--ease-rise) forwards;
+}
+@keyframes recede {
+  to {
+    transform: scale(0.9) translateY(-8px);
+    opacity: 0.12;
+    filter: blur(3px);
+  }
+}
+
+.lockup {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  opacity: 0;
+}
+.lockup.in {
+  animation: lockup-in 0.8s var(--ease-rise) forwards;
+}
+@keyframes lockup-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.mascot-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mascot-glow {
+  position: absolute;
+  width: 360px;
+  height: 360px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(0, 122, 255, 0.42) 0%, rgba(0, 122, 255, 0) 68%);
+  filter: blur(8px);
+  animation: glow-pulse 4.5s ease-in-out infinite;
+}
+.mascot-img {
+  position: relative;
+  width: 240px;
+  height: auto;
+  filter: drop-shadow(0 10px 34px rgba(0, 122, 255, 0.42));
+  animation: float 6s ease-in-out infinite;
+}
+
+.wordmark {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-size: 92px;
+  margin-top: 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #cfe2ff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.tagline {
+  font-family: var(--font-ui);
+  font-size: 30px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.82);
+  margin-top: 2px;
+}
+.url {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  color: var(--sentinel-blue);
+  margin-top: 26px;
+  letter-spacing: 0.01em;
+}
+
+@keyframes glow-pulse {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-14px);
+  }
+}
+
+/* Capture mode (?capture) hides any on-page helper chrome. */
+.capture-hide {
+  display: none;
+}
+:root:not(.capture) .replay-hint {
+  position: absolute;
+  bottom: 22px;
+  right: 28px;
+  z-index: 9;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.35);
+}
+:root.capture .replay-hint {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bg-aurora,
+  .mascot-img,
+  .mascot-glow {
+    animation: none;
+  }
+}

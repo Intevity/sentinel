@@ -1,0 +1,112 @@
+/* Per-clip outro cards (card.html?slug=...&kind=outro). Reuses bookend.css for
+ * the stage, ambient background, mascot/wordmark/url, and keyframes; adds the
+ * card layout: feature icon tile, the one-line takeaway, and the Sentinel
+ * lockup with the site URL. Accent is set per clip from JS. */
+
+.card {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 18px;
+}
+
+.icon-tile {
+  width: 150px;
+  height: 150px;
+  border-radius: 34px;
+  display: grid;
+  place-items: center;
+  color: var(--accent, var(--sentinel-blue));
+  background: color-mix(in srgb, var(--accent, #007aff) 14%, #1a1a1c);
+  border: 1px solid color-mix(in srgb, var(--accent, #007aff) 42%, transparent);
+  box-shadow:
+    0 0 60px color-mix(in srgb, var(--accent, #007aff) 30%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  opacity: 0;
+  transform: scale(0.82) translateY(10px);
+  animation: tile-pop 0.7s var(--ease-rise) 0.1s forwards;
+}
+.icon-tile svg {
+  width: 80px;
+  height: 80px;
+}
+
+@keyframes tile-pop {
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.takeaway {
+  margin: 8px 0 0;
+  font-family: var(--font-ui);
+  font-size: 66px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  max-width: 1400px;
+  background: linear-gradient(180deg, #ffffff 0%, #d7e6ff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  opacity: 0;
+  animation: rise-in 0.6s var(--ease-rise) 0.4s forwards;
+}
+
+.brand-lockup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-top: 26px;
+  opacity: 0;
+  animation: rise-in 0.6s var(--ease-rise) 0.62s forwards;
+}
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand-row img {
+  width: 40px;
+  height: 40px;
+  filter: drop-shadow(0 4px 16px rgba(0, 122, 255, 0.4));
+}
+.brand-row .name {
+  font-family: var(--font-ui);
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #fff;
+}
+.brand-lockup .url {
+  margin-top: 0;
+  font-family: var(--font-mono);
+  font-size: 22px;
+  color: var(--accent, var(--sentinel-blue));
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-tile,
+  .takeaway,
+  .brand-lockup {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}

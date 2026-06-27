@@ -38,17 +38,51 @@ const asset = (p: string) => `${base.replace(/\/$/, '')}/videos/${p.replace(/^\/
           <div class="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {pillar.subFeatures.map((sf) => (
               <article class="glass-card flex flex-col overflow-hidden">
-                <div class="relative aspect-video w-full bg-black/40">
+                <div
+                  class:list={[
+                    'pillar-media group relative aspect-video w-full bg-black/40',
+                    { 'cursor-pointer': sf.hasVideo },
+                  ]}
+                  {...(sf.hasVideo
+                    ? {
+                        'data-video': asset(sf.video),
+                        'data-poster': asset(sf.poster),
+                        'data-title': sf.title,
+                        role: 'button',
+                        tabindex: '0',
+                        'aria-label': `Play the ${sf.title} demo at full size`,
+                      }
+                    : {})}
+                >
                   {sf.hasVideo ? (
-                    <video
-                      class="h-full w-full object-cover"
-                      src={asset(sf.video)}
-                      poster={asset(sf.poster)}
-                      autoplay
-                      muted
-                      loop
-                      playsinline
-                    />
+                    <>
+                      <video
+                        class="h-full w-full object-cover"
+                        src={asset(sf.video)}
+                        poster={asset(sf.poster)}
+                        autoplay
+                        muted
+                        loop
+                        playsinline
+                      />
+                      {/* Hover/focus affordance: dim + an expand glyph signalling click-to-enlarge. */}
+                      <span class="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-200 group-hover:bg-black/30 group-hover:opacity-100 group-focus:bg-black/30 group-focus:opacity-100">
+                        <span class="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white/15 text-white ring-1 ring-white/30 backdrop-blur-sm">
+                          <svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          >
+                            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+                          </svg>
+                        </span>
+                      </span>
+                    </>
                   ) : (
                     <img
                       class="h-full w-full object-cover"
@@ -79,4 +113,178 @@ const asset = (p: string) => `${base.replace(/\/$/, '')}/videos/${p.replace(/^\/
       ))
     }
   </div>
+
+  {
+    /* Shared click-to-open lightbox: one large, centered player for every pillar
+      clip. Near-fullscreen on mobile via the responsive width/height caps.
+      Hidden until a card is clicked; closes on backdrop / X / Escape. */
+  }
+  <div
+    id="pillar-lightbox"
+    class="pillar-lightbox"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Feature demo"
+    aria-hidden="true"
+  >
+    <div class="pillar-lightbox__backdrop" data-close></div>
+    <div class="pillar-lightbox__inner">
+      <button type="button" class="pillar-lightbox__close" data-close aria-label="Close demo">
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M18 6 6 18M6 6l12 12"></path>
+        </svg>
+      </button>
+      <video
+        id="pillar-lightbox-video"
+        class="pillar-lightbox__video"
+        controls
+        muted
+        loop
+        playsinline></video>
+      <p id="pillar-lightbox-title" class="pillar-lightbox__title"></p>
+    </div>
+  </div>
 </section>
+
+<style>
+  .pillar-lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: clamp(0.75rem, 4vw, 3rem);
+  }
+  .pillar-lightbox.is-open {
+    display: flex;
+  }
+  .pillar-lightbox__backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.72);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    animation: pillar-lb-fade 0.2s ease-out;
+  }
+  .pillar-lightbox__inner {
+    position: relative;
+    width: min(1100px, 94vw);
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    animation: pillar-lb-pop 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .pillar-lightbox__video {
+    width: 100%;
+    max-height: 82vh;
+    border-radius: 16px;
+    background: #000;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  }
+  .pillar-lightbox__title {
+    margin-top: 0.75rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.85);
+    text-align: center;
+  }
+  .pillar-lightbox__close {
+    position: absolute;
+    top: -2.6rem;
+    right: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 2.25rem;
+    width: 2.25rem;
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    transition: background 0.15s ease;
+  }
+  .pillar-lightbox__close:hover {
+    background: rgba(255, 255, 255, 0.22);
+  }
+  @media (max-width: 640px) {
+    .pillar-lightbox__close {
+      top: -2.9rem;
+    }
+  }
+  @keyframes pillar-lb-fade {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes pillar-lb-pop {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pillar-lightbox__backdrop,
+    .pillar-lightbox__inner {
+      animation: none;
+    }
+  }
+</style>
+
+<script>
+  const lb = document.getElementById('pillar-lightbox');
+  const lbVideo = document.getElementById('pillar-lightbox-video') as HTMLVideoElement | null;
+  const lbTitle = document.getElementById('pillar-lightbox-title');
+  let lastFocused: HTMLElement | null = null;
+
+  function openLightbox(src: string, poster: string | null, title: string | null) {
+    if (!lb || !lbVideo) return;
+    lastFocused = document.activeElement as HTMLElement | null;
+    lbVideo.src = src;
+    if (poster) lbVideo.poster = poster;
+    if (lbTitle) lbTitle.textContent = title ?? '';
+    lb.classList.add('is-open');
+    lb.setAttribute('aria-hidden', 'false');
+    document.body.style.overflow = 'hidden';
+    lbVideo.currentTime = 0;
+    void lbVideo.play().catch(() => {});
+    (lb.querySelector('.pillar-lightbox__close') as HTMLElement | null)?.focus();
+  }
+
+  function closeLightbox() {
+    if (!lb || !lbVideo) return;
+    lb.classList.remove('is-open');
+    lb.setAttribute('aria-hidden', 'true');
+    document.body.style.overflow = '';
+    lbVideo.pause();
+    lbVideo.removeAttribute('src');
+    lbVideo.load();
+    lastFocused?.focus?.();
+  }
+
+  document.querySelectorAll<HTMLElement>('.pillar-media[data-video]').forEach((el) => {
+    const open = () =>
+      openLightbox(el.dataset.video ?? '', el.dataset.poster ?? null, el.dataset.title ?? null);
+    el.addEventListener('click', open);
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        open();
+      }
+    });
+  });
+
+  lb?.querySelectorAll('[data-close]').forEach((el) => el.addEventListener('click', closeLightbox));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && lb?.classList.contains('is-open')) closeLightbox();
+  });
+</script>

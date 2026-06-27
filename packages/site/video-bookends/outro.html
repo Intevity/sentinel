@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sentinel outro</title>
+    <link rel="stylesheet" href="./bookend.css" />
+  </head>
+  <body>
+    <div class="stage" id="stage">
+      <div class="bg-gradient"></div>
+      <div class="bg-aurora"></div>
+      <div class="bg-grid"></div>
+
+      <div class="lockup" id="lockup">
+        <div class="mascot-wrap">
+          <div class="mascot-glow"></div>
+          <img class="mascot-img" src="../public/sentinel-mascot.png" alt="Sentinel" />
+        </div>
+        <div class="wordmark">Sentinel</div>
+        <div class="tagline">Security, savings, and every Claude account in one place.</div>
+        <div class="url">intevity.github.io/sentinel</div>
+      </div>
+
+      <div class="replay-hint">Reload to replay</div>
+    </div>
+
+    <script>
+      window.SENTINEL_BOOKEND = { durationMs: 6000 };
+
+      const params = new URLSearchParams(location.search);
+      if (params.has('capture')) document.documentElement.classList.add('capture');
+
+      window.addEventListener('load', () => {
+        // The lockup eases in once; the mascot float + aurora keep looping so a
+        // longer hold (or a manual loop in the editor) still reads as alive.
+        requestAnimationFrame(() => document.getElementById('lockup').classList.add('in'));
+        setTimeout(() => {
+          window.__animDone = true;
+          document.documentElement.setAttribute('data-anim-done', '1');
+        }, 5600);
+      });
+    </script>
+  </body>
+</html>

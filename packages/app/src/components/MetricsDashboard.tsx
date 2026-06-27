@@ -12,6 +12,7 @@ import InfoTooltip from './InfoTooltip.js';
 import OtelDriftBanner from './OtelDriftBanner.js';
 import { RangeSelector } from './RangeSelector.js';
 import { RANGE_LABELS } from '../lib/dateRange.js';
+import { formatInt, formatUsd } from '../lib/format.js';
 
 const MODEL_COLORS: Record<string, string> = {
   'claude-opus-4': '#BF5AF2',
@@ -197,7 +198,7 @@ function MetricsContent({
       <div className="grid grid-cols-2 gap-2">
         <Tile label="Total Cost" sub={rangeLabel}>
           <span className="text-[22px] font-bold tracking-tight text-black dark:text-white">
-            ${formatCost(totalCost)}
+            {formatCost(totalCost)}
           </span>
         </Tile>
         <Tile
@@ -466,10 +467,14 @@ function CostChart({
             tick={{ fontSize: 10, fill: 'rgb(var(--muted))' }}
             axisLine={false}
             tickLine={false}
-            tickFormatter={(v: number) => `$${v.toFixed(2)}`}
+            tickFormatter={(v: number) => formatUsd(v)}
           />
           <Tooltip
-            content={<StackedTooltip valueFormatter={(v) => `$${v.toFixed(4)}`} />}
+            content={
+              <StackedTooltip
+                valueFormatter={(v) => formatUsd(v, { minFractionDigits: 4, maxFractionDigits: 4 })}
+              />
+            }
             cursor={{ fill: 'rgba(0,0,0,0.04)' }}
           />
           {allModels.map((model, idx) => (
@@ -806,11 +811,11 @@ function PromptsCard({ prompts }: { prompts: MetricsSummary['prompts'] }): React
       <div className="flex items-baseline justify-between mb-2">
         <p className="text-[11px] font-semibold text-muted">Prompts per day</p>
         <p className="text-[18px] font-bold tabular-nums text-black dark:text-white">
-          {prompts.total.toLocaleString()}
+          {formatInt(prompts.total)}
         </p>
       </div>
       <p className="text-[10px] text-muted mb-2">
-        avg {avgLen.toLocaleString()} chars · {prompts.total} total
+        avg {formatInt(avgLen)} chars · {formatInt(prompts.total)} total
       </p>
       {data.length > 0 && (
         <ResponsiveContainer width="100%" height={100}>
@@ -985,9 +990,7 @@ export function CacheTtlSection({
   });
 
   const fmt =
-    view === 'tokens'
-      ? (v: number): string => compact(v)
-      : (v: number): string => `$${formatCost(v)}`;
+    view === 'tokens' ? (v: number): string => compact(v) : (v: number): string => formatCost(v);
 
   return (
     <div className="glass-card px-4 pt-4 pb-2">
@@ -1097,7 +1100,7 @@ function CacheTtlSessionTable({
           const rightCol =
             view === 'tokens'
               ? String(s.requestCount)
-              : `$${formatCost(s.cost5mWrite + s.cost1hWrite + s.costRead)}`;
+              : formatCost(s.cost5mWrite + s.cost1hWrite + s.costRead);
           return (
             <div
               key={s.sessionId}
@@ -1150,9 +1153,10 @@ function compact(n: number): string {
 }
 
 function formatCost(n: number): string {
-  if (n === 0) return '0.00';
-  if (n < 0.01) return n.toFixed(4);
-  return n.toFixed(2);
+  // Sub-cent costs need extra precision to read as non-zero; everything else
+  // gets the standard $X,XXX.XX with thousands separators.
+  if (n > 0 && n < 0.01) return formatUsd(n, { minFractionDigits: 4, maxFractionDigits: 4 });
+  return formatUsd(n);
 }
 
 function sumRecord<T>(rec: Record<string, T>, extract: (v: T) => number): number {

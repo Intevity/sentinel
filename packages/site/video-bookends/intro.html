@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sentinel intro</title>
+    <link rel="stylesheet" href="./bookend.css" />
+  </head>
+  <body>
+    <div class="stage" id="stage">
+      <div class="bg-gradient"></div>
+      <div class="bg-aurora"></div>
+      <div class="bg-grid"></div>
+
+      <!-- Fake Claude Code terminal -->
+      <div class="terminal" id="terminal">
+        <div class="terminal-bar">
+          <span class="dot red"></span>
+          <span class="dot yellow"></span>
+          <span class="dot green"></span>
+          <span class="terminal-title">claude — zsh — 1120×620</span>
+        </div>
+        <div class="terminal-body" id="term">
+          <div class="line show" id="l1">
+            <span class="path">~/acme-api</span> <span class="prompt-sym">❯</span>
+            <span id="cmd"></span>
+          </div>
+          <div class="cc-banner line" id="banner">
+            <span class="spark">✻</span> Welcome to Claude Code &nbsp;<span class="muted"
+              >· /help for commands</span
+            >
+          </div>
+          <div class="line" id="l2">
+            <span class="prompt-sym">&gt;</span> <span id="ask"></span>
+          </div>
+          <div class="line" id="l3"><span class="muted">●</span> Bash(grep -rn "API_KEY" src/)</div>
+          <div class="line" id="l4">
+            <span class="muted">&nbsp;&nbsp;└</span> src/config.ts:14
+            <span class="red">const API_KEY = "sk-ant-api03-…"</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sentinel reveal -->
+      <div class="wipe" id="wipe"></div>
+      <div class="lockup" id="lockup">
+        <div class="mascot-wrap">
+          <div class="mascot-glow"></div>
+          <img class="mascot-img" src="../public/sentinel-mascot.png" alt="Sentinel" />
+        </div>
+        <div class="wordmark">Sentinel</div>
+        <div class="tagline">Sits in front of Claude Code.</div>
+      </div>
+
+      <div class="replay-hint">Reload to replay</div>
+    </div>
+
+    <script>
+      // Deterministic timeline. Exposed so the headless capture (capture.mjs)
+      // knows exactly how long to record, and sets __animDone on completion.
+      window.SENTINEL_BOOKEND = { durationMs: 9800 };
+
+      const params = new URLSearchParams(location.search);
+      if (params.has('capture')) document.documentElement.classList.add('capture');
+
+      const $ = (id) => document.getElementById(id);
+
+      function type(el, text, speed, done) {
+        el.parentElement.classList.add('caret');
+        let i = 0;
+        (function step() {
+          if (i <= text.length) {
+            el.textContent = text.slice(0, i);
+            i++;
+            setTimeout(step, speed);
+          } else {
+            el.parentElement.classList.remove('caret');
+            done && done();
+          }
+        })();
+      }
+
+      function reveal(el, delay) {
+        setTimeout(() => {
+          el.classList.add('show', 'reveal');
+        }, delay);
+      }
+
+      function run() {
+        // 1) type `claude`
+        setTimeout(() => {
+          type($('cmd'), ' claude', 70, () => {
+            // 2) welcome banner
+            reveal($('banner'), 250);
+            // 3) the user's request
+            setTimeout(() => {
+              $('l2').classList.add('show');
+              type($('ask'), 'find where we log the API key', 45, () => {
+                // 4) assistant tool calls stream in
+                reveal($('l3'), 350);
+                reveal($('l4'), 950);
+                // 5) Sentinel takes over
+                setTimeout(sentinelReveal, 1650);
+              });
+            }, 700);
+          });
+        }, 900);
+      }
+
+      function sentinelReveal() {
+        $('wipe').classList.add('go');
+        setTimeout(() => {
+          $('terminal').classList.add('recede');
+          $('lockup').classList.add('in');
+        }, 420);
+        setTimeout(() => {
+          window.__animDone = true;
+          document.documentElement.setAttribute('data-anim-done', '1');
+        }, 2400);
+      }
+
+      window.addEventListener('load', run);
+    </script>
+  </body>
+</html>

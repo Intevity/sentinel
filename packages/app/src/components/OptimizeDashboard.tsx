@@ -20,6 +20,7 @@ import {
   windowMultiplierLabel,
   type SavingsUnits,
 } from '../lib/optimizeUnits.js';
+import { formatInt, formatUsd } from '../lib/format.js';
 import OpportunityList from './optimize/OpportunityList.js';
 import ContextInventoryPanel from './optimize/ContextInventoryPanel.js';
 import CompressionPanel from './optimize/CompressionPanel.js';
@@ -522,7 +523,7 @@ function SubagentsSection({
         />
         <MetricTile
           label="Opportunities"
-          value={String(t.opportunities)}
+          value={formatInt(t.opportunities)}
           title="Times the analyzer detected a subagent could have absorbed a large read in this window (realized + potential)."
         />
       </div>
@@ -624,12 +625,6 @@ function SubagentsSection({
       </div>
     </>
   );
-}
-
-function formatUsd(n: number): string {
-  // Always show 2 decimals; preserve sign so negative values read as such.
-  const sign = n < 0 ? '-' : '';
-  return `${sign}$${Math.abs(n).toFixed(2)}`;
 }
 
 /** Color a savings value: emerald when positive, red when negative,
@@ -959,9 +954,10 @@ function StickySavingsBar({
                     {' · '}
                   </>
                 )}
-                {installs} subagent{installs === 1 ? '' : 's'} installed
+                {formatInt(installs)} subagent{installs === 1 ? '' : 's'} installed
                 {' · '}
-                {opportunities} opportunit{opportunities === 1 ? 'y' : 'ies'} {rangeLabel}
+                {formatInt(opportunities)} opportunit{opportunities === 1 ? 'y' : 'ies'}{' '}
+                {rangeLabel}
               </p>
             </>
           )}
@@ -1158,7 +1154,7 @@ function SubagentSavingsBadge({
     >
       Could save {fmt(potential)}
       <span className="ml-1 text-[10px] text-foreground/45">
-        based on {subSavings.opportunities} opportunit
+        based on {formatInt(subSavings.opportunities)} opportunit
         {subSavings.opportunities === 1 ? 'y' : 'ies'}
       </span>
     </p>

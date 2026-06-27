@@ -1,0 +1,14 @@
+# Recordings are build artifacts, not source.
+#
+# The reusable engine (record-clip.mjs, recipes.mjs, mock-bridge.mjs,
+# stage.html, inject.js, compose.mjs, discover.mjs, disc2.mjs) is tracked;
+# the rendered clips are not. The app-only and bookended composites land in
+# out/, and the final site clips are committed under
+# packages/site/public/videos/ instead.
+out/
+*.mp4
+*.webm
+
+# One-off scratch/debug harnesses created while bringing up a new recipe.
+dbg*.mjs
+shot.mjs
