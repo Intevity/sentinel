@@ -44,23 +44,32 @@ export const RECIPES = {
   },
 
   optimize: {
-    // Overview: pan the three levers (Subagents / Compression / Context),
-    // then emphasize the header headline "CONTENT REDUCED 49% · SAVED 1294.92M tk".
+    // Hero sell: land on the Compression panel, then spin the savings UP on
+    // camera. "CONTENT REDUCED 75%" holds steady (it's 1 - ratio, unscaled)
+    // while EST. COST SAVED counts from a small number up to the real
+    // $14,356.55 / 1236.62M tokens. Push-in framing mirrors the compression
+    // pillar clip (cx 960, focalOf cy, zmax 1.7), which is known to center.
     run: async (c) => {
+      // Freeze the totals low so the panel mounts on a small number.
+      await c.post('__demo_ramp_set', { value: 0.16 });
       await c.openTab('Optimize');
-      await c.sleep(1100);
-      // Pan across the three optimization levers (sub-tab row ~screen y 342).
-      await c.moveCursorTo(835, 342, 600);
-      await c.sleep(450);
-      await c.moveCursorTo(960, 342, 450);
-      await c.sleep(450);
-      await c.moveCursorTo(1085, 342, 450);
-      await c.sleep(550);
-      await c.moveCursorTo(960, 300, 550);
-      await c.sleep(400);
+      await c.sleep(900);
+      await c.openSubTab('Compression');
+      await c.waitText('EST. INPUT TOKENS SAVED');
+      await c.sleep(700);
+      // Beat on the steady headline reduction % before the money climbs.
+      await c.moveCursorTo(1024, 389, 600);
+      await c.sleep(500);
+      // Settle on the savings tiles, then spin them up to the real total.
+      const { cy } = await c.focalOf('EST. INPUT TOKENS SAVED', 0, 34);
+      await c.moveCursorTo(990, cy + 20, 600);
+      await c.sleep(500);
       const startMs = c.now();
-      c.zoom = { startMs: startMs + 150, endMs: startMs + 3400, cx: 960, cy: 300, zmax: 1.6 };
-      await c.sleep(3800);
+      await c.post('__demo_ramp', { from: 0.16, ms: 4800 });
+      await c.sleep(6000);
+      const endMs = c.now();
+      await c.sleep(900); // park on $14,356.55
+      c.zoom = { startMs, endMs, cx: 960, cy, zmax: 1.7 };
     },
   },
 
