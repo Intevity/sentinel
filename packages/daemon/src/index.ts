@@ -158,6 +158,7 @@ import {
 } from './token-refresher.js';
 import { probeRateLimits } from './rate-limit-probe.js';
 import { startUsageProber, type UsageProberHandle } from './usage-probe.js';
+import { startRateLimitSweeper, type RateLimitSweeperHandle } from './rate-limit-sweeper.js';
 import type {
   OAuthAccount,
   PlanType,
@@ -710,6 +711,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // Assigned after the proxy is listening — update_settings references it
   // via optional-chain so handler registration order doesn't matter.
   let usageProber: UsageProberHandle | null = null;
+  // Internal-timer fallback that rolls over rate-limit windows whose reset has
+  // elapsed, so usage statistics reset even when no requests flow through the
+  // proxy. Started after the rate-limit onUpdate callbacks are registered.
+  let rateLimitSweeper: RateLimitSweeperHandle | null = null;
 
   // Shared settings getter so the rotator, alert evaluators, and other
   // subsystems read the same live in-memory snapshot that `update_settings`
@@ -1021,6 +1026,25 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // it can auto-unpause + re-evaluate accounts that Sentinel paused earlier.
   rateLimitStore.onUpdate((accountId) => {
     spendTracker.handleRateLimitUpdate(accountId);
+  });
+
+  // Start the rate-limit sweeper AFTER the onUpdate callbacks above so its
+  // immediate startup pass routes through DB-persist + overage reload + spend
+  // tracker. A daemon launched after an idle weekend rolls over any windows
+  // whose reset already elapsed right at boot, then keeps them fresh on the
+  // interval — no proxied request required.
+  rateLimitSweeper = startRateLimitSweeper({
+    rateLimitStore,
+    ipcServer,
+    // A rolled-over window reads `reset = null`, which the spend tracker's
+    // reset-delta release paths skip — so re-run the pause evaluators here to
+    // release any weekly-rate-limit pause off the now-`allowed` status. Guarded
+    // like the claude.ai onUpdate above: a recompute after the DB is closed
+    // during shutdown would throw.
+    onWindowsExpired: () => {
+      if (shuttingDown) return;
+      spendTracker.recompute();
+    },
   });
 
   // Spend source of truth is now Anthropic's usage endpoint via
@@ -4418,6 +4442,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     console.log('[Sentinel] Shutting down...');
     stopTokenRefresher();
     usageProber?.stop();
+    rateLimitSweeper?.stop();
     // Stop the claude.ai usage poller BEFORE closing the DB so an in-flight
     // tick() cannot land on a freed connection. The tick reads listAccounts
     // from the shared DB handle and subscribers call into SpendTracker.

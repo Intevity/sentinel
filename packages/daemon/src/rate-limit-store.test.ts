@@ -624,4 +624,145 @@ describe('RateLimitStore', () => {
       expect(overage?.inUse).toBe(false);
     });
   });
+
+  // ── expireStaleWindows ──────────────────────────────────────────────────────
+  describe('expireStaleWindows', () => {
+    // Fixed clock so reset comparisons are deterministic (seconds derived below).
+    const NOW_MS = 2_000_000_000_000;
+    const NOW_SEC = Math.floor(NOW_MS / 1000); // 2_000_000_000
+
+    it('rolls a window whose reset has elapsed back to its zero-state', () => {
+      const store = new RateLimitStore();
+      // Seed a blocked weekly window with a reset 1h in the past.
+      store.update('acc-1', {
+        'anthropic-ratelimit-unified-7d-utilization': '1',
+        'anthropic-ratelimit-unified-7d-status': 'blocked',
+        'anthropic-ratelimit-unified-7d-reset': String(NOW_SEC - 3600),
+      });
+
+      const changed = store.expireStaleWindows(NOW_MS);
+
+      const w = store.getAll('acc-1').find((x) => x.name === 'unified-7d');
+      expect(w?.utilization).toBe(0);
+      expect(w?.status).toBe('allowed');
+      expect(w?.reset).toBeNull();
+      expect(w?.lastUpdated).toBe(NOW_MS);
+      expect(changed.get('acc-1')).toHaveLength(1);
+
+      // Idempotent: the window now has reset === null, so a second sweep is a
+      // no-op and reports no changes (so a periodic caller won't re-broadcast).
+      expect(store.expireStaleWindows(NOW_MS).size).toBe(0);
+    });
+
+    it('treats reset exactly at now as elapsed', () => {
+      const store = new RateLimitStore();
+      store.update('acc-1', {
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-5h-reset': String(NOW_SEC),
+      });
+
+      const changed = store.expireStaleWindows(NOW_MS);
+
+      expect(changed.get('acc-1')).toHaveLength(1);
+      expect(store.getAll('acc-1').find((x) => x.name === 'unified-5h')?.utilization).toBe(0);
+    });
+
+    it('leaves a window with a future reset untouched', () => {
+      const store = new RateLimitStore();
+      store.update('acc-1', {
+        'anthropic-ratelimit-unified-5h-utilization': '0.42',
+        'anthropic-ratelimit-unified-5h-status': 'allowed',
+        'anthropic-ratelimit-unified-5h-reset': String(NOW_SEC + 3600),
+      });
+
+      const changed = store.expireStaleWindows(NOW_MS);
+
+      const w = store.getAll('acc-1').find((x) => x.name === 'unified-5h');
+      expect(w?.utilization).toBeCloseTo(0.42);
+      expect(w?.reset).toBe(NOW_SEC + 3600);
+      expect(changed.size).toBe(0);
+    });
+
+    it('leaves a window with no reset untouched and reports no change', () => {
+      const store = new RateLimitStore();
+      // utilization only, no reset header → reset stays null
+      store.update('acc-1', { 'anthropic-ratelimit-unified-5h-utilization': '0.3' });
+
+      const changed = store.expireStaleWindows(NOW_MS);
+
+      const w = store.getAll('acc-1').find((x) => x.name === 'unified-5h');
+      expect(w?.utilization).toBeCloseTo(0.3);
+      expect(w?.reset).toBeNull();
+      expect(changed.size).toBe(0);
+    });
+
+    it('clears the overage in-use flag but leaves untracked inUse as null', () => {
+      const store = new RateLimitStore();
+      store.update('acc-1', {
+        // overage window: in-use tracked as true, with an elapsed reset
+        'anthropic-ratelimit-unified-overage-status': 'allowed',
+        'anthropic-ratelimit-unified-overage-in-use': 'true',
+        'anthropic-ratelimit-unified-overage-reset': String(NOW_SEC - 10),
+        // 5h window: never carried an in-use flag, also elapsed
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-5h-reset': String(NOW_SEC - 10),
+      });
+
+      store.expireStaleWindows(NOW_MS);
+
+      const overage = store.getAll('acc-1').find((x) => x.name === 'unified-overage');
+      const fiveHour = store.getAll('acc-1').find((x) => x.name === 'unified-5h');
+      expect(overage?.inUse).toBe(false);
+      expect(fiveHour?.inUse).toBeNull();
+    });
+
+    it('fires onUpdate once per changed account with only the changed windows', () => {
+      const store = new RateLimitStore();
+      // acc-1: one stale window. acc-2: one fresh window (untouched).
+      store.update('acc-1', {
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-5h-reset': String(NOW_SEC - 10),
+      });
+      store.update('acc-2', {
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-5h-reset': String(NOW_SEC + 1000),
+      });
+      // Register the callback AFTER seeding so only the sweep fires it.
+      const cb = vi.fn();
+      store.onUpdate(cb);
+
+      const changed = store.expireStaleWindows(NOW_MS);
+
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb).toHaveBeenCalledWith(
+        'acc-1',
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'unified-5h', utilization: 0, reset: null }),
+        ]),
+      );
+      expect([...changed.keys()]).toEqual(['acc-1']);
+    });
+
+    it('only rolls the stale windows when an account mixes stale and fresh', () => {
+      const store = new RateLimitStore();
+      store.update('acc-1', {
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+        'anthropic-ratelimit-unified-5h-reset': String(NOW_SEC - 10),
+        'anthropic-ratelimit-unified-7d-utilization': '0.3',
+        'anthropic-ratelimit-unified-7d-reset': String(NOW_SEC + 10_000),
+      });
+
+      const changed = store.expireStaleWindows(NOW_MS);
+
+      expect(changed.get('acc-1')).toHaveLength(1);
+      expect(changed.get('acc-1')?.[0]?.name).toBe('unified-5h');
+
+      const fiveHour = store.getAll('acc-1').find((x) => x.name === 'unified-5h');
+      const weekly = store.getAll('acc-1').find((x) => x.name === 'unified-7d');
+      expect(fiveHour?.utilization).toBe(0);
+      expect(fiveHour?.reset).toBeNull();
+      expect(weekly?.utilization).toBeCloseTo(0.3);
+      expect(weekly?.reset).toBe(NOW_SEC + 10_000);
+    });
+  });
 });

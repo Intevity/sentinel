@@ -141,6 +141,68 @@ export class RateLimitStore {
   }
 
   /**
+   * Roll over any window whose `reset` timestamp has already elapsed.
+   *
+   * Reset times are only refreshed by a proxied request's response headers or
+   * a successful claude.ai poll. With neither — e.g. the machine sat idle over
+   * a weekend, or the account's org has OAuth API access disabled so
+   * `/api/oauth/usage` 403s and never refreshes — a window keeps its last-seen
+   * `utilization` and a now-past `reset` indefinitely, so the UI shows stale
+   * usage (and "resets soon", since `ResetCountdown` renders that for any past
+   * timestamp). This sweep is the internal-timer fallback: a window whose
+   * server-side window has demonstrably rolled (`reset <= now`) is reset to its
+   * zero-state — `utilization = 0`, `status = 'allowed'`, `reset = null` — which
+   * matches what claude.ai itself reports at 0% (`resets_at: null`) and lets the
+   * countdown pill disappear instead of reading "resets soon".
+   *
+   * `reset` is nulled rather than advanced by a window period: the next genuine
+   * header / poll repopulates the real boundary, and fabricating a future reset
+   * would feed the token rotator's earliest-reset comparison a phantom value.
+   * `inUse` is set false only when it was already tracked (the overage window);
+   * windows that never carried the flag keep `null` (means "N/A", not "false").
+   *
+   * Fires `onUpdate` for each account with ≥1 changed window so DB persistence +
+   * spend tracker (which releases a stale weekly pause once the window reads
+   * `allowed`) + overage cache stay in sync — the same seam `update()` uses.
+   * Idempotent: windows already at `reset == null` are skipped, so a periodic
+   * caller doesn't re-fire callbacks (or re-broadcast) every tick.
+   *
+   * Returns the changed windows keyed by accountId so the caller can broadcast.
+   */
+  expireStaleWindows(nowMs: number): Map<string, RateLimitWindow[]> {
+    const nowSec = Math.floor(nowMs / 1000);
+    const changed = new Map<string, RateLimitWindow[]>();
+
+    for (const [accountId, accountMap] of this.data) {
+      const accountChanges: RateLimitWindow[] = [];
+      for (const [name, w] of accountMap) {
+        if (w.reset == null || w.reset > nowSec) continue;
+        const rolled: RateLimitWindow = {
+          ...w,
+          utilization: 0,
+          status: 'allowed',
+          reset: null,
+          lastUpdated: nowMs,
+        };
+        // Flip the overage in-use flag off, but only when it was actually
+        // tracked (a boolean). Windows that never carried it keep null/undefined
+        // — null means "N/A", not "false".
+        if (typeof w.inUse === 'boolean') rolled.inUse = false;
+        accountMap.set(name, rolled);
+        accountChanges.push(rolled);
+      }
+      if (accountChanges.length > 0) changed.set(accountId, accountChanges);
+    }
+
+    for (const [accountId, windows] of changed) {
+      for (const cb of this.updateCallbacks) {
+        cb(accountId, windows);
+      }
+    }
+    return changed;
+  }
+
+  /**
    * Populate rate-limit windows from a ClaudeAiUsageSnapshot. Used to bootstrap
    * data for accounts that have no OAuth token and can't be probed via the
    * api.anthropic.com path (notably silent-sibling team enrollments: they
