@@ -32,6 +32,25 @@ describe('renderClaudeCodeMd', () => {
     expect(md).not.toMatch(/^tools:/m);
   });
 
+  it('emits a skills: flow list after tools when skills are present', () => {
+    const md = renderClaudeCodeMd({ ...SAMPLE, skills: ['sentinel-code-mode'] });
+    expect(md).toMatch(/^skills: \[sentinel-code-mode\]$/m);
+    // Ordering: tools before skills before model.
+    expect(md.indexOf('tools:')).toBeLessThan(md.indexOf('skills:'));
+    expect(md.indexOf('skills:')).toBeLessThan(md.indexOf('model:'));
+  });
+
+  it('omits the skills line when skills is undefined or empty', () => {
+    expect(renderClaudeCodeMd(SAMPLE)).not.toMatch(/^skills:/m);
+    expect(renderClaudeCodeMd({ ...SAMPLE, skills: [] })).not.toMatch(/^skills:/m);
+  });
+
+  it('changes the fingerprint when skills are added (echo/staleness safety)', () => {
+    expect(gapFingerprint({ ...SAMPLE, skills: ['sentinel-code-mode'] })).not.toBe(
+      gapFingerprint(SAMPLE),
+    );
+  });
+
   it('includes the body after frontmatter', () => {
     const md = renderClaudeCodeMd(SAMPLE);
     expect(md).toContain('You are a sample agent.\n\nFollow the rules.');

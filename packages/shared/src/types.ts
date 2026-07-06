@@ -813,6 +813,11 @@ export interface Settings {
    *  `~/.claude/skills/`. Tracked so revert can clean it up when the
    *  last migration is removed. */
   codeModeSkillInstalled: boolean;
+  /** True once the Sentinel-managed code-mode block exists in
+   *  `~/.claude/CLAUDE.md`. The block is how bridged servers reach subagents
+   *  (which don't get the skill advertisement); tracked so revert can strip it
+   *  when the last migration is removed. */
+  codeModeClaudeMdInstalled: boolean;
   /** Servers disabled via the plain "Disable" action (no bridging), with
    *  their stashed entries so Enable restores byte-identically. Same record
    *  shape as a migration but deliberately a separate list: entries here

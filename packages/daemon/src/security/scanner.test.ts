@@ -101,6 +101,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     codeModeEnabled: false,
     codeModeMigrations: [],
     codeModeSkillInstalled: false,
+    codeModeClaudeMdInstalled: false,
     mcpDisabledStashes: [],
     optimizeSubTab: 'subagents',
     securitySubTab: 'scanning',

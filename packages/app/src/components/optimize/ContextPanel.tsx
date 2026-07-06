@@ -53,6 +53,7 @@ const EMPTY_STATUS: CodeModeStatus = {
   migrations: [],
   endpointUrl: '',
   workspaceDir: '',
+  claudeMdBlock: { present: false, upToDate: true },
 };
 
 const BADGE_STYLES: Record<McpRecommendationBadge['kind'], string> = {
@@ -714,8 +715,38 @@ function CodeModeStatusSection({
   audit: CodeModeAuditRow[];
 }): React.ReactElement {
   const [open, setOpen] = useState(false);
+  const [repairing, setRepairing] = useState(false);
+  const drifted =
+    status.enabled && (!status.claudeMdBlock.present || !status.claudeMdBlock.upToDate);
+  const repair = useCallback(async () => {
+    setRepairing(true);
+    try {
+      await sendToSentinel({ type: 'repair_code_mode_bridge' });
+    } finally {
+      setRepairing(false);
+    }
+  }, []);
   return (
     <div className="mt-3 border-t border-border-subtle/10 pt-2">
+      {drifted && (
+        <div className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+          <p className="font-medium">Subagent bridge needs repair</p>
+          <p className="mt-0.5 text-amber-700/80 dark:text-amber-300/80">
+            The code-mode instructions are missing or out of date in ~/.claude/CLAUDE.md, so
+            subagents (in this and other projects) can&apos;t reach the bridged servers. Sentinel
+            restores them automatically on restart — or repair now.
+          </p>
+          <button
+            type="button"
+            onClick={() => void repair()}
+            disabled={repairing}
+            className="mt-1.5 inline-flex items-center gap-1 rounded border border-amber-500/40 px-2 py-0.5 font-medium hover:bg-amber-500/15 disabled:opacity-50"
+          >
+            {repairing ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            {repairing ? 'Repairing…' : 'Repair'}
+          </button>
+        </div>
+      )}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -740,8 +771,9 @@ function CodeModeStatusSection({
             <br />
             Tool docs: <code className="text-foreground/80">{status.workspaceDir}</code>
             <br />
-            Claude reads the per-tool docs on demand and calls tools with curl through its normal
-            Bash permission prompts; arguments and results never appear in this audit.
+            Claude reads the per-tool docs on demand and calls tools with curl (auto-approved by
+            Sentinel, so no prompt — even for subagents); arguments and results never appear in this
+            audit.
           </p>
           {audit.length > 0 && (
             <ul className="space-y-0.5">

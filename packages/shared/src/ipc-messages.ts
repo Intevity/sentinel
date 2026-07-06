@@ -1317,6 +1317,15 @@ export interface GetCodeModeStatusMessage {
   type: 'get_code_mode_status';
 }
 
+/** Re-assert everything the code-mode bridge needs to reach subagents for the
+ *  currently-migrated servers: the sentinel-code-mode skill, the managed
+ *  `~/.claude/CLAUDE.md` block, the installed curated agents' skill preload,
+ *  and the endpoint allow rule. Idempotent; used by the UI's "Repair" action
+ *  when drift is detected. No-op when code mode is off. */
+export interface RepairCodeModeBridgeMessage {
+  type: 'repair_code_mode_bridge';
+}
+
 /** Response shape for {@link GetCodeModeStatusMessage}. */
 export interface CodeModeStatus {
   /** Mirror of `Settings.codeModeEnabled`. */
@@ -1330,6 +1339,13 @@ export interface CodeModeStatus {
   endpointUrl: string;
   /** Absolute path of the generated wrapper workspace. */
   workspaceDir: string;
+  /** State of the managed code-mode block in `~/.claude/CLAUDE.md` (the
+   *  mechanism that makes bridged servers reachable from subagents). When
+   *  code mode is enabled but this is `{ present: false }` or
+   *  `{ upToDate: false }`, the UI surfaces a drift warning + Repair action.
+   *  Reported as `{ present: false, upToDate: true }` when code mode is off
+   *  (nothing is expected on disk). */
+  claudeMdBlock: { present: boolean; upToDate: boolean };
 }
 
 /** Read recent bridge calls for the Context tab's audit list. Rows carry
@@ -2022,6 +2038,7 @@ export type AppToDaemonMessage =
   | MigrateServerToCodeModeMessage
   | RevertServerFromCodeModeMessage
   | GetCodeModeStatusMessage
+  | RepairCodeModeBridgeMessage
   | GetCodeModeAuditMessage
   | GetAgentsSyncStatusMessage
   | GetRemovedAccountsMessage
