@@ -149,6 +149,7 @@ export const DEFAULT_SETTINGS: Settings = {
   codeModeEnabled: false,
   codeModeMigrations: [],
   codeModeSkillInstalled: false,
+  codeModeClaudeMdInstalled: false,
   mcpDisabledStashes: [],
   otelForwardingEnabled: false,
   otelForwardMetrics: true,
@@ -826,6 +827,9 @@ function coerce(raw: unknown): Settings {
   }
   if (typeof obj['codeModeSkillInstalled'] === 'boolean') {
     next.codeModeSkillInstalled = obj['codeModeSkillInstalled'];
+  }
+  if (typeof obj['codeModeClaudeMdInstalled'] === 'boolean') {
+    next.codeModeClaudeMdInstalled = obj['codeModeClaudeMdInstalled'];
   }
   if (obj['mcpDisabledStashes'] !== undefined) {
     next.mcpDisabledStashes = coerceCodeModeMigrations(obj['mcpDisabledStashes']);

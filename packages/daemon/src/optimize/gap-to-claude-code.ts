@@ -36,6 +36,12 @@ export interface GapSubagent {
   model: 'haiku' | 'sonnet' | 'opus' | 'inherit';
   /** Allowlist of Claude Code tool names. Empty means inherit-all. */
   tools: string[];
+  /** Skills to preload into the subagent's context at startup (Claude Code
+   *  `skills:` frontmatter). Optional; omitted/empty emits no field. Used to
+   *  preload `sentinel-code-mode` so a subagent can reach bridged MCP servers.
+   *  Only set when the named skill is actually installed (a dangling reference
+   *  has undocumented behavior), so the renderer emits it verbatim. */
+  skills?: string[];
   /** System prompt body (the "SOUL"). Multi-line is fine. */
   soul: string;
   /** GAP schema version recorded in frontmatter so future loaders can
@@ -56,6 +62,12 @@ export function renderClaudeCodeMd(g: GapSubagent): string {
     // Comma-separated form keeps the file readable; matches Claude Code's
     // accepted shape.
     lines.push(`tools: ${g.tools.join(', ')}`);
+  }
+  if (g.skills && g.skills.length > 0) {
+    // Flow-list form is the unambiguous YAML list shape (Claude Code's docs
+    // don't show an example for this field; the flow list parses as a list
+    // rather than a bare scalar). Emitted after tools, before model.
+    lines.push(`skills: [${g.skills.join(', ')}]`);
   }
   lines.push(`model: ${g.model}`);
   lines.push(`gap_schema_version: ${g.gapSchemaVersion}`);

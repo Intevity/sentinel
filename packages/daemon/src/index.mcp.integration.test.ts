@@ -108,6 +108,28 @@ describe('Retrieval MCP IPC end-to-end', () => {
     expect(cfg.mcpServers?.['sentinel']).toBeUndefined();
   });
 
+  it('auto-allows mcp__sentinel__retrieve on install and removes it when the last install is gone', async () => {
+    ctx = await startTestDaemon();
+    const raws = async (): Promise<string[]> => {
+      const r = await ctx.request<Array<{ raw: string; decision: string }>>({
+        type: 'list_permission_rules',
+      });
+      return (r.data ?? []).map((x) => x.raw);
+    };
+    expect(await raws()).not.toContain('mcp__sentinel__retrieve');
+
+    await ctx.request({ type: 'install_retrieval_mcp', scope: 'user' });
+    const afterInstall = await ctx.request<Array<{ raw: string; decision: string }>>({
+      type: 'list_permission_rules',
+    });
+    expect(afterInstall.data).toContainEqual(
+      expect.objectContaining({ raw: 'mcp__sentinel__retrieve', decision: 'allow' }),
+    );
+
+    await ctx.request({ type: 'uninstall_retrieval_mcp', scope: 'user' });
+    expect(await raws()).not.toContain('mcp__sentinel__retrieve');
+  });
+
   it('status prunes a recorded install whose config was removed externally', async () => {
     ctx = await startTestDaemon();
     const dir = mkdtempSync(join(tmpdir(), 'sentinel-proj-prune-'));

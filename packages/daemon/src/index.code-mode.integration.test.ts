@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CodeModeStatus, McpContextCosts, Settings } from '@sentinel/shared';
 import {
@@ -359,5 +359,118 @@ describe('code-mode IPC end-to-end', () => {
     expect((after['mcpServers'] as Record<string, unknown>)['fakemcp']).toEqual(entry);
     const proj = (after['projects'] as Record<string, Record<string, unknown>>)['/proj/new']!;
     expect((proj['mcpServers'] as Record<string, unknown>)['fakemcp']).toEqual(entry);
+  });
+
+  // ─── Subagent bridge: CLAUDE.md block + endpoint allow rule ──────────
+
+  function claudeMdPath(): string {
+    return join(ctx.workdir, '.claude', 'CLAUDE.md');
+  }
+  async function ruleRaws(): Promise<string[]> {
+    const r = await ctx.request<Array<{ raw: string; decision: string }>>({
+      type: 'list_permission_rules',
+    });
+    return (r.data ?? []).map((x) => x.raw);
+  }
+
+  it('writes the CLAUDE.md bridge block + endpoint allow rule on migrate, and removes them on revert', async () => {
+    fakeMcp = await startFakeMcpHttpServer();
+    const entry = { type: 'http', url: fakeMcp.url };
+    ctx = await startTestDaemon({ claudeState: { mcpServers: { fakemcp: entry } } });
+    const curlRule = `Bash(curl -s -X POST http://127.0.0.1:${ctx.daemonPort}/code-mode/call:*)`;
+
+    await ctx.request({ type: 'migrate_server_to_code_mode', server: 'fakemcp' });
+
+    const md = readFileSync(claudeMdPath(), 'utf-8');
+    expect(md).toContain('BEGIN SENTINEL CODE-MODE (managed)');
+    expect(md).toContain('fakemcp');
+    expect(md).toContain(`http://127.0.0.1:${ctx.daemonPort}/code-mode/call`);
+
+    const settings = await ctx.request<Settings>({ type: 'get_settings' });
+    expect(settings.data?.codeModeClaudeMdInstalled).toBe(true);
+
+    const status = await ctx.request<CodeModeStatus>({ type: 'get_code_mode_status' });
+    expect(status.data?.claudeMdBlock).toEqual({ present: true, upToDate: true });
+
+    expect(await ruleRaws()).toContain(curlRule);
+
+    await ctx.request({ type: 'revert_server_from_code_mode', server: 'fakemcp' });
+    expect(readFileSync(claudeMdPath(), 'utf-8')).not.toContain('BEGIN SENTINEL CODE-MODE');
+    expect(await ruleRaws()).not.toContain(curlRule);
+    const status2 = await ctx.request<CodeModeStatus>({ type: 'get_code_mode_status' });
+    expect(status2.data?.claudeMdBlock).toEqual({ present: false, upToDate: true });
+  });
+
+  it('preloads sentinel-code-mode into installed Bash-capable curated agents while bridged', async () => {
+    fakeMcp = await startFakeMcpHttpServer();
+    const entry = { type: 'http', url: fakeMcp.url };
+    ctx = await startTestDaemon({ claudeState: { mcpServers: { fakemcp: entry } } });
+    const agentPath = join(ctx.workdir, 'agents', 'file-explorer.md');
+
+    // Install a Bash-capable curated agent — skill-free by default.
+    await ctx.request({ type: 'install_curated_subagent', curatedId: 'file-explorer' });
+    expect(readFileSync(agentPath, 'utf-8')).not.toMatch(/^skills:/m);
+
+    // Migrating a server preloads the skill into it.
+    await ctx.request({ type: 'migrate_server_to_code_mode', server: 'fakemcp' });
+    expect(readFileSync(agentPath, 'utf-8')).toMatch(/^skills: \[sentinel-code-mode\]$/m);
+
+    // Reverting the last server strips it again (no dangling skills reference).
+    await ctx.request({ type: 'revert_server_from_code_mode', server: 'fakemcp' });
+    expect(readFileSync(agentPath, 'utf-8')).not.toMatch(/^skills:/m);
+  });
+
+  it('repairs a hand-deleted CLAUDE.md block, preserving user content', async () => {
+    fakeMcp = await startFakeMcpHttpServer();
+    const entry = { type: 'http', url: fakeMcp.url };
+    ctx = await startTestDaemon({ claudeState: { mcpServers: { fakemcp: entry } } });
+    await ctx.request({ type: 'migrate_server_to_code_mode', server: 'fakemcp' });
+
+    // User wipes the block, leaving their own note.
+    writeFileSync(claudeMdPath(), '# only my notes\n');
+    const drift = await ctx.request<CodeModeStatus>({ type: 'get_code_mode_status' });
+    expect(drift.data?.claudeMdBlock.present).toBe(false);
+
+    const repair = await ctx.request<{ repaired: boolean }>({ type: 'repair_code_mode_bridge' });
+    expect(repair.data?.repaired).toBe(true);
+    const md = readFileSync(claudeMdPath(), 'utf-8');
+    expect(md).toContain('# only my notes');
+    expect(md).toContain('BEGIN SENTINEL CODE-MODE');
+    const status = await ctx.request<CodeModeStatus>({ type: 'get_code_mode_status' });
+    expect(status.data?.claudeMdBlock).toEqual({ present: true, upToDate: true });
+  });
+
+  it('repair is a no-op when code mode is disabled', async () => {
+    ctx = await startTestDaemon();
+    const r = await ctx.request<{ repaired: boolean }>({ type: 'repair_code_mode_bridge' });
+    expect(r.success).toBe(true);
+    expect(r.data?.repaired).toBe(false);
+  });
+
+  it('self-heals a missing CLAUDE.md block at startup when migrations already exist', async () => {
+    ctx = await startTestDaemon({
+      settings: {
+        codeModeEnabled: true,
+        codeModeSkillInstalled: true,
+        // Claims installed, but no file exists on disk → startup detects drift.
+        codeModeClaudeMdInstalled: true,
+        codeModeMigrations: [
+          {
+            server: 'preexisting',
+            scope: 'user',
+            directory: null,
+            originalEntry: { type: 'http', url: 'http://example.invalid' },
+            migratedAt: 1,
+            baselineNativeRequests: 0,
+            baselineServerRequests: 0,
+          },
+        ],
+      },
+    });
+    const md = readFileSync(claudeMdPath(), 'utf-8');
+    expect(md).toContain('BEGIN SENTINEL CODE-MODE');
+    expect(md).toContain('preexisting');
+    const status = await ctx.request<CodeModeStatus>({ type: 'get_code_mode_status' });
+    expect(status.data?.claudeMdBlock).toEqual({ present: true, upToDate: true });
   });
 });

@@ -51,6 +51,7 @@ import {
   removePermissionBypass,
   upsertPermissionRule,
   deletePermissionRule,
+  listPermissionRules,
   insertNotification,
   runDetectorTuningMigration,
   migrateLegacyDataDir,
@@ -126,7 +127,7 @@ import { join } from 'path';
 import { runScanBenchmark } from './security/scanner-benchmark.js';
 import { parseRule as parsePermissionRule } from './security/permissions/parser.js';
 import type { Settings, MetricsWindow } from '@sentinel/shared';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { getActiveAccount, setActiveAccount } from './claude-state.js';
 import {
   readActiveCredentials,
@@ -188,7 +189,14 @@ import {
   installCodeModeSkill,
   uninstallCodeModeSkill,
   writeCodeModeTokenFile,
+  SKILL_NAME as CODE_MODE_SKILL_NAME,
 } from './optimize/code-mode/skill-install.js';
+import {
+  installCodeModeClaudeMd,
+  uninstallCodeModeClaudeMd,
+  readCodeModeBlockState,
+} from './optimize/code-mode/claude-md-inject.js';
+import { renderClaudeCodeMd } from './optimize/gap-to-claude-code.js';
 import {
   createRetrieveMcpHandler,
   RETRIEVE_QUALIFIED_NAME,
@@ -2873,6 +2881,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
             compressionRetrievalEnabled: true,
             compressionRetrievalInstalls: installs,
           });
+          // Auto-allow Sentinel's own retrieve tool so Claude Code never
+          // prompts for it (it's read-only and loopback-gated). Durable and
+          // user-global, so it also covers subagents and every project.
+          ensureAllowRule(RETRIEVE_QUALIFIED_NAME);
           ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
           respond({
             requestType: 'install_retrieval_mcp',
@@ -2901,6 +2913,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
             (i) => !(i.scope === msg.scope && i.directory === recordDir),
           );
           currentSettings = writeSettings({ compressionRetrievalInstalls: installs });
+          // Drop the auto-allow rule only once the last retrieve install is
+          // gone — the tool no longer exists anywhere to be prompted for.
+          if (installs.length === 0) {
+            removeAllowRuleByRaw(RETRIEVE_QUALIFIED_NAME);
+          }
           ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
           respond({ requestType: 'uninstall_retrieval_mcp', success: true });
         } catch (err) {
@@ -3159,14 +3176,20 @@ export async function startDaemon(): Promise<DaemonHandle> {
               };
             });
             const migrations = [...currentSettings.codeModeMigrations, ...newRecords];
-            await installCodeModeSkill({
-              servers: [...new Set(migrations.map((m) => m.server))],
-              port: getDaemonPort(),
-            });
+            const bridgedServers = [...new Set(migrations.map((m) => m.server))];
+            await installCodeModeSkill({ servers: bridgedServers, port: getDaemonPort() });
+            // Reach subagents: the CLAUDE.md block is inherited by every
+            // non-Explore/Plan subagent (they get no skill advertisement), and
+            // installed curated agents preload the skill directly.
+            await installCodeModeClaudeMd({ servers: bridgedServers, port: getDaemonPort() });
+            await resyncCuratedCodeModeSkill(true);
+            // No native Bash prompt for the endpoint call, in any thread.
+            ensureAllowRule(codeModeCurlRule());
             currentSettings = writeSettings({
               codeModeMigrations: migrations,
               codeModeEnabled: true,
               codeModeSkillInstalled: true,
+              codeModeClaudeMdInstalled: true,
             });
             ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
             ipcServer.broadcast({ type: 'code_mode_status' });
@@ -3214,17 +3237,24 @@ export async function startDaemon(): Promise<DaemonHandle> {
           );
           await removeServerWorkspace(msg.server);
           if (remaining.length > 0) {
-            await installCodeModeSkill({
-              servers: [...new Set(remaining.map((m) => m.server))],
-              port: getDaemonPort(),
-            });
+            const remainingServers = [...new Set(remaining.map((m) => m.server))];
+            await installCodeModeSkill({ servers: remainingServers, port: getDaemonPort() });
+            await installCodeModeClaudeMd({ servers: remainingServers, port: getDaemonPort() });
+            await resyncCuratedCodeModeSkill(true);
           } else {
+            // Last server reverted: tear down everything Sentinel added for the
+            // bridge — skill, CLAUDE.md block, curated preloads, and the
+            // endpoint allow rule.
             await uninstallCodeModeSkill();
+            await uninstallCodeModeClaudeMd();
+            await resyncCuratedCodeModeSkill(false);
+            removeAllowRuleByRaw(codeModeCurlRule());
           }
           currentSettings = writeSettings({
             codeModeMigrations: remaining,
             codeModeEnabled: remaining.length > 0,
             codeModeSkillInstalled: remaining.length > 0,
+            codeModeClaudeMdInstalled: remaining.length > 0,
           });
           codeModeUnavailable.delete(sanitizeServerName(msg.server));
           ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
@@ -3252,6 +3282,14 @@ export async function startDaemon(): Promise<DaemonHandle> {
           ...m,
           drifted: !isNativeDisabled(m),
         }));
+        // Report whether the subagent-bridge CLAUDE.md block is present and
+        // current. When code mode is off, nothing is expected on disk.
+        const claudeMdBlock = currentSettings.codeModeEnabled
+          ? readCodeModeBlockState({
+              servers: [...new Set(currentSettings.codeModeMigrations.map((m) => m.server))],
+              port: getDaemonPort(),
+            })
+          : { present: false, upToDate: true };
         respond({
           requestType: 'get_code_mode_status',
           success: true,
@@ -3261,7 +3299,52 @@ export async function startDaemon(): Promise<DaemonHandle> {
             migrations,
             endpointUrl: `http://127.0.0.1:${getDaemonPort()}/code-mode/call`,
             workspaceDir: resolveCodeModeDir(),
+            claudeMdBlock,
           },
+        });
+        break;
+      }
+      case 'repair_code_mode_bridge': {
+        // Re-assert the whole subagent bridge for the current migrations:
+        // skill, CLAUDE.md block, curated preloads, endpoint allow rule. Used
+        // by the UI's Repair action when drift is detected.
+        void (async () => {
+          const servers = [...new Set(currentSettings.codeModeMigrations.map((m) => m.server))];
+          if (!currentSettings.codeModeEnabled || servers.length === 0) {
+            respond({
+              requestType: 'repair_code_mode_bridge',
+              success: true,
+              data: { repaired: false },
+            });
+            return;
+          }
+          const port = getDaemonPort();
+          await installCodeModeSkill({ servers, port });
+          await installCodeModeClaudeMd({ servers, port });
+          await resyncCuratedCodeModeSkill(true);
+          ensureAllowRule(codeModeCurlRule());
+          if (
+            !currentSettings.codeModeSkillInstalled ||
+            !currentSettings.codeModeClaudeMdInstalled
+          ) {
+            currentSettings = writeSettings({
+              codeModeSkillInstalled: true,
+              codeModeClaudeMdInstalled: true,
+            });
+          }
+          ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+          ipcServer.broadcast({ type: 'code_mode_status' });
+          respond({
+            requestType: 'repair_code_mode_bridge',
+            success: true,
+            data: { repaired: true },
+          });
+        })().catch((err: unknown) => {
+          respond({
+            requestType: 'repair_code_mode_bridge',
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
         });
         break;
       }
@@ -3685,6 +3768,84 @@ export async function startDaemon(): Promise<DaemonHandle> {
     console.error('[AgentsSync] initial start failed:', err);
   }
 
+  // ─── Auto-allow Sentinel's own local operations ─────────────────────
+  // Seed durable user-global allow rules for Sentinel's own read-only /
+  // loopback-gated tools so Claude Code never prompts for them (in any
+  // project, including subagents). Rules live in the DB as source='local' —
+  // never orphan-deleted, always re-asserted by claude-sync's push. Pushed
+  // to ~/.claude/settings.json only when sync is enabled: if the user
+  // explicitly opted out of Sentinel managing their settings.json we honor
+  // that and don't override it (the rule still applies to Sentinel's own
+  // enforcer and activates for Claude Code the moment they enable sync).
+  const ensureAllowRule = (raw: string): void => {
+    const parsed = parsePermissionRule(raw);
+    /* v8 ignore next 1 -- raw is a compile-time constant that always parses */
+    if (!parsed.ok) return;
+    upsertPermissionRule(db, {
+      raw: parsed.parsed.raw,
+      tool: parsed.parsed.tool,
+      pattern: parsed.parsed.pattern,
+      decision: 'allow',
+      source: 'local',
+      enabled: true,
+    });
+    permissionsEnforcer.invalidate();
+    ipcServer.broadcast({
+      type: 'permission_rules_changed',
+      rules: permissionsEnforcer.listRules(),
+    });
+    if (currentSettings.claudeCodeSyncEnabled) void claudeSyncEngine.pushNow();
+  };
+
+  const removeAllowRuleByRaw = (raw: string): void => {
+    const row = listPermissionRules(db).find((r) => r.raw === raw);
+    if (!row) return;
+    if (deletePermissionRule(db, row.id)) {
+      permissionsEnforcer.invalidate();
+      ipcServer.broadcast({
+        type: 'permission_rules_changed',
+        rules: permissionsEnforcer.listRules(),
+      });
+      if (currentSettings.claudeCodeSyncEnabled) void claudeSyncEngine.pushNow();
+    }
+  };
+
+  /** The Bash allow rule that lets any thread (including subagents) call the
+   *  code-mode endpoint without a native Claude Code prompt. Prefix rule; the
+   *  SKILL and the CLAUDE.md block both emit this exact command form. */
+  const codeModeCurlRule = (): string =>
+    `Bash(curl -s -X POST http://127.0.0.1:${getDaemonPort()}/code-mode/call:*)`;
+
+  // ─── Curated-agent code-mode skill preload (the "Both" path) ────────
+  // Re-render installed curated agents to (un)preload the sentinel-code-mode
+  // skill as code mode toggles. Only Bash-capable agents get it (they alone
+  // can call the endpoint), and only while the skill is installed (a dangling
+  // `skills:` reference has undocumented behavior in Claude Code). Idempotent:
+  // skips a write when the rendered content already matches what's on disk.
+  const resyncCuratedCodeModeSkill = async (skillInstalled: boolean): Promise<void> => {
+    const installed = listSubagentInstalls(db).filter(
+      (r) => r.source === 'curated' && !r.uninstalledAt,
+    );
+    for (const row of installed) {
+      if (!row.curatedId) continue;
+      const entry = getCuratedSubagent(row.curatedId);
+      if (!entry) continue;
+      const wantsBridge = skillInstalled && entry.gap.tools.includes('Bash');
+      const rendered = wantsBridge
+        ? renderClaudeCodeMd({ ...entry.gap, skills: [CODE_MODE_SKILL_NAME] })
+        : entry.renderedMd;
+      const desiredHash = createHash('sha256').update(rendered).digest('hex');
+      if (row.mdHash === desiredHash) continue;
+      await agentsSyncEngine.installCuratedFile({
+        name: entry.curatedId,
+        mdPath: row.mdPath,
+        renderedMd: rendered,
+        curatedId: entry.curatedId,
+        gapFingerprint: entry.fingerprint,
+      });
+    }
+  };
+
   // Optimize feature: periodic analyzer. Runs every 5 minutes,
   // detecting opportunities in recent tool_calls and writing
   // `kind='measured'` rows. Drives the dashboard's continuous savings
@@ -3975,6 +4136,34 @@ export async function startDaemon(): Promise<DaemonHandle> {
       resolve();
     });
   });
+
+  // ─── Code-mode subagent-bridge self-heal ────────────────────────────
+  // The CLAUDE.md block and curated-agent skill preload can drift (a daemon
+  // upgrade, a hand-edit, or a deleted block). Reconcile once at startup so
+  // the bridge stays reachable from subagents in every project without the
+  // user doing anything. Runs AFTER the HTTP server is listening so
+  // getDaemonPort() reflects the final bound port (the block embeds the
+  // endpoint URL). Only touches files when code mode is on and the block is
+  // missing/stale — no needless writes on a clean start.
+  if (currentSettings.codeModeEnabled && currentSettings.codeModeMigrations.length > 0) {
+    try {
+      const servers = [...new Set(currentSettings.codeModeMigrations.map((m) => m.server))];
+      const port = getDaemonPort();
+      const blockState = readCodeModeBlockState({ servers, port });
+      if (!blockState.present || !blockState.upToDate) {
+        await installCodeModeClaudeMd({ servers, port });
+        if (!currentSettings.codeModeClaudeMdInstalled) {
+          currentSettings = writeSettings({ codeModeClaudeMdInstalled: true });
+          ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+        }
+        console.log('[Startup] code-mode CLAUDE.md block healed');
+      }
+      await resyncCuratedCodeModeSkill(currentSettings.codeModeSkillInstalled);
+    } catch (err) {
+      /* v8 ignore next 2 */
+      console.error('[CodeMode] startup self-heal failed:', err);
+    }
+  }
 
   // Keep OAuth tokens fresh in the background. Runs once immediately (catching
   // any account whose token expired overnight) then every 15 minutes.
