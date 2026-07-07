@@ -108,7 +108,23 @@ describe('Retrieval MCP IPC end-to-end', () => {
     expect(cfg.mcpServers?.['sentinel']).toBeUndefined();
   });
 
-  it('auto-allows mcp__sentinel__retrieve on install and removes it when the last install is gone', async () => {
+  // Reads permissions.allow from the test-redirected ~/.claude/settings.json —
+  // the only scope Claude Code consults for SUBAGENTS. Missing file → [].
+  const settingsAllow = (): string[] => {
+    const p = process.env['SENTINEL_TEST_CLAUDE_SETTINGS_FILE']!;
+    if (!existsSync(p)) return [];
+    const parsed = JSON.parse(readFileSync(p, 'utf8')) as {
+      permissions?: { allow?: unknown };
+    };
+    const allow = parsed.permissions?.allow;
+    return Array.isArray(allow) ? (allow.filter((x): x is string => typeof x === 'string')) : [];
+  };
+
+  it('auto-allows mcp__sentinel__retrieve in the DB AND settings.json on install, and removes it on uninstall', async () => {
+    // Default settings → claudeCodeSyncEnabled is false, so the rule reaches
+    // Claude Code ONLY via the direct settings.json write (sync's push is off).
+    // This is the exact path that was broken: the rule lived in the DB but never
+    // in settings.json, so subagents kept prompting.
     ctx = await startTestDaemon();
     const raws = async (): Promise<string[]> => {
       const r = await ctx.request<Array<{ raw: string; decision: string }>>({
@@ -117,6 +133,7 @@ describe('Retrieval MCP IPC end-to-end', () => {
       return (r.data ?? []).map((x) => x.raw);
     };
     expect(await raws()).not.toContain('mcp__sentinel__retrieve');
+    expect(settingsAllow()).not.toContain('mcp__sentinel__retrieve');
 
     await ctx.request({ type: 'install_retrieval_mcp', scope: 'user' });
     const afterInstall = await ctx.request<Array<{ raw: string; decision: string }>>({
@@ -125,9 +142,48 @@ describe('Retrieval MCP IPC end-to-end', () => {
     expect(afterInstall.data).toContainEqual(
       expect.objectContaining({ raw: 'mcp__sentinel__retrieve', decision: 'allow' }),
     );
+    // The real fix: it's now in the file the subagent permission check reads.
+    expect(settingsAllow()).toContain('mcp__sentinel__retrieve');
 
     await ctx.request({ type: 'uninstall_retrieval_mcp', scope: 'user' });
     expect(await raws()).not.toContain('mcp__sentinel__retrieve');
+    expect(settingsAllow()).not.toContain('mcp__sentinel__retrieve');
+  });
+
+  it('preserves the user\'s other settings.json keys when seeding the retrieve allow', async () => {
+    ctx = await startTestDaemon({
+      claudeSettings: {
+        model: 'opusplan',
+        permissions: { allow: ['Bash(ls)'], deny: ['Read(secret)'] },
+      },
+    });
+    await ctx.request({ type: 'install_retrieval_mcp', scope: 'user' });
+
+    const p = process.env['SENTINEL_TEST_CLAUDE_SETTINGS_FILE']!;
+    const after = JSON.parse(readFileSync(p, 'utf8')) as {
+      model?: string;
+      permissions?: { allow?: string[]; deny?: string[] };
+    };
+    expect(after.permissions?.allow).toContain('mcp__sentinel__retrieve');
+    expect(after.permissions?.allow).toContain('Bash(ls)'); // pre-existing kept
+    expect(after.permissions?.deny).toEqual(['Read(secret)']); // untouched
+    expect(after.model).toBe('opusplan'); // untouched
+  });
+
+  it('self-heals a prior-session retrieval install into settings.json on startup (no install call)', async () => {
+    // A user who installed retrieval in a previous session has the DB rule but,
+    // with sync off, never got the settings.json entry. Re-assert it at startup.
+    ctx = await startTestDaemon({ settings: { compressionRetrievalEnabled: true } });
+    expect(settingsAllow()).toContain('mcp__sentinel__retrieve');
+  });
+
+  it('self-heals the code-mode curl allow into settings.json on startup when code mode is on', async () => {
+    ctx = await startTestDaemon({ settings: { codeModeEnabled: true } });
+    expect(
+      settingsAllow().some((r) =>
+        /^Bash\(curl -s -X POST http:\/\/127\.0\.0\.1:\d+\/code-mode\/call:\*\)$/.test(r),
+      ),
+    ).toBe(true);
   });
 
   it('status prunes a recorded install whose config was removed externally', async () => {

@@ -102,7 +102,11 @@ import { createPermissionsEnforcer } from './security/permissions/enforcer.js';
 import { attachWebhookToIpc } from './alerting/webhook.js';
 import { createIncidentReplayRecorder } from './security/incident-replay.js';
 import { redactSecretsInString } from './security/detectors.js';
-import { createClaudeSyncEngine } from './security/permissions/claude-sync.js';
+import {
+  createClaudeSyncEngine,
+  ensureClaudeSettingsAllow,
+  removeClaudeSettingsAllow,
+} from './security/permissions/claude-sync.js';
 import { createSandboxSyncEngine } from './security/sandbox/sandbox-sync.js';
 import { createSandboxRuntime } from './security/sandbox/sandbox-runtime.js';
 import { resolvePlatformPaths } from './security/sandbox/platform-paths.js';
@@ -3921,11 +3925,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // Seed durable user-global allow rules for Sentinel's own read-only /
   // loopback-gated tools so Claude Code never prompts for them (in any
   // project, including subagents). Rules live in the DB as source='local' —
-  // never orphan-deleted, always re-asserted by claude-sync's push. Pushed
-  // to ~/.claude/settings.json only when sync is enabled: if the user
-  // explicitly opted out of Sentinel managing their settings.json we honor
-  // that and don't override it (the rule still applies to Sentinel's own
-  // enforcer and activates for Claude Code the moment they enable sync).
+  // never orphan-deleted, always re-asserted by claude-sync's push.
+  //
+  // Reaching ~/.claude/settings.json (the only scope that covers subagents —
+  // a project-local grant does not) depends on sync state:
+  //   - sync ON  → claude-sync's push mirrors the whole DB rule set.
+  //   - sync OFF → push is disabled, so we write JUST these infra entries
+  //     directly via ensureClaudeSettingsAllow, preserving every other key.
+  //     Auto-allowing Sentinel's own plumbing is not "managing the user's
+  //     ruleset" (the thing they opted out of) — without it, subagents prompt
+  //     on every retrieve/code-mode call, which is the bug this fixes.
   const ensureAllowRule = (raw: string): void => {
     const parsed = parsePermissionRule(raw);
     /* v8 ignore next 1 -- raw is a compile-time constant that always parses */
@@ -3943,7 +3952,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
       type: 'permission_rules_changed',
       rules: permissionsEnforcer.listRules(),
     });
-    if (currentSettings.claudeCodeSyncEnabled) void claudeSyncEngine.pushNow();
+    if (currentSettings.claudeCodeSyncEnabled) {
+      void claudeSyncEngine.pushNow();
+    } else {
+      try {
+        ensureClaudeSettingsAllow([parsed.parsed.raw], claudeSettingsPath);
+      } catch (err) {
+        /* v8 ignore next 2 -- settings.json write failure is non-fatal; the DB rule still applies */
+        console.error('[Sentinel] failed to seed infra allow-rule in settings.json:', err);
+      }
+    }
   };
 
   const removeAllowRuleByRaw = (raw: string): void => {
@@ -3955,7 +3973,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
         type: 'permission_rules_changed',
         rules: permissionsEnforcer.listRules(),
       });
-      if (currentSettings.claudeCodeSyncEnabled) void claudeSyncEngine.pushNow();
+      if (currentSettings.claudeCodeSyncEnabled) {
+        void claudeSyncEngine.pushNow();
+      } else {
+        try {
+          removeClaudeSettingsAllow([raw], claudeSettingsPath);
+        } catch (err) {
+          /* v8 ignore next 2 -- settings.json write failure is non-fatal */
+          console.error('[Sentinel] failed to remove infra allow-rule from settings.json:', err);
+        }
+      }
     }
   };
 
@@ -4328,6 +4355,22 @@ export async function startDaemon(): Promise<DaemonHandle> {
       /* v8 ignore next 2 */
       console.error('[CodeMode] startup self-heal failed:', err);
     }
+  }
+
+  // ─── Infra allow-rule self-heal ─────────────────────────────────────
+  // Re-assert Sentinel's own infra allow-rules on every startup. They were
+  // seeded in the DB when the feature was installed, but an install from a
+  // prior session (or from before this fix) never reached ~/.claude/settings.
+  // json while sync was off — so subagents kept prompting for retrieve /
+  // code-mode. ensureAllowRule is idempotent and, with sync off, writes the
+  // entry straight to settings.json, so this heals existing users with no
+  // action on their part. Runs after the HTTP server is listening so
+  // codeModeCurlRule()'s embedded port is final.
+  if (currentSettings.compressionRetrievalEnabled) {
+    ensureAllowRule(RETRIEVE_QUALIFIED_NAME);
+  }
+  if (currentSettings.codeModeEnabled) {
+    ensureAllowRule(codeModeCurlRule());
   }
 
   // Keep OAuth tokens fresh in the background. Runs once immediately (catching

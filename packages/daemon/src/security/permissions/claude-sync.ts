@@ -20,7 +20,7 @@
  *     file dropped them) but leaves `source='local'` untouched.
  */
 
-import { promises as fs, type FSWatcher, watch } from 'fs';
+import { promises as fs, readFileSync, writeFileSync, renameSync, mkdirSync, type FSWatcher, watch } from 'fs';
 import { homedir } from 'os';
 import { join, dirname, basename } from 'path';
 import { createHash, randomBytes } from 'crypto';
@@ -45,6 +45,88 @@ interface PermissionsBlock {
 }
 
 const EMPTY_PERMISSIONS: PermissionsBlock = { allow: [], deny: [], ask: [] };
+
+/**
+ * Idempotently add or remove specific entries in a Claude Code settings file's
+ * `permissions.allow` array, WITHOUT disturbing any other key — every other
+ * top-level key, and every other `permissions` sub-key (`deny`, `ask`,
+ * `defaultMode`, `additionalDirectories`, …), is preserved verbatim.
+ *
+ * This is for Sentinel's OWN read-only / loopback-gated infrastructure tools
+ * (the `mcp__sentinel__retrieve` tool and the code-mode curl endpoint), which
+ * must be allow-listed so Claude Code — including subagents, which don't
+ * inherit a project-local grant — never prompts for them. It runs even when
+ * bi-directional settings-sync is disabled, because auto-allowing Sentinel's
+ * own plumbing is not the same as mirroring the user's broader permission
+ * ruleset: we only ever touch these specific entries, never the rest.
+ *
+ * Synchronous + atomic (temp file + rename) so callers stay simple and tests
+ * observe the write immediately. Returns true iff the file changed.
+ */
+function mutateClaudeSettingsAllow(
+  entries: readonly string[],
+  op: 'add' | 'remove',
+  settingsPath: string,
+): boolean {
+  if (entries.length === 0) return false;
+
+  let root: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(settingsPath, 'utf8')) as unknown;
+    if (parsed && typeof parsed === 'object') root = parsed as Record<string, unknown>;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    // Missing file: nothing to remove; an add starts from an empty object.
+    if (op === 'remove') return false;
+  }
+
+  const permsRaw = root['permissions'];
+  const perms: Record<string, unknown> =
+    permsRaw && typeof permsRaw === 'object' ? { ...(permsRaw as Record<string, unknown>) } : {};
+  const allow = Array.isArray(perms['allow'])
+    ? (perms['allow'] as unknown[]).filter((x): x is string => typeof x === 'string')
+    : [];
+
+  let next: string[];
+  if (op === 'add') {
+    const missing = entries.filter((e) => !allow.includes(e));
+    if (missing.length === 0) return false; // already present — no-op
+    next = [...allow, ...missing];
+  } else {
+    const drop = new Set(entries);
+    if (!allow.some((e) => drop.has(e))) return false; // nothing to remove — no-op
+    next = allow.filter((e) => !drop.has(e));
+  }
+
+  perms['allow'] = next;
+  root['permissions'] = perms;
+  const json = `${JSON.stringify(root, null, 2)}\n`;
+  mkdirSync(dirname(settingsPath), { recursive: true });
+  const tmp = `${settingsPath}.tmp-${randomBytes(6).toString('hex')}`;
+  writeFileSync(tmp, json, 'utf8');
+  renameSync(tmp, settingsPath);
+  return true;
+}
+
+/** Ensure every entry in `entries` is present in the file's
+ *  `permissions.allow`. Idempotent; preserves all other keys. Returns true iff
+ *  the file changed. See {@link mutateClaudeSettingsAllow}. */
+export function ensureClaudeSettingsAllow(
+  entries: readonly string[],
+  settingsPath: string = DEFAULT_SETTINGS_PATH,
+): boolean {
+  return mutateClaudeSettingsAllow(entries, 'add', settingsPath);
+}
+
+/** Remove every entry in `entries` from the file's `permissions.allow`, if
+ *  present. Idempotent; preserves all other keys. Returns true iff the file
+ *  changed. See {@link mutateClaudeSettingsAllow}. */
+export function removeClaudeSettingsAllow(
+  entries: readonly string[],
+  settingsPath: string = DEFAULT_SETTINGS_PATH,
+): boolean {
+  return mutateClaudeSettingsAllow(entries, 'remove', settingsPath);
+}
 
 export interface ClaudeSyncEngine {
   /** Attach the watcher and run an initial pull (as a merge). Emits
