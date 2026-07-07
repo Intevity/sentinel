@@ -117,7 +117,7 @@ describe('Retrieval MCP IPC end-to-end', () => {
       permissions?: { allow?: unknown };
     };
     const allow = parsed.permissions?.allow;
-    return Array.isArray(allow) ? (allow.filter((x): x is string => typeof x === 'string')) : [];
+    return Array.isArray(allow) ? allow.filter((x): x is string => typeof x === 'string') : [];
   };
 
   it('auto-allows mcp__sentinel__retrieve in the DB AND settings.json on install, and removes it on uninstall', async () => {
@@ -150,7 +150,7 @@ describe('Retrieval MCP IPC end-to-end', () => {
     expect(settingsAllow()).not.toContain('mcp__sentinel__retrieve');
   });
 
-  it('preserves the user\'s other settings.json keys when seeding the retrieve allow', async () => {
+  it("preserves the user's other settings.json keys when seeding the retrieve allow", async () => {
     ctx = await startTestDaemon({
       claudeSettings: {
         model: 'opusplan',

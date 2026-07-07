@@ -160,7 +160,10 @@ export function resolveDesktopInstallMarkers(
 }
 
 /** True if any of `markers` exists on disk. */
-export function anyExists(markers: string[], existsFn: (p: string) => boolean = existsSync): boolean {
+export function anyExists(
+  markers: string[],
+  existsFn: (p: string) => boolean = existsSync,
+): boolean {
   return markers.some((m) => existsFn(m));
 }
 

@@ -12,10 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import {
-  ensureClaudeSettingsAllow,
-  removeClaudeSettingsAllow,
-} from './claude-sync.js';
+import { ensureClaudeSettingsAllow, removeClaudeSettingsAllow } from './claude-sync.js';
 
 const RETRIEVE = 'mcp__sentinel__retrieve';
 const CURL = 'Bash(curl -s -X POST http://127.0.0.1:47284/code-mode/call:*)';
@@ -75,9 +72,9 @@ describe('ensureClaudeSettingsAllow / removeClaudeSettingsAllow', () => {
     const nested = join(dir, 'a', 'b', 'settings.json');
     expect(existsSync(nested)).toBe(false);
     expect(ensureClaudeSettingsAllow([RETRIEVE], nested)).toBe(true);
-    expect((JSON.parse(readFileSync(nested, 'utf8'))['permissions'] as Record<string, unknown>)['allow']).toEqual([
-      RETRIEVE,
-    ]);
+    expect(
+      (JSON.parse(readFileSync(nested, 'utf8'))['permissions'] as Record<string, unknown>)['allow'],
+    ).toEqual([RETRIEVE]);
   });
 
   it('seeds permissions.allow when the file exists but has no permissions block', () => {

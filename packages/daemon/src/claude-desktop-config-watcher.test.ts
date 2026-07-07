@@ -66,7 +66,10 @@ describe('claude-desktop-config-watcher', () => {
       const foreignId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
       writeFileSync(
         join(libDir, `${foreignId}.json`),
-        JSON.stringify({ inferenceProvider: 'gateway', inferenceGatewayBaseUrl: 'https://corp.example' }),
+        JSON.stringify({
+          inferenceProvider: 'gateway',
+          inferenceGatewayBaseUrl: 'https://corp.example',
+        }),
       );
       // Re-touch _meta.json until the drift lands, spacing writes beyond the
       // 500ms debounce so each re-touch actually fires a tick. fs.watch can

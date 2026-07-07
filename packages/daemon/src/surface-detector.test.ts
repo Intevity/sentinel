@@ -24,7 +24,9 @@ function makeStubServer(): {
 }
 
 const surfaceMsgs = (b: DaemonToAppMessage[]): SurfaceState[] =>
-  b.filter((m) => m.type === 'surface_state_changed').map((m) => (m as { state: SurfaceState }).state);
+  b
+    .filter((m) => m.type === 'surface_state_changed')
+    .map((m) => (m as { state: SurfaceState }).state);
 
 describe('resolveDesktopInstallMarkers (pure, cross-platform)', () => {
   const home = '/home/u';
@@ -34,7 +36,11 @@ describe('resolveDesktopInstallMarkers (pure, cross-platform)', () => {
     expect(m).toContain('/home/u/Library/Application Support/Claude');
   });
   it('Windows uses APPDATA + LOCALAPPDATA Programs', () => {
-    const m = resolveDesktopInstallMarkers('win32', { APPDATA: 'C:\\A', LOCALAPPDATA: 'C:\\L' }, home);
+    const m = resolveDesktopInstallMarkers(
+      'win32',
+      { APPDATA: 'C:\\A', LOCALAPPDATA: 'C:\\L' },
+      home,
+    );
     expect(m).toHaveLength(2);
     expect(m[0]).toContain('Claude');
     expect(m.some((p) => p.includes('Programs'))).toBe(true);
@@ -43,7 +49,9 @@ describe('resolveDesktopInstallMarkers (pure, cross-platform)', () => {
     expect(resolveDesktopInstallMarkers('win32', {}, home)).toEqual([]);
   });
   it('Linux uses XDG or ~/.config', () => {
-    expect(resolveDesktopInstallMarkers('linux', { XDG_CONFIG_HOME: '/cfg' }, home)).toContain('/cfg/Claude');
+    expect(resolveDesktopInstallMarkers('linux', { XDG_CONFIG_HOME: '/cfg' }, home)).toContain(
+      '/cfg/Claude',
+    );
     expect(resolveDesktopInstallMarkers('linux', {}, home)).toContain('/home/u/.config/Claude');
   });
 });

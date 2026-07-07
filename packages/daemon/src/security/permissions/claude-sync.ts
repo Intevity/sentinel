@@ -20,7 +20,15 @@
  *     file dropped them) but leaves `source='local'` untouched.
  */
 
-import { promises as fs, readFileSync, writeFileSync, renameSync, mkdirSync, type FSWatcher, watch } from 'fs';
+import {
+  promises as fs,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  mkdirSync,
+  type FSWatcher,
+  watch,
+} from 'fs';
 import { homedir } from 'os';
 import { join, dirname, basename } from 'path';
 import { createHash, randomBytes } from 'crypto';

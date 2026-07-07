@@ -117,7 +117,11 @@ import {
   parseOtlpHeaders,
   pickAuthHeader,
 } from './otel-settings-drift.js';
-import { isUrlSafeForForwarder, SENTINEL_BASE_URL, isSentinelEndpoint } from './claude-otel-config.js';
+import {
+  isUrlSafeForForwarder,
+  SENTINEL_BASE_URL,
+  isSentinelEndpoint,
+} from './claude-otel-config.js';
 import {
   inspectDesktopConfig,
   activateDesktop,
@@ -1511,7 +1515,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
       case 'get_claude_desktop_drift_state': {
         void inspectDesktopConfig()
           .then((details) =>
-            respond({ requestType: 'get_claude_desktop_drift_state', success: true, data: details }),
+            respond({
+              requestType: 'get_claude_desktop_drift_state',
+              success: true,
+              data: details,
+            }),
           )
           .catch((err: unknown) =>
             respond({

@@ -96,7 +96,10 @@ export function resolveDesktopUserDataBase(
 export function desktopConfigLibraryDir(): string {
   const override = process.env.SENTINEL_TEST_CLAUDE_DESKTOP_DIR;
   if (override) return override;
-  return join(resolveDesktopUserDataBase(process.platform, process.env, homedir()), 'configLibrary');
+  return join(
+    resolveDesktopUserDataBase(process.platform, process.env, homedir()),
+    'configLibrary',
+  );
 }
 
 const metaPath = (): string => join(desktopConfigLibraryDir(), '_meta.json');
@@ -149,15 +152,19 @@ export function classifyDesktopConfig(
   if (!appliedId || !applied) {
     return { state: 'inactive', appliedId, appliedBaseUrl: null, appliedProvider: null };
   }
-  const provider =
-    typeof applied.inferenceProvider === 'string' ? applied.inferenceProvider : null;
+  const provider = typeof applied.inferenceProvider === 'string' ? applied.inferenceProvider : null;
   const baseUrl =
     typeof applied.inferenceGatewayBaseUrl === 'string' ? applied.inferenceGatewayBaseUrl : null;
   if (provider === 'gateway' && isSentinelEndpoint(baseUrl)) {
     return { state: 'active', appliedId, appliedBaseUrl: baseUrl, appliedProvider: provider };
   }
   if (provider === 'gateway' && baseUrl) {
-    return { state: 'foreign-gateway', appliedId, appliedBaseUrl: baseUrl, appliedProvider: provider };
+    return {
+      state: 'foreign-gateway',
+      appliedId,
+      appliedBaseUrl: baseUrl,
+      appliedProvider: provider,
+    };
   }
   return { state: 'inactive', appliedId, appliedBaseUrl: baseUrl, appliedProvider: provider };
 }
@@ -233,9 +240,7 @@ export async function activateDesktop(existingId: string | null): Promise<Activa
  *  other 3p config. If `appliedId` pointed at us it is repointed to a
  *  remaining entry or cleared — never left dangling (the app's own resolver
  *  requires `appliedId` to be a valid id present in `entries`, or empty). */
-export async function deactivateDesktop(
-  ourId: string | null,
-): Promise<ClaudeDesktopDriftDetails> {
+export async function deactivateDesktop(ourId: string | null): Promise<ClaudeDesktopDriftDetails> {
   const meta = await readJson<DesktopMeta>(metaPath());
   if (!meta) {
     return { state: 'not-installed', appliedId: null, appliedBaseUrl: null, appliedProvider: null };

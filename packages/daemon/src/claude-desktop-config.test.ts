@@ -23,15 +23,19 @@ describe('resolveDesktopUserDataBase (cross-platform, pure)', () => {
     );
   });
   it('Windows → %LOCALAPPDATA%\\Claude-3p when set', () => {
-    expect(resolveDesktopUserDataBase('win32', { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }, home)).toBe(
-      join('C:\\Users\\u\\AppData\\Local', 'Claude-3p'),
-    );
+    expect(
+      resolveDesktopUserDataBase('win32', { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }, home),
+    ).toBe(join('C:\\Users\\u\\AppData\\Local', 'Claude-3p'));
   });
   it('Windows → AppData/Local fallback when LOCALAPPDATA unset', () => {
-    expect(resolveDesktopUserDataBase('win32', {}, home)).toBe(join(home, 'AppData', 'Local', 'Claude-3p'));
+    expect(resolveDesktopUserDataBase('win32', {}, home)).toBe(
+      join(home, 'AppData', 'Local', 'Claude-3p'),
+    );
   });
   it('Linux → $XDG_CONFIG_HOME/Claude-3p when set', () => {
-    expect(resolveDesktopUserDataBase('linux', { XDG_CONFIG_HOME: '/cfg' }, home)).toBe('/cfg/Claude-3p');
+    expect(resolveDesktopUserDataBase('linux', { XDG_CONFIG_HOME: '/cfg' }, home)).toBe(
+      '/cfg/Claude-3p',
+    );
   });
   it('Linux → ~/.config/Claude-3p when XDG unset', () => {
     expect(resolveDesktopUserDataBase('linux', {}, home)).toBe('/home/u/.config/Claude-3p');
@@ -57,7 +61,10 @@ describe('classifyDesktopConfig (pure)', () => {
     expect(d.appliedId).toBe('abc');
   });
   it('gateway pointing at Sentinel → active', () => {
-    const d = classifyDesktopConfig({ appliedId: 'a', entries: [{ id: 'a' }] }, gw(SENTINEL_BASE_URL));
+    const d = classifyDesktopConfig(
+      { appliedId: 'a', entries: [{ id: 'a' }] },
+      gw(SENTINEL_BASE_URL),
+    );
     expect(d.state).toBe('active');
     expect(d.appliedBaseUrl).toBe(SENTINEL_BASE_URL);
     expect(d.appliedProvider).toBe('gateway');
@@ -71,19 +78,30 @@ describe('classifyDesktopConfig (pure)', () => {
     expect(d.appliedBaseUrl).toBe('https://other-gateway.example.com');
   });
   it('non-gateway provider → inactive', () => {
-    const d = classifyDesktopConfig({ appliedId: 'a', entries: [{ id: 'a' }] }, gw(SENTINEL_BASE_URL, 'anthropic'));
+    const d = classifyDesktopConfig(
+      { appliedId: 'a', entries: [{ id: 'a' }] },
+      gw(SENTINEL_BASE_URL, 'anthropic'),
+    );
     expect(d.state).toBe('inactive');
     expect(d.appliedProvider).toBe('anthropic');
   });
   it('recognizes the older localhost endpoint form as Sentinel', () => {
-    const d = classifyDesktopConfig({ appliedId: 'a', entries: [{ id: 'a' }] }, gw('http://localhost:47284'));
+    const d = classifyDesktopConfig(
+      { appliedId: 'a', entries: [{ id: 'a' }] },
+      gw('http://localhost:47284'),
+    );
     expect(d.state).toBe('active');
   });
 });
 
 describe('canonHashDesktopDrift', () => {
   it('is stable and differs on state change', () => {
-    const a = { state: 'active' as const, appliedId: 'x', appliedBaseUrl: SENTINEL_BASE_URL, appliedProvider: 'gateway' };
+    const a = {
+      state: 'active' as const,
+      appliedId: 'x',
+      appliedBaseUrl: SENTINEL_BASE_URL,
+      appliedProvider: 'gateway',
+    };
     const b = { ...a, state: 'inactive' as const };
     expect(canonHashDesktopDrift(a)).toBe(canonHashDesktopDrift({ ...a }));
     expect(canonHashDesktopDrift(a)).not.toBe(canonHashDesktopDrift(b));
@@ -147,7 +165,10 @@ describe('activate / deactivate / inspect (real files)', () => {
     mkdirSync(libDir, { recursive: true });
     writeFileSync(
       join(libDir, 'foreign.json'),
-      JSON.stringify({ inferenceProvider: 'gateway', inferenceGatewayBaseUrl: 'https://corp.example' }),
+      JSON.stringify({
+        inferenceProvider: 'gateway',
+        inferenceGatewayBaseUrl: 'https://corp.example',
+      }),
     );
     writeFileSync(
       join(libDir, '_meta.json'),
@@ -164,7 +185,10 @@ describe('activate / deactivate / inspect (real files)', () => {
     mkdirSync(libDir, { recursive: true });
     writeFileSync(
       join(libDir, '_meta.json'),
-      JSON.stringify({ appliedId: '', entries: [{ id: 'legacy-sentinel-id', name: SENTINEL_DESKTOP_ENTRY_NAME }] }),
+      JSON.stringify({
+        appliedId: '',
+        entries: [{ id: 'legacy-sentinel-id', name: SENTINEL_DESKTOP_ENTRY_NAME }],
+      }),
     );
     const { configId } = await activateDesktop(null);
     expect(configId).toBe('legacy-sentinel-id');

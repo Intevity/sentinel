@@ -146,7 +146,10 @@ describe('rate-limit sweeper end-to-end recovery', () => {
   });
 
   it('rolls over a stale weekly window, persists it, and releases its pause', () => {
-    dbPath = join(tmpdir(), `sentinel-sweeper-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    dbPath = join(
+      tmpdir(),
+      `sentinel-sweeper-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+    );
     const db = getDb(dbPath);
     upsertAccount(db, {
       id: 'acc-1',
@@ -208,7 +211,11 @@ describe('rate-limit sweeper end-to-end recovery', () => {
     expect(weekly?.status).toBe('allowed');
     expect(weekly?.reset).toBeNull();
     // Persisted, so a restart won't resurrect the stale numbers.
-    expect(loadRateLimits(db).get('acc-1')?.find((w) => w.name === 'unified-7d')?.reset).toBeNull();
+    expect(
+      loadRateLimits(db)
+        .get('acc-1')
+        ?.find((w) => w.name === 'unified-7d')?.reset,
+    ).toBeNull();
     // The stale weekly pause is released, with both broadcasts fired.
     expect(tracker.getPauseReason('acc-1')).toBeNull();
     expect(ipc.broadcasts).toContainEqual({ type: 'rate_limits_updated', accountId: 'acc-1' });

@@ -169,7 +169,10 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
     );
     writeFileSync(
       join(desktopConfigDir, '_meta.json'),
-      JSON.stringify({ appliedId: desktopSeedId, entries: [{ id: desktopSeedId, name: 'Sentinel' }] }),
+      JSON.stringify({
+        appliedId: desktopSeedId,
+        entries: [{ id: desktopSeedId, name: 'Sentinel' }],
+      }),
     );
   }
   const keychainPath = join(workdir, 'keychain.json');

@@ -7,11 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 import { SENTINEL_BASE_URL } from './claude-otel-config.js';
-import type {
-  SurfaceState,
-  ClaudeDesktopDriftDetails,
-  Settings,
-} from '@sentinel/shared';
+import type { SurfaceState, ClaudeDesktopDriftDetails, Settings } from '@sentinel/shared';
 
 describe('desktop surface IPC', () => {
   let ctx: TestDaemon;
