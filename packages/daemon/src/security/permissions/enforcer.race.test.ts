@@ -66,6 +66,7 @@ function defaultSettings(over: Partial<Settings> = {}): Settings {
     securityMuteScanSkipped: false,
     lastScanBenchmark: null,
     claudeCodeSyncEnabled: false,
+    claudeDesktopConfigId: null,
     isolationPolicy: {
       enabled: false,
       syncToClaudeCode: false,

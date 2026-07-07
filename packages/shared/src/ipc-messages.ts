@@ -29,6 +29,8 @@ import type {
   OtelForwarderStatus,
   OtelExporterTestResult,
   OtelDriftDetails,
+  ClaudeDesktopDriftDetails,
+  SurfaceState,
   CaptureHealth,
   CaptureHealthState,
   McpInstallScope,
@@ -185,6 +187,26 @@ export interface OtelForwarderStatusBroadcastMessage {
 export interface OtelDriftStateMessage {
   type: 'otel_drift_state';
   details: OtelDriftDetails;
+}
+
+/** Broadcast when the daemon's watcher on the Claude **Desktop** app's
+ *  `Claude-3p/configLibrary` detects a change in the applied gateway config
+ *  (post-debounce, after echo suppression of our own writes). UI replaces
+ *  the cached `ClaudeDesktopDriftDetails` and re-renders the desktop drift
+ *  banner. Desktop analog of `otel_drift_state`. */
+export interface ClaudeDesktopDriftStateMessage {
+  type: 'claude_desktop_drift_state';
+  details: ClaudeDesktopDriftDetails;
+}
+
+/** Broadcast when the presence or routing status of a Claude surface (CLI
+ *  or Desktop) changes — e.g. the user installs the Desktop app after the
+ *  CLI, activates/deactivates routing, or live desktop traffic first
+ *  appears. Fires only on real transitions. Drives the per-surface status
+ *  cards. */
+export interface SurfaceStateChangedMessage {
+  type: 'surface_state_changed';
+  state: SurfaceState;
 }
 
 /** Broadcast when the proxy-ingestion health that feeds the Optimize tab
@@ -587,6 +609,8 @@ export type DaemonToAppMessage =
   | AuditLogTamperedMessage
   | OtelForwarderStatusBroadcastMessage
   | OtelDriftStateMessage
+  | ClaudeDesktopDriftStateMessage
+  | SurfaceStateChangedMessage
   | CaptureHealthChangedMessage;
 
 // ─── App → Daemon messages ────────────────────────────────────────────────────
@@ -2003,6 +2027,44 @@ export interface PromoteForeignOtelEndpointMessage {
   chosenHeaderName?: string;
 }
 
+/** Report presence + routing status of the Claude CLI and Desktop surfaces.
+ *  Response payload is `SurfaceState`. */
+export interface GetSurfaceStateMessage {
+  type: 'get_surface_state';
+}
+
+/** Inspect the Claude Desktop app's applied gateway config and report
+ *  whether it routes through Sentinel. Response payload is
+ *  `ClaudeDesktopDriftDetails`. */
+export interface GetClaudeDesktopDriftStateMessage {
+  type: 'get_claude_desktop_drift_state';
+}
+
+/** Write (or update) Sentinel's gateway config into the Claude Desktop
+ *  app's `configLibrary` and set it as the applied config, so the desktop
+ *  app routes Chat/Code inference through the Sentinel proxy. Preserves any
+ *  other 3p configs the user created. Response payload is the resulting
+ *  `ClaudeDesktopDriftDetails`. */
+export interface ActivateDesktopMessage {
+  type: 'activate_desktop';
+}
+
+/** Remove Sentinel's gateway config from the Claude Desktop app's
+ *  `configLibrary` (and clear the applied id if it pointed at us),
+ *  preserving any other 3p configs, so the desktop app returns to its
+ *  first-party login. Response payload is `ClaudeDesktopDriftDetails`. */
+export interface DeactivateDesktopMessage {
+  type: 'deactivate_desktop';
+}
+
+/** Re-apply Sentinel's gateway config after drift (a foreign edit or the
+ *  app resetting the applied config). Same effect as activate; used by the
+ *  desktop drift banner's one-click recovery. Response payload is
+ *  `ClaudeDesktopDriftDetails`. */
+export interface ReapplyDesktopConfigMessage {
+  type: 'reapply_desktop_config';
+}
+
 export type AppToDaemonMessage =
   | GetAccountsMessage
   | GetCredentialsMessage
@@ -2103,6 +2165,11 @@ export type AppToDaemonMessage =
   | GetCaptureHealthMessage
   | RepatchOtelSettingsMessage
   | PromoteForeignOtelEndpointMessage
+  | GetSurfaceStateMessage
+  | GetClaudeDesktopDriftStateMessage
+  | ActivateDesktopMessage
+  | DeactivateDesktopMessage
+  | ReapplyDesktopConfigMessage
   | GetProxyActivityMessage;
 
 /** Response payload alias re-exports for convenience in consumers. */
@@ -2130,6 +2197,8 @@ export type {
   OtelForwarderStatus,
   OtelExporterTestResult,
   OtelDriftDetails,
+  ClaudeDesktopDriftDetails,
+  SurfaceState,
   CaptureHealth,
   CaptureHealthState,
 };

@@ -105,6 +105,7 @@ export const DEFAULT_SETTINGS: Settings = {
   securityMuteScanSkipped: false,
   lastScanBenchmark: null,
   claudeCodeSyncEnabled: false,
+  claudeDesktopConfigId: null,
   isolationPolicy: {
     enabled: false,
     syncToClaudeCode: false,
@@ -671,6 +672,12 @@ function coerce(raw: unknown): Settings {
   }
   if (typeof obj['claudeCodeSyncEnabled'] === 'boolean') {
     next.claudeCodeSyncEnabled = obj['claudeCodeSyncEnabled'];
+  }
+  if (obj['claudeDesktopConfigId'] === null) {
+    next.claudeDesktopConfigId = null;
+  } else if (typeof obj['claudeDesktopConfigId'] === 'string') {
+    const trimmed = (obj['claudeDesktopConfigId'] as string).trim();
+    next.claudeDesktopConfigId = trimmed.length > 0 ? trimmed : null;
   }
   next.isolationPolicy = coerceIsolationPolicy(obj['isolationPolicy']);
   if (typeof obj['securityIncidentReplay'] === 'boolean') {

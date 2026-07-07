@@ -112,6 +112,7 @@ function benchSettings(): Settings {
     securityMuteScanSkipped: true,
     lastScanBenchmark: null,
     claudeCodeSyncEnabled: false,
+    claudeDesktopConfigId: null,
     isolationPolicy: {
       enabled: false,
       syncToClaudeCode: false,

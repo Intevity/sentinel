@@ -113,7 +113,19 @@ import {
   parseOtlpHeaders,
   pickAuthHeader,
 } from './otel-settings-drift.js';
-import { isUrlSafeForForwarder, SENTINEL_BASE_URL } from './claude-otel-config.js';
+import { isUrlSafeForForwarder, SENTINEL_BASE_URL, isSentinelEndpoint } from './claude-otel-config.js';
+import {
+  inspectDesktopConfig,
+  activateDesktop,
+  deactivateDesktop,
+} from './claude-desktop-config.js';
+import { createClaudeDesktopConfigWatcher } from './claude-desktop-config-watcher.js';
+import {
+  createSurfaceDetector,
+  createDesktopHealthTracker,
+  isCliInstalled,
+  isDesktopInstalled,
+} from './surface-detector.js';
 import {
   CaptureHealthTracker,
   composeCaptureHealth,
@@ -1446,6 +1458,87 @@ export async function startDaemon(): Promise<DaemonHandle> {
               requestType: 'promote_foreign_otel_endpoint',
               success: false,
               error: message,
+            });
+          }
+        })();
+        break;
+      }
+
+      case 'get_surface_state': {
+        void (async () => {
+          try {
+            const state = surfaceDetector.getCurrent() ?? (await surfaceDetector.refresh());
+            respond({ requestType: 'get_surface_state', success: true, data: state });
+          } catch (err) {
+            respond({
+              requestType: 'get_surface_state',
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        })();
+        break;
+      }
+
+      case 'get_claude_desktop_drift_state': {
+        void inspectDesktopConfig()
+          .then((details) =>
+            respond({ requestType: 'get_claude_desktop_drift_state', success: true, data: details }),
+          )
+          .catch((err: unknown) =>
+            respond({
+              requestType: 'get_claude_desktop_drift_state',
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        break;
+      }
+
+      // activate + re-apply share a body: write Sentinel's gateway config,
+      // persist the id we own, and publish the new drift state. Re-apply is the
+      // drift-banner's recovery; both are idempotent.
+      case 'activate_desktop':
+      case 'reapply_desktop_config': {
+        const requestType = msg.type;
+        void (async () => {
+          try {
+            const { details, configId } = await activateDesktop(
+              currentSettings.claudeDesktopConfigId,
+            );
+            currentSettings = writeSettings({ claudeDesktopConfigId: configId });
+            ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+            desktopConfigWatcher.markWritten(details);
+            ipcServer.broadcast({ type: 'claude_desktop_drift_state', details });
+            await ensureDesktopWatcher();
+            await surfaceDetector.refresh();
+            respond({ requestType, success: true, data: details });
+          } catch (err) {
+            respond({
+              requestType,
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        })();
+        break;
+      }
+
+      case 'deactivate_desktop': {
+        void (async () => {
+          try {
+            const details = await deactivateDesktop(currentSettings.claudeDesktopConfigId);
+            currentSettings = writeSettings({ claudeDesktopConfigId: null });
+            ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+            desktopConfigWatcher.markWritten(details);
+            ipcServer.broadcast({ type: 'claude_desktop_drift_state', details });
+            await surfaceDetector.refresh();
+            respond({ requestType: 'deactivate_desktop', success: true, data: details });
+          } catch (err) {
+            respond({
+              requestType: 'deactivate_desktop',
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
             });
           }
         })();
@@ -3732,6 +3825,38 @@ export async function startDaemon(): Promise<DaemonHandle> {
     getSentinelExporterEndpoint: () => currentSettings.otelExporterEndpoint,
   });
 
+  // ─── Claude Desktop app surface ───────────────────────────────────────
+  // The desktop app routes through Sentinel via its own `Claude-3p/
+  // configLibrary` (NOT ~/.claude/settings.json). The health tracker records
+  // live desktop `/v1/messages` traffic (UA marker `claude-desktop-3p`); the
+  // config watcher surfaces drift + re-apply; the surface detector polls which
+  // surfaces (CLI + Desktop) are installed/activated and broadcasts on change.
+  const desktopHealthTracker = createDesktopHealthTracker();
+  const desktopConfigWatcher = createClaudeDesktopConfigWatcher({ ipcServer });
+  // Idempotent; only started once the desktop app is installed AND Sentinel is
+  // managing a config, so it never `mkdir`s a configLibrary the app doesn't own.
+  const ensureDesktopWatcher = async (): Promise<void> => {
+    try {
+      await desktopConfigWatcher.start();
+    } catch (err) {
+      console.error('[DesktopDrift] start failed:', err);
+    }
+  };
+  const surfaceDetector = createSurfaceDetector({
+    ipcServer,
+    probeCliInstalled: () => isCliInstalled(),
+    probeCliActivated: async () => {
+      const drift = await inspectClaudeOtelConfig(
+        claudeSettingsPath,
+        currentSettings.otelExporterEndpoint,
+      );
+      return isSentinelEndpoint(drift.actual.baseUrl);
+    },
+    probeDesktopInstalled: () => isDesktopInstalled(),
+    probeDesktopActivated: async () => (await inspectDesktopConfig()).state === 'active',
+    probeDesktopHealthy: () => desktopHealthTracker.isHealthy(),
+  });
+
   // Sandbox feature, Leg A: sync the canonical isolation policy into Claude
   // Code's own native sandbox at `settings.json#/sandbox` (same file as the
   // OTEL watcher above). Started when `isolationPolicy.syncToClaudeCode` is on;
@@ -3946,6 +4071,18 @@ export async function startDaemon(): Promise<DaemonHandle> {
     console.error('[OtelDrift] initial start failed:', err);
   });
 
+  // Surface detector (ungated) — polls CLI + Desktop presence/activation and
+  // broadcasts `surface_state_changed` on transitions, so the UI reacts when
+  // the user installs the *other* surface later. The desktop config watcher
+  // starts only when the desktop app is installed AND Sentinel already manages
+  // a config (avoids creating a configLibrary the app doesn't own).
+  void surfaceDetector.start().catch((err: unknown) => {
+    console.error('[SurfaceDetector] initial start failed:', err);
+  });
+  if (isDesktopInstalled() && currentSettings.claudeDesktopConfigId) {
+    void ensureDesktopWatcher();
+  }
+
   // Sprint 2: surface settings-file tamper to the UI as soon as a client
   // connects. Defer the broadcast to the next tick so the IPC `clients`
   // set has had a chance to populate.
@@ -4045,6 +4182,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
       // like the sibling proxy callbacks above.
       /* v8 ignore next 1 */
       onRealMessagesRequest: () => captureHealthTracker.recordRealProxyRequest(),
+      // Desktop live-traffic health. Same live-proxy-only reachability as the
+      // sibling callback above, so it rides an ignore block for the same reason.
+      /* v8 ignore next 1 */
+      onDesktopRequest: () => desktopHealthTracker.record(),
       // Sprint 9 health probe. Each component check is sub-millisecond
       // and runs inline on `/health` requests + on the fail-mode gate.
       // SELECT 1 catches a closed/locked DB; the scanner/enforcer truthy
@@ -4294,6 +4435,8 @@ export async function startDaemon(): Promise<DaemonHandle> {
     optimizationAnalyzer.stop();
     agentsSyncEngine.stop();
     otelSettingsWatcher.stop();
+    surfaceDetector.stop();
+    desktopConfigWatcher.stop();
     // Stop the sandbox engines so their watchers/timers don't outlive the
     // daemon (a leaked watcher's setPolicy would otherwise write through the
     // current settings file after shutdown).

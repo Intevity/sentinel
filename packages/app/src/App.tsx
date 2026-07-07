@@ -29,6 +29,7 @@ import MetricsDashboard from './components/MetricsDashboard.js';
 import OptimizeDashboard from './components/OptimizeDashboard.js';
 import AlertsEditor from './components/AlertsEditor.js';
 import ActivationBanner from './components/ActivationBanner.js';
+import DesktopSurfaceCard from './components/DesktopSurfaceCard.js';
 import HeaderMenu from './components/HeaderMenu.js';
 import PersistenceBanner from './components/PersistenceBanner.js';
 import SettingsPanel from './components/SettingsPanel.js';
@@ -478,6 +479,9 @@ export default function App(): React.ReactElement {
 
             {/* ── Activation banner (patches ~/.claude/settings.json) ─ */}
             <ActivationBanner />
+
+            {/* ── Claude Desktop app surface (writes Claude-3p configLibrary) ─ */}
+            <DesktopSurfaceCard />
 
             {/* ── One-time persistence explanation ─────────────────── */}
             <PersistenceBanner />

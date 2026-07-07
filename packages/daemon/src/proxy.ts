@@ -235,6 +235,12 @@ interface ProxyOptions {
    *  ingestion path) versus bypassing it via an overridden ANTHROPIC_BASE_URL.
    *  Fire-and-forget; never mutates the request. */
   onRealMessagesRequest?: () => void;
+  /** Invoked once per real (non-probe) POST /v1/messages whose client is the
+   *  Claude **Desktop** app — its user-agent carries the `claude-desktop-3p`
+   *  marker. Wired in index.ts to the desktop-health tracker so the surface
+   *  status card can show whether desktop traffic is live. Fire-and-forget;
+   *  never mutates the request. */
+  onDesktopRequest?: () => void;
   /** Sprint 9 health probe. Returns the per-component status of the
    *  daemon's critical subsystems (DB, scanner, enforcer). Used by
    *  `/health` to respond 503 when any component is degraded and by
@@ -429,6 +435,7 @@ export function createProxyServer(
     onUpstreamAuthFailure,
     onToolCallsFlushed,
     onRealMessagesRequest,
+    onDesktopRequest,
   } = opts;
   const getPausedAccountIds = opts.getPausedAccountIds ?? (() => new Set<string>());
   const getPauseReason = opts.getPauseReason ?? (() => null);
@@ -559,9 +566,16 @@ export function createProxyServer(
     // still proves traffic is routing through Sentinel (the bypass we detect
     // is traffic NOT reaching the proxy at all). Probes and count_tokens are
     // excluded so they can't mask a true bypass, matching `isMessagesPost`.
-    const isProbeRequest = String(req.headers['user-agent'] ?? '').includes('sentinel-probe');
+    const userAgent = String(req.headers['user-agent'] ?? '');
+    const isProbeRequest = userAgent.includes('sentinel-probe');
     const isCountTokens = req.url?.includes('count_tokens') ?? false;
-    if (!isProbeRequest && !isCountTokens) onRealMessagesRequest?.();
+    if (!isProbeRequest && !isCountTokens) {
+      onRealMessagesRequest?.();
+      // The Claude Desktop app tags its requests with `claude-desktop-3p` in
+      // the UA (distinct from the terminal CLI's `(external, cli)`), so the
+      // desktop-health tracker can tell desktop traffic apart from CLI.
+      if (userAgent.includes('claude-desktop-3p')) onDesktopRequest?.();
+    }
 
     const body = await readBody(req);
     const model = extractRequestModel(body);
