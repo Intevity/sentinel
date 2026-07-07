@@ -28,7 +28,8 @@ three levels — **Conservative**, **Moderate**, or **Aggressive**.
 <Aside type="note" title="Nothing is lost in reversible mode">
   In reversible mode, Sentinel stores the original payload and leaves a marker. Claude can pull the
   full content back on demand with the `mcp__sentinel__retrieve` tool — so compression never costs
-  you information, only context budget.
+  you information, only context budget. Sentinel auto-allows this tool in `~/.claude/settings.json`,
+  so Claude Code never prompts for it — including inside subagents.
 </Aside>
 
 ![The compression panel showing trimmed payloads](/sentinel/screenshots/compression-panel.png)

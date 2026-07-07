@@ -45,9 +45,10 @@ missing, click **Activate Sentinel** in the app, then restart Claude Code.
 
 The desktop app reads its own gateway config, not `~/.claude/settings.json`. Click **Enable** on the
 **Claude Desktop** card in Sentinel, then **fully quit and reopen** the desktop app (a reopen from
-the dock won't reload the config). If the card doesn't appear, the app wasn't detected yet — give the
-detector a few seconds. Confirm traffic with `tail -f ~/.sentinel/daemon.log`. Note that **Cowork**
-runs in a separate VM and may not route through the host gateway.
+the dock won't reload the config). If the card doesn't appear, either the app wasn't detected yet —
+give the detector a few seconds — or routing is already active (the card hides once enabled; check or
+toggle it from **Settings → General**). Confirm traffic with `tail -f ~/.sentinel/daemon.log`. Note
+that **Cowork** runs in a separate VM and may not route through the host gateway.
 
 ## "Continue with Google" doesn't work in the Connect claude.ai window
 

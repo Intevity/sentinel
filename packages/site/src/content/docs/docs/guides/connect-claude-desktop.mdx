@@ -24,7 +24,9 @@ per-user gateway config that Sentinel writes for you — **no MDM or admin setup
 
 2. Click **Enable** on that card. Sentinel writes a gateway config pointing the desktop app at the
    proxy on `http://127.0.0.1:47284`. Your real account token is injected per-request by the proxy,
-   so the desktop app inherits account pooling and rotation.
+   so the desktop app inherits account pooling and rotation. Once routing is active the card
+   disappears — there's nothing left to confirm. The on/off control then lives in
+   **Settings → General**.
 
 3. **Fully quit and reopen Claude Desktop** (⌘Q / tray → Quit — a reopen from the dock won't reload
    the config). On next launch it no longer needs a separate login; it routes through Sentinel.
@@ -51,12 +53,13 @@ in-app reset), the card switches to **Claude Desktop routed elsewhere** with a o
 
 ## Disabling
 
-Click **Disable** on the Claude Desktop card. Sentinel removes only its own gateway entry (any other
-third-party inference configs you created are preserved) and the desktop app returns to its
-first-party login the next time it starts.
+Open **Settings → General** and turn off **Route Claude Desktop through Sentinel**. Sentinel removes
+only its own gateway entry (any other third-party inference configs you created are preserved) and
+the desktop app returns to its first-party login the next time it starts.
 
 <Aside type="caution" title="Card not showing?">
-  The card only appears once the desktop app is detected. If you just installed it, give Sentinel a
-  few seconds to poll, or reopen the tray window. See
+  The card only appears when the desktop app is detected **and** routing isn't active yet. If you
+  just installed the app, give Sentinel a few seconds to poll, or reopen the tray window. If routing
+  is already on, the card is gone by design — manage it from **Settings → General**. See
   [Troubleshooting](/sentinel/docs/reference/troubleshooting/).
 </Aside>
