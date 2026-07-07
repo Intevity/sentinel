@@ -102,7 +102,11 @@ import { createPermissionsEnforcer } from './security/permissions/enforcer.js';
 import { attachWebhookToIpc } from './alerting/webhook.js';
 import { createIncidentReplayRecorder } from './security/incident-replay.js';
 import { redactSecretsInString } from './security/detectors.js';
-import { createClaudeSyncEngine } from './security/permissions/claude-sync.js';
+import {
+  createClaudeSyncEngine,
+  ensureClaudeSettingsAllow,
+  removeClaudeSettingsAllow,
+} from './security/permissions/claude-sync.js';
 import { createSandboxSyncEngine } from './security/sandbox/sandbox-sync.js';
 import { createSandboxRuntime } from './security/sandbox/sandbox-runtime.js';
 import { resolvePlatformPaths } from './security/sandbox/platform-paths.js';
@@ -113,7 +117,23 @@ import {
   parseOtlpHeaders,
   pickAuthHeader,
 } from './otel-settings-drift.js';
-import { isUrlSafeForForwarder, SENTINEL_BASE_URL } from './claude-otel-config.js';
+import {
+  isUrlSafeForForwarder,
+  SENTINEL_BASE_URL,
+  isSentinelEndpoint,
+} from './claude-otel-config.js';
+import {
+  inspectDesktopConfig,
+  activateDesktop,
+  deactivateDesktop,
+} from './claude-desktop-config.js';
+import { createClaudeDesktopConfigWatcher } from './claude-desktop-config-watcher.js';
+import {
+  createSurfaceDetector,
+  createDesktopHealthTracker,
+  isCliInstalled,
+  isDesktopInstalled,
+} from './surface-detector.js';
 import {
   CaptureHealthTracker,
   composeCaptureHealth,
@@ -146,6 +166,7 @@ import {
 } from './token-refresher.js';
 import { probeRateLimits } from './rate-limit-probe.js';
 import { startUsageProber, type UsageProberHandle } from './usage-probe.js';
+import { startRateLimitSweeper, type RateLimitSweeperHandle } from './rate-limit-sweeper.js';
 import type {
   OAuthAccount,
   PlanType,
@@ -698,6 +719,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // Assigned after the proxy is listening — update_settings references it
   // via optional-chain so handler registration order doesn't matter.
   let usageProber: UsageProberHandle | null = null;
+  // Internal-timer fallback that rolls over rate-limit windows whose reset has
+  // elapsed, so usage statistics reset even when no requests flow through the
+  // proxy. Started after the rate-limit onUpdate callbacks are registered.
+  let rateLimitSweeper: RateLimitSweeperHandle | null = null;
 
   // Shared settings getter so the rotator, alert evaluators, and other
   // subsystems read the same live in-memory snapshot that `update_settings`
@@ -1009,6 +1034,25 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // it can auto-unpause + re-evaluate accounts that Sentinel paused earlier.
   rateLimitStore.onUpdate((accountId) => {
     spendTracker.handleRateLimitUpdate(accountId);
+  });
+
+  // Start the rate-limit sweeper AFTER the onUpdate callbacks above so its
+  // immediate startup pass routes through DB-persist + overage reload + spend
+  // tracker. A daemon launched after an idle weekend rolls over any windows
+  // whose reset already elapsed right at boot, then keeps them fresh on the
+  // interval — no proxied request required.
+  rateLimitSweeper = startRateLimitSweeper({
+    rateLimitStore,
+    ipcServer,
+    // A rolled-over window reads `reset = null`, which the spend tracker's
+    // reset-delta release paths skip — so re-run the pause evaluators here to
+    // release any weekly-rate-limit pause off the now-`allowed` status. Guarded
+    // like the claude.ai onUpdate above: a recompute after the DB is closed
+    // during shutdown would throw.
+    onWindowsExpired: () => {
+      if (shuttingDown) return;
+      spendTracker.recompute();
+    },
   });
 
   // Spend source of truth is now Anthropic's usage endpoint via
@@ -1446,6 +1490,91 @@ export async function startDaemon(): Promise<DaemonHandle> {
               requestType: 'promote_foreign_otel_endpoint',
               success: false,
               error: message,
+            });
+          }
+        })();
+        break;
+      }
+
+      case 'get_surface_state': {
+        void (async () => {
+          try {
+            const state = surfaceDetector.getCurrent() ?? (await surfaceDetector.refresh());
+            respond({ requestType: 'get_surface_state', success: true, data: state });
+          } catch (err) {
+            respond({
+              requestType: 'get_surface_state',
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        })();
+        break;
+      }
+
+      case 'get_claude_desktop_drift_state': {
+        void inspectDesktopConfig()
+          .then((details) =>
+            respond({
+              requestType: 'get_claude_desktop_drift_state',
+              success: true,
+              data: details,
+            }),
+          )
+          .catch((err: unknown) =>
+            respond({
+              requestType: 'get_claude_desktop_drift_state',
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        break;
+      }
+
+      // activate + re-apply share a body: write Sentinel's gateway config,
+      // persist the id we own, and publish the new drift state. Re-apply is the
+      // drift-banner's recovery; both are idempotent.
+      case 'activate_desktop':
+      case 'reapply_desktop_config': {
+        const requestType = msg.type;
+        void (async () => {
+          try {
+            const { details, configId } = await activateDesktop(
+              currentSettings.claudeDesktopConfigId,
+            );
+            currentSettings = writeSettings({ claudeDesktopConfigId: configId });
+            ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+            desktopConfigWatcher.markWritten(details);
+            ipcServer.broadcast({ type: 'claude_desktop_drift_state', details });
+            await ensureDesktopWatcher();
+            await surfaceDetector.refresh();
+            respond({ requestType, success: true, data: details });
+          } catch (err) {
+            respond({
+              requestType,
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        })();
+        break;
+      }
+
+      case 'deactivate_desktop': {
+        void (async () => {
+          try {
+            const details = await deactivateDesktop(currentSettings.claudeDesktopConfigId);
+            currentSettings = writeSettings({ claudeDesktopConfigId: null });
+            ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+            desktopConfigWatcher.markWritten(details);
+            ipcServer.broadcast({ type: 'claude_desktop_drift_state', details });
+            await surfaceDetector.refresh();
+            respond({ requestType: 'deactivate_desktop', success: true, data: details });
+          } catch (err) {
+            respond({
+              requestType: 'deactivate_desktop',
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
             });
           }
         })();
@@ -3732,6 +3861,38 @@ export async function startDaemon(): Promise<DaemonHandle> {
     getSentinelExporterEndpoint: () => currentSettings.otelExporterEndpoint,
   });
 
+  // ─── Claude Desktop app surface ───────────────────────────────────────
+  // The desktop app routes through Sentinel via its own `Claude-3p/
+  // configLibrary` (NOT ~/.claude/settings.json). The health tracker records
+  // live desktop `/v1/messages` traffic (UA marker `claude-desktop-3p`); the
+  // config watcher surfaces drift + re-apply; the surface detector polls which
+  // surfaces (CLI + Desktop) are installed/activated and broadcasts on change.
+  const desktopHealthTracker = createDesktopHealthTracker();
+  const desktopConfigWatcher = createClaudeDesktopConfigWatcher({ ipcServer });
+  // Idempotent; only started once the desktop app is installed AND Sentinel is
+  // managing a config, so it never `mkdir`s a configLibrary the app doesn't own.
+  const ensureDesktopWatcher = async (): Promise<void> => {
+    try {
+      await desktopConfigWatcher.start();
+    } catch (err) {
+      console.error('[DesktopDrift] start failed:', err);
+    }
+  };
+  const surfaceDetector = createSurfaceDetector({
+    ipcServer,
+    probeCliInstalled: () => isCliInstalled(),
+    probeCliActivated: async () => {
+      const drift = await inspectClaudeOtelConfig(
+        claudeSettingsPath,
+        currentSettings.otelExporterEndpoint,
+      );
+      return isSentinelEndpoint(drift.actual.baseUrl);
+    },
+    probeDesktopInstalled: () => isDesktopInstalled(),
+    probeDesktopActivated: async () => (await inspectDesktopConfig()).state === 'active',
+    probeDesktopHealthy: () => desktopHealthTracker.isHealthy(),
+  });
+
   // Sandbox feature, Leg A: sync the canonical isolation policy into Claude
   // Code's own native sandbox at `settings.json#/sandbox` (same file as the
   // OTEL watcher above). Started when `isolationPolicy.syncToClaudeCode` is on;
@@ -3772,11 +3933,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // Seed durable user-global allow rules for Sentinel's own read-only /
   // loopback-gated tools so Claude Code never prompts for them (in any
   // project, including subagents). Rules live in the DB as source='local' —
-  // never orphan-deleted, always re-asserted by claude-sync's push. Pushed
-  // to ~/.claude/settings.json only when sync is enabled: if the user
-  // explicitly opted out of Sentinel managing their settings.json we honor
-  // that and don't override it (the rule still applies to Sentinel's own
-  // enforcer and activates for Claude Code the moment they enable sync).
+  // never orphan-deleted, always re-asserted by claude-sync's push.
+  //
+  // Reaching ~/.claude/settings.json (the only scope that covers subagents —
+  // a project-local grant does not) depends on sync state:
+  //   - sync ON  → claude-sync's push mirrors the whole DB rule set.
+  //   - sync OFF → push is disabled, so we write JUST these infra entries
+  //     directly via ensureClaudeSettingsAllow, preserving every other key.
+  //     Auto-allowing Sentinel's own plumbing is not "managing the user's
+  //     ruleset" (the thing they opted out of) — without it, subagents prompt
+  //     on every retrieve/code-mode call, which is the bug this fixes.
   const ensureAllowRule = (raw: string): void => {
     const parsed = parsePermissionRule(raw);
     /* v8 ignore next 1 -- raw is a compile-time constant that always parses */
@@ -3794,7 +3960,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
       type: 'permission_rules_changed',
       rules: permissionsEnforcer.listRules(),
     });
-    if (currentSettings.claudeCodeSyncEnabled) void claudeSyncEngine.pushNow();
+    if (currentSettings.claudeCodeSyncEnabled) {
+      void claudeSyncEngine.pushNow();
+    } else {
+      try {
+        ensureClaudeSettingsAllow([parsed.parsed.raw], claudeSettingsPath);
+      } catch (err) {
+        /* v8 ignore next 2 -- settings.json write failure is non-fatal; the DB rule still applies */
+        console.error('[Sentinel] failed to seed infra allow-rule in settings.json:', err);
+      }
+    }
   };
 
   const removeAllowRuleByRaw = (raw: string): void => {
@@ -3806,7 +3981,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
         type: 'permission_rules_changed',
         rules: permissionsEnforcer.listRules(),
       });
-      if (currentSettings.claudeCodeSyncEnabled) void claudeSyncEngine.pushNow();
+      if (currentSettings.claudeCodeSyncEnabled) {
+        void claudeSyncEngine.pushNow();
+      } else {
+        try {
+          removeClaudeSettingsAllow([raw], claudeSettingsPath);
+        } catch (err) {
+          /* v8 ignore next 2 -- settings.json write failure is non-fatal */
+          console.error('[Sentinel] failed to remove infra allow-rule from settings.json:', err);
+        }
+      }
     }
   };
 
@@ -3946,6 +4130,18 @@ export async function startDaemon(): Promise<DaemonHandle> {
     console.error('[OtelDrift] initial start failed:', err);
   });
 
+  // Surface detector (ungated) — polls CLI + Desktop presence/activation and
+  // broadcasts `surface_state_changed` on transitions, so the UI reacts when
+  // the user installs the *other* surface later. The desktop config watcher
+  // starts only when the desktop app is installed AND Sentinel already manages
+  // a config (avoids creating a configLibrary the app doesn't own).
+  void surfaceDetector.start().catch((err: unknown) => {
+    console.error('[SurfaceDetector] initial start failed:', err);
+  });
+  if (isDesktopInstalled() && currentSettings.claudeDesktopConfigId) {
+    void ensureDesktopWatcher();
+  }
+
   // Sprint 2: surface settings-file tamper to the UI as soon as a client
   // connects. Defer the broadcast to the next tick so the IPC `clients`
   // set has had a chance to populate.
@@ -4045,6 +4241,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
       // like the sibling proxy callbacks above.
       /* v8 ignore next 1 */
       onRealMessagesRequest: () => captureHealthTracker.recordRealProxyRequest(),
+      // Desktop live-traffic health. Same live-proxy-only reachability as the
+      // sibling callback above, so it rides an ignore block for the same reason.
+      /* v8 ignore next 1 */
+      onDesktopRequest: () => desktopHealthTracker.record(),
       // Sprint 9 health probe. Each component check is sub-millisecond
       // and runs inline on `/health` requests + on the fail-mode gate.
       // SELECT 1 catches a closed/locked DB; the scanner/enforcer truthy
@@ -4165,6 +4365,22 @@ export async function startDaemon(): Promise<DaemonHandle> {
     }
   }
 
+  // ─── Infra allow-rule self-heal ─────────────────────────────────────
+  // Re-assert Sentinel's own infra allow-rules on every startup. They were
+  // seeded in the DB when the feature was installed, but an install from a
+  // prior session (or from before this fix) never reached ~/.claude/settings.
+  // json while sync was off — so subagents kept prompting for retrieve /
+  // code-mode. ensureAllowRule is idempotent and, with sync off, writes the
+  // entry straight to settings.json, so this heals existing users with no
+  // action on their part. Runs after the HTTP server is listening so
+  // codeModeCurlRule()'s embedded port is final.
+  if (currentSettings.compressionRetrievalEnabled) {
+    ensureAllowRule(RETRIEVE_QUALIFIED_NAME);
+  }
+  if (currentSettings.codeModeEnabled) {
+    ensureAllowRule(codeModeCurlRule());
+  }
+
   // Keep OAuth tokens fresh in the background. Runs once immediately (catching
   // any account whose token expired overnight) then every 15 minutes.
   const stopTokenRefresher = startTokenRefresher({
@@ -4277,6 +4493,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     console.log('[Sentinel] Shutting down...');
     stopTokenRefresher();
     usageProber?.stop();
+    rateLimitSweeper?.stop();
     // Stop the claude.ai usage poller BEFORE closing the DB so an in-flight
     // tick() cannot land on a freed connection. The tick reads listAccounts
     // from the shared DB handle and subscribers call into SpendTracker.
@@ -4294,6 +4511,8 @@ export async function startDaemon(): Promise<DaemonHandle> {
     optimizationAnalyzer.stop();
     agentsSyncEngine.stop();
     otelSettingsWatcher.stop();
+    surfaceDetector.stop();
+    desktopConfigWatcher.stop();
     // Stop the sandbox engines so their watchers/timers don't outlive the
     // daemon (a leaked watcher's setPolicy would otherwise write through the
     // current settings file after shutdown).

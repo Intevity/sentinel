@@ -1,0 +1,65 @@
+---
+title: Connect Claude Desktop
+description: Route the Claude Desktop app (Chat + Code) through the Sentinel proxy — no MDM required.
+sidebar:
+  order: 2
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Sentinel can route the **Claude Desktop app** through the same local proxy as the terminal CLI, so
+desktop Chat and Code inference share your pooled accounts, usage tracking, and alerts.
+
+The desktop app doesn't read `~/.claude/settings.json` or environment variables. Instead it reads a
+per-user gateway config that Sentinel writes for you — **no MDM or admin setup required**:
+
+- **macOS** `~/Library/Application Support/Claude-3p/configLibrary/`
+- **Windows** `%LOCALAPPDATA%\Claude-3p\configLibrary\`
+- **Linux** `~/.config/Claude-3p/configLibrary/`
+
+<Steps>
+
+1. Install and open the [Claude Desktop app](https://claude.com/download). Sentinel detects it
+   automatically and shows a **Claude Desktop** card.
+
+2. Click **Enable** on that card. Sentinel writes a gateway config pointing the desktop app at the
+   proxy on `http://127.0.0.1:47284`. Your real account token is injected per-request by the proxy,
+   so the desktop app inherits account pooling and rotation. Once routing is active the card
+   disappears — there's nothing left to confirm. The on/off control then lives in
+   **Settings → General**.
+
+3. **Fully quit and reopen Claude Desktop** (⌘Q / tray → Quit — a reopen from the dock won't reload
+   the config). On next launch it no longer needs a separate login; it routes through Sentinel.
+
+4. Confirm traffic is flowing:
+
+   ```sh
+   tail -f ~/.sentinel/daemon.log
+   ```
+
+</Steps>
+
+<Aside type="note" title="What routes through Sentinel">
+  Enabling covers the desktop app's **Chat** and **Code** inference. **Cowork** runs tasks in a
+  separate VM whose network egress may not use the host gateway, so Cowork coverage isn't
+  guaranteed. macOS is verified end-to-end; Windows and Linux use the same mechanism.
+</Aside>
+
+## Drift and re-apply
+
+If the desktop app's applied config is later pointed at a different gateway (a manual change, or an
+in-app reset), the card switches to **Claude Desktop routed elsewhere** with a one-click
+**Re-apply** to restore Sentinel routing.
+
+## Disabling
+
+Open **Settings → General** and turn off **Route Claude Desktop through Sentinel**. Sentinel removes
+only its own gateway entry (any other third-party inference configs you created are preserved) and
+the desktop app returns to its first-party login the next time it starts.
+
+<Aside type="caution" title="Card not showing?">
+  The card only appears when the desktop app is detected **and** routing isn't active yet. If you
+  just installed the app, give Sentinel a few seconds to poll, or reopen the tray window. If routing
+  is already on, the card is gone by design — manage it from **Settings → General**. See
+  [Troubleshooting](/sentinel/docs/reference/troubleshooting/).
+</Aside>

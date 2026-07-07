@@ -9,7 +9,7 @@
  * difference is that this harness starts the entire daemon (not just the
  * proxy) and connects a real IPC client instead of stubbing it.
  */
-import { chmodSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { createServer, type AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -58,6 +58,11 @@ export interface StartTestDaemonOptions {
   /** Access tokens to pre-register with the fake so `/v1/messages` and
    *  `/api/oauth/profile` return 200 instead of 401 for them. */
   registerTokens?: string[];
+  /** When true, pre-seed the Claude Desktop configLibrary with an active
+   *  Sentinel gateway config (and set `settings.claudeDesktopConfigId`) before
+   *  the daemon boots. Exercises the boot-time desktop-drift-watcher start
+   *  path (desktop installed + Sentinel-managed). */
+  seedDesktopActive?: boolean;
 }
 
 export interface TestDaemon {
@@ -129,6 +134,7 @@ const TEST_ENV_KEYS = [
   'SENTINEL_TEST_DAEMON_PORT',
   'SENTINEL_TEST_AGENTS_DIR',
   'SENTINEL_TEST_CLAUDE_SETTINGS_FILE',
+  'SENTINEL_TEST_CLAUDE_DESKTOP_DIR',
   'ANTHROPIC_UPSTREAM_URL',
   'OAUTH_TOKEN_URL',
   'OAUTH_AUTH_URL',
@@ -142,6 +148,33 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   const claudeJsonPath = join(workdir, 'claude.json');
   const settingsPath = join(workdir, 'settings.json');
   const claudeSettingsPath = join(workdir, 'claude-settings.json');
+  const desktopConfigDir = join(workdir, 'claude-3p', 'configLibrary');
+
+  // Optionally pre-seed the Claude Desktop configLibrary with an active
+  // Sentinel gateway config before boot, and thread its id into settings so
+  // the daemon starts the desktop drift watcher at boot.
+  const desktopSeedId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const seedSettings: Partial<Settings> = { ...(opts.settings ?? {}) };
+  if (opts.seedDesktopActive) {
+    seedSettings.claudeDesktopConfigId = desktopSeedId;
+    mkdirSync(desktopConfigDir, { recursive: true });
+    writeFileSync(
+      join(desktopConfigDir, `${desktopSeedId}.json`),
+      JSON.stringify({
+        inferenceProvider: 'gateway',
+        inferenceGatewayBaseUrl: 'http://127.0.0.1:47284',
+        inferenceGatewayApiKey: 'sentinel-local-proxy',
+        inferenceGatewayAuthScheme: 'bearer',
+      }),
+    );
+    writeFileSync(
+      join(desktopConfigDir, '_meta.json'),
+      JSON.stringify({
+        appliedId: desktopSeedId,
+        entries: [{ id: desktopSeedId, name: 'Sentinel' }],
+      }),
+    );
+  }
   const keychainPath = join(workdir, 'keychain.json');
   // Short socket name — macOS caps AF_UNIX paths at ~104 chars, and tmpdir()
   // plus a UUID prefix leave limited room.
@@ -176,7 +209,7 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   // worker-level state would not match the on-disk key for this run.
   const { resetSettingsHmacKeyCache, signSettings } = await import('./settings-integrity.js');
   resetSettingsHmacKeyCache();
-  const settingsBytes = JSON.stringify(opts.settings ?? {}, null, 2);
+  const settingsBytes = JSON.stringify(seedSettings, null, 2);
   writeFileSync(settingsPath, settingsBytes);
   writeFileSync(`${settingsPath}.sig`, signSettings(settingsBytes));
   chmodSync(settingsPath, 0o600);
@@ -212,6 +245,10 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   process.env.SENTINEL_TEST_CODE_MODE_DIR = join(workdir, 'code-mode');
   process.env.SENTINEL_TEST_HOME = workdir;
   process.env.SENTINEL_TEST_CLAUDE_SETTINGS_FILE = claudeSettingsPath;
+  // Desktop configLibrary: redirect to tmp so activate/deactivate never touch
+  // the dev's real Claude Desktop config. Its existence also drives the
+  // surface detector's desktop-installed probe under test.
+  process.env.SENTINEL_TEST_CLAUDE_DESKTOP_DIR = desktopConfigDir;
   process.env.ANTHROPIC_UPSTREAM_URL = fake.origin;
   process.env.OAUTH_TOKEN_URL = fake.tokenUrl;
   process.env.OAUTH_AUTH_URL = fake.authUrl;

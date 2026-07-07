@@ -20,8 +20,23 @@
 import { createHash } from 'crypto';
 import type { GapSubagent } from './gap-to-claude-code.js';
 import { renderClaudeCodeMd, gapFingerprint } from './gap-to-claude-code.js';
+import { RETRIEVE_QUALIFIED_NAME } from './compress/mcp-retrieve-server.js';
 
 const GAP_SCHEMA_VERSION = 1;
+
+/**
+ * Ensure a restricted-tools curated agent can call Sentinel's own reversible-
+ * retrieve tool. Claude Code treats a tool absent from a subagent's `tools:`
+ * allowlist as unavailable, so without this a curated agent whose own tool
+ * output got elided by Sentinel could never retrieve it — reversible elision
+ * would be silently lossy inside the subagent. Inherit-all agents (empty
+ * `tools`) already have it available, so they're left untouched. Returns a new
+ * object; never mutates the source GAP entry (they're shared module singletons).
+ */
+export function withRetrieveTool(gap: GapSubagent): GapSubagent {
+  if (gap.tools.length === 0 || gap.tools.includes(RETRIEVE_QUALIFIED_NAME)) return gap;
+  return { ...gap, tools: [...gap.tools, RETRIEVE_QUALIFIED_NAME] };
+}
 
 const FILE_EXPLORER: GapSubagent = {
   name: 'file-explorer',
@@ -289,7 +304,10 @@ let _cache: readonly CuratedSubagent[] | null = null;
 
 export function getCuratedLibrary(): readonly CuratedSubagent[] {
   if (_cache) return _cache;
-  _cache = LIBRARY.map((gap) => {
+  _cache = LIBRARY.map((raw) => {
+    // Augment restricted-tools agents with the retrieve tool BEFORE rendering
+    // so the .md and the fingerprint both reflect it.
+    const gap = withRetrieveTool(raw);
     const renderedMd = renderClaudeCodeMd(gap);
     return {
       curatedId: gap.name,

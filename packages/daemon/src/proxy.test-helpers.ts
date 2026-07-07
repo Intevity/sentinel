@@ -240,6 +240,10 @@ export interface StartProxyOpts {
    *  ProxyOptions.onRealMessagesRequest so capture-health tests can assert
    *  real traffic is counted but probes / count_tokens are not. */
   onRealMessagesRequest?: () => void;
+  /** Callback fired once per real /v1/messages POST whose UA carries the
+   *  `claude-desktop-3p` marker. Wired into ProxyOptions.onDesktopRequest so
+   *  desktop-health tests can assert desktop traffic is distinguished from CLI. */
+  onDesktopRequest?: () => void;
   /** Dedicated compression stats store. Wired into ProxyOptions.compressionStore
    *  so tests can assert on the compressed upstream body and recorded stats. */
   compressionStore?: CompressionStatsStore;
@@ -368,6 +372,7 @@ export async function startProxyWithFake(opts: StartProxyOpts = {}): Promise<Sta
   if (opts.onUpstreamAuthFailure) proxyOpts.onUpstreamAuthFailure = opts.onUpstreamAuthFailure;
   if (opts.onToolCallsFlushed) proxyOpts.onToolCallsFlushed = opts.onToolCallsFlushed;
   if (opts.onRealMessagesRequest) proxyOpts.onRealMessagesRequest = opts.onRealMessagesRequest;
+  if (opts.onDesktopRequest) proxyOpts.onDesktopRequest = opts.onDesktopRequest;
   if (opts.compressionStore) proxyOpts.compressionStore = opts.compressionStore;
   if (opts.contextCostStore) proxyOpts.contextCostStore = opts.contextCostStore;
   if (opts.mcpHandler) proxyOpts.mcpHandler = opts.mcpHandler;

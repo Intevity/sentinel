@@ -36,22 +36,28 @@ usage metrics; and overage alerts.
 ## What it is
 
 Sentinel sits transparently between [Claude Code](https://claude.com/claude-code) and Anthropic's
-API. Activate it once and every Claude Code request flows through a local daemon that can scan and
+API. Activate it once and every Claude request flows through a local daemon that can scan and
 sandbox it, enforce permission rules, route across the Claude accounts you own, trim wasted tokens,
 and catch overage spend — all on your machine, with **no telemetry** and credentials kept in your
 OS keychain.
 
+It covers both surfaces: the **Claude Code CLI** (terminal) and the **Claude Desktop app** (Chat +
+Code). Sentinel detects whichever you have installed — including the second one you add later — and
+routes each through the proxy with a single click.
+
 ```
-Claude Code  ──→  localhost:47284  ──→  api.anthropic.com
-                  (sentinel daemon)
-                        │
-                        │  Unix socket / named pipe
-                        ▼
-                  Sentinel App (Tauri v2 tray app)
+Claude Code CLI  ─┐
+                  ├─→  127.0.0.1:47284  ──→  api.anthropic.com
+Claude Desktop   ─┘   (sentinel daemon)
+                            │
+                            │  Unix socket / named pipe
+                            ▼
+                      Sentinel App (Tauri v2 tray app)
 ```
 
-- **App** (`packages/app`) — a Tauri v2 tray app that bundles and supervises the daemon and patches
-  `~/.claude/settings.json` on activation.
+- **App** (`packages/app`) — a Tauri v2 tray app that bundles and supervises the daemon, patches
+  `~/.claude/settings.json` for the CLI, and writes the desktop app's `Claude-3p` gateway config on
+  activation.
 - **Daemon** (`packages/daemon`) — a Node.js reverse proxy, OTLP telemetry receiver, MCP server, and
   SQLite store, compiled into a single binary embedded in the app.
 
@@ -79,9 +85,12 @@ with a normal double-click. Full per-OS steps (including Linux system libraries)
 ## Quick start
 
 1. **Install** and **launch** Sentinel — the tray icon appears and the daemon starts automatically.
-2. **Click "Activate Sentinel"** to point Claude Code at the proxy (writes
-   `ANTHROPIC_BASE_URL=http://localhost:47284` into `~/.claude/settings.json`).
-3. **Restart Claude Code** so every session routes through Sentinel.
+2. **Click "Activate Sentinel"** to point the Claude Code CLI at the proxy (writes
+   `ANTHROPIC_BASE_URL=http://127.0.0.1:47284` into `~/.claude/settings.json`), then **restart
+   Claude Code**.
+3. _(If you use the Claude Desktop app)_ Click **Enable** on the **Claude Desktop** card to route it
+   too, then fully quit and reopen the desktop app. See
+   [Connect Claude Desktop](https://intevity.github.io/sentinel/docs/guides/connect-claude-desktop/).
 4. **Add Account** and complete the OAuth flow for each Claude subscription you own.
 5. _(Optional)_ Turn on **Auto** switching in Settings to route across accounts automatically.
 

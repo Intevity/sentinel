@@ -638,6 +638,16 @@ export interface Settings {
    *  merge direction via a modal to avoid data loss. */
   claudeCodeSyncEnabled: boolean;
 
+  /** UUID of the gateway config Sentinel wrote into the Claude **Desktop**
+   *  app's per-user `configLibrary` (`Claude-3p/configLibrary/<id>.json`).
+   *  Records which entry Sentinel owns so activate updates — and deactivate
+   *  removes — exactly that entry, preserving any other 3p configs the user
+   *  created. `null` when the desktop surface has never been activated. The
+   *  desktop app reads this dir instead of `~/.claude/settings.json`, so
+   *  this is the desktop analog of the CLI's `env.ANTHROPIC_BASE_URL`
+   *  activation truth. */
+  claudeDesktopConfigId: string | null;
+
   // ─── OS-level sandbox / isolation ──────────────────────────────────
   /** OS-level isolation policy (Sentinel's sandbox feature). The single
    *  source of truth projected onto both Claude Code's native sandbox
@@ -991,6 +1001,46 @@ export interface OtelDriftDetails {
   canPromote: boolean;
   /** Populated when canPromote is true. Drives the confirmation modal. */
   promotePreview: OtelDriftPromotePreview | null;
+}
+
+/** Drift classification for the Claude **Desktop** app's gateway config
+ *  (`Claude-3p/configLibrary`). Analog of {@link OtelDriftState} for the
+ *  desktop surface:
+ *  - `active` — the applied config is a gateway pointing at Sentinel's proxy.
+ *  - `inactive` — a configLibrary exists but no applied config routes to
+ *    Sentinel (e.g. the user disabled it, or the app reset to first-party).
+ *  - `foreign-gateway` — the applied config is a gateway pointing somewhere
+ *    other than Sentinel (another proxy / LLM gateway).
+ *  - `not-installed` — no desktop configLibrary present. */
+export type ClaudeDesktopDriftState = 'active' | 'inactive' | 'foreign-gateway' | 'not-installed';
+
+/** Snapshot of the Claude Desktop app's applied gateway config + Sentinel's
+ *  interpretation. Broadcast as `claude_desktop_drift_state` and returned
+ *  from the `get_claude_desktop_drift_state` IPC. Mirrors
+ *  {@link OtelDriftDetails} for the desktop surface. */
+export interface ClaudeDesktopDriftDetails {
+  state: ClaudeDesktopDriftState;
+  /** `_meta.json#appliedId` — the id of the config the app currently applies,
+   *  or null when none is applied / no configLibrary exists. */
+  appliedId: string | null;
+  /** `inferenceGatewayBaseUrl` of the applied config (null unless it's a
+   *  gateway config with a base URL). Surfaced so the banner can show where
+   *  desktop traffic is currently pointed. */
+  appliedBaseUrl: string | null;
+  /** `inferenceProvider` of the applied config (e.g. `gateway`, `anthropic`),
+   *  or null when nothing is applied. */
+  appliedProvider: string | null;
+}
+
+/** Presence + routing status of each Claude surface Sentinel can proxy.
+ *  Broadcast as `surface_state_changed` and returned from `get_surface_state`.
+ *  Drives the per-surface status cards. `installed` is detected (does the CLI
+ *  / Desktop app exist on this machine); `activated` is whether it currently
+ *  routes through Sentinel; desktop `healthy` is whether the proxy has seen
+ *  live desktop traffic (UA marker `claude-desktop-3p`) recently. */
+export interface SurfaceState {
+  cli: { installed: boolean; activated: boolean };
+  desktop: { installed: boolean; activated: boolean; healthy: boolean };
 }
 
 /** Health of the proxy ingestion path that feeds the Optimize tab.

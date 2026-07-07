@@ -26,19 +26,25 @@ can add capabilities Claude Code doesn't ship on its own:
 
 ## How it fits with Claude Code
 
-Claude Code reads `ANTHROPIC_BASE_URL` from `~/.claude/settings.json`. When you **activate
-Sentinel**, the app points that variable at the local daemon (`http://localhost:47284`). From then
+The Claude Code CLI reads `ANTHROPIC_BASE_URL` from `~/.claude/settings.json`. When you **activate
+Sentinel**, the app points that variable at the local daemon (`http://127.0.0.1:47284`). From then
 on, every Claude Code request flows through the daemon, which inspects it, optionally rewrites the
 active credential, scans the response, and forwards it to Anthropic unchanged.
 
+The **Claude Desktop app** (Chat + Code) doesn't read that file — it uses its own per-user gateway
+config. Sentinel detects the desktop app and, with one click, writes that config so desktop traffic
+routes through the same daemon. See
+[Connect Claude Desktop](/sentinel/docs/guides/connect-claude-desktop/).
+
 ```
-Claude Code  ──→  localhost:47284  ──→  api.anthropic.com
-                  (sentinel daemon)
-                        │
-                        │  Unix socket / named pipe
-                        ▼
-                  Sentinel App
-                  (Tauri v2 tray app)
+Claude Code CLI  ─┐
+                  ├─→  127.0.0.1:47284  ──→  api.anthropic.com
+Claude Desktop   ─┘   (sentinel daemon)
+                            │
+                            │  Unix socket / named pipe
+                            ▼
+                      Sentinel App
+                      (Tauri v2 tray app)
 ```
 
 ## The two pieces

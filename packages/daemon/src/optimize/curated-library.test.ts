@@ -3,8 +3,11 @@ import {
   getCuratedLibrary,
   getCuratedSubagent,
   curatedLibraryVersion,
+  withRetrieveTool,
   _resetCuratedLibraryCacheForTest,
 } from './curated-library.js';
+import type { GapSubagent } from './gap-to-claude-code.js';
+import { RETRIEVE_QUALIFIED_NAME } from './compress/mcp-retrieve-server.js';
 
 describe('curated library', () => {
   it('ships the curated subagent set with curated_ids stable across releases', () => {
@@ -97,5 +100,50 @@ describe('curated library', () => {
     ]) {
       expect(byId.get(id)?.gap.model).toBe('haiku');
     }
+  });
+
+  it('every restricted-tools agent can call the reversible-retrieve tool', () => {
+    // Reversible elision inserts a retrieve marker into a subagent's own tool
+    // output; Claude Code treats a tool absent from `tools:` as unavailable, so
+    // without this the curated agent could never undo the elision. Every
+    // curated agent has a non-empty tool list, so every one must carry it — and
+    // it must appear in the rendered .md too (the file is the contract).
+    for (const s of getCuratedLibrary()) {
+      expect(s.gap.tools).toContain(RETRIEVE_QUALIFIED_NAME);
+      expect(s.renderedMd).toMatch(new RegExp(`^tools:.*${RETRIEVE_QUALIFIED_NAME}`, 'm'));
+    }
+  });
+});
+
+describe('withRetrieveTool', () => {
+  const base: GapSubagent = {
+    name: 'x',
+    description: 'd',
+    model: 'haiku',
+    tools: ['Read', 'Grep'],
+    soul: 's',
+    gapSchemaVersion: 1,
+  };
+
+  it('appends the retrieve tool to a restricted-tools agent without mutating the source', () => {
+    const out = withRetrieveTool(base);
+    expect(out).not.toBe(base);
+    expect(out.tools).toEqual(['Read', 'Grep', RETRIEVE_QUALIFIED_NAME]);
+    // Source untouched — the LIBRARY entries are shared singletons.
+    expect(base.tools).toEqual(['Read', 'Grep']);
+  });
+
+  it('leaves an inherit-all (empty tools) agent untouched — it already has retrieve available', () => {
+    const inheritAll: GapSubagent = { ...base, tools: [] };
+    const out = withRetrieveTool(inheritAll);
+    expect(out).toBe(inheritAll);
+    expect(out.tools).toEqual([]);
+  });
+
+  it('is idempotent when the agent already lists the retrieve tool', () => {
+    const already: GapSubagent = { ...base, tools: ['Read', RETRIEVE_QUALIFIED_NAME] };
+    const out = withRetrieveTool(already);
+    expect(out).toBe(already);
+    expect(out.tools).toEqual(['Read', RETRIEVE_QUALIFIED_NAME]);
   });
 });

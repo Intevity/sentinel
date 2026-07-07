@@ -24,6 +24,8 @@ import { useScanBenchmark } from '../hooks/useScanBenchmark.js';
 import { useDaemon } from '../hooks/useDaemon.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { useAccounts } from '../hooks/useAccounts.js';
+import { useClaudeDesktopDrift } from '../hooks/useClaudeDesktopDrift.js';
+import { useSurfaceState } from '../hooks/useSurfaceState.js';
 import { accountColor } from '../lib/accountColor.js';
 import { isDemoModeEnabled, setDemoModeEnabled } from '../lib/demoMode.js';
 import { planLabel } from '../lib/plan.js';
@@ -130,6 +132,16 @@ export default function SettingsPanel({
   const { settings, loading, error, update } = useSettings();
   const { accounts } = useDaemon();
   const { refreshToken } = useAccounts();
+  // Claude Desktop routing is an IPC action (writes the desktop app's gateway
+  // config), not a plain settings write — so it's driven by the drift hook, not
+  // `update`. The toggle only appears when the desktop app is installed.
+  const { state: surfaceState } = useSurfaceState();
+  const {
+    details: desktopDrift,
+    acting: desktopActing,
+    activate: activateDesktop,
+    deactivate: deactivateDesktop,
+  } = useClaudeDesktopDrift();
 
   // Active tab state. Settings is grouped into 4 tabs (General, Accounts,
   // Security, Data) so no single scroll path exceeds the 628 px tray
@@ -204,6 +216,12 @@ export default function SettingsPanel({
 
   const setLaunch = (enabled: boolean): void => {
     void update({ launchAtLogin: enabled }).catch(() => undefined);
+  };
+
+  const desktopInstalled = surfaceState?.desktop.installed ?? false;
+  const desktopRouted = desktopDrift?.state === 'active';
+  const setDesktopRouting = (enabled: boolean): void => {
+    void (enabled ? activateDesktop() : deactivateDesktop());
   };
 
   const setTheme = (value: ThemePreference): void => {
@@ -538,6 +556,15 @@ export default function SettingsPanel({
                   checked={settings.launchAtLogin}
                   onChange={setLaunch}
                 />
+                {desktopInstalled && (
+                  <ToggleRow
+                    label="Route Claude Desktop through Sentinel"
+                    description="Route the Claude Desktop app (Chat + Code) through the Sentinel proxy for pooled accounts, usage tracking, and alerts. Restart Claude Desktop after changing this."
+                    checked={desktopRouted}
+                    onChange={setDesktopRouting}
+                    disabled={desktopActing}
+                  />
+                )}
               </Section>
             )}
 
