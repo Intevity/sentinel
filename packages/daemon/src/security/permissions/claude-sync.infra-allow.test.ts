@@ -12,10 +12,19 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ensureClaudeSettingsAllow, removeClaudeSettingsAllow } from './claude-sync.js';
+import {
+  ensureClaudeSettingsAllow,
+  removeClaudeSettingsAllow,
+  ensureClaudeSettingsPreToolUseHook,
+  removeClaudeSettingsPreToolUseHook,
+} from './claude-sync.js';
 
 const RETRIEVE = 'mcp__sentinel__retrieve';
 const CURL = 'Bash(curl -s -X POST http://127.0.0.1:47284/code-mode/call:*)';
+const HOOK_CMD =
+  'echo \'{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\'';
+/** The exact PreToolUse entry the writer produces for RETRIEVE + HOOK_CMD. */
+const OUR_ENTRY = { matcher: RETRIEVE, hooks: [{ type: 'command', command: HOOK_CMD }] };
 
 describe('ensureClaudeSettingsAllow / removeClaudeSettingsAllow', () => {
   let dir: string;
@@ -120,5 +129,118 @@ describe('ensureClaudeSettingsAllow / removeClaudeSettingsAllow', () => {
   it('rethrows on a malformed (non-ENOENT) settings file', () => {
     writeFileSync(path, '{ this is not json');
     expect(() => ensureClaudeSettingsAllow([RETRIEVE], path)).toThrow();
+  });
+});
+
+describe('ensureClaudeSettingsPreToolUseHook / removeClaudeSettingsPreToolUseHook', () => {
+  let dir: string;
+  let path: string;
+  const read = (): Record<string, unknown> => JSON.parse(readFileSync(path, 'utf8'));
+  const preToolUse = (): unknown[] =>
+    (read()['hooks'] as Record<string, unknown>)['PreToolUse'] as unknown[];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'sentinel-infra-hook-'));
+    path = join(dir, 'settings.json');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('adds exactly the Sentinel entry and preserves every other key', () => {
+    writeFileSync(
+      path,
+      JSON.stringify({
+        model: 'opusplan',
+        permissions: { allow: [RETRIEVE], deny: [], ask: [] },
+      }),
+    );
+    expect(ensureClaudeSettingsPreToolUseHook(RETRIEVE, HOOK_CMD, path)).toBe(true);
+    const after = read();
+    expect((after['hooks'] as Record<string, unknown>)['PreToolUse']).toEqual([OUR_ENTRY]);
+    // The command carries a permissionDecision:"allow" — the load-bearing bit.
+    const cmd = (preToolUse()[0] as Record<string, unknown>)['hooks'] as Record<string, unknown>[];
+    expect(cmd[0]!['command']).toContain('"permissionDecision":"allow"');
+    // Nothing else touched.
+    expect(after['model']).toBe('opusplan');
+    expect(after['permissions']).toEqual({ allow: [RETRIEVE], deny: [], ask: [] });
+  });
+
+  it('preserves other PreToolUse matchers and other hook events', () => {
+    const otherEntry = { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo hi' }] };
+    const postToolUse = [{ matcher: 'Write', hooks: [{ type: 'command', command: 'fmt' }] }];
+    writeFileSync(
+      path,
+      JSON.stringify({ hooks: { PreToolUse: [otherEntry], PostToolUse: postToolUse } }),
+    );
+    expect(ensureClaudeSettingsPreToolUseHook(RETRIEVE, HOOK_CMD, path)).toBe(true);
+    const hooks = read()['hooks'] as Record<string, unknown>;
+    // Our entry appended after the user's; the user's entry untouched.
+    expect(hooks['PreToolUse']).toEqual([otherEntry, OUR_ENTRY]);
+    expect(hooks['PostToolUse']).toEqual(postToolUse);
+  });
+
+  it('is a no-op (returns false, byte-identical) when already present verbatim', () => {
+    writeFileSync(path, JSON.stringify({ hooks: { PreToolUse: [OUR_ENTRY] } }));
+    const before = readFileSync(path, 'utf8');
+    expect(ensureClaudeSettingsPreToolUseHook(RETRIEVE, HOOK_CMD, path)).toBe(false);
+    expect(readFileSync(path, 'utf8')).toBe(before);
+  });
+
+  it('replaces a stale Sentinel entry when the command changed', () => {
+    const stale = { matcher: RETRIEVE, hooks: [{ type: 'command', command: 'echo OLD' }] };
+    writeFileSync(path, JSON.stringify({ hooks: { PreToolUse: [stale] } }));
+    expect(ensureClaudeSettingsPreToolUseHook(RETRIEVE, HOOK_CMD, path)).toBe(true);
+    expect(preToolUse()).toEqual([OUR_ENTRY]);
+  });
+
+  it('creates the file (and parent dirs) when it does not exist', () => {
+    const nested = join(dir, 'a', 'b', 'settings.json');
+    expect(ensureClaudeSettingsPreToolUseHook(RETRIEVE, HOOK_CMD, nested)).toBe(true);
+    const hooks = JSON.parse(readFileSync(nested, 'utf8'))['hooks'] as Record<string, unknown>;
+    expect(hooks['PreToolUse']).toEqual([OUR_ENTRY]);
+  });
+
+  it('remove strips only the Sentinel entry, keeping others', () => {
+    const otherEntry = { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo hi' }] };
+    writeFileSync(path, JSON.stringify({ hooks: { PreToolUse: [otherEntry, OUR_ENTRY] } }));
+    expect(removeClaudeSettingsPreToolUseHook(RETRIEVE, path)).toBe(true);
+    expect(preToolUse()).toEqual([otherEntry]);
+  });
+
+  it('remove drops the empty hooks key entirely when we were the only entry', () => {
+    writeFileSync(path, JSON.stringify({ model: 'z', hooks: { PreToolUse: [OUR_ENTRY] } }));
+    expect(removeClaudeSettingsPreToolUseHook(RETRIEVE, path)).toBe(true);
+    const after = read();
+    expect('hooks' in after).toBe(false); // file returns to its hook-free shape
+    expect(after['model']).toBe('z');
+  });
+
+  it('remove empties PreToolUse but keeps hooks when other events remain', () => {
+    const postToolUse = [{ matcher: 'Write', hooks: [{ type: 'command', command: 'fmt' }] }];
+    writeFileSync(
+      path,
+      JSON.stringify({ hooks: { PreToolUse: [OUR_ENTRY], PostToolUse: postToolUse } }),
+    );
+    expect(removeClaudeSettingsPreToolUseHook(RETRIEVE, path)).toBe(true);
+    const hooks = read()['hooks'] as Record<string, unknown>;
+    expect('PreToolUse' in hooks).toBe(false); // emptied → key dropped
+    expect(hooks['PostToolUse']).toEqual(postToolUse); // sibling event preserved
+  });
+
+  it('remove is a no-op (false) when our entry is absent', () => {
+    writeFileSync(path, JSON.stringify({ hooks: { PreToolUse: [] } }));
+    const before = readFileSync(path, 'utf8');
+    expect(removeClaudeSettingsPreToolUseHook(RETRIEVE, path)).toBe(false);
+    expect(readFileSync(path, 'utf8')).toBe(before);
+  });
+
+  it('remove from a missing file returns false and creates nothing', () => {
+    const missing = join(dir, 'nope', 'settings.json');
+    expect(removeClaudeSettingsPreToolUseHook(RETRIEVE, missing)).toBe(false);
+    expect(existsSync(missing)).toBe(false);
+  });
+
+  it('rethrows on a malformed (non-ENOENT) settings file', () => {
+    writeFileSync(path, '{ not json');
+    expect(() => ensureClaudeSettingsPreToolUseHook(RETRIEVE, HOOK_CMD, path)).toThrow();
   });
 });

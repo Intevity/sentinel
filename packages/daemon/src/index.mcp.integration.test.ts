@@ -7,7 +7,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { McpInstallRecord, RetrievalMcpStatus, Settings } from '@sentinel/shared';
+import type { ClaudeState, McpInstallRecord, RetrievalMcpStatus, Settings } from '@sentinel/shared';
 import { startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 
 describe('Retrieval MCP IPC end-to-end', () => {
@@ -120,6 +120,21 @@ describe('Retrieval MCP IPC end-to-end', () => {
     return Array.isArray(allow) ? allow.filter((x): x is string => typeof x === 'string') : [];
   };
 
+  // The matcher strings of every PreToolUse hook Sentinel wrote into the
+  // test-redirected ~/.claude/settings.json. The retrieve hook is what actually
+  // suppresses the prompt (bug #28580 makes the allow rule insufficient).
+  const preToolUseMatchers = (): string[] => {
+    const p = process.env['SENTINEL_TEST_CLAUDE_SETTINGS_FILE']!;
+    if (!existsSync(p)) return [];
+    const parsed = JSON.parse(readFileSync(p, 'utf8')) as {
+      hooks?: { PreToolUse?: Array<{ matcher?: unknown }> };
+    };
+    const pre = parsed.hooks?.PreToolUse;
+    return Array.isArray(pre)
+      ? pre.map((e) => e?.matcher).filter((m): m is string => typeof m === 'string')
+      : [];
+  };
+
   it('auto-allows mcp__sentinel__retrieve in the DB AND settings.json on install, and removes it on uninstall', async () => {
     // Default settings → claudeCodeSyncEnabled is false, so the rule reaches
     // Claude Code ONLY via the direct settings.json write (sync's push is off).
@@ -144,10 +159,14 @@ describe('Retrieval MCP IPC end-to-end', () => {
     );
     // The real fix: it's now in the file the subagent permission check reads.
     expect(settingsAllow()).toContain('mcp__sentinel__retrieve');
+    // And the load-bearing half: a PreToolUse allow-hook that CC actually
+    // honors for this deferred MCP tool.
+    expect(preToolUseMatchers()).toContain('mcp__sentinel__retrieve');
 
     await ctx.request({ type: 'uninstall_retrieval_mcp', scope: 'user' });
     expect(await raws()).not.toContain('mcp__sentinel__retrieve');
     expect(settingsAllow()).not.toContain('mcp__sentinel__retrieve');
+    expect(preToolUseMatchers()).not.toContain('mcp__sentinel__retrieve');
   });
 
   it("preserves the user's other settings.json keys when seeding the retrieve allow", async () => {
@@ -172,9 +191,32 @@ describe('Retrieval MCP IPC end-to-end', () => {
 
   it('self-heals a prior-session retrieval install into settings.json on startup (no install call)', async () => {
     // A user who installed retrieval in a previous session has the DB rule but,
-    // with sync off, never got the settings.json entry. Re-assert it at startup.
+    // with sync off, never got the settings.json entry. Re-assert it at startup,
+    // both the allow rule and the load-bearing PreToolUse hook.
     ctx = await startTestDaemon({ settings: { compressionRetrievalEnabled: true } });
     expect(settingsAllow()).toContain('mcp__sentinel__retrieve');
+    expect(preToolUseMatchers()).toContain('mcp__sentinel__retrieve');
+  });
+
+  it('upgrades a pre-alwaysLoad retrieval install to alwaysLoad on startup', async () => {
+    // Simulate a beta user whose server entry predates the alwaysLoad fix: the
+    // install is recorded and present in ~/.claude.json, but without the flag
+    // it defers via ToolSearch and trips bug #28580. Startup must heal it.
+    ctx = await startTestDaemon({
+      settings: {
+        compressionRetrievalEnabled: true,
+        compressionRetrievalInstalls: [{ scope: 'user', directory: null, installedAt: 1 }],
+      },
+      claudeState: {
+        mcpServers: {
+          sentinel: { type: 'http', url: 'http://127.0.0.1:47284/mcp', headers: {} },
+        },
+      } as unknown as ClaudeState,
+    });
+    const cfg = JSON.parse(readFileSync(ctx.claudeJsonPath, 'utf8')) as {
+      mcpServers?: Record<string, { alwaysLoad?: unknown }>;
+    };
+    expect(cfg.mcpServers?.['sentinel']?.alwaysLoad).toBe(true);
   });
 
   it('self-heals the code-mode curl allow into settings.json on startup when code mode is on', async () => {

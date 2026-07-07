@@ -106,6 +106,8 @@ import {
   createClaudeSyncEngine,
   ensureClaudeSettingsAllow,
   removeClaudeSettingsAllow,
+  ensureClaudeSettingsPreToolUseHook,
+  removeClaudeSettingsPreToolUseHook,
 } from './security/permissions/claude-sync.js';
 import { createSandboxSyncEngine } from './security/sandbox/sandbox-sync.js';
 import { createSandboxRuntime } from './security/sandbox/sandbox-runtime.js';
@@ -227,6 +229,7 @@ import {
   installMcpServer,
   uninstallMcpServer,
   isMcpInstalled,
+  mcpInstallNeedsAlwaysLoad,
   buildMcpServerEntry,
 } from './optimize/compress/mcp-install.js';
 
@@ -3012,8 +3015,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
           });
           // Auto-allow Sentinel's own retrieve tool so Claude Code never
           // prompts for it (it's read-only and loopback-gated). Durable and
-          // user-global, so it also covers subagents and every project.
+          // user-global, so it also covers subagents and every project. The
+          // PreToolUse hook is the load-bearing half — CC ignores the allow
+          // rule for this deferred MCP tool (bug #28580); the hook does not.
           ensureAllowRule(RETRIEVE_QUALIFIED_NAME);
+          ensureRetrieveHook();
           ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
           respond({
             requestType: 'install_retrieval_mcp',
@@ -3042,10 +3048,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
             (i) => !(i.scope === msg.scope && i.directory === recordDir),
           );
           currentSettings = writeSettings({ compressionRetrievalInstalls: installs });
-          // Drop the auto-allow rule only once the last retrieve install is
-          // gone — the tool no longer exists anywhere to be prompted for.
+          // Drop the auto-allow rule and PreToolUse hook only once the last
+          // retrieve install is gone — the tool no longer exists anywhere to be
+          // prompted for.
           if (installs.length === 0) {
             removeAllowRuleByRaw(RETRIEVE_QUALIFIED_NAME);
+            removeRetrieveHook();
           }
           ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
           respond({ requestType: 'uninstall_retrieval_mcp', success: true });
@@ -4000,6 +4008,44 @@ export async function startDaemon(): Promise<DaemonHandle> {
   const codeModeCurlRule = (): string =>
     `Bash(curl -s -X POST http://127.0.0.1:${getDaemonPort()}/code-mode/call:*)`;
 
+  // The retrieve allow rule above is necessary but NOT sufficient: Claude Code
+  // (2.x) doesn't consult persisted permissions.allow for lazily-discovered MCP
+  // tools (bug #28580), so retrieve prompts on every call anyway — worst inside
+  // subagents. A PreToolUse hook that returns permissionDecision:"allow"
+  // short-circuits the prompt on the path Claude Code DOES honor. `echo` keeps
+  // it instant (no daemon round-trip) and the JSON has no single quotes, so the
+  // shell single-quoting is safe. Scoped to Sentinel's own read-only tool only.
+  const RETRIEVE_HOOK_COMMAND = `echo '${JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'allow',
+      permissionDecisionReason: 'Sentinel read-only retrieve auto-approved',
+    },
+  })}'`;
+  const ensureRetrieveHook = (): void => {
+    try {
+      ensureClaudeSettingsPreToolUseHook(
+        RETRIEVE_QUALIFIED_NAME,
+        RETRIEVE_HOOK_COMMAND,
+        claudeSettingsPath,
+      );
+    } catch (err) {
+      /* v8 ignore next 2 -- settings.json write failure is non-fatal; the allow rule still applies */
+      console.error('[Sentinel] failed to seed retrieve PreToolUse hook in settings.json:', err);
+    }
+  };
+  const removeRetrieveHook = (): void => {
+    try {
+      removeClaudeSettingsPreToolUseHook(RETRIEVE_QUALIFIED_NAME, claudeSettingsPath);
+    } catch (err) {
+      /* v8 ignore next 2 -- settings.json write failure is non-fatal */
+      console.error(
+        '[Sentinel] failed to remove retrieve PreToolUse hook from settings.json:',
+        err,
+      );
+    }
+  };
+
   // ─── Curated-agent code-mode skill preload (the "Both" path) ────────
   // Re-render installed curated agents to (un)preload the sentinel-code-mode
   // skill as code mode toggles. Only Bash-capable agents get it (they alone
@@ -4376,6 +4422,28 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // codeModeCurlRule()'s embedded port is final.
   if (currentSettings.compressionRetrievalEnabled) {
     ensureAllowRule(RETRIEVE_QUALIFIED_NAME);
+    // The allow rule alone doesn't stop the prompt for this deferred MCP tool
+    // (bug #28580); the PreToolUse hook is what actually suppresses it.
+    ensureRetrieveHook();
+    // Heal pre-alwaysLoad installs: an entry without alwaysLoad defers via
+    // ToolSearch and trips #28580. Re-install (idempotent) to add the flag so
+    // existing users recover on next launch with no action on their part.
+    for (const inst of currentSettings.compressionRetrievalInstalls) {
+      try {
+        if (mcpInstallNeedsAlwaysLoad({ scope: inst.scope, directory: inst.directory })) {
+          installMcpServer({
+            scope: inst.scope,
+            directory: inst.directory,
+            port: getDaemonPort(),
+            token: getOrCreateMcpToken(),
+          });
+          console.log(`[Startup] upgraded retrieve MCP install (${inst.scope}) to alwaysLoad`);
+        }
+      } catch (err) {
+        /* v8 ignore next 2 -- config write failure is non-fatal; hook still suppresses the prompt */
+        console.error('[Sentinel] failed to upgrade retrieve MCP install to alwaysLoad:', err);
+      }
+    }
   }
   if (currentSettings.codeModeEnabled) {
     ensureAllowRule(codeModeCurlRule());

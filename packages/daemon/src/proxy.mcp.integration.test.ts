@@ -98,6 +98,13 @@ describe('retrieval MCP endpoint (real SDK client round-trip)', () => {
       type: 'object',
       required: ['id'],
     });
+    // retrieve is read-only, and must load eagerly (not defer via ToolSearch)
+    // so Claude Code's permission check consults the allow rule / PreToolUse
+    // hook instead of prompting every call (bug #28580).
+    expect(retrieve?.annotations?.readOnlyHint).toBe(true);
+    expect((retrieve?._meta as Record<string, unknown> | undefined)?.['anthropic/alwaysLoad']).toBe(
+      true,
+    );
 
     const result = (await client.callTool({
       name: 'retrieve',

@@ -136,6 +136,108 @@ export function removeClaudeSettingsAllow(
   return mutateClaudeSettingsAllow(entries, 'remove', settingsPath);
 }
 
+/**
+ * Idempotently add or remove Sentinel's OWN PreToolUse hook entry (identified
+ * by `matcher`) in a Claude Code settings file's `hooks.PreToolUse` array,
+ * WITHOUT disturbing any other hook, hook event, or top-level key.
+ *
+ * Why a hook and not just the allow rule: Claude Code (2.x) does not consult
+ * persisted `permissions.allow` for lazily-discovered MCP tools (bug #28580),
+ * so the `mcp__sentinel__retrieve` allow rule is ignored and the tool prompts
+ * on every call — heaviest inside subagents. A PreToolUse hook that returns
+ * `permissionDecision:"allow"` short-circuits the prompt on the path Claude
+ * Code *does* honor, for the main thread and subagents alike. Scoped strictly
+ * to Sentinel's own read-only, loopback-/token-gated retrieve tool; it never
+ * touches user hooks.
+ *
+ * Runs regardless of settings-sync state: claude-sync's push only rewrites the
+ * `permissions` block, so it never clobbers `hooks`.
+ *
+ * Synchronous + atomic (temp file + rename). Returns true iff the file changed.
+ */
+function mutateClaudeSettingsPreToolUseHook(
+  matcher: string,
+  command: string,
+  op: 'add' | 'remove',
+  settingsPath: string,
+): boolean {
+  let root: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(settingsPath, 'utf8')) as unknown;
+    if (parsed && typeof parsed === 'object') root = parsed as Record<string, unknown>;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    // Missing file: nothing to remove; an add starts from an empty object.
+    if (op === 'remove') return false;
+  }
+
+  const hooksRaw = root['hooks'];
+  const hooks: Record<string, unknown> =
+    hooksRaw && typeof hooksRaw === 'object' ? { ...(hooksRaw as Record<string, unknown>) } : {};
+  const preRaw = hooks['PreToolUse'];
+  const pre: unknown[] = Array.isArray(preRaw) ? [...(preRaw as unknown[])] : [];
+
+  const isOurs = (entry: unknown): boolean =>
+    !!entry &&
+    typeof entry === 'object' &&
+    (entry as Record<string, unknown>)['matcher'] === matcher;
+
+  const desired = { matcher, hooks: [{ type: 'command', command }] };
+  const kept = pre.filter((e) => !isOurs(e));
+
+  let nextPre: unknown[];
+  if (op === 'add') {
+    // Already present verbatim → no rewrite, no reorder.
+    const existing = pre.find(isOurs);
+    if (existing && JSON.stringify(existing) === JSON.stringify(desired)) return false;
+    nextPre = [...kept, desired];
+  } else {
+    if (kept.length === pre.length) return false; // ours wasn't there — no-op
+    nextPre = kept;
+  }
+
+  if (nextPre.length > 0) {
+    hooks['PreToolUse'] = nextPre;
+  } else {
+    delete hooks['PreToolUse'];
+  }
+  if (Object.keys(hooks).length > 0) {
+    root['hooks'] = hooks;
+  } else {
+    // We only ever created `hooks` for our own entry; leave the file hook-free
+    // if nothing else lives there (matches its pre-Sentinel state).
+    delete root['hooks'];
+  }
+
+  const json = `${JSON.stringify(root, null, 2)}\n`;
+  mkdirSync(dirname(settingsPath), { recursive: true });
+  const tmp = `${settingsPath}.tmp-${randomBytes(6).toString('hex')}`;
+  writeFileSync(tmp, json, 'utf8');
+  renameSync(tmp, settingsPath);
+  return true;
+}
+
+/** Ensure Sentinel's PreToolUse allow-hook for `matcher` is present with the
+ *  given `command`. Idempotent; preserves all other hooks and keys. Returns
+ *  true iff the file changed. See {@link mutateClaudeSettingsPreToolUseHook}. */
+export function ensureClaudeSettingsPreToolUseHook(
+  matcher: string,
+  command: string,
+  settingsPath: string = DEFAULT_SETTINGS_PATH,
+): boolean {
+  return mutateClaudeSettingsPreToolUseHook(matcher, command, 'add', settingsPath);
+}
+
+/** Remove Sentinel's PreToolUse hook entry for `matcher`, if present.
+ *  Idempotent; preserves all other hooks and keys. Returns true iff the file
+ *  changed. See {@link mutateClaudeSettingsPreToolUseHook}. */
+export function removeClaudeSettingsPreToolUseHook(
+  matcher: string,
+  settingsPath: string = DEFAULT_SETTINGS_PATH,
+): boolean {
+  return mutateClaudeSettingsPreToolUseHook(matcher, '', 'remove', settingsPath);
+}
+
 export interface ClaudeSyncEngine {
   /** Attach the watcher and run an initial pull (as a merge). Emits
    *  a `claude_sync_status` broadcast on every state change. */

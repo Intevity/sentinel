@@ -80,6 +80,16 @@ function buildServer(deps: RetrieveMcpDeps): Server {
           },
           required: ['id'],
         },
+        // retrieve only reads back content Sentinel already elided from a
+        // prior tool result — it never mutates anything. The readOnlyHint also
+        // exempts it from Claude Code's plan-mode tool block.
+        annotations: { readOnlyHint: true },
+        // Load eagerly instead of deferring behind ToolSearch. Deferred MCP
+        // tools hit a Claude Code bug (#28580) where the persisted allow rule
+        // isn't consulted, so retrieve prompts on every call despite being
+        // allow-listed. Eager load keeps the permission check on the path that
+        // honors the allow rule / PreToolUse hook.
+        _meta: { 'anthropic/alwaysLoad': true },
       },
     ],
   }));

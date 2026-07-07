@@ -7,6 +7,7 @@ import {
   installMcpServer,
   uninstallMcpServer,
   isMcpInstalled,
+  mcpInstallNeedsAlwaysLoad,
   buildMcpServerEntry,
   MCP_SERVER_NAME,
 } from './mcp-install.js';
@@ -20,11 +21,12 @@ function claudeJson(): Record<string, unknown> {
 }
 
 describe('buildMcpServerEntry', () => {
-  it('builds an http entry with the loopback url and bearer header', () => {
+  it('builds an http entry with the loopback url, bearer header, and alwaysLoad', () => {
     expect(buildMcpServerEntry(PORT, TOKEN)).toEqual({
       type: 'http',
       url: 'http://127.0.0.1:47284/mcp',
       headers: { Authorization: 'Bearer tok-abc' },
+      alwaysLoad: true,
     });
   });
 });
@@ -111,6 +113,30 @@ describe('mcp-install (user + local scopes, ~/.claude.json)', () => {
     expect(() =>
       installMcpServer({ scope: 'project', directory: '', port: PORT, token: TOKEN }),
     ).toThrow(/requires a directory/);
+  });
+
+  it('mcpInstallNeedsAlwaysLoad detects a stale (pre-alwaysLoad) user entry and clears after re-install', () => {
+    // Simulate an install from before the alwaysLoad fix: entry present, flag absent.
+    writeFileSync(
+      jsonPath,
+      JSON.stringify({
+        mcpServers: {
+          [MCP_SERVER_NAME]: { type: 'http', url: 'http://127.0.0.1:47284/mcp', headers: {} },
+        },
+      }),
+    );
+    expect(mcpInstallNeedsAlwaysLoad({ scope: 'user', directory: null })).toBe(true);
+    // Re-install writes the alwaysLoad flag, so it's no longer stale.
+    installMcpServer({ scope: 'user', directory: null, port: PORT, token: TOKEN });
+    expect(mcpInstallNeedsAlwaysLoad({ scope: 'user', directory: null })).toBe(false);
+  });
+
+  it('mcpInstallNeedsAlwaysLoad is false when the server is not installed at all', () => {
+    // Seed file has only `other`, not sentinel → nothing to upgrade.
+    expect(isMcpInstalled({ scope: 'user', directory: null })).toBe(false);
+    expect(mcpInstallNeedsAlwaysLoad({ scope: 'user', directory: null })).toBe(false);
+    // Blank local directory short-circuits to false.
+    expect(mcpInstallNeedsAlwaysLoad({ scope: 'local', directory: '' })).toBe(false);
   });
 });
 

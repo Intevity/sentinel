@@ -22,6 +22,10 @@ export interface McpServerEntry {
   type: 'http';
   url: string;
   headers: { Authorization: string };
+  /** Load the tool eagerly rather than deferring it behind ToolSearch. Deferred
+   *  MCP tools trip Claude Code bug #28580 (the persisted allow rule isn't
+   *  consulted), so retrieve would prompt on every call. See mcp-retrieve-server. */
+  alwaysLoad: true;
 }
 
 /** The MCP server config entry Claude Code connects to. */
@@ -30,6 +34,7 @@ export function buildMcpServerEntry(port: number, token: string): McpServerEntry
     type: 'http',
     url: `http://127.0.0.1:${port}/mcp`,
     headers: { Authorization: `Bearer ${token}` },
+    alwaysLoad: true,
   };
 }
 
@@ -166,16 +171,41 @@ export function isMcpInstalled(opts: {
   scope: McpInstallScope;
   directory: string | null;
 }): boolean {
+  return readInstalledEntry(opts) !== null;
+}
+
+/** Read the currently-installed sentinel server entry at the given scope, or
+ *  null if it isn't present (or the directory is missing for local/project). */
+function readInstalledEntry(opts: {
+  scope: McpInstallScope;
+  directory: string | null;
+}): Record<string, unknown> | null {
+  let servers: Record<string, unknown>;
   if (opts.scope === 'user') {
-    return MCP_SERVER_NAME in asRecord(readClaudeState()['mcpServers']);
+    servers = asRecord(readClaudeState()['mcpServers']);
+  } else if (opts.scope === 'local') {
+    if (typeof opts.directory !== 'string' || opts.directory.length === 0) return null;
+    const project = asRecord(asRecord(readClaudeState()['projects'])[opts.directory]);
+    servers = asRecord(project['mcpServers']);
+  } else {
+    if (typeof opts.directory !== 'string' || opts.directory.length === 0) return null;
+    servers = asRecord(readJsonObject(mcpJsonPath(opts.directory))['mcpServers']);
   }
-  if (opts.scope === 'local') {
-    if (typeof opts.directory !== 'string' || opts.directory.length === 0) return false;
-    const projects = asRecord(readClaudeState()['projects']);
-    const project = asRecord(projects[opts.directory]);
-    return MCP_SERVER_NAME in asRecord(project['mcpServers']);
-  }
-  if (typeof opts.directory !== 'string' || opts.directory.length === 0) return false;
-  const obj = readJsonObject(mcpJsonPath(opts.directory));
-  return MCP_SERVER_NAME in asRecord(obj['mcpServers']);
+  const entry = servers[MCP_SERVER_NAME];
+  return entry && typeof entry === 'object' && !Array.isArray(entry)
+    ? (entry as Record<string, unknown>)
+    : null;
+}
+
+/** True when the server is installed at the given scope but its entry predates
+ *  the `alwaysLoad` flag — so Claude Code defers the tool via ToolSearch and
+ *  trips bug #28580 (the persisted allow rule is ignored). The startup
+ *  self-heal re-installs these entries so existing users recover with no
+ *  action on their part. */
+export function mcpInstallNeedsAlwaysLoad(opts: {
+  scope: McpInstallScope;
+  directory: string | null;
+}): boolean {
+  const entry = readInstalledEntry(opts);
+  return entry !== null && entry['alwaysLoad'] !== true;
 }
