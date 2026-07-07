@@ -6,24 +6,29 @@ import { useClaudeDesktopDrift } from '../hooks/useClaudeDesktopDrift.js';
 /**
  * Per-surface status card for the Claude **Desktop** app, sibling to
  * {@link ActivationBanner} (which owns the terminal CLI). Renders only when the
- * desktop app is detected. Routing goes through the daemon (it writes the
- * `Claude-3p/configLibrary` gateway config), not Rust — the desktop app has no
- * before-daemon first-run path.
+ * desktop app is detected AND there is something actionable to offer. Routing
+ * goes through the daemon (it writes the `Claude-3p/configLibrary` gateway
+ * config), not Rust — the desktop app has no before-daemon first-run path.
  *
  *  - not installed → hidden
+ *  - routed through Sentinel (active) → hidden; Disable lives in Settings → General
  *  - installed, not routed → Enable
  *  - routed to another gateway (drift) → Re-apply (recovery)
- *  - routed through Sentinel → confirmation + Disable
  */
 export default function DesktopSurfaceCard(): React.ReactElement | null {
   const { state } = useSurfaceState();
-  const { details, acting, actionError, activate, deactivate, reapply } = useClaudeDesktopDrift();
+  const { details, acting, actionError, activate, reapply } = useClaudeDesktopDrift();
 
   if (!state?.desktop.installed) return null;
 
   const driftState = details?.state ?? 'inactive';
+  // Once routed through Sentinel the banner has nothing actionable left, so
+  // hide it instead of persisting a Disable button (mirrors ActivationBanner's
+  // active-state gate). Disabling now lives in Settings → General. The card
+  // only surfaces the two actionable states below.
+  if (driftState === 'active') return null;
+
   const foreign = driftState === 'foreign-gateway';
-  const active = driftState === 'active';
 
   // Static class strings (Tailwind JIT can't see interpolated names).
   const wrap = foreign
@@ -48,16 +53,12 @@ export default function DesktopSurfaceCard(): React.ReactElement | null {
             <p className="text-[13px] font-semibold text-black dark:text-white">
               {foreign
                 ? 'Claude Desktop routed elsewhere'
-                : active
-                  ? 'Claude Desktop routed through Sentinel'
-                  : 'Route Claude Desktop through Sentinel'}
+                : 'Route Claude Desktop through Sentinel'}
             </p>
             <p className="text-[11px] text-muted mt-0.5">
               {foreign
                 ? 'The desktop app points at another inference gateway. Re-apply to route it through Sentinel.'
-                : active
-                  ? 'Chat and Code inference from the desktop app flows through the Sentinel proxy. Restart Claude Desktop if you just enabled it.'
-                  : 'Routes the Claude Desktop app (Chat + Code) through the Sentinel proxy for pooled accounts, usage tracking, and alerts. Restart Claude Desktop after enabling.'}
+                : 'Routes the Claude Desktop app (Chat + Code) through the Sentinel proxy for pooled accounts, usage tracking, and alerts. Restart Claude Desktop after enabling.'}
             </p>
             {actionError && (
               <p className="text-[11px] text-ios-red mt-1 font-mono break-all">{actionError}</p>
@@ -70,14 +71,6 @@ export default function DesktopSurfaceCard(): React.ReactElement | null {
               className="flex-shrink-0 btn-primary"
             >
               {acting ? 'Re-applying…' : 'Re-apply'}
-            </button>
-          ) : active ? (
-            <button
-              onClick={() => void deactivate()}
-              disabled={acting}
-              className="flex-shrink-0 btn-ghost"
-            >
-              {acting ? 'Disabling…' : 'Disable'}
             </button>
           ) : (
             <button

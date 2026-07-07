@@ -77,9 +77,15 @@ export function ToggleRow(props: {
   description?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  /** Disable the control (e.g. while an action it triggers is in flight). */
+  disabled?: boolean;
 }): React.ReactElement {
   return (
-    <label className="flex items-start gap-3 px-3 py-2.5 cursor-pointer">
+    <label
+      className={`flex items-start gap-3 px-3 py-2.5 ${
+        props.disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
+      }`}
+    >
       <div className="flex-1 min-w-0">
         <p className="text-[13px] font-medium text-black dark:text-white">{props.label}</p>
         {props.description && (
@@ -89,6 +95,7 @@ export function ToggleRow(props: {
       <input
         type="checkbox"
         checked={props.checked}
+        disabled={props.disabled}
         onChange={(e) => props.onChange(e.target.checked)}
         className="mt-1 accent-ios-blue w-4 h-4"
       />
