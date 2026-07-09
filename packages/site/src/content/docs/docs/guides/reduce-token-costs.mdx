@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-import { Steps } from '@astrojs/starlight/components';
+import { Steps, Aside } from '@astrojs/starlight/components';
 
 The **Optimize** tab estimates where your tokens go and offers three levers. Apply them in order of
 impact.
@@ -26,6 +26,50 @@ impact.
    the per-server allowlist.
 
 </Steps>
+
+## Optimal settings
+
+The defaults are conservative on purpose. For the biggest savings, configure each of the three
+**Optimize** sub-tabs as follows.
+
+### Subagents
+
+Open the **Subagents** tab and, under **Curated subagents**, click **Install** on these seven right
+away — they cover the routine, high-volume work that otherwise burns main-model tokens:
+
+- `file-explorer`
+- `log-analyzer`
+- `diff-pre-pass`
+- `web-fetcher`
+- `dep-tracer`
+- `bulk-reader`
+- `bash-loop-summarizer`
+
+Leave the rest for later. Check the **Potential** tile and the **Opportunities analyzed** list from
+time to time, and install additional subagents once you've reviewed the savings they'd actually earn
+for your workload.
+
+### Compression
+
+Open the **Compression** tab, turn on **Enable compression**, and set **Aggressiveness** to
+**Aggressive** — the tightest caps trim the most.
+
+<Aside type="caution" title="Turn on Reversible retrieval with Aggressive">
+  Aggressive is the most lossy level. Enable **Reversible retrieval** (the **Emit retrieval
+  markers** switch) so nothing is ever truly lost: Sentinel keeps the full original on your machine
+  and Claude fetches it on demand with `mcp__sentinel__retrieve`. That keeps even Aggressive
+  trimming lossless in practice. It requires the Sentinel MCP server — install it from the same
+  panel and restart Claude Code so the tool loads.
+</Aside>
+
+### Context
+
+Open the **Context** tab. In the **MCP context costs** table, use **Switch to code execution** on
+every server you can, so their tool definitions stop riding along in every request.
+
+Then scan the **Context-bloat inventory** below it and disable anything you no longer use — stale
+`CLAUDE.md` files, memory directories, plugins, or globally enabled subagents. Everything left
+enabled is paid for on every request.
 
 ## Measure the impact
 
