@@ -60,16 +60,16 @@ test('Probe round-trip renders 5h utilization; scenario flip updates UI', async 
   // The UI shows "X.Y% of quota consumed" below each window. Two data
   // paths feed the store:
   //   - claude.ai usage sync (startup): value is in 0-100 scale and
-  //     normalized by /100 inside parseUsage → fake's 0.1 lands as 0.001.
+  //     normalized by /100 inside parseUsage → fake's 18 lands as 0.18.
   //   - proxy /v1/messages headers (probes): value is a fraction 0-1
   //     and stored as-is → scenario's 0.10 lands as 0.1.
   // The daemon's startup pipeline runs both — the one that wrote most
   // recently wins per-window. The fake's claude.ai snapshot for 5h
-  // reports 0.1 (percent), so after the sync the 5h window renders as
-  // "0.1% of quota consumed". That's what we assert on for the healthy
-  // readout; after the scenario flip below we'll assert the header-path
-  // value clobbers it with "92.0%".
-  await expect(page.getByText('0.1% of quota consumed').first()).toBeVisible({
+  // reports 18 (percent), so after the sync the 5h window renders as
+  // "18.0% of quota consumed" (distinct from the header path's "10.0%",
+  // so this asserts the sync landed). After the scenario flip below we
+  // assert the header-path value clobbers it with "92.0%".
+  await expect(page.getByText('18.0% of quota consumed').first()).toBeVisible({
     timeout: 10000,
   });
 
