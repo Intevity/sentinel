@@ -8,7 +8,7 @@ import { openBugReport } from '../lib/bugReport.js';
 import { sendToSentinel } from '../lib/ipc.js';
 
 const INTEVITY_URL =
-  'https://www.intevity.com/?utm_source=sentinel&utm_medium=app&utm_campaign=built-by-footer';
+  'https://www.intevity.com/labs?utm_source=sentinel&utm_medium=desktop-app&utm_campaign=built-by-intevity';
 
 interface FooterProps {
   daemonErrors?: LogEntry[];
