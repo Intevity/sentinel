@@ -54,6 +54,7 @@ import {
   listPermissionRules,
   insertNotification,
   runDetectorTuningMigration,
+  runSonnetToFableMigration,
   migrateLegacyDataDir,
   listDetectorStats,
   getCacheTtlByDayModel,
@@ -78,7 +79,7 @@ import { OtelEmitter } from './otel-emitter.js';
 import { deleteOtelExporterSecret, writeOtelExporterSecret } from './otel-forwarder-secret.js';
 import { RequestAccountMap } from './request-account-map.js';
 import { OverageStateMachine } from './overage.js';
-import { SonnetSaturationMachine, buildSonnetSaturationBody } from './sonnet-saturation.js';
+import { FableSaturationMachine, buildFableSaturationBody } from './fable-saturation.js';
 import { createProxyServer, getDaemonPort, getProxyActivity } from './proxy.js';
 import type { ActiveToken, ActiveAccountId } from './proxy.js';
 import type { AddressInfo } from 'node:net';
@@ -89,7 +90,7 @@ import { SpendTracker } from './spend-tracker.js';
 import { ClaudeAiUsageStore } from './claude-ai-usage.js';
 import {
   startAlertEvaluator,
-  startSonnetAlertEvaluator,
+  startFableAlertEvaluator,
   startWeeklyAlertEvaluator,
   startPoolAlertEvaluator,
   startWeeklyPoolAlertEvaluator,
@@ -177,6 +178,7 @@ import type {
   AlertScope,
   CaptureHealthState,
 } from '@sentinel/shared';
+import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
 import { request as httpRequest, type Server } from 'http';
 import { log } from './logger.js';
 import { getRequestLogStore, closeRequestLogStore } from './request-log-db.js';
@@ -620,7 +622,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
   });
 
   const overageMachine = new OverageStateMachine();
-  const sonnetMachine = new SonnetSaturationMachine();
+  const fableMachine = new FableSaturationMachine();
 
   // Rehydrate the state machine from the DB so a daemon restart mid-overage-
   // window does not re-fire an `entered` transition on the very next request.
@@ -717,6 +719,25 @@ export async function startDaemon(): Promise<DaemonHandle> {
     /* v8 ignore next 3 */
   } catch (err) {
     console.error('[Security] detector_tuning_v1 failed:', err);
+  }
+
+  // One-time Sonnet→Fable usage-tier migration. Anthropic folded the old
+  // per-Sonnet weekly window into "All Models" and now tracks Fable separately;
+  // re-point existing account-sonnet alerts to account-fable and purge stale
+  // unified-7d_sonnet rows. Idempotent via the `sonnet_to_fable_v1` marker.
+  try {
+    const fableMigration = runSonnetToFableMigration(db);
+    if (
+      fableMigration &&
+      (fableMigration.alertsMigrated > 0 || fableMigration.staleWindowsDeleted > 0)
+    ) {
+      console.log(
+        `[Migrate] sonnet_to_fable_v1: re-pointed ${fableMigration.alertsMigrated} alert(s) to account-fable, purged ${fableMigration.staleWindowsDeleted} stale unified-7d_sonnet row(s)`,
+      );
+    }
+    /* v8 ignore next 3 */
+  } catch (err) {
+    console.error('[Migrate] sonnet_to_fable_v1 failed:', err);
   }
 
   // Assigned after the proxy is listening — update_settings references it
@@ -1066,7 +1087,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // be probed via api.anthropic.com. Silent-sibling team enrollments share
   // the parent's claude.ai sessionKey but have NO OAuth token, so
   // probeRateLimits() can't run for them. Claude.ai's usage endpoint
-  // returns 5h/7d/sonnet utilization + reset times alongside the overage
+  // returns 5h/7d/fable utilization + reset times alongside the overage
   // numbers, so syncing those into rateLimitStore closes the "empty usage
   // until first proxied request" gap.
   claudeAiUsageStore.onUpdate((accountId) => {
@@ -2636,7 +2657,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
           break;
         }
         if (
-          (scope === 'account' || scope === 'account-sonnet' || scope === 'account-weekly') &&
+          (scope === 'account' || scope === 'account-fable' || scope === 'account-weekly') &&
           !msg.accountId
         ) {
           respond({
@@ -3498,7 +3519,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
 
   // Evaluate user-created per-account alerts on every rate-limit update.
   // `getSettings` enables the Auto-pool exclusion guard inside the
-  // per-account + Sonnet evaluators: rate-limit headers can still arrive for
+  // per-account + Fable evaluators: rate-limit headers can still arrive for
   // excluded accounts (via background probes that run immediately post-reset,
   // or via claude.ai usage-store sync) and without this guard the evaluator
   // would fire alerts for accounts the user has explicitly taken out of
@@ -3515,14 +3536,14 @@ export async function startDaemon(): Promise<DaemonHandle> {
   };
   startAlertEvaluator(alertEvaluatorDeps);
 
-  // Evaluate user-created `account-sonnet`-scoped alerts on every
-  // rate-limit update. Reads the unified-7d_sonnet window rather than
-  // unified-5h; re-fire gated per Sonnet window reset.
-  startSonnetAlertEvaluator(alertEvaluatorDeps);
+  // Evaluate user-created `account-fable`-scoped alerts on every
+  // rate-limit update. Reads the unified-7d_oi window rather than
+  // unified-5h; re-fire gated per Fable window reset.
+  startFableAlertEvaluator(alertEvaluatorDeps);
 
   // Evaluate user-created `account-weekly`-scoped alerts. Reads the general
-  // unified-7d window (non-Sonnet weekly cap); an account can saturate its
-  // Sonnet 7-day quota while the general 7-day window is fresh, and vice
+  // unified-7d window (non-Fable weekly cap); an account can saturate its
+  // Fable 7-day quota while the general 7-day window is fresh, and vice
   // versa, so this is deliberately a separate evaluator/scope.
   startWeeklyAlertEvaluator(alertEvaluatorDeps);
 
@@ -3535,13 +3556,13 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // Pool-weekly alerts — same gating as pool, but mean is over unified-7d.
   startWeeklyPoolAlertEvaluator(poolAlertDeps);
 
-  // Sonnet saturation transitions — fire native notifications + persist a
-  // timeline entry when an account's unified-7d_sonnet utilization crosses
+  // Fable saturation transitions — fire native notifications + persist a
+  // timeline entry when an account's unified-7d_oi utilization crosses
   // the overage-buffer threshold (default 95%). Uses the same overageOsNotify
   // toggle as the regular overage transitions: the user's mental model is
   // "a spillover just became likely" in both cases, so a single mute switch
   // is sufficient.
-  sonnetMachine.onTransition((event) => {
+  fableMachine.onTransition((event) => {
     const { accountId, transition, utilization, resetsAt } = event;
     if (transition === 'entered') {
       const acct = listAccounts(db).find((a) => a.id === accountId);
@@ -3551,34 +3572,34 @@ export async function startDaemon(): Promise<DaemonHandle> {
         ts: Date.now(),
         accountId,
         type: 'overage_entered',
-        title: 'Sentinel: Sonnet 7-day saturated',
-        body: buildSonnetSaturationBody(who, utilization, optedIn),
+        title: 'Sentinel: Fable 7-day saturated',
+        body: buildFableSaturationBody(who, utilization, optedIn),
       });
       ipcServer.broadcast({
-        type: 'sonnet_saturation_entered',
+        type: 'fable_saturation_entered',
         accountId,
         resetsAt,
         utilization,
       });
     } else {
-      ipcServer.broadcast({ type: 'sonnet_saturation_exited', accountId });
+      ipcServer.broadcast({ type: 'fable_saturation_exited', accountId });
     }
   });
 
-  // Feed rate-limit updates into the Sonnet machine. Uses the live
+  // Feed rate-limit updates into the Fable machine. Uses the live
   // overageBufferPct so the threshold stays in lockstep with the rotator
   // and proxy short-circuit.
   rateLimitStore.onUpdate((accountId) => {
-    const sonnetWindow = rateLimitStore
+    const fableWindow = rateLimitStore
       .getAll(accountId)
-      .find((w) => w.name === 'unified-7d_sonnet');
-    if (!sonnetWindow) return;
+      .find((w) => w.name === FABLE_WEEKLY_WINDOW);
+    if (!fableWindow) return;
     const clampedBuffer = Math.max(0, Math.min(50, currentSettings.overageBufferPct ?? 5));
     const thresholdPct = 100 - clampedBuffer;
-    sonnetMachine.update(
+    fableMachine.update(
       accountId,
-      sonnetWindow.utilization ?? null,
-      sonnetWindow.reset ?? null,
+      fableWindow.utilization ?? null,
+      fableWindow.reset ?? null,
       thresholdPct,
     );
   });

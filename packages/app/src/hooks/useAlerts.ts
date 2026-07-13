@@ -17,14 +17,14 @@ interface UseAlertsResult {
  * Target for the alerts being edited. Shapes:
  *   { scope: 'account', accountId }        — per-account alerts fired on the
  *                                            account's unified-5h window.
- *   { scope: 'account-sonnet', accountId } — per-account alerts fired on the
- *                                            account's unified-7d_sonnet
+ *   { scope: 'account-fable', accountId } — per-account alerts fired on the
+ *                                            account's unified-7d_oi
  *                                            window. Same id, separate
  *                                            threshold list.
  *   { scope: 'account-weekly', accountId } — per-account alerts fired on the
  *                                            account's unified-7d (general
  *                                            weekly) window. Independent
- *                                            threshold list from Sonnet.
+ *                                            threshold list from Fable.
  *   { scope: 'pool' }                      — pool-wide alerts (Auto mode
  *                                            only); fire on mean unified-5h
  *                                            utilization across the pool.
@@ -34,7 +34,7 @@ interface UseAlertsResult {
  */
 export type UseAlertsTarget =
   | { scope: 'account'; accountId: string | undefined }
-  | { scope: 'account-sonnet'; accountId: string | undefined }
+  | { scope: 'account-fable'; accountId: string | undefined }
   | { scope: 'account-weekly'; accountId: string | undefined }
   | { scope: 'pool' }
   | { scope: 'pool-weekly' }
@@ -58,7 +58,7 @@ export function useAlerts(arg: string | undefined | UseAlertsTarget): UseAlertsR
   const scope: AlertScope = target.scope;
   const accountId =
     target.scope === 'account' ||
-    target.scope === 'account-sonnet' ||
+    target.scope === 'account-fable' ||
     target.scope === 'account-weekly'
       ? target.accountId
       : target.scope === 'budget'
@@ -81,7 +81,7 @@ export function useAlerts(arg: string | undefined | UseAlertsTarget): UseAlertsR
   const refetch = useCallback(async () => {
     if (
       (scope === 'account' ||
-        scope === 'account-sonnet' ||
+        scope === 'account-fable' ||
         scope === 'account-weekly' ||
         (scope === 'budget' && budgetScope === 'account')) &&
       !accountId
@@ -124,7 +124,7 @@ export function useAlerts(arg: string | undefined | UseAlertsTarget): UseAlertsR
   const create = useCallback(
     async (thresholdPct: number): Promise<void> => {
       if (
-        (scope === 'account' || scope === 'account-sonnet' || scope === 'account-weekly') &&
+        (scope === 'account' || scope === 'account-fable' || scope === 'account-weekly') &&
         !accountId
       ) {
         return;

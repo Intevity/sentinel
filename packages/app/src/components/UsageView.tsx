@@ -9,6 +9,7 @@ import type {
   ClaudeAiUsageSnapshot,
   PauseReason,
 } from '@sentinel/shared';
+import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
 import { useSettings } from '../hooks/useSettings.js';
 import {
   useAllRateLimits,
@@ -16,8 +17,8 @@ import {
   fiveHourResetAt,
   weeklyUtilization,
   weeklyResetAt,
-  weeklySonnetUtilization,
-  weeklySonnetResetAt,
+  weeklyFableUtilization,
+  weeklyFableResetAt,
 } from '../hooks/useAllRateLimits.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { usePausedAccounts, type PausedState } from '../hooks/usePausedAccounts.js';
@@ -34,7 +35,7 @@ const USAGE_VARIANCE_NOTE =
 const WINDOW_META: Record<string, { label: string; order: number }> = {
   'unified-5h': { label: '5-Hour Window', order: 0 },
   'unified-7d': { label: 'Weekly: All Models', order: 1 },
-  'unified-7d_sonnet': { label: 'Weekly: Sonnet', order: 2 },
+  [FABLE_WEEKLY_WINDOW]: { label: 'Weekly: Fable', order: 2 },
   'unified-overage': { label: 'Overage Budget', order: 3 },
 };
 
@@ -456,9 +457,9 @@ function OverageMeterRow({
 
 /**
  * Synthesize a minimal OAuthAccount from an AccountInfo row. Only fills the
- * fields the Sonnet-quota synthesis below reads (`billingType`,
+ * fields the Fable-quota synthesis below reads (`billingType`,
  * `hasExtraUsageEnabled`). Used when the per-tab picker selects a non-active
- * account so Usage can still decide whether to render the Sonnet row at 0%.
+ * account so Usage can still decide whether to render the Fable row at 0%.
  */
 function accountInfoToOAuthLike(acct: AccountInfo | undefined): OAuthAccount | null {
   if (!acct) return null;
@@ -490,8 +491,8 @@ interface UsageViewProps {
   isProbing?: boolean;
   /** The account whose windows are being rendered. Used to decide which
    *  windows to always show even when Anthropic has not yet returned headers
-   *  for them — Max seat holders have a separate Sonnet quota that the API
-   *  omits from rate-limit headers until Sonnet usage actually starts, but
+   *  for them — Max seat holders have a separate Fable quota that the API
+   *  omits from rate-limit headers until Fable usage actually starts, but
    *  the user still wants to see it (at 0%) in the UI. */
   activeAccount: OAuthAccount | null;
   /** Every known account. Piped in from App.tsx (useDaemon) so the Auto-switching
@@ -542,7 +543,7 @@ function SingleAccountUsageView({
   const busy = loading || Boolean(isProbing);
 
   // When the user picks a non-active account via the per-tab picker, we need
-  // the OAuthAccount-shaped record for that selection so the Sonnet-quota
+  // the OAuthAccount-shaped record for that selection so the Fable-quota
   // synthesis (below) can read billingType / hasExtraUsageEnabled. Fall back
   // to the actual active account when no pick is made.
   const viewAccount: OAuthAccount | null = viewAccountId
@@ -610,25 +611,25 @@ function SingleAccountUsageView({
   }, [fetchRateLimits, rateLimitsVersion]);
 
   // Show windows that have meaningful data, sorted by priority, excluding noise.
-  // For accounts that carry a separate Sonnet quota (Max / Team / Enterprise),
-  // ensure the `unified-7d_sonnet` row is present alongside real data —
+  // For accounts that carry a separate Fable quota (Max / Team / Enterprise),
+  // ensure the `unified-7d_oi` row is present alongside real data —
   // Anthropic omits it from response headers until the user actually consumes
-  // Sonnet, but when we have other windows the user still wants to see the 0%
+  // Fable, but when we have other windows the user still wants to see the 0%
   // row rather than have it silently disappear.
   //
-  // Important: only synthesize the Sonnet placeholder when `windows` already
+  // Important: only synthesize the Fable placeholder when `windows` already
   // has real data. If the list is empty (fresh account, no calls yet) a lone
-  // "Weekly: Sonnet 0%" row reads as misleading "sole usage" instead of the
+  // "Weekly: Fable 0%" row reads as misleading "sole usage" instead of the
   // truthful "no data" empty state.
   //
-  // Signal priority for whether a Sonnet quota exists at all:
+  // Signal priority for whether a Fable quota exists at all:
   //   1. Observed `unified-7d` header (definitive: the account has weekly quotas).
   //   2. Plan type (falls back when no API calls have been made yet — Max's
   //      `hasExtraUsageEnabled` flag, or a team/enterprise billingType).
   const synthesized: RateLimitWindow[] = [...windows];
   const weekly = synthesized.find((w) => w.name === 'unified-7d');
   const billing = viewAccount?.billingType;
-  const hasSonnetQuota =
+  const hasFableQuota =
     weekly != null ||
     viewAccount?.hasExtraUsageEnabled === true ||
     billing === 'team' ||
@@ -637,9 +638,9 @@ function SingleAccountUsageView({
   const hasRealData = windows.some(
     (w) => !HIDDEN_WINDOWS.has(w.name) && (w.utilization != null || w.limit != null),
   );
-  if (hasRealData && hasSonnetQuota && !synthesized.some((w) => w.name === 'unified-7d_sonnet')) {
+  if (hasRealData && hasFableQuota && !synthesized.some((w) => w.name === FABLE_WEEKLY_WINDOW)) {
     synthesized.push({
-      name: 'unified-7d_sonnet',
+      name: FABLE_WEEKLY_WINDOW,
       status: 'allowed',
       utilization: 0,
       limit: null,
@@ -920,10 +921,10 @@ function PoolAccountRow({
  * When the proxy rotates tokens per-request, the "active account" concept
  * loses meaning for Usage — every request's response headers belong to a
  * different account, so the single-account view thrashes. Instead we render:
- *   1. A "Pool Usage" card with three pool-average meters (5h, weekly, sonnet)
+ *   1. A "Pool Usage" card with three pool-average meters (5h, weekly, fable)
  *   2. Per-account card for 5-Hour Window
  *   3. Per-account card for Weekly: All Models
- *   4. Per-account card for Weekly: Sonnet
+ *   4. Per-account card for Weekly: Fable
  *
  * Data flows through useAllRateLimits (which listens to rate_limits_updated /
  * account_switched / login_complete broadcasts) and useAccounts (for labels).
@@ -971,7 +972,7 @@ function AutoPoolUsageView({ accounts }: { accounts: AccountInfo[] }): React.Rea
       inPool: !excludedIds.has(acct.id) && !isAutoExcluded(acct.id),
       fiveH: { util: fiveHourUtilization(w), resetAt: fiveHourResetAt(w) },
       weekly: { util: weeklyUtilization(w), resetAt: weeklyResetAt(w) },
-      sonnet: { util: weeklySonnetUtilization(w), resetAt: weeklySonnetResetAt(w) },
+      fable: { util: weeklyFableUtilization(w), resetAt: weeklyFableResetAt(w) },
     };
   });
 
@@ -979,7 +980,7 @@ function AutoPoolUsageView({ accounts }: { accounts: AccountInfo[] }): React.Rea
   const poolSize = poolRows.length;
   const fiveHUtils = poolRows.map((r) => r.fiveH.util).filter((u): u is number => u != null);
   const weeklyUtils = poolRows.map((r) => r.weekly.util).filter((u): u is number => u != null);
-  const sonnetUtils = poolRows.map((r) => r.sonnet.util).filter((u): u is number => u != null);
+  const fableUtils = poolRows.map((r) => r.fable.util).filter((u): u is number => u != null);
 
   // Accounts auto-excluded *only* because they're paused (not via the manual
   // poolExcludedIds setting). Manually-excluded accounts already render the
@@ -1038,8 +1039,8 @@ function AutoPoolUsageView({ accounts }: { accounts: AccountInfo[] }): React.Rea
               totalAccounts={poolSize}
             />
             <PoolMeterBlock
-              label={windowLabel('unified-7d_sonnet')}
-              utils={sonnetUtils}
+              label={windowLabel(FABLE_WEEKLY_WINDOW)}
+              utils={fableUtils}
               totalAccounts={poolSize}
             />
             <p className="text-[10px] text-muted leading-snug">
@@ -1102,17 +1103,17 @@ function AutoPoolUsageView({ accounts }: { accounts: AccountInfo[] }): React.Rea
             ))}
           </div>
 
-          {/* Per-account: Weekly: Sonnet */}
+          {/* Per-account: Weekly: Fable */}
           <div className="glass-card px-4 py-4 space-y-4">
             <span className="text-[12px] font-semibold text-black dark:text-white">
-              {windowLabel('unified-7d_sonnet')}
+              {windowLabel(FABLE_WEEKLY_WINDOW)}
             </span>
-            {rows.map(({ account, inPool, sonnet }) => (
+            {rows.map(({ account, inPool, fable }) => (
               <PoolAccountRow
-                key={`${account.id}:sonnet`}
+                key={`${account.id}:fable`}
                 account={account}
-                util={sonnet.util}
-                resetAt={sonnet.resetAt}
+                util={fable.util}
+                resetAt={fable.resetAt}
                 inPool={inPool}
               />
             ))}

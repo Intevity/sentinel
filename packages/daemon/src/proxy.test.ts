@@ -16,7 +16,7 @@ import {
   ANTHROPIC_HOST,
   summarizeOverageHeaders,
   extractRequestModel,
-  isSonnetModel,
+  isFableModel,
 } from './proxy.js';
 import type { IpcServer } from './ipc.js';
 
@@ -117,16 +117,17 @@ describe('extractRequestModel', () => {
   });
 });
 
-describe('isSonnetModel', () => {
+describe('isFableModel', () => {
   it.each([
-    ['claude-sonnet-4-6', true],
-    ['claude-3-5-sonnet-20241022', true],
-    ['CLAUDE-SONNET-5-x', true],
+    ['claude-fable-5', true],
+    ['claude-fable-4-5', true],
+    ['CLAUDE-FABLE-5-x', true],
     ['claude-opus-4-7', false],
+    ['claude-sonnet-4-6', false],
     ['claude-haiku-4-5', false],
     [null, false],
     ['', false],
-  ])('isSonnetModel(%j) === %s', (input, expected) => {
-    expect(isSonnetModel(input)).toBe(expected);
+  ])('isFableModel(%j) === %s', (input, expected) => {
+    expect(isFableModel(input)).toBe(expected);
   });
 });

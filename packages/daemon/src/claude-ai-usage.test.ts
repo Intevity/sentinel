@@ -81,7 +81,15 @@ describe('parseUsage', () => {
     const snap = parseUsage({
       five_hour: { utilization: 36.0, resets_at: null },
       seven_day: { utilization: 3.0, resets_at: null },
-      seven_day_sonnet: { utilization: 0.0, resets_at: null },
+      limits: [
+        {
+          kind: 'weekly_scoped',
+          group: 'weekly',
+          percent: 0,
+          resets_at: null,
+          scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+        },
+      ],
       extra_usage: {
         is_enabled: true,
         monthly_limit: 10000,
@@ -92,8 +100,61 @@ describe('parseUsage', () => {
     });
     expect(snap.fiveHourUtilization).toBeCloseTo(0.36, 5);
     expect(snap.sevenDayUtilization).toBeCloseTo(0.03, 5);
-    expect(snap.sevenDaySonnetUtilization).toBe(0);
+    expect(snap.sevenDayFableUtilization).toBe(0);
     expect(snap.extraUsage?.utilizationPct).toBe(77.22);
+  });
+
+  // The Fable weekly quota is served ONLY via the `limits[]` weekly_scoped
+  // entry (scope.model.display_name === 'Fable') — there is no top-level
+  // `seven_day_fable` key on the wire. Verified live 2026-07-13: the entry's
+  // percent/resets_at tracked the `unified-7d_oi` response header in real
+  // time on the same org while every top-level per-model key stayed null.
+  it('reads the Fable weekly window from the limits[] weekly_scoped entry', () => {
+    const snap = parseUsage({
+      five_hour: { utilization: 18, resets_at: null },
+      seven_day: { utilization: 10, resets_at: '2026-07-17T18:00:00Z' },
+      limits: [
+        { kind: 'session', group: 'session', percent: 18, scope: null, is_active: true },
+        { kind: 'weekly_all', group: 'weekly', percent: 10, scope: null },
+        {
+          kind: 'weekly_scoped',
+          group: 'weekly',
+          percent: 6,
+          resets_at: '2026-07-17T18:00:01Z',
+          scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+          is_active: false,
+        },
+      ],
+    });
+    expect(snap.sevenDayFableUtilization).toBeCloseTo(0.06, 5);
+    expect(snap.sevenDayFableResetsAt).toBe('2026-07-17T18:00:01Z');
+  });
+
+  it('returns null Fable fields when limits[] is absent or has no Fable weekly_scoped entry', () => {
+    // No limits array at all (defensive: endpoint variant / older schema).
+    const noLimits = parseUsage({ seven_day: { utilization: 10, resets_at: null } });
+    expect(noLimits.sevenDayFableUtilization).toBeNull();
+    expect(noLimits.sevenDayFableResetsAt).toBeNull();
+
+    // weekly_scoped exists but is scoped to a different model, plus a null
+    // entry and a matching display_name under the WRONG kind — none may match.
+    const wrongEntries = parseUsage({
+      limits: [
+        null,
+        {
+          kind: 'weekly_scoped',
+          percent: 40,
+          scope: { model: { id: null, display_name: 'Opus' }, surface: null },
+        },
+        {
+          kind: 'monthly_scoped',
+          percent: 55,
+          scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+        },
+      ],
+    });
+    expect(wrongEntries.sevenDayFableUtilization).toBeNull();
+    expect(wrongEntries.sevenDayFableResetsAt).toBeNull();
   });
 
   it('represents a saturated 100% utilization as 1.0', () => {

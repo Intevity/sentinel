@@ -74,16 +74,16 @@ describe('RateLimitStore', () => {
     expect(names).toEqual(['unified-5h', 'unified-7d', 'unified-overage']);
   });
 
-  it('parses windows with underscore in name (e.g. unified-7d_sonnet)', () => {
+  it('parses windows with underscore in name (e.g. unified-7d_oi)', () => {
     const store = new RateLimitStore();
     store.update('acc-1', {
-      'anthropic-ratelimit-unified-7d_sonnet-status': 'allowed',
-      'anthropic-ratelimit-unified-7d_sonnet-utilization': '0.68',
-      'anthropic-ratelimit-unified-7d_sonnet-reset': '1776430800',
+      'anthropic-ratelimit-unified-7d_oi-status': 'allowed',
+      'anthropic-ratelimit-unified-7d_oi-utilization': '0.68',
+      'anthropic-ratelimit-unified-7d_oi-reset': '1776430800',
     });
     const windows = store.getAll('acc-1');
     expect(windows).toHaveLength(1);
-    expect(windows[0]?.name).toBe('unified-7d_sonnet');
+    expect(windows[0]?.name).toBe('unified-7d_oi');
     expect(windows[0]?.utilization).toBeCloseTo(0.68);
   });
 
@@ -352,26 +352,26 @@ describe('RateLimitStore', () => {
       fiveHourResetsAt: '2026-04-22T03:00:00Z',
       sevenDayUtilization: 0.65,
       sevenDayResetsAt: '2026-04-28T00:00:00Z',
-      sevenDaySonnetUtilization: 0.1,
-      sevenDaySonnetResetsAt: '2026-04-28T00:00:00Z',
+      sevenDayFableUtilization: 0.1,
+      sevenDayFableResetsAt: '2026-04-28T00:00:00Z',
       extraUsage: null,
       perUserBudget: null,
       fetchedAt: 2000,
     });
 
-    it('populates 5h / 7d / sonnet windows when store is empty', () => {
+    it('populates 5h / 7d / fable windows when store is empty', () => {
       const store = new RateLimitStore();
       const synced = store.syncFromClaudeAiSnapshot('acc-1', baseSnapshot());
       expect(synced).toBe(3);
       const windows = store.getAll('acc-1');
       const fiveHour = windows.find((w) => w.name === 'unified-5h');
       const weekly = windows.find((w) => w.name === 'unified-7d');
-      const sonnet = windows.find((w) => w.name === 'unified-7d_sonnet');
+      const fable = windows.find((w) => w.name === 'unified-7d_oi');
       expect(fiveHour?.utilization).toBeCloseTo(0.2);
       expect(fiveHour?.status).toBe('allowed');
       expect(fiveHour?.reset).toBe(Math.floor(Date.parse('2026-04-22T03:00:00Z') / 1000));
       expect(weekly?.utilization).toBeCloseTo(0.65);
-      expect(sonnet?.utilization).toBeCloseTo(0.1);
+      expect(fable?.utilization).toBeCloseTo(0.1);
     });
 
     it('infers status from utilization', () => {
@@ -380,14 +380,14 @@ describe('RateLimitStore', () => {
         ...baseSnapshot(),
         fiveHourUtilization: 0.95,
         sevenDayUtilization: 1,
-        sevenDaySonnetUtilization: null,
-        sevenDaySonnetResetsAt: null,
+        sevenDayFableUtilization: null,
+        sevenDayFableResetsAt: null,
       });
       const windows = store.getAll('acc-1');
       expect(windows.find((w) => w.name === 'unified-5h')?.status).toBe('allowed_warning');
       expect(windows.find((w) => w.name === 'unified-7d')?.status).toBe('blocked');
-      // sonnet row with both util + reset null → skipped
-      expect(windows.find((w) => w.name === 'unified-7d_sonnet')).toBeUndefined();
+      // fable row with both util + reset null → skipped
+      expect(windows.find((w) => w.name === 'unified-7d_oi')).toBeUndefined();
     });
 
     it('writes an overage window when extraUsage is enabled', () => {
@@ -438,7 +438,7 @@ describe('RateLimitStore', () => {
         fiveHourUtilization: 0.9, // stale, should be ignored
         fetchedAt: before.lastUpdated! - 10_000,
       });
-      // Only 7d + sonnet are new; 5h stays at 0.5 from fresh headers.
+      // Only 7d + fable are new; 5h stays at 0.5 from fresh headers.
       expect(synced).toBe(2);
       expect(store.getAll('acc-1').find((w) => w.name === 'unified-5h')?.utilization).toBe(0.5);
     });
@@ -513,8 +513,8 @@ describe('RateLimitStore', () => {
         fiveHourResetsAt: null,
         sevenDayUtilization: 0.4,
         sevenDayResetsAt: null,
-        sevenDaySonnetUtilization: null,
-        sevenDaySonnetResetsAt: null,
+        sevenDayFableUtilization: null,
+        sevenDayFableResetsAt: null,
         extraUsage: null,
         perUserBudget: null,
         fetchedAt: 1000,
@@ -544,7 +544,7 @@ describe('RateLimitStore', () => {
       store.update('acc-1', {
         'anthropic-ratelimit-unified-5h-utilization': '0.5',
         'anthropic-ratelimit-unified-7d-utilization': '0.5',
-        'anthropic-ratelimit-unified-7d_sonnet-utilization': '0.5',
+        'anthropic-ratelimit-unified-7d_oi-utilization': '0.5',
       });
       vi.useRealTimers();
       const cb = vi.fn();
@@ -595,7 +595,7 @@ describe('RateLimitStore', () => {
     });
 
     it('preserves an existing inUse flag when the sync passes null', () => {
-      // Sync always passes inUse=null for unified-5h/7d/7d_sonnet (those
+      // Sync always passes inUse=null for unified-5h/7d/7d_fable (those
       // windows don't carry that flag in the claude.ai snapshot). The
       // overage window's header-derived inUse=false is load-bearing for
       // the overage state machine; sync must not wipe it.

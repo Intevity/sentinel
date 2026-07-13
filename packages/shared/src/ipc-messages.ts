@@ -57,24 +57,24 @@ export interface OverageDisabledMessage {
   reason: string;
 }
 
-/** Broadcast when an account's Sonnet 7-day utilization crosses the
- *  overage-buffer threshold (default 95%). The next Sonnet request on the
+/** Broadcast when an account's Fable 7-day utilization crosses the
+ *  overage-buffer threshold (default 95%). The next Fable request on the
  *  account will draw from the monthly overage budget unless the account is
- *  opted in via `overageEnabledIds`. Fired at most once per Sonnet window
+ *  opted in via `overageEnabledIds`. Fired at most once per Fable window
  *  (deduped by reset timestamp). */
-export interface SonnetSaturationEnteredMessage {
-  type: 'sonnet_saturation_entered';
+export interface FableSaturationEnteredMessage {
+  type: 'fable_saturation_entered';
   accountId: string;
-  /** Unix seconds when the Sonnet 7-day window resets. */
+  /** Unix seconds when the Fable 7-day window resets. */
   resetsAt: number | null;
   /** Utilization fraction 0-1 at the time the threshold was crossed. */
   utilization: number;
 }
 
-/** Counterpart to `sonnet_saturation_entered`. Fires once the Sonnet
+/** Counterpart to `fable_saturation_entered`. Fires once the Fable
  *  window rolls over and utilization falls back below the threshold. */
-export interface SonnetSaturationExitedMessage {
-  type: 'sonnet_saturation_exited';
+export interface FableSaturationExitedMessage {
+  type: 'fable_saturation_exited';
   accountId: string;
 }
 
@@ -453,8 +453,8 @@ export interface ClaudeAiUsageSnapshot {
   fiveHourResetsAt: string | null;
   sevenDayUtilization: number | null;
   sevenDayResetsAt: string | null;
-  sevenDaySonnetUtilization: number | null;
-  sevenDaySonnetResetsAt: string | null;
+  sevenDayFableUtilization: number | null;
+  sevenDayFableResetsAt: string | null;
   /** Null when overage is not configured on the account. Scope is
    *  ORG-WIDE for team plans — `usedUsd` is the team's combined
    *  overage spend across every member, not the viewer's personal
@@ -565,8 +565,8 @@ export type DaemonToAppMessage =
   | OverageEnteredMessage
   | OverageExitedMessage
   | OverageDisabledMessage
-  | SonnetSaturationEnteredMessage
-  | SonnetSaturationExitedMessage
+  | FableSaturationEnteredMessage
+  | FableSaturationExitedMessage
   | UsageUpdateMessage
   | AccountSwitchedMessage
   | RoutedAccountChangedMessage
@@ -1466,7 +1466,7 @@ export interface UpdateAccountMessage {
 export interface ListAlertsMessage {
   type: 'list_alerts';
   /** When provided, only alerts bound to this Sentinel account key are returned.
-   *  Implies an account-bound scope (`account`, `account-sonnet`,
+   *  Implies an account-bound scope (`account`, `account-fable`,
    *  `account-weekly`, or `budget:account`). Ignored when scope is
    *  `pool`, `pool-weekly`, or `budget:global`. */
   accountId?: string;
@@ -1480,7 +1480,7 @@ export interface UpsertAlertMessage {
   /** Omit to create; provide an existing id to update in place. */
   id?: number;
   /** Scope-dependent accountId validation:
-   *    - `account`, `account-sonnet`, `account-weekly` require non-null accountId
+   *    - `account`, `account-fable`, `account-weekly` require non-null accountId
    *    - `pool`, `pool-weekly` require accountId to be null
    *    - `budget` requires an accompanying `budgetScope`
    *  Defaults to `'account'` for backwards compatibility. */

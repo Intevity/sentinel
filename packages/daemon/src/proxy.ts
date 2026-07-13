@@ -39,6 +39,7 @@ import type { CodeModeHttpHandler } from './optimize/code-mode/code-mode-server.
 import { measureToolDefinitions } from './context-bloat/mcp-definition-cost.js';
 import type { ContextCostStore } from './context-bloat/context-cost-db.js';
 import type { PauseReason } from '@sentinel/shared';
+import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
 
 export const DAEMON_PORT = 47284;
 
@@ -127,12 +128,12 @@ interface ProxyOptions {
   rateLimitStore?: RateLimitStore;
   /** When set, overrides the activeToken/activeAccountId pair on a per-request
    *  basis — used for Auto mode. Returning null falls back to the
-   *  activeToken/activeAccountId refs. `ctx.isSonnet` lets the rotator fold
-   *  Sonnet-saturated accounts into the overage tier on Sonnet requests so
-   *  the pool doesn't silently spill into overage when `unified-7d_sonnet`
+   *  activeToken/activeAccountId refs. `ctx.isFable` lets the rotator fold
+   *  Fable-saturated accounts into the overage tier on Fable requests so
+   *  the pool doesn't silently spill into overage when `unified-7d_oi`
    *  exhausts. Callers without model context pass undefined and the rotator
    *  falls back to the 5h-only gate (Opus-safe default). */
-  tokenProvider?: (ctx?: { isSonnet: boolean }) => TokenSelection | null;
+  tokenProvider?: (ctx?: { isFable: boolean }) => TokenSelection | null;
   /** Live accessor for the Sentinel-side paused-account set. When the
    *  account that a request is about to be attributed to is paused, the
    *  proxy short-circuits the request with 503 + Retry-After. The reset
@@ -159,8 +160,8 @@ interface ProxyOptions {
    *  Returning null falls back to the 5h reset. */
   getWeeklyResetAt?: (accountId: string) => number | null;
   /** Live accessor for the user's overage opt-in allow-list (Sentinel ids).
-   *  Consulted by the Sonnet short-circuit: a Sonnet request whose selected
-   *  account has `unified-7d_sonnet` saturated is refused with 503 unless
+   *  Consulted by the Fable short-circuit: a Fable request whose selected
+   *  account has `unified-7d_oi` saturated is refused with 503 unless
    *  the account is on this list. Defaults to an empty set (opt-in model),
    *  matching the rotator's default. */
   getOverageAllowedIds?: () => ReadonlySet<string>;
@@ -490,14 +491,14 @@ export function createProxyServer(
    *      — used by the background usage-probe to probe a non-active account
    *      without mutating the active-token refs. Headers are stripped before
    *      upstream forwarding so they never leak to Anthropic.
-   *   2. `tokenProvider` (Auto mode). `ctx.isSonnet` is threaded
-   *      through so the rotator can fold Sonnet-saturated accounts into
-   *      the overage tier on Sonnet requests.
+   *   2. `tokenProvider` (Auto mode). `ctx.isFable` is threaded
+   *      through so the rotator can fold Fable-saturated accounts into
+   *      the overage tier on Fable requests.
    *   3. Shared `activeToken` / `activeAccountId` refs (default flow).
    */
   const selectCredential = (
     req: IncomingMessage,
-    ctx?: { isSonnet: boolean },
+    ctx?: { isFable: boolean },
   ): TokenSelection | null => {
     const probeToken = req.headers['x-sentinel-probe-token'];
     const probeAccount = req.headers['x-sentinel-probe-account'];
@@ -534,7 +535,7 @@ export function createProxyServer(
   /**
    * Emit a Retry-After 503 to pause further client retries until the named
    * reset window rolls over. Shared between the Sentinel-budget pause and
-   * the Sonnet-saturation gate so both surfaces render identical shape and
+   * the Fable-saturation gate so both surfaces render identical shape and
    * drop the client into the same exponential-backoff state machine.
    */
   const respond503 = (
@@ -555,7 +556,7 @@ export function createProxyServer(
   /**
    * Async path for `/v1/messages*` POSTs. Buffers the request body so we
    * can inspect the `model` field before credential selection — this is
-   * what lets the rotator route Sonnet-saturated accounts into the
+   * what lets the rotator route Fable-saturated accounts into the
    * overage tier without ever touching an Opus request. The buffered body
    * is forwarded into `proxyToAnthropic` via the final arg so it isn't
    * re-read downstream.
@@ -579,9 +580,9 @@ export function createProxyServer(
 
     const body = await readBody(req);
     const model = extractRequestModel(body);
-    const isSonnet = isSonnetModel(model);
+    const isFable = isFableModel(model);
 
-    const credential = selectCredential(req, { isSonnet });
+    const credential = selectCredential(req, { isFable });
     if (credential) {
       req.headers['authorization'] = `Bearer ${credential.token}`;
     }
@@ -597,31 +598,31 @@ export function createProxyServer(
       return;
     }
 
-    // Sonnet saturation short-circuit. Fires when the request is a Sonnet
-    // model AND the selected account's `unified-7d_sonnet` utilization is
+    // Fable saturation short-circuit. Fires when the request is a Fable
+    // model AND the selected account's `unified-7d_oi` utilization is
     // at or above the overage-buffer threshold AND the account is NOT
     // opted into overage. Without this, the request would silently spill
     // into the user's monthly overage budget even when `unified-5h` still
     // has room. The rotator applies the same gate for Auto picks;
     // this catches single-account mode and the RR edge case where every
-    // candidate is Sonnet-saturated (rotator returns null → fallback to
+    // candidate is Fable-saturated (rotator returns null → fallback to
     // activeToken → this fires).
-    if (isSonnet && perRequestAccountId && rateLimitStore) {
+    if (isFable && perRequestAccountId && rateLimitStore) {
       if (!getOverageAllowedIds().has(perRequestAccountId)) {
-        const sonnet = rateLimitStore
+        const fable = rateLimitStore
           .getAll(perRequestAccountId)
-          .find((w) => w.name === 'unified-7d_sonnet');
+          .find((w) => w.name === FABLE_WEEKLY_WINDOW);
         const rawBuffer = getOverageBufferPct();
         const clampedBuffer = Math.max(0, Math.min(50, rawBuffer));
         const threshold = 1 - clampedBuffer / 100;
-        if (sonnet?.utilization != null && sonnet.utilization >= threshold) {
+        if (fable?.utilization != null && fable.utilization >= threshold) {
           respond503(
             res,
-            sonnet.reset ?? null,
-            'sentinel_sonnet_saturated',
-            "Sentinel refused this Sonnet request because this account's " +
-              'Sonnet 7-day quota is exhausted and the account is not opted ' +
-              'into overage. Switch accounts, use a non-Sonnet model, or ' +
+            fable.reset ?? null,
+            'sentinel_fable_saturated',
+            "Sentinel refused this Fable request because this account's " +
+              'Fable 7-day quota is exhausted and the account is not opted ' +
+              'into overage. Switch accounts, use a non-Fable model, or ' +
               'enable overage for this account in Settings.',
           );
           return;
@@ -637,7 +638,7 @@ export function createProxyServer(
     const retryProvider = tokenProvider
       ? (currentAccountId: string): TokenSelection | null => {
           for (let i = 0; i < 5; i++) {
-            const next = tokenProvider({ isSonnet });
+            const next = tokenProvider({ isFable });
             if (!next) return null;
             if (next.accountId !== currentAccountId) return next;
           }
@@ -1815,7 +1816,7 @@ function extractAccountFromAuth(auth: string | undefined): string | null {
  *
  * Returns null on malformed JSON, an empty body, or a missing/non-string
  * `model`. Callers must treat null as "unknown model" and skip any
- * model-aware gating — never as "route as Sonnet by default."
+ * model-aware gating — never as "route as Fable by default."
  */
 export function extractRequestModel(body: Buffer): string | null {
   if (body.length === 0) return null;
@@ -1828,12 +1829,12 @@ export function extractRequestModel(body: Buffer): string | null {
 }
 
 /**
- * True when the model identifier names a Sonnet variant. Case-insensitive
+ * True when the model identifier names a Fable variant. Case-insensitive
  * substring match rather than a prefix list so the check keeps working
- * across Anthropic release cadence (`claude-3-5-sonnet-*`,
- * `claude-sonnet-4-*`, future Sonnet releases). Null/empty input returns
- * false — unknown model never routes through the Sonnet gate.
+ * across Anthropic release cadence (`claude-fable-5`, `claude-fable-*`,
+ * future Fable releases). Null/empty input returns false — unknown model
+ * never routes through the Fable gate.
  */
-export function isSonnetModel(model: string | null): boolean {
-  return model != null && model.toLowerCase().includes('sonnet');
+export function isFableModel(model: string | null): boolean {
+  return model != null && model.toLowerCase().includes('fable');
 }

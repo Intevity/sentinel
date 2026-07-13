@@ -14,8 +14,8 @@ import {
 
 const SESSION_WINDOW = 'unified-5h';
 
-/** The general weekly quota window name. Distinct from `unified-7d_sonnet`
- *  (Sonnet-specific); this window caps Opus and every other non-Sonnet
+/** The general weekly quota window name. Distinct from `unified-7d_oi`
+ *  (Fable-specific); this window caps Opus and every other non-Fable
  *  model. When Anthropic marks it `status === 'blocked'`, Sentinel pauses
  *  the account until the window's reset timestamp (days away, not hours). */
 const WEEKLY_RATE_LIMIT_WINDOW = 'unified-7d';

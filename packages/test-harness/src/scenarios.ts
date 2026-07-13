@@ -19,8 +19,8 @@ export type ScenarioName =
   | 'overage-disabled'
   | 'overage-exited'
   | 'overage-null-reset'
-  | 'sonnet-saturation'
-  | 'sonnet-saturated-blocked'
+  | 'fable-saturation'
+  | 'fable-saturated-blocked'
   | 'rate-limited-5h'
   | 'weekly-paused-7d'
   | 'upstream-500'
@@ -106,15 +106,15 @@ export const SCENARIOS: Record<ScenarioName, Scenario> = {
       'anthropic-ratelimit-unified-overage-in-use': 'true',
     },
   },
-  'sonnet-saturation': {
-    label: '7d Sonnet window near exhaustion',
+  'fable-saturation': {
+    label: '7d Fable window near exhaustion',
     messagesHeaders: {
       'anthropic-ratelimit-unified-5h-status': 'allowed',
       'anthropic-ratelimit-unified-5h-utilization': '0.45',
       'anthropic-ratelimit-unified-5h-reset': resetInHour(),
-      'anthropic-ratelimit-unified-7d_sonnet-status': 'allowed_warning',
-      'anthropic-ratelimit-unified-7d_sonnet-utilization': '0.95',
-      'anthropic-ratelimit-unified-7d_sonnet-reset': resetInWeek(),
+      'anthropic-ratelimit-unified-7d_oi-status': 'allowed_warning',
+      'anthropic-ratelimit-unified-7d_oi-utilization': '0.95',
+      'anthropic-ratelimit-unified-7d_oi-reset': resetInWeek(),
     },
   },
   'overage-entered-fresh': {
@@ -161,15 +161,15 @@ export const SCENARIOS: Record<ScenarioName, Scenario> = {
       'anthropic-ratelimit-unified-overage-in-use': 'true',
     },
   },
-  'sonnet-saturated-blocked': {
-    label: '7d Sonnet window exhausted (blocked)',
+  'fable-saturated-blocked': {
+    label: '7d Fable window exhausted (blocked)',
     messagesHeaders: {
       'anthropic-ratelimit-unified-5h-status': 'allowed',
       'anthropic-ratelimit-unified-5h-utilization': '0.20',
       'anthropic-ratelimit-unified-5h-reset': resetInHour(),
-      'anthropic-ratelimit-unified-7d_sonnet-status': 'blocked',
-      'anthropic-ratelimit-unified-7d_sonnet-utilization': '1.00',
-      'anthropic-ratelimit-unified-7d_sonnet-reset': resetInWeek(),
+      'anthropic-ratelimit-unified-7d_oi-status': 'blocked',
+      'anthropic-ratelimit-unified-7d_oi-utilization': '1.00',
+      'anthropic-ratelimit-unified-7d_oi-reset': resetInWeek(),
     },
   },
   'rate-limited-5h': {

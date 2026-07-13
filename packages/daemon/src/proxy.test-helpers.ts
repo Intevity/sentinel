@@ -219,7 +219,7 @@ export interface StartProxyOpts {
   enablePermissionsEnforcer?: boolean;
   /** When set, overrides the default tokenProvider (Auto switching). The
    *  helper's default tokenProvider returns null (fallback to activeToken). */
-  tokenProvider?: (ctx?: { isSonnet: boolean }) => TokenSelection | null;
+  tokenProvider?: (ctx?: { isFable: boolean }) => TokenSelection | null;
   /** Live accessors — wired straight into `createProxyServer`. */
   getPausedAccountIds?: () => ReadonlySet<string>;
   getPauseReason?: (accountId: string) => PauseReason | null;

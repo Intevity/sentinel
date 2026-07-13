@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { RateLimitWindow } from '@sentinel/shared';
+import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 
 type AllRateLimits = Record<string, RateLimitWindow[]>;
@@ -107,12 +108,12 @@ export function weeklyResetAt(windows: RateLimitWindow[] | undefined): number | 
 }
 
 /**
- * Extract the 7-day Sonnet-specific utilization (0..1), or null when absent.
- * Anthropic omits this header until the user consumes Sonnet, so `null`
+ * Extract the 7-day Fable-specific utilization (0..1), or null when absent.
+ * Anthropic omits this header until the user consumes Fable, so `null`
  * means "unknown" rather than "zero" — callers should not treat them the same.
  */
-export function weeklySonnetUtilization(windows: RateLimitWindow[] | undefined): number | null {
-  const w = windows?.find((x) => x.name === 'unified-7d_sonnet');
+export function weeklyFableUtilization(windows: RateLimitWindow[] | undefined): number | null {
+  const w = windows?.find((x) => x.name === FABLE_WEEKLY_WINDOW);
   if (!w) return null;
   if (w.utilization != null) return w.utilization;
   if (w.limit != null && w.remaining != null && w.limit > 0) {
@@ -122,11 +123,11 @@ export function weeklySonnetUtilization(windows: RateLimitWindow[] | undefined):
 }
 
 /**
- * Extract the Unix-seconds reset timestamp for the 7-day Sonnet window, or
- * null when absent. See {@link weeklySonnetUtilization} for the "unknown vs
+ * Extract the Unix-seconds reset timestamp for the 7-day Fable window, or
+ * null when absent. See {@link weeklyFableUtilization} for the "unknown vs
  * zero" distinction.
  */
-export function weeklySonnetResetAt(windows: RateLimitWindow[] | undefined): number | null {
-  const w = windows?.find((x) => x.name === 'unified-7d_sonnet');
+export function weeklyFableResetAt(windows: RateLimitWindow[] | undefined): number | null {
+  const w = windows?.find((x) => x.name === FABLE_WEEKLY_WINDOW);
   return w?.reset ?? null;
 }
