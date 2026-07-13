@@ -245,9 +245,7 @@ export class TokenRotator {
       // is one request away from a 429 whether or not overage exists to
       // catch it.
       const fableAtThreshold =
-        isFable &&
-        fableWindow?.utilization != null &&
-        fableWindow.utilization >= overageThreshold;
+        isFable && fableWindow?.utilization != null && fableWindow.utilization >= overageThreshold;
       const atOrAboveThreshold = util >= overageThreshold || fableAtThreshold;
       const overageActive = overageWindow?.inUse === true;
 
