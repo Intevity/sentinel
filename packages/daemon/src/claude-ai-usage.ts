@@ -11,7 +11,30 @@ import { fetchRunBudget } from './claude-ai-run-budget.js';
 interface RawUsageResponse {
   five_hour?: { utilization?: number; resets_at?: string | null } | null;
   seven_day?: { utilization?: number; resets_at?: string | null } | null;
-  seven_day_sonnet?: { utilization?: number; resets_at?: string | null } | null;
+  // The Fable weekly quota has NO dedicated top-level key (there is no
+  // `seven_day_fable`; the schema's per-model keys like `seven_day_opus` /
+  // `seven_day_sonnet` are all null on current plans). It is served only as
+  // a `limits[]` entry: kind `weekly_scoped` with
+  // `scope.model.display_name === 'Fable'`, utilization in `percent`
+  // (0-100 int scale, same as every other utilization here).
+  //
+  // Verified live 2026-07-13 against `/api/organizations/{org}/usage` (same
+  // schema family this endpoint mirrors): the weekly_scoped Fable entry's
+  // percent and resets_at tracked the `unified-7d_oi` response header on
+  // the same org in real time, while every top-level per-model key stayed
+  // null.
+  limits?: Array<{
+    kind?: string;
+    group?: string;
+    percent?: number;
+    severity?: string;
+    resets_at?: string | null;
+    scope?: {
+      model?: { id?: string | null; display_name?: string | null } | null;
+      surface?: unknown;
+    } | null;
+    is_active?: boolean;
+  } | null> | null;
   extra_usage?: {
     is_enabled?: boolean;
     monthly_limit?: number | null;
@@ -42,6 +65,14 @@ export type UsageFetchError =
 export interface UsageFetchResult {
   snapshot: ClaudeAiUsageSnapshot | null;
   error: UsageFetchError | null;
+  /** Set on HTTP 429: server-directed cooldown from the Retry-After header
+   *  (clamped, with a fallback when the header is absent/malformed). The
+   *  store uses it as the poll backoff instead of the 90s cadence —
+   *  polling through a 429 keeps the shared per-org budget pinned at zero
+   *  and starves every other consumer of the endpoint. Not a distinct
+   *  UsageFetchError variant: the UI's `network` treatment (keep last-known
+   *  numbers + transient warning) is already right for rate limiting. */
+  retryAfterMs?: number;
 }
 
 import { getAnthropicOrigin } from './hosts.js';
@@ -157,6 +188,20 @@ export async function fetchOrgUsage(
   if (resp.status === 401) {
     return { snapshot: null, error: 'auth_expired' };
   }
+  if (resp.status === 429) {
+    // Surface the server's Retry-After so the poller backs off instead of
+    // re-polling in 90s — hammering through a 429 holds the per-org budget
+    // at zero indefinitely (observed live: flat retry-after 3600 for days
+    // while three accounts polled every 90s). Non-numeric or absent header
+    // (the HTTP-date form, or nothing) falls back to a conservative wait;
+    // the clamp keeps a hostile/buggy header from parking an account.
+    const raSeconds = Number(resp.headers.get('retry-after'));
+    const retryAfterMs =
+      Number.isFinite(raSeconds) && raSeconds > 0
+        ? Math.min(raSeconds * 1000, RATE_LIMIT_MAX_BACKOFF_MS)
+        : RATE_LIMIT_FALLBACK_BACKOFF_MS;
+    return { snapshot: null, error: 'network', retryAfterMs };
+  }
   if (!resp.ok) {
     return { snapshot: null, error: 'network' };
   }
@@ -190,7 +235,14 @@ export async function fetchOrgUsage(
 export function parseUsage(raw: RawUsageResponse): ClaudeAiUsageSnapshot {
   const fiveHour = raw.five_hour ?? null;
   const sevenDay = raw.seven_day ?? null;
-  const sonnet = raw.seven_day_sonnet ?? null;
+  // Exact display_name match: if Anthropic renames the scope (or adds more
+  // weekly_scoped entries for other models), this degrades to "no Fable
+  // data" — the UI hides the bar — rather than showing another model's
+  // numbers under the Fable label.
+  const fable =
+    raw.limits?.find(
+      (l) => l?.kind === 'weekly_scoped' && l?.scope?.model?.display_name === 'Fable',
+    ) ?? null;
   const extra = raw.extra_usage ?? null;
 
   // claude.ai returns utilization as a percent on the 0-100 scale —
@@ -235,8 +287,8 @@ export function parseUsage(raw: RawUsageResponse): ClaudeAiUsageSnapshot {
     fiveHourResetsAt: fiveHour?.resets_at ?? null,
     sevenDayUtilization: utilFraction(sevenDay?.utilization),
     sevenDayResetsAt: sevenDay?.resets_at ?? null,
-    sevenDaySonnetUtilization: utilFraction(sonnet?.utilization),
-    sevenDaySonnetResetsAt: sonnet?.resets_at ?? null,
+    sevenDayFableUtilization: utilFraction(fable?.percent),
+    sevenDayFableResetsAt: fable?.resets_at ?? null,
     extraUsage,
     // Populated by fetchOrgUsage after parseUsage.
     perUserBudget: null,
@@ -255,11 +307,20 @@ function toUsd(minorUnits: number | null | undefined): number {
  *  inline forced refresh, and a failed refresh broadcasts
  *  `token_refresh_failed` → the UI's Re-authenticate banner. A tight
  *  cadence is what keeps Claude Code from blowing up on a dead token
- *  the user didn't know had been revoked. 90s strikes the balance —
- *  well above claude.ai's 429 threshold for a handful of accounts,
- *  fast enough that the yellow banner appears within a minute or two
- *  of server-side revocation even if the user never opens the tray. */
+ *  the user didn't know had been revoked. 90s is fast enough that the
+ *  yellow banner appears within a minute or two of server-side
+ *  revocation even if the user never opens the tray. It is NOT always
+ *  below the endpoint's 429 threshold (observed live 2026-07: three
+ *  accounts at 90s each held the per-org budget at zero for days) —
+ *  recordFailure's Retry-After backoff is what keeps a rate-limited
+ *  account from being polled straight back into the limit. */
 const POLL_INTERVAL_MS = 90 * 1000;
+/** 429 backoff when Retry-After is absent or unparseable (HTTP-date form).
+ *  Conservative: observed server cooldowns run 20-60 min. */
+const RATE_LIMIT_FALLBACK_BACKOFF_MS = 15 * 60 * 1000;
+/** Ceiling on a server-supplied Retry-After so a buggy header can't park
+ *  an account's polling for a day. */
+const RATE_LIMIT_MAX_BACKOFF_MS = 60 * 60 * 1000;
 /** Back-off after auth_expired — the refresh + retry happens inline in
  *  fetchOne, so by the time we land here we've already tried to recover.
  *  The long cooldown is for persistently-dead tokens where the refresher
@@ -420,7 +481,7 @@ export class ClaudeAiUsageStore {
           // Retry failed — fall through to recordFailure with the retry
           // result's error, so a still-auth_expired state records once
           // (no recursion) and other errors reflect the current failure.
-          this.recordFailure(accountId, retry.error ?? 'parse', force);
+          this.recordFailure(accountId, retry.error ?? 'parse', force, retry.retryAfterMs);
           return;
         }
       }
@@ -433,7 +494,7 @@ export class ClaudeAiUsageStore {
     }
 
     if (result.error) {
-      this.recordFailure(accountId, result.error, force);
+      this.recordFailure(accountId, result.error, force, result.retryAfterMs);
       return;
     }
     if (!result.snapshot) {
@@ -456,13 +517,24 @@ export class ClaudeAiUsageStore {
     this.fireSubscribers(accountId);
   }
 
-  private recordFailure(accountId: string, error: UsageFetchError, force: boolean): void {
-    // Per-error backoff. `force` (on-demand refresh) bypasses all cooldowns.
-    //   oauth_forbidden → 24h (policy change is manual; polling burns quota)
-    //   auth_expired    → 30min (refresh + retry already happened inline)
-    //   other           → 5min (normal poll cadence)
+  private recordFailure(
+    accountId: string,
+    error: UsageFetchError,
+    force: boolean,
+    retryAfterMs?: number,
+  ): void {
+    // Per-error backoff. `force` (on-demand refresh) bypasses all cooldowns
+    // EXCEPT a server-directed Retry-After — the user may re-click refresh
+    // anytime (refresh() always fetches), but the background poller must
+    // respect the 429 cooldown or it re-arms the rate limit forever.
+    //   429 w/ Retry-After → server-directed (clamped in fetchOrgUsage)
+    //   oauth_forbidden    → 24h (policy change is manual; polling burns quota)
+    //   auth_expired       → 30min (refresh + retry already happened inline)
+    //   other              → 5min (normal poll cadence)
     let backoff: number;
-    if (force) {
+    if (retryAfterMs != null) {
+      backoff = retryAfterMs;
+    } else if (force) {
       backoff = POLL_INTERVAL_MS;
     } else if (error === 'oauth_forbidden') {
       backoff = OAUTH_FORBIDDEN_BACKOFF_MS;

@@ -38,7 +38,7 @@ const SEED: Array<{ id: string; scenario: ScenarioName }> = [
   { id: 'acct-fresh', scenario: 'healthy-account' },
   { id: 'acct-warning', scenario: '5h-warning' },
   { id: 'acct-overage', scenario: 'overage-in-use' },
-  { id: 'acct-sonnet-saturation', scenario: 'sonnet-saturation' },
+  { id: 'acct-fable-saturation', scenario: 'fable-saturation' },
   { id: 'acct-overage-disabled', scenario: 'overage-disabled' },
 ];
 
@@ -155,11 +155,11 @@ describe('TokenRotator integration (real headers → store → rotator)', () => 
     expect(fresh?.utilization).toBeCloseTo(0.1, 1);
     expect(warning?.utilization).toBeCloseTo(0.92, 2);
 
-    // Sonnet scenario emits a `unified-7d_sonnet` window separately.
-    const sonnet = rateLimitStore
-      .getAll('acct-sonnet-saturation')
-      .find((w) => w.name === 'unified-7d_sonnet');
-    expect(sonnet?.utilization).toBeCloseTo(0.95, 2);
+    // Fable scenario emits a `unified-7d_oi` window separately.
+    const fable = rateLimitStore
+      .getAll('acct-fable-saturation')
+      .find((w) => w.name === 'unified-7d_oi');
+    expect(fable?.utilization).toBeCloseTo(0.95, 2);
 
     // overage-disabled's overage window should have status=disabled.
     const overageDisabled = rateLimitStore
@@ -171,9 +171,9 @@ describe('TokenRotator integration (real headers → store → rotator)', () => 
   it('rotator drains all fresh 5h quota before touching overage accounts', () => {
     const db = getDb(dbPath);
     // Pool down to the original three accounts so the existing invariant
-    // assertion stays crisp; the extra sonnet/overage-disabled accounts
+    // assertion stays crisp; the extra fable/overage-disabled accounts
     // would obscure the fresh-vs-overage contrast.
-    const excluded = new Set(['acct-sonnet-saturation', 'acct-overage-disabled']);
+    const excluded = new Set(['acct-fable-saturation', 'acct-overage-disabled']);
     const rotator = new TokenRotator(
       db,
       rateLimitStore,
@@ -217,30 +217,30 @@ describe('TokenRotator integration (real headers → store → rotator)', () => 
     expect(rotator.pick()).toBeNull();
   });
 
-  it('sonnet-saturated account is skipped when isSonnet=true without opt-in but selectable for Opus traffic', () => {
-    // sonnet-saturation scenario: 5h util 0.45 (fresh tier under buffer 10),
-    // unified-7d_sonnet util 0.95 (above 0.90 threshold), no overage window.
-    // isSonnet=true folds the sonnet window into the overage gate; with no
-    // overage window the account is unconditionally skipped. isSonnet=false
+  it('fable-saturated account is skipped when isFable=true without opt-in but selectable for Opus traffic', () => {
+    // fable-saturation scenario: 5h util 0.45 (fresh tier under buffer 10),
+    // unified-7d_oi util 0.95 (above 0.90 threshold), no overage window.
+    // isFable=true folds the fable window into the overage gate; with no
+    // overage window the account is unconditionally skipped. isFable=false
     // leaves it in the fresh tier.
     const db = getDb(dbPath);
-    const excluded = new Set(SEED.map((s) => s.id).filter((id) => id !== 'acct-sonnet-saturation'));
+    const excluded = new Set(SEED.map((s) => s.id).filter((id) => id !== 'acct-fable-saturation'));
     const rotator = new TokenRotator(
       db,
       rateLimitStore,
-      { value: 'acct-sonnet-saturation' },
+      { value: 'acct-fable-saturation' },
       () => excluded,
       () => new Set(), // not opted into overage
       () => new Set(),
       () => 10,
     );
 
-    // Sonnet request: at-threshold path, no overage → null.
-    expect(rotator.pick({ isSonnet: true })).toBeNull();
+    // Fable request: at-threshold path, no overage → null.
+    expect(rotator.pick({ isFable: true })).toBeNull();
 
     // Opus / ctx-less request: 5h util 0.45 < 0.90, stays in fresh tier.
-    expect(rotator.pick()?.accountId).toBe('acct-sonnet-saturation');
-    expect(rotator.pick({ isSonnet: false })?.accountId).toBe('acct-sonnet-saturation');
+    expect(rotator.pick()?.accountId).toBe('acct-fable-saturation');
+    expect(rotator.pick({ isFable: false })?.accountId).toBe('acct-fable-saturation');
   });
 
   it('overage-disabled account is never selected regardless of opt-in', () => {

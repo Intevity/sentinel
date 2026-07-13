@@ -71,12 +71,12 @@ export default function AlertsEditor({
   const hasAccountContext = Boolean(viewedInfo || activeAccount);
 
   const accountTarget: UseAlertsTarget = { scope: 'account', accountId };
-  const sonnetTarget: UseAlertsTarget = { scope: 'account-sonnet', accountId };
+  const fableTarget: UseAlertsTarget = { scope: 'account-fable', accountId };
   const weeklyTarget: UseAlertsTarget = { scope: 'account-weekly', accountId };
   const poolTarget: UseAlertsTarget = { scope: 'pool' };
   const poolWeeklyTarget: UseAlertsTarget = { scope: 'pool-weekly' };
   const perAccount = useAlerts(accountTarget);
-  const perAccountSonnet = useAlerts(sonnetTarget);
+  const perAccountFable = useAlerts(fableTarget);
   const perAccountWeekly = useAlerts(weeklyTarget);
   const pool = useAlerts(poolTarget);
   const poolWeekly = useAlerts(poolWeeklyTarget);
@@ -206,25 +206,25 @@ export default function AlertsEditor({
         />
       </SettingsCard>
 
-      {/* ── Per-account Sonnet 7-day alerts ─────────────────────── */}
+      {/* ── Per-account Fable 7-day alerts ─────────────────────── */}
       <SettingsCard
-        title="Sonnet 7-day alerts"
-        summary={describeAlertsSummary(perAccountSonnet.alerts, hasAccountContext)}
+        title="Fable 7-day alerts"
+        summary={describeAlertsSummary(perAccountFable.alerts, hasAccountContext)}
         defaultOpen={false}
       >
         <AlertList
-          emptyCopy="No Sonnet alerts yet. Add one to get notified before this account's Sonnet weekly quota spills into overage."
-          rowSuffix="of Sonnet 7-day usage"
-          unavailableCopy="Switch to an account to configure Sonnet alerts."
-          alerts={perAccountSonnet.alerts}
-          loading={perAccountSonnet.loading}
-          error={perAccountSonnet.error}
+          emptyCopy="No Fable alerts yet. Add one to get notified before this account's Fable weekly quota spills into overage."
+          rowSuffix="of Fable 7-day usage"
+          unavailableCopy="Switch to an account to configure Fable alerts."
+          alerts={perAccountFable.alerts}
+          loading={perAccountFable.loading}
+          error={perAccountFable.error}
           available={hasAccountContext}
           rowColor={rowInfo ? accountColor(rowInfo) : null}
-          create={perAccountSonnet.create}
-          update={perAccountSonnet.update}
-          toggle={perAccountSonnet.toggle}
-          remove={perAccountSonnet.remove}
+          create={perAccountFable.create}
+          update={perAccountFable.update}
+          toggle={perAccountFable.toggle}
+          remove={perAccountFable.remove}
         />
       </SettingsCard>
 

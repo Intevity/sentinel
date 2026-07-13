@@ -70,8 +70,8 @@ export function useNativeAlertNotifications(): void {
             ? `Sentinel: pool at ${msg.thresholdPct}%`
             : msg.scope === 'pool-weekly'
               ? `Sentinel: pool weekly at ${msg.thresholdPct}%`
-              : msg.scope === 'account-sonnet'
-                ? `Sentinel: ${msg.thresholdPct}% Sonnet usage reached`
+              : msg.scope === 'account-fable'
+                ? `Sentinel: ${msg.thresholdPct}% Fable usage reached`
                 : msg.scope === 'account-weekly'
                   ? `Sentinel: ${msg.thresholdPct}% weekly usage reached`
                   : `Sentinel: ${msg.thresholdPct}% usage reached`;
@@ -80,19 +80,19 @@ export function useNativeAlertNotifications(): void {
             ? `Auto pool has used ${pct}% on average across its 5-hour window.`
             : msg.scope === 'pool-weekly'
               ? `Auto pool has used ${pct}% on average across its 7-day window.`
-              : msg.scope === 'account-sonnet'
-                ? `Active account has used ${pct}% of its Sonnet 7-day window.`
+              : msg.scope === 'account-fable'
+                ? `Active account has used ${pct}% of its Fable 7-day window.`
                 : msg.scope === 'account-weekly'
                   ? `Active account has used ${pct}% of its weekly 7-day window.`
                   : `Active account has used ${pct}% of its 5-hour window.`;
         void fireNativeStandard(headline, body, soundName);
-      } else if (msg.type === 'sonnet_saturation_entered') {
+      } else if (msg.type === 'fable_saturation_entered') {
         if (overageOsNotify) {
           const short = msg.accountId.slice(0, 8);
           const pct = (msg.utilization * 100).toFixed(1);
           void fireNativeStandard(
-            'Sentinel: Sonnet 7-day saturated',
-            `${short}… at ${pct}% of Sonnet weekly quota. Further Sonnet requests will draw from overage.`,
+            'Sentinel: Fable 7-day saturated',
+            `${short}… at ${pct}% of Fable weekly quota. Further Fable requests will draw from overage.`,
             soundName,
           );
         }
@@ -288,7 +288,7 @@ export function useNotifications(params: UseNotificationsParams = {}): UseNotifi
         msg.type === 'alert_triggered' ||
         msg.type === 'overage_entered' ||
         msg.type === 'overage_disabled' ||
-        msg.type === 'sonnet_saturation_entered' ||
+        msg.type === 'fable_saturation_entered' ||
         msg.type === 'account_switched' ||
         msg.type === 'security_event_detected'
       ) {

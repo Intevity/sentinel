@@ -659,7 +659,7 @@ export default function SettingsPanel({
                       </span>
                     </div>
                     <p className="text-[10px] text-muted/80 leading-snug mb-2">
-                      Auto stops picking an account once its 5-hour (or Sonnet 7-day) utilization
+                      Auto stops picking an account once its 5-hour (or Fable 7-day) utilization
                       reaches {100 - settings.overageBufferPct}%. A larger buffer protects against a
                       single large request pushing you into overage; a smaller one squeezes more
                       pool throughput.
@@ -2175,7 +2175,7 @@ function ClaudeAiConnectionRow({
             </p>
             <p className="text-[10px] text-muted leading-snug">
               Auto picks this account for new requests after its 5-hour quota is exhausted, and lets
-              Sonnet requests through once the Sonnet 7-day quota is spent. Off: Sentinel refuses
+              Fable requests through once the Fable 7-day quota is spent. Off: Sentinel refuses
               either spillover with a 503.
             </p>
           </div>

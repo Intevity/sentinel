@@ -15,7 +15,7 @@ import {
 import { RateLimitStore } from './rate-limit-store.js';
 import {
   startAlertEvaluator,
-  startSonnetAlertEvaluator,
+  startFableAlertEvaluator,
   startWeeklyAlertEvaluator,
   startPoolAlertEvaluator,
   startWeeklyPoolAlertEvaluator,
@@ -1100,22 +1100,22 @@ describe('primeNewAlertAgainstCurrentWindow', () => {
   });
 });
 
-// ── account-sonnet scope ───────────────────────────────────────────────────
+// ── account-fable scope ───────────────────────────────────────────────────
 
-function updateSonnetWindow(
+function updateFableWindow(
   store: RateLimitStore,
   accountId: string,
   utilization: number,
   reset = 500,
 ): void {
   store.update(accountId, {
-    'anthropic-ratelimit-unified-7d_sonnet-status': 'allowed',
-    'anthropic-ratelimit-unified-7d_sonnet-utilization': String(utilization),
-    'anthropic-ratelimit-unified-7d_sonnet-reset': String(reset),
+    'anthropic-ratelimit-unified-7d_oi-status': 'allowed',
+    'anthropic-ratelimit-unified-7d_oi-utilization': String(utilization),
+    'anthropic-ratelimit-unified-7d_oi-reset': String(reset),
   });
 }
 
-describe('account-sonnet alerts', () => {
+describe('account-fable alerts', () => {
   let dbPath: string;
 
   beforeEach(() => {
@@ -1126,173 +1126,173 @@ describe('account-sonnet alerts', () => {
     if (existsSync(dbPath)) unlinkSync(dbPath);
   });
 
-  it('fires on the Sonnet 7-day window, not the 5-hour window', () => {
+  it('fires on the Fable 7-day window, not the 5-hour window', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();
     const ipc = ipcStub();
 
     upsertAlert(db, {
-      scope: 'account-sonnet',
+      scope: 'account-fable',
       accountId: 'acc-a',
       thresholdPct: 80,
       enabled: true,
     });
-    startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+    startFableAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
-    // 5-hour usage is high but irrelevant — we only care about Sonnet 7d.
+    // 5-hour usage is high but irrelevant — we only care about Fable 7d.
     updateSessionWindow(store, 'acc-a', 0.95);
-    // Sonnet at 90% — above 80% threshold → fire.
-    updateSonnetWindow(store, 'acc-a', 0.9, 500);
+    // Fable at 90% — above 80% threshold → fire.
+    updateFableWindow(store, 'acc-a', 0.9, 500);
 
     const fires = ipc.broadcasts.filter(
       (m): m is { type: string; scope: string } =>
         typeof m === 'object' && m !== null && (m as { type?: string }).type === 'alert_triggered',
     );
-    expect(fires.some((m) => (m as { scope?: string }).scope === 'account-sonnet')).toBe(true);
+    expect(fires.some((m) => (m as { scope?: string }).scope === 'account-fable')).toBe(true);
   });
 
-  it('does not re-fire within the same Sonnet window', () => {
+  it('does not re-fire within the same Fable window', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();
     const ipc = ipcStub();
 
     upsertAlert(db, {
-      scope: 'account-sonnet',
+      scope: 'account-fable',
       accountId: 'acc-a',
       thresholdPct: 80,
       enabled: true,
     });
-    startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+    startFableAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
-    updateSonnetWindow(store, 'acc-a', 0.85, 500);
-    updateSonnetWindow(store, 'acc-a', 0.95, 500);
-    updateSonnetWindow(store, 'acc-a', 0.99, 500);
+    updateFableWindow(store, 'acc-a', 0.85, 500);
+    updateFableWindow(store, 'acc-a', 0.95, 500);
+    updateFableWindow(store, 'acc-a', 0.99, 500);
 
     const fires = ipc.broadcasts.filter(
       (m): m is { scope: string } =>
         typeof m === 'object' &&
         m !== null &&
         (m as { type?: string }).type === 'alert_triggered' &&
-        (m as { scope?: string }).scope === 'account-sonnet',
+        (m as { scope?: string }).scope === 'account-fable',
     );
     expect(fires).toHaveLength(1);
   });
 
-  it('re-arms after the Sonnet window rolls over', () => {
+  it('re-arms after the Fable window rolls over', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();
     const ipc = ipcStub();
 
     upsertAlert(db, {
-      scope: 'account-sonnet',
+      scope: 'account-fable',
       accountId: 'acc-a',
       thresholdPct: 80,
       enabled: true,
     });
-    startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+    startFableAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
-    updateSonnetWindow(store, 'acc-a', 0.9, 500);
+    updateFableWindow(store, 'acc-a', 0.9, 500);
     // Window rolls over — new reset timestamp. A real 7-day rollover
     // advances the reset by 604800 sec; anything past the 7-day dedup
     // tolerance (302400 sec) counts as a new window.
-    updateSonnetWindow(store, 'acc-a', 0.9, 500 + 604_800);
+    updateFableWindow(store, 'acc-a', 0.9, 500 + 604_800);
 
     const fires = ipc.broadcasts.filter(
       (m): m is { scope: string } =>
         typeof m === 'object' &&
         m !== null &&
         (m as { type?: string }).type === 'alert_triggered' &&
-        (m as { scope?: string }).scope === 'account-sonnet',
+        (m as { scope?: string }).scope === 'account-fable',
     );
     expect(fires).toHaveLength(2);
   });
 
-  it('does not re-fire the Sonnet alert when reset jitters within the same window', () => {
+  it('does not re-fire the Fable alert when reset jitters within the same window', () => {
     // Regression: same cross-source skew that plagues unified-5h can affect
-    // unified-7d_sonnet too. Dedup tolerance must cover both.
+    // unified-7d_oi too. Dedup tolerance must cover both.
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();
     const ipc = ipcStub();
 
     upsertAlert(db, {
-      scope: 'account-sonnet',
+      scope: 'account-fable',
       accountId: 'acc-a',
       thresholdPct: 80,
       enabled: true,
     });
-    startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+    startFableAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
-    updateSonnetWindow(store, 'acc-a', 0.9, 1_776_909_600);
-    updateSonnetWindow(store, 'acc-a', 0.9, 1_776_909_601);
-    updateSonnetWindow(store, 'acc-a', 0.9, 1_776_909_600);
+    updateFableWindow(store, 'acc-a', 0.9, 1_776_909_600);
+    updateFableWindow(store, 'acc-a', 0.9, 1_776_909_601);
+    updateFableWindow(store, 'acc-a', 0.9, 1_776_909_600);
 
     const fires = ipc.broadcasts.filter(
       (m): m is { scope: string } =>
         typeof m === 'object' &&
         m !== null &&
         (m as { type?: string }).type === 'alert_triggered' &&
-        (m as { scope?: string }).scope === 'account-sonnet',
+        (m as { scope?: string }).scope === 'account-fable',
     );
     expect(fires).toHaveLength(1);
   });
 
-  it('does not fire when Sonnet util is below the threshold', () => {
+  it('does not fire when Fable util is below the threshold', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();
     const ipc = ipcStub();
 
     upsertAlert(db, {
-      scope: 'account-sonnet',
+      scope: 'account-fable',
       accountId: 'acc-a',
       thresholdPct: 80,
       enabled: true,
     });
-    startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+    startFableAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
-    updateSonnetWindow(store, 'acc-a', 0.6, 500);
+    updateFableWindow(store, 'acc-a', 0.6, 500);
 
     const fires = ipc.broadcasts.filter(
       (m): m is { scope: string } =>
         typeof m === 'object' &&
         m !== null &&
         (m as { type?: string }).type === 'alert_triggered' &&
-        (m as { scope?: string }).scope === 'account-sonnet',
+        (m as { scope?: string }).scope === 'account-fable',
     );
     expect(fires).toHaveLength(0);
   });
 
-  it('sonnet-scope priming suppresses first-fire when already above threshold', () => {
+  it('fable-scope priming suppresses first-fire when already above threshold', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();
-    updateSonnetWindow(store, 'acc-a', 0.95, 500);
+    updateFableWindow(store, 'acc-a', 0.95, 500);
 
     const alert = upsertAlert(db, {
-      scope: 'account-sonnet',
+      scope: 'account-fable',
       accountId: 'acc-a',
       thresholdPct: 80,
       enabled: true,
     });
     primeNewAlertAgainstCurrentWindow(db, store, alert);
 
-    const [row] = listAlerts(db, { scope: 'account-sonnet', accountId: 'acc-a' });
+    const [row] = listAlerts(db, { scope: 'account-fable', accountId: 'acc-a' });
     expect(row?.lastTriggeredResetTs).toBe(500);
 
     // Now verify a subsequent rate-limit update does NOT re-fire for this window.
     const ipc = ipcStub();
-    startSonnetAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
-    updateSonnetWindow(store, 'acc-a', 0.97, 500);
+    startFableAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
+    updateFableWindow(store, 'acc-a', 0.97, 500);
     const fires = ipc.broadcasts.filter(
       (m): m is { scope: string } =>
         typeof m === 'object' &&
         m !== null &&
         (m as { type?: string }).type === 'alert_triggered' &&
-        (m as { scope?: string }).scope === 'account-sonnet',
+        (m as { scope?: string }).scope === 'account-fable',
     );
     expect(fires).toHaveLength(0);
   });
@@ -1304,25 +1304,25 @@ describe('account-sonnet alerts', () => {
     const ipc = ipcStub();
 
     upsertAlert(db, {
-      scope: 'account-sonnet',
+      scope: 'account-fable',
       accountId: 'acc-a',
       thresholdPct: 80,
       enabled: true,
     });
-    startSonnetAlertEvaluator({
+    startFableAlertEvaluator({
       db,
       rateLimitStore: store,
       ipcServer: ipc as never,
       getSettings: () => rrSettings({ poolExcludedIds: ['acc-a'] }),
     });
 
-    updateSonnetWindow(store, 'acc-a', 0.95, 500);
+    updateFableWindow(store, 'acc-a', 0.95, 500);
     const fires = ipc.broadcasts.filter(
       (m): m is { scope: string } =>
         typeof m === 'object' &&
         m !== null &&
         (m as { type?: string }).type === 'alert_triggered' &&
-        (m as { scope?: string }).scope === 'account-sonnet',
+        (m as { scope?: string }).scope === 'account-fable',
     );
     expect(fires).toHaveLength(0);
   });
@@ -1334,12 +1334,12 @@ describe('account-sonnet alerts', () => {
     const ipc = ipcStub();
 
     upsertAlert(db, {
-      scope: 'account-sonnet',
+      scope: 'account-fable',
       accountId: 'acc-a',
       thresholdPct: 80,
       enabled: true,
     });
-    startSonnetAlertEvaluator({
+    startFableAlertEvaluator({
       db,
       rateLimitStore: store,
       ipcServer: ipc as never,
@@ -1350,13 +1350,13 @@ describe('account-sonnet alerts', () => {
       }),
     });
 
-    updateSonnetWindow(store, 'acc-a', 0.95, 500);
+    updateFableWindow(store, 'acc-a', 0.95, 500);
     const fires = ipc.broadcasts.filter(
       (m): m is { scope: string } =>
         typeof m === 'object' &&
         m !== null &&
         (m as { type?: string }).type === 'alert_triggered' &&
-        (m as { scope?: string }).scope === 'account-sonnet',
+        (m as { scope?: string }).scope === 'account-fable',
     );
     expect(fires).toHaveLength(1);
   });
@@ -1399,7 +1399,7 @@ describe('account-weekly alerts', () => {
     if (existsSync(dbPath)) unlinkSync(dbPath);
   });
 
-  it('fires on the general 7-day window, independent of the 5-hour and Sonnet windows', () => {
+  it('fires on the general 7-day window, independent of the 5-hour and Fable windows', () => {
     const db = getDb(dbPath);
     seedAccount(db, 'acc-a');
     const store = new RateLimitStore();
@@ -1413,9 +1413,9 @@ describe('account-weekly alerts', () => {
     });
     startWeeklyAlertEvaluator({ db, rateLimitStore: store, ipcServer: ipc as never });
 
-    // 5-hour and Sonnet saturated but should be ignored by this evaluator.
+    // 5-hour and Fable saturated but should be ignored by this evaluator.
     updateSessionWindow(store, 'acc-a', 0.99);
-    updateSonnetWindow(store, 'acc-a', 0.99, 500);
+    updateFableWindow(store, 'acc-a', 0.99, 500);
     // No weekly fire yet — evaluator reads 7d only, and we haven't pushed a
     // 7d header. Sanity check the isolation.
     expect(weeklyFires(ipc.broadcasts, 'account-weekly')).toHaveLength(0);

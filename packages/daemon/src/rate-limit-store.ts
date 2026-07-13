@@ -1,4 +1,5 @@
 import type { RateLimitWindow, ClaudeAiUsageSnapshot } from '@sentinel/shared';
+import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
 
 /**
  * In-memory store for rate limit windows parsed from anthropic-ratelimit-* response headers.
@@ -293,9 +294,9 @@ export class RateLimitStore {
     maybeSync('unified-5h', snapshot.fiveHourUtilization, snapshot.fiveHourResetsAt, null);
     maybeSync('unified-7d', snapshot.sevenDayUtilization, snapshot.sevenDayResetsAt, null);
     maybeSync(
-      'unified-7d_sonnet',
-      snapshot.sevenDaySonnetUtilization,
-      snapshot.sevenDaySonnetResetsAt,
+      FABLE_WEEKLY_WINDOW,
+      snapshot.sevenDayFableUtilization,
+      snapshot.sevenDayFableResetsAt,
       null,
     );
     if (snapshot.extraUsage?.isEnabled) {

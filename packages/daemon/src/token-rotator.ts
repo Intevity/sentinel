@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3';
+import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
 import { listAccounts } from './db.js';
 import { readActiveCredentials, readSentinelCredentials } from './accounts.js';
 import type { RateLimitStore } from './rate-limit-store.js';
@@ -10,11 +11,11 @@ const SESSION_WINDOW = 'unified-5h';
 /** Name of the overage RateLimitWindow as reported by Anthropic headers. */
 const OVERAGE_WINDOW = 'unified-overage';
 
-/** Sonnet's weekly quota on Max plans. When this saturates, subsequent
- *  Sonnet requests spill into overage even if `unified-5h` has room. The
- *  rotator consults it only for Sonnet-model requests so Opus traffic
+/** Fable's weekly quota on Max plans. When this saturates, subsequent
+ *  Fable requests spill into overage even if `unified-5h` has room. The
+ *  rotator consults it only for Fable-model requests so Opus traffic
  *  stays unaffected. */
-const SONNET_WINDOW = 'unified-7d_sonnet';
+const FABLE_WINDOW = FABLE_WEEKLY_WINDOW;
 
 /** Two `unified-5h` resets within this many seconds count as the same
  *  window boundary. The store has two writers for the reset value — API
@@ -156,13 +157,13 @@ export class TokenRotator {
    * the class docstring). Returns null when every account is unavailable or
    * the pool is empty.
    *
-   * `ctx.isSonnet` routes through the same overage gate with the Sonnet
-   * 7-day window folded in: an account whose Sonnet 7d utilization is at
+   * `ctx.isFable` routes through the same overage gate with the Fable
+   * 7-day window folded in: an account whose Fable 7d utilization is at
    * or above the threshold is treated as "will draw overage for this
-   * request" and subject to the same opt-in. Non-Sonnet requests
-   * (undefined or `isSonnet: false`) bypass this branch so Opus traffic
-   * is unaffected. Missing `unified-7d_sonnet` on an account is treated
-   * as "not saturated" (the account has no observed Sonnet usage yet).
+   * request" and subject to the same opt-in. Non-Fable requests
+   * (undefined or `isFable: false`) bypass this branch so Opus traffic
+   * is unaffected. Missing `unified-7d_oi` on an account is treated
+   * as "not saturated" (the account has no observed Fable usage yet).
    *
    * Account eligibility (in order):
    *   1. Pool membership (not in `poolExcludedIds`, has a token) — handled in
@@ -179,10 +180,10 @@ export class TokenRotator {
    *      Claude Code hits 100% and stalls. The rotator always drains the
    *      fresh tier before touching the overage tier.
    */
-  pick(ctx?: { isSonnet: boolean }): RotatedCredential | null {
+  pick(ctx?: { isFable: boolean }): RotatedCredential | null {
     if (this.pool.length === 0) return null;
 
-    const isSonnet = ctx?.isSonnet === true;
+    const isFable = ctx?.isFable === true;
     const overageAllowed = this.getOverageAllowedIds();
     const paused = this.getPausedAccountIds();
     // Buffer is read once per pick(). Clamp here so malformed settings
@@ -202,9 +203,9 @@ export class TokenRotator {
     const overage: { idx: number; util: number; reset: number }[] = [];
     const now = this.nowSec();
     // Set when the earliest-reset sticky account is pushed out of the
-    // fresh tier solely by the Sonnet 7d gate for THIS request — its 5h
+    // fresh tier solely by the Fable 7d gate for THIS request — its 5h
     // window still has room, so the sticky must survive the detour.
-    let stickySonnetEjected = false;
+    let stickyFableEjected = false;
 
     for (let i = 0; i < this.pool.length; i++) {
       const entry = this.pool[i]!;
@@ -212,7 +213,7 @@ export class TokenRotator {
       const windows = this.rateLimitStore.getAll(entry.accountId);
       const sessionWindow = windows.find((w) => w.name === SESSION_WINDOW);
       const overageWindow = windows.find((w) => w.name === OVERAGE_WINDOW);
-      const sonnetWindow = windows.find((w) => w.name === SONNET_WINDOW);
+      const fableWindow = windows.find((w) => w.name === FABLE_WINDOW);
       const util = sessionWindow?.utilization ?? 0;
       // A reset that is missing OR already behind the clock carries no
       // scheduling information: the stored window has expired, and the
@@ -237,27 +238,25 @@ export class TokenRotator {
         continue;
       }
       // Partitioning runs in two steps. First: is this account out of the
-      // fresh tier? That's true whenever its 5h (or Sonnet 7d, for Sonnet
+      // fresh tier? That's true whenever its 5h (or Fable 7d, for Fable
       // requests) utilization is at or above the buffer threshold — or the
       // overage window shows `in-use` already. The buffer is keep-alive
       // headroom as much as it is an overage-cost guard: an account at 99%
       // is one request away from a 429 whether or not overage exists to
       // catch it.
-      const sonnetAtThreshold =
-        isSonnet &&
-        sonnetWindow?.utilization != null &&
-        sonnetWindow.utilization >= overageThreshold;
-      const atOrAboveThreshold = util >= overageThreshold || sonnetAtThreshold;
+      const fableAtThreshold =
+        isFable && fableWindow?.utilization != null && fableWindow.utilization >= overageThreshold;
+      const atOrAboveThreshold = util >= overageThreshold || fableAtThreshold;
       const overageActive = overageWindow?.inUse === true;
 
       if (atOrAboveThreshold || overageActive) {
         if (
           entry.accountId === this.earliestResetStickyId &&
-          sonnetAtThreshold &&
+          fableAtThreshold &&
           util < overageThreshold &&
           !overageActive
         ) {
-          stickySonnetEjected = true;
+          stickyFableEjected = true;
         }
         // Second step: eligible for the overage tier? Only when overage is
         // actually available on this account (claude.ai hasn't disabled it,
@@ -305,12 +304,12 @@ export class TokenRotator {
       ) {
         return this.pool[sticky.idx]!;
       }
-      // The sticky account was pushed out of the tier by the Sonnet 7d
+      // The sticky account was pushed out of the tier by the Fable 7d
       // gate for THIS request only — its 5h window still has room.
       // Serve the request from the runner-up without re-targeting, so
-      // non-Sonnet traffic keeps draining the sticky account instead of
+      // non-Fable traffic keeps draining the sticky account instead of
       // the target flip-flopping with every model change.
-      if (!sticky && stickySonnetEjected) {
+      if (!sticky && stickyFableEjected) {
         return this.pool[ranked[0]!.idx]!;
       }
     }

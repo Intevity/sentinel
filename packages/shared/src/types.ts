@@ -75,18 +75,18 @@ export interface UsageEvent {
 export type OverageTransition = 'entered' | 'exited' | 'disabled';
 
 /**
- * Sonnet-specific saturation transitions.
+ * Fable-specific saturation transitions.
  *
- *   entered — utilization on `unified-7d_sonnet` crossed the overage-buffer
- *             threshold (default 95%). The next Sonnet request on this
+ *   entered — utilization on `unified-7d_oi` crossed the overage-buffer
+ *             threshold (default 95%). The next Fable request on this
  *             account will draw from the monthly overage budget unless the
  *             account is opted into overage via `overageEnabledIds`.
  *   exited  — utilization fell back below the threshold (window rollover).
  *
- * Dedup is per reset timestamp on the Sonnet window, so a single
+ * Dedup is per reset timestamp on the Fable window, so a single
  * saturation episode produces at most one entered + one exited.
  */
-export type SonnetSaturationTransition = 'entered' | 'exited';
+export type FableSaturationTransition = 'entered' | 'exited';
 
 /**
  * A recorded transition in the overage state machine
@@ -1660,15 +1660,16 @@ export const ALERT_SOUNDS_WINDOWS: ReadonlyArray<{ label: string; value: string 
  * Scope for a user-configured usage alert.
  *   account        — bound to a single Sentinel account key; fires on that
  *                    account's unified-5h utilization.
- *   account-sonnet — bound to a single Sentinel account key; fires on that
- *                    account's unified-7d_sonnet utilization (Sonnet's
- *                    weekly pool on Max plans). Distinct from `account` so
- *                    a user can configure 5-hour and Sonnet 7-day
+ *   account-fable — bound to a single Sentinel account key; fires on that
+ *                    account's unified-7d_oi utilization (Fable's
+ *                    separately-tracked weekly pool). Distinct from `account`
+ *                    so a user can configure 5-hour and Fable 7-day
  *                    thresholds independently on the same account.
  *   account-weekly — bound to a single Sentinel account key; fires on that
- *                    account's unified-7d utilization (the general weekly
- *                    quota that caps Opus and other non-Sonnet models).
- *                    Parallel to `account-sonnet` but reads the general
+ *                    account's unified-7d utilization (the general "All
+ *                    Models" weekly quota that now caps every model,
+ *                    Sonnet included, since Anthropic folded Sonnet into it).
+ *                    Parallel to `account-fable` but reads the general
  *                    7-day window; users frequently want distinct
  *                    thresholds for the two weekly quotas.
  *   pool           — Auto mode only; fires on the mean unified-5h
@@ -1688,7 +1689,7 @@ export const ALERT_SOUNDS_WINDOWS: ReadonlyArray<{ label: string; value: string 
  */
 export type AlertScope =
   | 'account'
-  | 'account-sonnet'
+  | 'account-fable'
   | 'account-weekly'
   | 'pool'
   | 'pool-weekly'
@@ -1767,13 +1768,28 @@ export interface OverageHeaders {
 }
 
 /**
+ * The rate-limit window name for the separately-tracked Fable weekly quota.
+ * Anthropic dropped the old per-Sonnet weekly window (folded into the general
+ * "All Models" `unified-7d`) and now tracks Fable on its own weekly window.
+ *
+ * `_oi` is Anthropic's wire tag for this window, NOT the `_fable` the naming
+ * convention would suggest. Verified live 2026-07-10 against captured
+ * `anthropic-ratelimit-*` response headers: every `claude-fable-5` request
+ * carried `unified-7d_oi` and no `claude-opus-4-8` request did (20/20 vs
+ * 0/385 over 3 h of proxy traffic). On the claude.ai usage JSON the same
+ * window has no top-level key; it is served via the `limits[]` array —
+ * parser in claude-ai-usage.ts.
+ */
+export const FABLE_WEEKLY_WINDOW = 'unified-7d_oi';
+
+/**
  * A single rate limit window parsed from anthropic-ratelimit-* response headers.
  *
  * Subscription plans (Pro/Max/Team) use utilization (0–1 fraction) with no
  * absolute counts. API-key plans use limit + remaining instead.
  */
 export interface RateLimitWindow {
-  /** e.g. "unified-5h", "unified-7d", "unified-7d_sonnet", "tokens", "requests" */
+  /** e.g. "unified-5h", "unified-7d", "unified-7d_oi", "tokens", "requests" */
   name: string;
   /** "allowed" | "blocked" | null */
   status: string | null;

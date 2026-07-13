@@ -1,26 +1,26 @@
-import type { SonnetSaturationTransition } from '@sentinel/shared';
+import type { FableSaturationTransition } from '@sentinel/shared';
 
 /**
- * Event emitted when an account's Sonnet 7-day utilization crosses (or
+ * Event emitted when an account's Fable 7-day utilization crosses (or
  * falls back below) the user-configured overage-buffer threshold.
  *
  *   entered — utilization went from below-threshold to at-or-above. The
- *             next Sonnet request on this account will draw from the
+ *             next Fable request on this account will draw from the
  *             monthly overage budget unless the account is opted in.
  *   exited  — utilization fell back below the threshold (window rollover).
  */
-export type SonnetSaturationEvent = {
+export type FableSaturationEvent = {
   accountId: string;
-  transition: SonnetSaturationTransition;
+  transition: FableSaturationTransition;
   /** Utilization fraction 0-1 at the time of the transition. */
   utilization: number;
-  /** Unix seconds when the Sonnet 7-day window resets. Null when the
+  /** Unix seconds when the Fable 7-day window resets. Null when the
    *  header didn't carry a reset value (unlikely in practice but possible
    *  for claude.ai snapshots that pre-date live headers). */
   resetsAt: number | null;
 };
 
-export type SonnetTransitionHandler = (event: SonnetSaturationEvent) => void;
+export type FableTransitionHandler = (event: FableSaturationEvent) => void;
 
 /** Per-window fired-transitions cache. Keyed by `resetsAt`; within a
  *  window, each transition type fires at most once. A new `resetsAt`
@@ -28,7 +28,7 @@ export type SonnetTransitionHandler = (event: SonnetSaturationEvent) => void;
  *  pattern used by `OverageStateMachine`. */
 type FiredWindow = {
   resetsAt: number | null;
-  transitions: Set<SonnetSaturationTransition>;
+  transitions: Set<FableSaturationTransition>;
 };
 
 type AccountState = {
@@ -37,10 +37,10 @@ type AccountState = {
 };
 
 /**
- * In-memory state machine tracking Sonnet 7-day window saturation per
- * account. Sonnet has its own weekly quota on Max plans (the
- * `unified-7d_sonnet` rate-limit window); when that quota exhausts,
- * subsequent Sonnet requests draw from the monthly overage budget even if
+ * In-memory state machine tracking Fable 7-day window saturation per
+ * account. Fable has its own weekly quota on Max plans (the
+ * `unified-7d_oi` rate-limit window); when that quota exhausts,
+ * subsequent Fable requests draw from the monthly overage budget even if
  * `unified-5h` still has room. This machine fires edge-triggered
  * transitions so the daemon can surface a native notification and persist
  * a timeline entry, and so the proxy's short-circuit can make request
@@ -51,17 +51,17 @@ type AccountState = {
  * on a stored utilization value rather than a single boolean header like
  * overage `in-use`.
  */
-export class SonnetSaturationMachine {
+export class FableSaturationMachine {
   private readonly states = new Map<string, AccountState>();
   private readonly fired = new Map<string, FiredWindow>();
-  private readonly handlers: SonnetTransitionHandler[] = [];
+  private readonly handlers: FableTransitionHandler[] = [];
 
-  onTransition(handler: SonnetTransitionHandler): void {
+  onTransition(handler: FableTransitionHandler): void {
     this.handlers.push(handler);
   }
 
   /**
-   * Feed the current Sonnet window snapshot for an account and fire any
+   * Feed the current Fable window snapshot for an account and fire any
    * transition that crossed relative to the previous call.
    *
    * `thresholdPct` is the overage-buffer threshold expressed as a percent
@@ -77,7 +77,7 @@ export class SonnetSaturationMachine {
     utilization: number | null,
     resetsAt: number | null,
     thresholdPct: number,
-  ): SonnetSaturationEvent | null {
+  ): FableSaturationEvent | null {
     if (utilization == null) return null;
 
     const threshold = Math.max(0, Math.min(100, thresholdPct)) / 100;
@@ -86,7 +86,7 @@ export class SonnetSaturationMachine {
 
     this.states.set(accountId, { isSaturated, resetsAt });
 
-    let transition: SonnetSaturationTransition | null = null;
+    let transition: FableSaturationTransition | null = null;
     if (isSaturated && (prev === undefined || !prev.isSaturated)) {
       transition = 'entered';
     } else if (!isSaturated && prev !== undefined && prev.isSaturated) {
@@ -114,7 +114,7 @@ export class SonnetSaturationMachine {
     if (window.transitions.has(transition)) return null;
     window.transitions.add(transition);
 
-    const event: SonnetSaturationEvent = {
+    const event: FableSaturationEvent = {
       accountId,
       transition,
       utilization,
@@ -132,7 +132,7 @@ export class SonnetSaturationMachine {
   rehydrate(
     accountId: string,
     state: { isSaturated: boolean; resetsAt: number | null },
-    transitions: SonnetSaturationTransition[],
+    transitions: FableSaturationTransition[],
   ): void {
     this.states.set(accountId, { isSaturated: state.isSaturated, resetsAt: state.resetsAt });
     this.fired.set(accountId, {
@@ -150,7 +150,7 @@ export class SonnetSaturationMachine {
   }
 
   /**
-   * True when the account's last known Sonnet utilization was at or above
+   * True when the account's last known Fable utilization was at or above
    * the threshold. False when unknown or below. Used by the proxy's
    * short-circuit and the rotator's overage tier.
    */
@@ -160,27 +160,27 @@ export class SonnetSaturationMachine {
 }
 
 /**
- * Build the notification body for an `entered` Sonnet saturation event.
+ * Build the notification body for an `entered` Fable saturation event.
  * Pure so the wiring in index.ts can stay simple and the two copy paths
  * stay unit-tested. `who` is whatever identifier the UI should show
  * (email preferred, account id fallback).
  *
  * The two branches reflect what Sentinel will actually do next:
  *
- *   optedIn  — proxy lets further Sonnet requests through; Anthropic
+ *   optedIn  — proxy lets further Fable requests through; Anthropic
  *              bills them against the monthly overage pool.
- *   not-in   — proxy's Sonnet short-circuit returns 503 for further
- *              Sonnet requests on this account, so the accurate message
+ *   not-in   — proxy's Fable short-circuit returns 503 for further
+ *              Fable requests on this account, so the accurate message
  *              is "will be blocked", not "will draw from overage".
  */
-export function buildSonnetSaturationBody(
+export function buildFableSaturationBody(
   who: string,
   utilization: number,
   optedIn: boolean,
 ): string {
   const pct = (utilization * 100).toFixed(1);
   if (optedIn) {
-    return `${who} has used ${pct}% of its Sonnet 7-day window. Further Sonnet requests will draw from overage.`;
+    return `${who} has used ${pct}% of its Fable 7-day window. Further Fable requests will draw from overage.`;
   }
-  return `${who} has used ${pct}% of its Sonnet 7-day window. Further Sonnet requests will be blocked by Sentinel. Switch accounts, use a non-Sonnet model, or enable overage in Settings.`;
+  return `${who} has used ${pct}% of its Fable 7-day window. Further Fable requests will be blocked by Sentinel. Switch accounts, use a non-Fable model, or enable overage in Settings.`;
 }

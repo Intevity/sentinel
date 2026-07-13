@@ -76,8 +76,11 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
       const result = await fetchOrgUsage('org-1', TOKEN);
       expect(result.error).toBeNull();
       expect(result.snapshot).not.toBeNull();
-      // Default fake body is `five_hour.utilization: 0.1`, scaled by /100.
-      expect(result.snapshot!.fiveHourUtilization).toBeCloseTo(0.001, 6);
+      // Default fake body is `five_hour.utilization: 18` (percent), scaled by /100.
+      expect(result.snapshot!.fiveHourUtilization).toBeCloseTo(0.18, 6);
+      // The Fable weekly window comes from the limits[] weekly_scoped entry
+      // (percent: 6 in the fake's default body), not a top-level key.
+      expect(result.snapshot!.sevenDayFableUtilization).toBeCloseTo(0.06, 6);
     });
 
     it('returns oauth_forbidden on 403 permission_error body', async () => {
@@ -141,6 +144,41 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
       fake.queueResponse('/api/oauth/usage', { status: 500, body: '' });
       const result = await fetchOrgUsage('org-1', TOKEN);
       expect(result).toEqual({ snapshot: null, error: 'network' });
+    });
+
+    it('returns network + retryAfterMs from the Retry-After header on 429', async () => {
+      fake.queueResponse('/api/oauth/usage', {
+        status: 429,
+        body: { error: { type: 'rate_limit_error', message: 'Rate limited.' } },
+        extraHeaders: { 'retry-after': '120' },
+      });
+      const result = await fetchOrgUsage('org-1', TOKEN);
+      expect(result).toEqual({ snapshot: null, error: 'network', retryAfterMs: 120_000 });
+    });
+
+    it('falls back to 15min retryAfterMs when the Retry-After header is absent or non-numeric', async () => {
+      fake.queueResponse('/api/oauth/usage', { status: 429, body: '' });
+      const noHeader = await fetchOrgUsage('org-1', TOKEN);
+      expect(noHeader.retryAfterMs).toBe(15 * 60 * 1000);
+
+      // HTTP-date form of Retry-After is valid per spec but not worth parsing.
+      fake.queueResponse('/api/oauth/usage', {
+        status: 429,
+        body: '',
+        extraHeaders: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' },
+      });
+      const dateHeader = await fetchOrgUsage('org-1', TOKEN);
+      expect(dateHeader.retryAfterMs).toBe(15 * 60 * 1000);
+    });
+
+    it('clamps an oversized Retry-After to the 60min ceiling', async () => {
+      fake.queueResponse('/api/oauth/usage', {
+        status: 429,
+        body: '',
+        extraHeaders: { 'retry-after': '999999' },
+      });
+      const result = await fetchOrgUsage('org-1', TOKEN);
+      expect(result.retryAfterMs).toBe(60 * 60 * 1000);
     });
 
     it('returns parse on malformed JSON body', async () => {
@@ -451,6 +489,71 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
       clock += 25 * 60 * 60 * 1000;
       await poll();
       expect(fake.requests().filter((r) => r.url === '/api/oauth/usage').length).toBe(baseline + 1);
+    });
+
+    it('honors Retry-After on 429: skips ticks during the cooldown, resumes after', async () => {
+      writeSentinelCredentials('acct-1', makeCreds({ accessToken: TOKEN }));
+      fake.queueResponse('/api/oauth/usage', {
+        status: 429,
+        body: { error: { type: 'rate_limit_error', message: 'Rate limited.' } },
+        extraHeaders: { 'retry-after': '600' },
+      });
+
+      let clock = 1_000_000;
+      const store = new ClaudeAiUsageStore({
+        ipcServer,
+        getOrgUuid: () => 'org-1',
+        getAccountIds: () => ['acct-1'],
+        now: () => clock,
+      });
+      const poll = () => (store as unknown as { tick(): Promise<void> }).tick();
+
+      await poll();
+      expect(store.getLastError('acct-1')).toBe('network');
+      const baseline = fake.requests().filter((r) => r.url === '/api/oauth/usage').length;
+      expect(baseline).toBe(1);
+
+      // 5min elapsed: still inside the server's 600s cooldown. The old
+      // behavior (90s poll cadence, no 429 backoff) would refetch here and
+      // hold the shared budget at zero — this tick must NOT hit the wire.
+      clock += 5 * 60 * 1000;
+      await poll();
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage')).toHaveLength(baseline);
+
+      // Past the 600s Retry-After: polling resumes.
+      clock += 6 * 60 * 1000;
+      await poll();
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage').length).toBe(baseline + 1);
+      // The resumed fetch hit the fake's default 200 body — snapshot stored.
+      expect(store.getSnapshot('acct-1')).not.toBeNull();
+      expect(store.getLastError('acct-1')).toBeNull();
+    });
+
+    it('applies the Retry-After cooldown even when the 429 came from a forced refresh', async () => {
+      writeSentinelCredentials('acct-1', makeCreds({ accessToken: TOKEN }));
+      fake.queueResponse('/api/oauth/usage', {
+        status: 429,
+        body: '',
+        extraHeaders: { 'retry-after': '600' },
+      });
+
+      let clock = 1_000_000;
+      const store = new ClaudeAiUsageStore({
+        ipcServer,
+        getOrgUuid: () => 'org-1',
+        getAccountIds: () => ['acct-1'],
+        now: () => clock,
+      });
+      const poll = () => (store as unknown as { tick(): Promise<void> }).tick();
+
+      // User-initiated refresh trips the 429. Force bypasses cooldown for
+      // the refresh itself, but the resulting cooldown must still gate the
+      // background poller — otherwise a UI mount-refresh re-arms the limit.
+      await store.refresh('acct-1');
+      const baseline = fake.requests().filter((r) => r.url === '/api/oauth/usage').length;
+      clock += 90 * 1000;
+      await poll();
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage')).toHaveLength(baseline);
     });
   });
 });

@@ -287,13 +287,13 @@ function rateLimits() {
     'org-acme': [
       win('unified-5h', 0.62, Math.round(2.4 * HOUR)),
       win('unified-7d', 0.38, Math.round(4.1 * DAY)),
-      win('unified-7d_sonnet', 0.71, Math.round(2.4 * HOUR)),
+      win('unified-7d_oi', 0.71, Math.round(2.4 * HOUR)),
       win('unified-overage', 0.42, Math.round(12 * DAY)),
     ],
     'org-acme-team': [
       win('unified-5h', 0.41, Math.round(3.2 * HOUR)),
       win('unified-7d', 0.55, Math.round(5.0 * DAY)),
-      win('unified-7d_sonnet', 0.33, Math.round(3.2 * HOUR)),
+      win('unified-7d_oi', 0.33, Math.round(3.2 * HOUR)),
     ],
     'usr-side': [
       win('unified-5h', 0.78, Math.round(1.3 * HOUR)),
@@ -310,8 +310,8 @@ function claudeAiUsage(accountId) {
       fiveHourResetsAt: iso(2.4),
       sevenDayUtilization: 0.38,
       sevenDayResetsAt: iso(98),
-      sevenDaySonnetUtilization: 0.71,
-      sevenDaySonnetResetsAt: iso(2.4),
+      sevenDayFableUtilization: 0.71,
+      sevenDayFableResetsAt: iso(2.4),
       extraUsage: {
         isEnabled: true,
         limitUsd: 100,
@@ -327,8 +327,8 @@ function claudeAiUsage(accountId) {
       fiveHourResetsAt: iso(3.2),
       sevenDayUtilization: 0.55,
       sevenDayResetsAt: iso(120),
-      sevenDaySonnetUtilization: 0.33,
-      sevenDaySonnetResetsAt: iso(3.2),
+      sevenDayFableUtilization: 0.33,
+      sevenDayFableResetsAt: iso(3.2),
       extraUsage: {
         isEnabled: true,
         limitUsd: 500,
@@ -344,8 +344,8 @@ function claudeAiUsage(accountId) {
       fiveHourResetsAt: iso(1.3),
       sevenDayUtilization: 0.62,
       sevenDayResetsAt: iso(62),
-      sevenDaySonnetUtilization: null,
-      sevenDaySonnetResetsAt: null,
+      sevenDayFableUtilization: null,
+      sevenDayFableResetsAt: null,
       extraUsage: null,
       perUserBudget: null,
       fetchedAt: MS(),

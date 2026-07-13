@@ -112,31 +112,31 @@ describe('RateLimitStore integration (scenario headers → proxy → store)', ()
     expect(overage?.inUse).toBe(false);
   });
 
-  it('sonnet-saturation: window name with underscore (unified-7d_sonnet) round-trips intact', async () => {
+  it('fable-saturation: window name with underscore (unified-7d_oi) round-trips intact', async () => {
     // The regex at rate-limit-store.ts:54-58 captures the window name
-    // greedily, which is the only way `unified-7d_sonnet` parses without
+    // greedily, which is the only way `unified-7d_oi` parses without
     // splitting on the underscore. This test proves the wire shape holds.
-    ctx = await startProxyWithFake({ scenario: 'sonnet-saturation' });
+    ctx = await startProxyWithFake({ scenario: 'fable-saturation' });
     await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
     await letHeadersSettle();
 
     const windows = ctx.rateLimitStore.getAll(ctx.activeAccountId.value);
-    const sonnet = windows.find((w) => w.name === 'unified-7d_sonnet');
-    expect(sonnet, 'unified-7d_sonnet window must round-trip').toBeDefined();
-    expect(sonnet?.utilization).toBeCloseTo(0.95, 2);
-    expect(sonnet?.status).toBe('allowed_warning');
+    const fable = windows.find((w) => w.name === 'unified-7d_oi');
+    expect(fable, 'unified-7d_oi window must round-trip').toBeDefined();
+    expect(fable?.utilization).toBeCloseTo(0.95, 2);
+    expect(fable?.status).toBe('allowed_warning');
   });
 
-  it('sonnet-saturated-blocked: unified-7d_sonnet at util=1.0 parsed with status=blocked', async () => {
-    ctx = await startProxyWithFake({ scenario: 'sonnet-saturated-blocked' });
+  it('fable-saturated-blocked: unified-7d_oi at util=1.0 parsed with status=blocked', async () => {
+    ctx = await startProxyWithFake({ scenario: 'fable-saturated-blocked' });
     await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
     await letHeadersSettle();
 
-    const sonnet = ctx.rateLimitStore
+    const fable = ctx.rateLimitStore
       .getAll(ctx.activeAccountId.value)
-      .find((w) => w.name === 'unified-7d_sonnet');
-    expect(sonnet?.status).toBe('blocked');
-    expect(sonnet?.utilization).toBeCloseTo(1.0, 2);
+      .find((w) => w.name === 'unified-7d_oi');
+    expect(fable?.status).toBe('blocked');
+    expect(fable?.utilization).toBeCloseTo(1.0, 2);
   });
 
   it('rate-limited-5h: 429 upstream still populates the store from the headers on the error response', async () => {

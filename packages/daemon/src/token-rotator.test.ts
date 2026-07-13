@@ -694,7 +694,7 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     expect(rotator.pick()?.accountId).toBe('a');
   });
 
-  it('keeps the non-Sonnet target while Sonnet requests detour around its saturated Sonnet window', () => {
+  it('keeps the non-Fable target while Fable requests detour around its saturated Fable window', () => {
     const db = getDb(dbPath);
     seed(db, 'a', 'a@x');
     seed(db, 'b', 'b@x');
@@ -702,18 +702,18 @@ describe('TokenRotator (earliest-reset strategy)', () => {
     setResetAndUtil(store, 'a', 10_000, 0.3);
     setResetAndUtil(store, 'b', 10_000, 0.31);
     store.update('a', {
-      'anthropic-ratelimit-unified-7d_sonnet-status': 'allowed',
-      'anthropic-ratelimit-unified-7d_sonnet-utilization': '1.0',
-      'anthropic-ratelimit-unified-7d_sonnet-reset': '99000',
+      'anthropic-ratelimit-unified-7d_oi-status': 'allowed',
+      'anthropic-ratelimit-unified-7d_oi-utilization': '1.0',
+      'anthropic-ratelimit-unified-7d_oi-reset': '99000',
     });
     const rotator = makeRotator(db, store);
     expect(rotator.pick()?.accountId).toBe('a');
-    // Sonnet requests detour to b (a's Sonnet 7d is saturated, no overage
+    // Fable requests detour to b (a's Fable 7d is saturated, no overage
     // opt-in) WITHOUT moving the target…
-    expect(rotator.pick({ isSonnet: true })?.accountId).toBe('b');
-    // …so non-Sonnet traffic keeps draining a instead of following the detour.
+    expect(rotator.pick({ isFable: true })?.accountId).toBe('b');
+    // …so non-Fable traffic keeps draining a instead of following the detour.
     expect(rotator.pick()?.accountId).toBe('a');
-    expect(rotator.pick({ isSonnet: true })?.accountId).toBe('b');
+    expect(rotator.pick({ isFable: true })?.accountId).toBe('b');
     expect(rotator.pick()?.accountId).toBe('a');
   });
 
@@ -1202,30 +1202,30 @@ describe('TokenRotator overage gate', () => {
     expect(rotator.pick()?.accountId).toBe('fresh');
   });
 
-  // ── Sonnet saturation gate ────────────────────────────────────────
-  // When a Sonnet request is being routed, the rotator folds accounts
-  // whose unified-7d_sonnet utilization is at or above the buffer
+  // ── Fable saturation gate ────────────────────────────────────────
+  // When a Fable request is being routed, the rotator folds accounts
+  // whose unified-7d_oi utilization is at or above the buffer
   // threshold into the overage tier, subject to the same opt-in. Opus
   // requests and ctx-less picks are unaffected.
 
-  function setSonnet(store: RateLimitStore, id: string, util: number, reset = 9_000): void {
+  function setFable(store: RateLimitStore, id: string, util: number, reset = 9_000): void {
     store.update(id, {
-      'anthropic-ratelimit-unified-7d_sonnet-status': 'allowed',
-      'anthropic-ratelimit-unified-7d_sonnet-utilization': String(util),
-      'anthropic-ratelimit-unified-7d_sonnet-reset': String(reset),
+      'anthropic-ratelimit-unified-7d_oi-status': 'allowed',
+      'anthropic-ratelimit-unified-7d_oi-utilization': String(util),
+      'anthropic-ratelimit-unified-7d_oi-reset': String(reset),
     });
   }
 
-  it('routes Sonnet requests away from Sonnet-saturated accounts', () => {
+  it('routes Fable requests away from Fable-saturated accounts', () => {
     const db = getDb(dbPath);
     seed(db, 'saturated', 's@x');
     seed(db, 'fresh', 'f@x');
     const store = new RateLimitStore();
-    // 5h has plenty of room on both, but Sonnet 7d is exhausted on one.
+    // 5h has plenty of room on both, but Fable 7d is exhausted on one.
     setSession(store, 'saturated', 0.3);
-    setSonnet(store, 'saturated', 1.0);
+    setFable(store, 'saturated', 1.0);
     setSession(store, 'fresh', 0.3);
-    setSonnet(store, 'fresh', 0.2);
+    setFable(store, 'fresh', 0.2);
 
     const rotator = new TokenRotator(
       db,
@@ -1236,40 +1236,40 @@ describe('TokenRotator overage gate', () => {
       () => new Set(),
       () => 5,
     );
-    // Sonnet request should never land on `saturated` — not opted in.
+    // Fable request should never land on `saturated` — not opted in.
     for (let i = 0; i < 4; i++) {
-      expect(rotator.pick({ isSonnet: true })?.accountId).toBe('fresh');
+      expect(rotator.pick({ isFable: true })?.accountId).toBe('fresh');
     }
   });
 
-  it('allows Opus requests to route to a Sonnet-saturated account', () => {
+  it('allows Opus requests to route to a Fable-saturated account', () => {
     const db = getDb(dbPath);
-    seed(db, 'hotSonnet', 'h@x');
+    seed(db, 'hotFable', 'h@x');
     const store = new RateLimitStore();
-    setSession(store, 'hotSonnet', 0.3);
-    setSonnet(store, 'hotSonnet', 1.0);
+    setSession(store, 'hotFable', 0.3);
+    setFable(store, 'hotFable', 1.0);
 
     const rotator = new TokenRotator(
       db,
       store,
-      { value: 'hotSonnet' },
+      { value: 'hotFable' },
       () => new Set(),
       () => new Set(),
       () => new Set(),
       () => 5,
     );
-    // Opus / ctx-less / {isSonnet:false} — all three must land on the account.
-    expect(rotator.pick({ isSonnet: false })?.accountId).toBe('hotSonnet');
-    expect(rotator.pick()?.accountId).toBe('hotSonnet');
+    // Opus / ctx-less / {isFable:false} — all three must land on the account.
+    expect(rotator.pick({ isFable: false })?.accountId).toBe('hotFable');
+    expect(rotator.pick()?.accountId).toBe('hotFable');
   });
 
-  it('treats missing Sonnet window as not saturated', () => {
+  it('treats missing Fable window as not saturated', () => {
     const db = getDb(dbPath);
     seed(db, 'unprobed', 'u@x');
     const store = new RateLimitStore();
     setSession(store, 'unprobed', 0.2);
-    // Deliberately do NOT call setSonnet — mirrors an account that hasn't
-    // served a Sonnet request yet so Anthropic hasn't reported the window.
+    // Deliberately do NOT call setFable — mirrors an account that hasn't
+    // served a Fable request yet so Anthropic hasn't reported the window.
 
     const rotator = new TokenRotator(
       db,
@@ -1280,18 +1280,18 @@ describe('TokenRotator overage gate', () => {
       () => new Set(),
       () => 5,
     );
-    expect(rotator.pick({ isSonnet: true })?.accountId).toBe('unprobed');
+    expect(rotator.pick({ isFable: true })?.accountId).toBe('unprobed');
   });
 
-  it('returns null when every pool member is Sonnet-saturated and none opted in', () => {
+  it('returns null when every pool member is Fable-saturated and none opted in', () => {
     const db = getDb(dbPath);
     seed(db, 'a', 'a@x');
     seed(db, 'b', 'b@x');
     const store = new RateLimitStore();
     setSession(store, 'a', 0.3);
-    setSonnet(store, 'a', 1.0);
+    setFable(store, 'a', 1.0);
     setSession(store, 'b', 0.3);
-    setSonnet(store, 'b', 1.0);
+    setFable(store, 'b', 1.0);
 
     const rotator = new TokenRotator(
       db,
@@ -1302,16 +1302,16 @@ describe('TokenRotator overage gate', () => {
       () => new Set(),
       () => 5,
     );
-    expect(rotator.pick({ isSonnet: true })).toBeNull();
+    expect(rotator.pick({ isFable: true })).toBeNull();
   });
 
-  it('routes a Sonnet request to an opted-in Sonnet-saturated account when no fresh member remains', () => {
+  it('routes a Fable request to an opted-in Fable-saturated account when no fresh member remains', () => {
     const db = getDb(dbPath);
     seed(db, 'saturated', 's@x');
     const store = new RateLimitStore();
     setSession(store, 'saturated', 0.3);
-    setSonnet(store, 'saturated', 1.0);
-    // Sonnet-saturated accounts spill into the monthly overage pool;
+    setFable(store, 'saturated', 1.0);
+    // Fable-saturated accounts spill into the monthly overage pool;
     // Anthropic reports `overage-status: allowed` in that case, which
     // the overage tier now requires before accepting a candidate.
     setOverage(store, 'saturated', { status: 'allowed' });
@@ -1325,18 +1325,18 @@ describe('TokenRotator overage gate', () => {
       () => new Set(),
       () => 5,
     );
-    expect(rotator.pick({ isSonnet: true })?.accountId).toBe('saturated');
+    expect(rotator.pick({ isFable: true })?.accountId).toBe('saturated');
   });
 
-  it('prefers a fresh account over a Sonnet-saturated opted-in one', () => {
+  it('prefers a fresh account over a Fable-saturated opted-in one', () => {
     const db = getDb(dbPath);
     seed(db, 'saturated', 's@x');
     seed(db, 'fresh', 'f@x');
     const store = new RateLimitStore();
     setSession(store, 'saturated', 0.3);
-    setSonnet(store, 'saturated', 1.0);
+    setFable(store, 'saturated', 1.0);
     setSession(store, 'fresh', 0.3);
-    setSonnet(store, 'fresh', 0.2);
+    setFable(store, 'fresh', 0.2);
 
     const rotator = new TokenRotator(
       db,
@@ -1348,7 +1348,7 @@ describe('TokenRotator overage gate', () => {
       () => 5,
     );
     for (let i = 0; i < 4; i++) {
-      expect(rotator.pick({ isSonnet: true })?.accountId).toBe('fresh');
+      expect(rotator.pick({ isFable: true })?.accountId).toBe('fresh');
     }
   });
 });

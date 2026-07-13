@@ -2,18 +2,19 @@ import type { Database } from 'better-sqlite3';
 import type { RateLimitStore } from './rate-limit-store.js';
 import type { IpcServer } from './ipc.js';
 import type { AlertScope, RateLimitWindow, Settings } from '@sentinel/shared';
+import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
 import { listAlerts, listAccounts, markAlertTriggered, insertNotification } from './db.js';
 
 /** Only evaluate alerts against the 5-hour window — see plan rationale. */
 const SESSION_WINDOW = 'unified-5h';
 
-/** Window name for Sonnet's weekly quota. `account-sonnet`-scoped alerts
+/** Window name for Fable's weekly quota. `account-fable`-scoped alerts
  *  evaluate against this window rather than `unified-5h`. */
-const SONNET_WINDOW = 'unified-7d_sonnet';
+const FABLE_WINDOW = FABLE_WEEKLY_WINDOW;
 
 /** Window name for the general weekly quota (caps Opus and every other
- *  non-Sonnet model). `account-weekly` and `pool-weekly`-scoped alerts
- *  evaluate against this window. Distinct from SONNET_WINDOW — the two
+ *  non-Fable model). `account-weekly` and `pool-weekly`-scoped alerts
+ *  evaluate against this window. Distinct from FABLE_WINDOW — the two
  *  quotas are reported separately by Anthropic and a user may want
  *  independent thresholds on each. */
 const WEEKLY_WINDOW = 'unified-7d';
@@ -43,7 +44,7 @@ export interface AlertEvaluatorDeps {
   ipcServer: IpcServer;
   /** Optional — used to decorate notification titles/bodies with an email. */
   getEmailForAccount?: (accountId: string) => string | null;
-  /** Optional — when provided, the per-account and Sonnet evaluators skip
+  /** Optional — when provided, the per-account and Fable evaluators skip
    *  accounts the user has excluded from the Auto-switching pool while
    *  `switchingMode === 'auto'`. Prevents false-positive notifications
    *  firing off rate-limit headers that arrive from background probes or
@@ -60,7 +61,7 @@ export interface PoolAlertEvaluatorDeps extends AlertEvaluatorDeps {
 
 /** Shared predicate: `true` when the given accountId is in the user's
  *  Auto-pool exclusion list AND Auto is the active mode. Used by
- *  both per-account and Sonnet evaluators to stay silent on accounts the
+ *  both per-account and Fable evaluators to stay silent on accounts the
  *  user has explicitly taken out of rotation. Outside Auto mode
  *  `poolExcludedIds` is defined to be ignored, so the guard no-ops there. */
 function isExcludedFromAutoPool(
@@ -317,25 +318,25 @@ export function startWeeklyPoolAlertEvaluator(deps: PoolAlertEvaluatorDeps): voi
 
 /**
  * Subscribe to rate-limit updates and fire user-configured
- * `account-sonnet`-scope alerts when the unified-7d_sonnet window crosses
+ * `account-fable`-scope alerts when the unified-7d_oi window crosses
  * the configured threshold. Mirrors `startAlertEvaluator` but reads the
- * Sonnet window instead of the 5-hour window; re-fire is gated per-Sonnet
+ * Fable window instead of the 5-hour window; re-fire is gated per-Fable
  * window reset so each alert fires at most once per 7-day rollover.
  */
-export function startSonnetAlertEvaluator(deps: AlertEvaluatorDeps): void {
+export function startFableAlertEvaluator(deps: AlertEvaluatorDeps): void {
   const handler = (accountId: string, _windows: RateLimitWindow[]): void => {
-    const sonnet = deps.rateLimitStore.getAll(accountId).find((w) => w.name === SONNET_WINDOW);
-    if (!sonnet || sonnet.utilization == null) return;
+    const fable = deps.rateLimitStore.getAll(accountId).find((w) => w.name === FABLE_WINDOW);
+    if (!fable || fable.utilization == null) return;
 
     if (isExcludedFromAutoPool(deps.getSettings, accountId)) return;
 
-    const alerts = listAlerts(deps.db, { scope: 'account-sonnet', accountId }).filter(
+    const alerts = listAlerts(deps.db, { scope: 'account-fable', accountId }).filter(
       (a) => a.enabled,
     );
     if (alerts.length === 0) return;
 
-    const utilPct = sonnet.utilization * 100;
-    const resetTs = sonnet.reset ?? 0;
+    const utilPct = fable.utilization * 100;
+    const resetTs = fable.reset ?? 0;
 
     for (const alert of alerts) {
       if (utilPct < alert.thresholdPct) continue;
@@ -348,9 +349,9 @@ export function startSonnetAlertEvaluator(deps: AlertEvaluatorDeps): void {
       }
 
       const email = deps.getEmailForAccount?.(accountId) ?? accountId;
-      const title = `Sentinel: ${alert.thresholdPct}% Sonnet usage reached`;
+      const title = `Sentinel: ${alert.thresholdPct}% Fable usage reached`;
       const overageSuffix = utilPct > 100 ? ' (overage in use)' : '';
-      const body = `${email} has used ${utilPct.toFixed(1)}% of its Sonnet 7-day window${overageSuffix}.`;
+      const body = `${email} has used ${utilPct.toFixed(1)}% of its Fable 7-day window${overageSuffix}.`;
 
       insertNotification(deps.db, {
         ts: Date.now(),
@@ -364,14 +365,14 @@ export function startSonnetAlertEvaluator(deps: AlertEvaluatorDeps): void {
         type: 'alert_triggered',
         alertId: alert.id,
         accountId,
-        scope: 'account-sonnet',
+        scope: 'account-fable',
         thresholdPct: alert.thresholdPct,
-        utilization: sonnet.utilization,
+        utilization: fable.utilization,
       });
 
       markAlertTriggered(deps.db, alert.id, resetTs);
       console.log(
-        `[Alerts] Fired sonnet alert ${alert.id} (${alert.thresholdPct}%) on ${accountId} at ${utilPct.toFixed(1)}%`,
+        `[Alerts] Fired fable alert ${alert.id} (${alert.thresholdPct}%) on ${accountId} at ${utilPct.toFixed(1)}%`,
       );
     }
   };
@@ -382,12 +383,12 @@ export function startSonnetAlertEvaluator(deps: AlertEvaluatorDeps): void {
 /**
  * Subscribe to rate-limit updates and fire user-configured
  * `account-weekly`-scope alerts when the unified-7d window crosses the
- * configured threshold. Mirrors `startSonnetAlertEvaluator` but reads the
- * general (non-Sonnet) weekly window; re-fire is gated per-weekly-window
+ * configured threshold. Mirrors `startFableAlertEvaluator` but reads the
+ * general (non-Fable) weekly window; re-fire is gated per-weekly-window
  * reset so each alert fires at most once per 7-day rollover.
  *
- * Distinct from the `account-sonnet` evaluator: an account can saturate its
- * Sonnet 7-day quota while the general 7-day window is fresh (and vice
+ * Distinct from the `account-fable` evaluator: an account can saturate its
+ * Fable 7-day quota while the general 7-day window is fresh (and vice
  * versa), and users frequently want different thresholds on each.
  */
 export function startWeeklyAlertEvaluator(deps: AlertEvaluatorDeps): void {
@@ -491,8 +492,8 @@ export function primeNewAlertAgainstCurrentWindow(
   }
   if (!alert.accountId) return;
   const windowName =
-    alert.scope === 'account-sonnet'
-      ? SONNET_WINDOW
+    alert.scope === 'account-fable'
+      ? FABLE_WINDOW
       : alert.scope === 'account-weekly'
         ? WEEKLY_WINDOW
         : SESSION_WINDOW;

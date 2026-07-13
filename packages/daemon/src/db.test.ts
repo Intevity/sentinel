@@ -31,6 +31,7 @@ import {
   listPermissionRules,
   upsertPermissionRule,
   deletePermissionRule,
+  runSonnetToFableMigration,
 } from './db.js';
 import type { AccountInfo, RateLimitWindow } from '@sentinel/shared';
 
@@ -2063,6 +2064,115 @@ describe('alerts schema migration', () => {
     const cols = db.pragma('table_info(alerts)') as Array<{ name: string }>;
     expect(cols.some((c) => c.name === 'scope')).toBe(true);
     expect(cols.some((c) => c.name === 'budget_scope')).toBe(true);
+  });
+});
+
+describe('runSonnetToFableMigration', () => {
+  const FABLE_DB = join(
+    tmpdir(),
+    `sentinel-sonnet-fable-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+  );
+
+  afterEach(() => {
+    closeDb();
+    if (existsSync(FABLE_DB)) unlinkSync(FABLE_DB);
+  });
+
+  // Seed a pre-upgrade DB the way an old daemon left it: `account-sonnet`
+  // alerts and a `unified-7d_sonnet` rate-limit row. These legacy string
+  // values are no longer valid TS types, so they go in via raw SQL / the
+  // free-form window name.
+  function seedLegacy(db: Database.Database): void {
+    db.prepare(
+      'INSERT INTO alerts (scope, account_id, threshold_pct, enabled, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('account-sonnet', 'acc-1', 80, 1, 1_000);
+    // A control alert on a different scope that must NOT be touched.
+    db.prepare(
+      'INSERT INTO alerts (scope, account_id, threshold_pct, enabled, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('account-weekly', 'acc-1', 90, 1, 1_000);
+    const now = Date.now();
+    upsertRateLimit(db, 'acc-1', {
+      name: 'unified-7d_sonnet',
+      status: 'allowed',
+      utilization: 0.9,
+      limit: null,
+      remaining: null,
+      reset: 200,
+      lastUpdated: now,
+    });
+    // Control windows that must survive the purge.
+    upsertRateLimit(db, 'acc-1', {
+      name: 'unified-7d_oi',
+      status: 'allowed',
+      utilization: 0.1,
+      limit: null,
+      remaining: null,
+      reset: 200,
+      lastUpdated: now,
+    });
+    upsertRateLimit(db, 'acc-1', {
+      name: 'unified-5h',
+      status: 'allowed',
+      utilization: 0.3,
+      limit: null,
+      remaining: null,
+      reset: 100,
+      lastUpdated: now,
+    });
+  }
+
+  it('re-points account-sonnet alerts to account-fable and purges unified-7d_sonnet rows', () => {
+    const db = getDb(FABLE_DB);
+    seedLegacy(db);
+
+    const result = runSonnetToFableMigration(db, 12_345);
+    expect(result).toEqual({ alertsMigrated: 1, staleWindowsDeleted: 1 });
+
+    // No account-sonnet rows remain; the migrated row is now account-fable
+    // and keeps its account_id + threshold. The account-weekly control is
+    // untouched.
+    const scopes = db
+      .prepare('SELECT scope, account_id, threshold_pct FROM alerts ORDER BY threshold_pct')
+      .all() as Array<{ scope: string; account_id: string; threshold_pct: number }>;
+    expect(scopes).toEqual([
+      { scope: 'account-fable', account_id: 'acc-1', threshold_pct: 80 },
+      { scope: 'account-weekly', account_id: 'acc-1', threshold_pct: 90 },
+    ]);
+
+    // Stale sonnet window gone; fable + 5h survive.
+    const windows = (loadRateLimits(db).get('acc-1') ?? []).map((w) => w.name).sort();
+    expect(windows).toEqual(['unified-5h', 'unified-7d_oi']);
+
+    // Marker persisted.
+    const marker = db
+      .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+      .get('sonnet_to_fable_v1') as { ok: number } | undefined;
+    expect(marker?.ok).toBe(1);
+  });
+
+  it('is idempotent — a second run is a no-op returning null', () => {
+    const db = getDb(FABLE_DB);
+    seedLegacy(db);
+
+    expect(runSonnetToFableMigration(db, 1)).toEqual({ alertsMigrated: 1, staleWindowsDeleted: 1 });
+
+    // Second run: marker present → null, no further mutation.
+    expect(runSonnetToFableMigration(db, 2)).toBeNull();
+    const fableAlerts = db
+      .prepare("SELECT COUNT(*) AS n FROM alerts WHERE scope = 'account-fable'")
+      .get() as { n: number };
+    expect(fableAlerts.n).toBe(1);
+    const sonnetRows = db
+      .prepare("SELECT COUNT(*) AS n FROM rate_limits WHERE name = 'unified-7d_sonnet'")
+      .get() as { n: number };
+    expect(sonnetRows.n).toBe(0);
+  });
+
+  it('returns zero counts when there is nothing to migrate', () => {
+    const db = getDb(FABLE_DB);
+    // Fresh DB, no legacy sonnet data.
+    const result = runSonnetToFableMigration(db, 7);
+    expect(result).toEqual({ alertsMigrated: 0, staleWindowsDeleted: 0 });
   });
 });
 

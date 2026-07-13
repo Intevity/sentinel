@@ -465,22 +465,66 @@ export async function startFakeAnthropic(
     if (!requireAuth(req, res)) return;
     const override = popOverride('/api/oauth/usage');
     const status = override?.status ?? 200;
+    // Mirrors the real 2026-07 wire shape (see fixtures/usage.response.json):
+    // utilizations are 0-100 percents, and the Fable weekly quota appears
+    // ONLY as a `limits[]` weekly_scoped entry — there is no top-level
+    // `seven_day_fable` key.
     const defaultBody = {
       five_hour: {
-        utilization: 0.1,
+        utilization: 18,
         resets_at: new Date(Date.now() + 3600_000).toISOString(),
+        limit_dollars: null,
+        used_dollars: null,
+        remaining_dollars: null,
       },
       seven_day: {
-        utilization: 0.2,
+        utilization: 10,
         resets_at: new Date(Date.now() + 7 * 86400_000).toISOString(),
+        limit_dollars: null,
+        used_dollars: null,
+        remaining_dollars: null,
       },
-      seven_day_sonnet: {
-        utilization: 0.05,
-        resets_at: new Date(Date.now() + 7 * 86400_000).toISOString(),
-      },
+      seven_day_oauth_apps: null,
+      seven_day_opus: null,
+      seven_day_sonnet: null,
+      limits: [
+        {
+          kind: 'session',
+          group: 'session',
+          percent: 18,
+          severity: 'normal',
+          resets_at: new Date(Date.now() + 3600_000).toISOString(),
+          scope: null,
+          is_active: true,
+        },
+        {
+          kind: 'weekly_all',
+          group: 'weekly',
+          percent: 10,
+          severity: 'normal',
+          resets_at: new Date(Date.now() + 7 * 86400_000).toISOString(),
+          scope: null,
+          is_active: false,
+        },
+        {
+          kind: 'weekly_scoped',
+          group: 'weekly',
+          percent: 6,
+          severity: 'normal',
+          resets_at: new Date(Date.now() + 7 * 86400_000).toISOString(),
+          scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+          is_active: false,
+        },
+      ],
       extra_usage: {
         is_enabled: true,
-        utilization_pct: 0,
+        monthly_limit: 10000,
+        used_credits: 0,
+        utilization: 0,
+        currency: 'USD',
+        decimal_places: 2,
+        daily: null,
+        weekly: null,
       },
     };
     const finalHeaders: Record<string, string> = {

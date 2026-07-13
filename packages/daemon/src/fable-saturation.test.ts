@@ -1,19 +1,19 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  SonnetSaturationMachine,
-  buildSonnetSaturationBody,
-  type SonnetSaturationEvent,
-} from './sonnet-saturation.js';
+  FableSaturationMachine,
+  buildFableSaturationBody,
+  type FableSaturationEvent,
+} from './fable-saturation.js';
 
-describe('SonnetSaturationMachine', () => {
-  let machine: SonnetSaturationMachine;
+describe('FableSaturationMachine', () => {
+  let machine: FableSaturationMachine;
 
   beforeEach(() => {
-    machine = new SonnetSaturationMachine();
+    machine = new FableSaturationMachine();
   });
 
   it('emits entered when utilization first crosses the threshold', () => {
-    const events: SonnetSaturationEvent[] = [];
+    const events: FableSaturationEvent[] = [];
     machine.onTransition((e) => events.push(e));
 
     const out = machine.update('acct', 0.97, 9_000, 95);
@@ -31,7 +31,7 @@ describe('SonnetSaturationMachine', () => {
   });
 
   it('emits exited when utilization falls back below the threshold', () => {
-    const events: SonnetSaturationEvent[] = [];
+    const events: FableSaturationEvent[] = [];
     machine.onTransition((e) => events.push(e));
     machine.update('acct', 0.97, 9_000, 95);
     const exit = machine.update('acct', 0.5, 9_000, 95);
@@ -62,7 +62,7 @@ describe('SonnetSaturationMachine', () => {
   });
 
   it('rehydrate suppresses re-emit of already-persisted entered', () => {
-    const events: SonnetSaturationEvent[] = [];
+    const events: FableSaturationEvent[] = [];
     machine.onTransition((e) => events.push(e));
     // Simulate restart with entered already persisted for this window.
     machine.rehydrate('acct', { isSaturated: true, resetsAt: 9_000 }, ['entered']);
@@ -102,16 +102,16 @@ describe('SonnetSaturationMachine', () => {
   });
 });
 
-describe('buildSonnetSaturationBody', () => {
+describe('buildFableSaturationBody', () => {
   it('tells opted-in accounts that further requests will draw overage', () => {
-    const body = buildSonnetSaturationBody('user@x', 0.97, true);
+    const body = buildFableSaturationBody('user@x', 0.97, true);
     expect(body).toContain('97.0%');
     expect(body).toContain('will draw from overage');
     expect(body).not.toContain('blocked');
   });
 
   it('tells not-opted-in accounts that further requests will be blocked', () => {
-    const body = buildSonnetSaturationBody('user@x', 1.0, false);
+    const body = buildFableSaturationBody('user@x', 1.0, false);
     expect(body).toContain('100.0%');
     expect(body).toContain('blocked by Sentinel');
     expect(body).toContain('enable overage in Settings');

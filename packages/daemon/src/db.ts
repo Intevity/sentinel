@@ -2194,6 +2194,51 @@ export function runDetectorTuningMigration(
   return { demotedIds, acknowledgedRowCount };
 }
 
+/** Result of the one-time Sonnet→Fable migration. Null when already applied. */
+export interface SonnetToFableMigrationResult {
+  /** `account-sonnet` alert rows re-pointed to `account-fable`. */
+  alertsMigrated: number;
+  /** Stale `unified-7d_sonnet` rate_limits rows deleted (window no longer emitted). */
+  staleWindowsDeleted: number;
+}
+
+/**
+ * One-time migration for the Sonnet→Fable usage-tier rename. Anthropic dropped
+ * the per-Sonnet weekly window (folded into the general "All Models"
+ * `unified-7d`) and now tracks Fable separately. This:
+ *   - re-points existing `account-sonnet` alerts to `account-fable` (the renamed
+ *     per-tier scope) so users keep their configured thresholds; and
+ *   - purges stale `unified-7d_sonnet` rate_limits rows, which will never update
+ *     again and would otherwise linger as a dead "Weekly: Sonnet" bar.
+ *
+ * Idempotent via the `_migrations` marker; safe to run on every startup. The
+ * `'account-sonnet'` / `'unified-7d_sonnet'` literals here are the historical
+ * values stored in pre-upgrade DBs — deliberately NOT the FABLE_WEEKLY_WINDOW
+ * constant, since this migrates *from* them.
+ */
+export function runSonnetToFableMigration(
+  db: Database.Database,
+  nowMs: number = Date.now(),
+): SonnetToFableMigrationResult | null {
+  const MIGRATION_NAME = 'sonnet_to_fable_v1';
+  const applied = db
+    .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+    .get(MIGRATION_NAME) as { ok: number } | undefined;
+  if (applied) return null;
+
+  const alerts = db
+    .prepare("UPDATE alerts SET scope = 'account-fable' WHERE scope = 'account-sonnet'")
+    .run();
+  const stale = db.prepare("DELETE FROM rate_limits WHERE name = 'unified-7d_sonnet'").run();
+
+  db.prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)').run(
+    MIGRATION_NAME,
+    nowMs,
+  );
+
+  return { alertsMigrated: alerts.changes, staleWindowsDeleted: stale.changes };
+}
+
 /** Walk the audit log chain from oldest to newest, recomputing each
  *  row's payload_hash and verifying every prev_hash links to a known
  *  chain element (event row OR summary row). Returns the first break
@@ -2837,8 +2882,8 @@ function rowToAlert(row: DbAlertRow): Alert {
         ? 'pool-weekly'
         : row.scope === 'budget'
           ? 'budget'
-          : row.scope === 'account-sonnet'
-            ? 'account-sonnet'
+          : row.scope === 'account-fable'
+            ? 'account-fable'
             : row.scope === 'account-weekly'
               ? 'account-weekly'
               : 'account';
@@ -2846,7 +2891,7 @@ function rowToAlert(row: DbAlertRow): Alert {
   // budget-global rows were stored with ''.
   const hasAccountId =
     scope === 'account' ||
-    scope === 'account-sonnet' ||
+    scope === 'account-fable' ||
     scope === 'account-weekly' ||
     (scope === 'budget' && row.budget_scope !== 'global');
   const alert: Alert = {
@@ -2885,12 +2930,12 @@ export function listAlerts(
       "SELECT * FROM alerts WHERE scope = 'budget' ORDER BY budget_scope, account_id, threshold_pct ASC";
     params = [];
   } else if (
-    (scope === 'account-sonnet' || scope === 'account-weekly' || scope === 'account') &&
+    (scope === 'account-fable' || scope === 'account-weekly' || scope === 'account') &&
     accountId
   ) {
     sql = 'SELECT * FROM alerts WHERE scope = ? AND account_id = ? ORDER BY threshold_pct ASC';
     params = [scope, accountId];
-  } else if (scope === 'account-sonnet' || scope === 'account-weekly' || scope === 'account') {
+  } else if (scope === 'account-fable' || scope === 'account-weekly' || scope === 'account') {
     sql = 'SELECT * FROM alerts WHERE scope = ? ORDER BY account_id, threshold_pct ASC';
     params = [scope];
   } else if (accountId) {
@@ -2920,7 +2965,7 @@ export function upsertAlert(
     throw new Error(`${scope}-scoped alerts must have accountId = null`);
   }
   if (
-    (scope === 'account' || scope === 'account-sonnet' || scope === 'account-weekly') &&
+    (scope === 'account' || scope === 'account-fable' || scope === 'account-weekly') &&
     !input.accountId
   ) {
     throw new Error(`${scope}-scoped alerts require a non-empty accountId`);
