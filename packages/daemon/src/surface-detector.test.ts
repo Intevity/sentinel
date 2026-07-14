@@ -30,29 +30,44 @@ const surfaceMsgs = (b: DaemonToAppMessage[]): SurfaceState[] =>
 
 describe('resolveDesktopInstallMarkers (pure, cross-platform)', () => {
   const home = '/home/u';
-  it('macOS includes the app bundle and userData dir', () => {
+  it('macOS includes the app bundle, userData dir, and 3p data dir', () => {
     const m = resolveDesktopInstallMarkers('darwin', {}, home);
     expect(m).toContain('/Applications/Claude.app');
     expect(m).toContain('/home/u/Library/Application Support/Claude');
+    expect(m).toContain('/home/u/Library/Application Support/Claude-3p');
   });
-  it('Windows uses APPDATA + LOCALAPPDATA Programs', () => {
+  it('Windows covers MSIX, Squirrel, and 3p data dirs', () => {
     const m = resolveDesktopInstallMarkers(
       'win32',
       { APPDATA: 'C:\\A', LOCALAPPDATA: 'C:\\L' },
       home,
     );
-    expect(m).toHaveLength(2);
-    expect(m[0]).toContain('Claude');
-    expect(m.some((p) => p.includes('Programs'))).toBe(true);
+    expect(m).toEqual([
+      join('C:\\A', 'Claude'),
+      join('C:\\A', 'Claude-3p'),
+      join('C:\\L', 'AnthropicClaude'),
+      join('C:\\L', 'Programs', 'claude'),
+      join('C:\\L', 'Packages', 'Claude_pzs8sxrjxfjjc'),
+      join('C:\\L', 'Claude-3p'),
+    ]);
+  });
+  it('Windows with only one of APPDATA/LOCALAPPDATA still yields its markers', () => {
+    const roamingOnly = resolveDesktopInstallMarkers('win32', { APPDATA: 'C:\\A' }, home);
+    expect(roamingOnly).toEqual([join('C:\\A', 'Claude'), join('C:\\A', 'Claude-3p')]);
+    const localOnly = resolveDesktopInstallMarkers('win32', { LOCALAPPDATA: 'C:\\L' }, home);
+    expect(localOnly).toContain(join('C:\\L', 'Packages', 'Claude_pzs8sxrjxfjjc'));
+    expect(localOnly.some((p) => p.includes('AnthropicClaude'))).toBe(true);
   });
   it('Windows with no env yields no markers', () => {
     expect(resolveDesktopInstallMarkers('win32', {}, home)).toEqual([]);
   });
-  it('Linux uses XDG or ~/.config', () => {
-    expect(resolveDesktopInstallMarkers('linux', { XDG_CONFIG_HOME: '/cfg' }, home)).toContain(
-      '/cfg/Claude',
-    );
-    expect(resolveDesktopInstallMarkers('linux', {}, home)).toContain('/home/u/.config/Claude');
+  it('Linux uses XDG or ~/.config, including the 3p data dir', () => {
+    const withXdg = resolveDesktopInstallMarkers('linux', { XDG_CONFIG_HOME: '/cfg' }, home);
+    expect(withXdg).toContain('/cfg/Claude');
+    expect(withXdg).toContain('/cfg/Claude-3p');
+    const noXdg = resolveDesktopInstallMarkers('linux', {}, home);
+    expect(noXdg).toContain('/home/u/.config/Claude');
+    expect(noXdg).toContain('/home/u/.config/Claude-3p');
   });
 });
 

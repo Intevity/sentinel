@@ -128,8 +128,19 @@ export function createDesktopHealthTracker(
 /** Candidate filesystem markers that indicate the Claude **Desktop** app is
  *  installed, per-OS. Pure + parameterized so the Windows/Linux branches —
  *  unreachable on the macOS CI runner — are covered by table tests. Includes
- *  both the app's userData dir (present once it has run) and the app bundle /
- *  install location (present even before first run). */
+ *  both the app's data dirs (present once it has run) and the app bundle /
+ *  install location (present even before first run).
+ *
+ *  Windows has three install channels, each with distinct footprints:
+ *  - MSIX (current claude.com installer, Microsoft Store, WinGet): package dir
+ *    `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc` (the suffix is the stable
+ *    publisher-hash of the package family name). AppData is virtualized into
+ *    the package dir, so `%APPDATA%\Claude` never exists at its real path.
+ *  - Legacy Squirrel `.exe`: app at `%LOCALAPPDATA%\AnthropicClaude`, userData
+ *    at `%APPDATA%\Claude`.
+ *  - 3p-gateway mode data dir `Claude-3p` (the mode Sentinel routes): current
+ *    releases use `%LOCALAPPDATA%`, pre-migration releases used `%APPDATA%`.
+ *    Also checked on macOS/Linux as install evidence. */
 export function resolveDesktopInstallMarkers(
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
@@ -139,8 +150,16 @@ export function resolveDesktopInstallMarkers(
     const appData = env.APPDATA;
     const localAppData = env.LOCALAPPDATA;
     const markers: string[] = [];
-    if (appData) markers.push(join(appData, 'Claude'));
-    if (localAppData) markers.push(join(localAppData, 'Programs', 'claude'));
+    if (appData) {
+      markers.push(join(appData, 'Claude'));
+      markers.push(join(appData, 'Claude-3p'));
+    }
+    if (localAppData) {
+      markers.push(join(localAppData, 'AnthropicClaude'));
+      markers.push(join(localAppData, 'Programs', 'claude'));
+      markers.push(join(localAppData, 'Packages', 'Claude_pzs8sxrjxfjjc'));
+      markers.push(join(localAppData, 'Claude-3p'));
+    }
     return markers;
   }
   if (platform === 'darwin') {
@@ -148,12 +167,15 @@ export function resolveDesktopInstallMarkers(
       '/Applications/Claude.app',
       join(home, 'Applications', 'Claude.app'),
       join(home, 'Library', 'Application Support', 'Claude'),
+      join(home, 'Library', 'Application Support', 'Claude-3p'),
     ];
   }
   // linux + other
   const xdg = env.XDG_CONFIG_HOME;
+  const configBase = xdg && xdg.length > 0 ? xdg : join(home, '.config');
   return [
-    join(xdg && xdg.length > 0 ? xdg : join(home, '.config'), 'Claude'),
+    join(configBase, 'Claude'),
+    join(configBase, 'Claude-3p'),
     '/opt/Claude',
     '/usr/bin/claude-desktop',
   ];
