@@ -4,8 +4,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { Loader2, X } from 'lucide-react';
+import { Check, Copy, Loader2, X } from 'lucide-react';
 import { extractSetupToken } from '../lib/setupToken.js';
+import { claudeInstallCommand } from '../lib/claudeInstall.js';
 import { sendToSentinel } from '../lib/ipc.js';
 
 type Phase = 'running' | 'label' | 'storing' | 'error';
@@ -44,6 +45,30 @@ export default function SetupTokenTerminal({
   const [phase, setPhase] = useState<Phase>('running');
   const [label, setLabel] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  // The CLI wasn't found: swap the plain error for the guided-install panel
+  // (copyable install one-liner + Retry once the user has run it).
+  const [cliMissing, setCliMissing] = useState(false);
+  const [copied, setCopied] = useState(false);
+  // Bumped by Retry; the PTY effect depends on it, so a bump tears the old
+  // terminal down and starts a fresh `claude setup-token` run.
+  const [runNonce, setRunNonce] = useState(0);
+
+  const retry = (): void => {
+    bufferRef.current = '';
+    tokenRef.current = null;
+    setErrorMsg('');
+    setCliMissing(false);
+    setCopied(false);
+    setPhase('running');
+    setRunNonce((n) => n + 1);
+  };
+
+  const copyInstallCommand = (): void => {
+    void navigator.clipboard
+      .writeText(claudeInstallCommand(navigator.platform))
+      .then(() => setCopied(true))
+      .catch(() => undefined);
+  };
 
   // Send the captured token to the daemon, then close. Re-auth refreshes the
   // existing account in place; a new add carries the user's label.
@@ -131,11 +156,12 @@ export default function SetupTokenTerminal({
       } catch (err) {
         if (disposed) return;
         const msg = err instanceof Error ? err.message : String(err);
-        setErrorMsg(
-          msg === 'claude-not-found'
-            ? 'Claude Code (the `claude` CLI) was not found. Install it, then try again.'
-            : `Could not start the terminal: ${msg}`,
-        );
+        if (msg === 'claude-not-found') {
+          setCliMissing(true);
+          setErrorMsg('Claude Code (the `claude` CLI) was not found.');
+        } else {
+          setErrorMsg(`Could not start the terminal: ${msg}`);
+        }
         setPhase('error');
       }
     })();
@@ -161,7 +187,7 @@ export default function SetupTokenTerminal({
       void invoke('setup_token_kill').catch(() => undefined);
       term.dispose();
     };
-  }, []);
+  }, [runNonce]);
 
   const submitLabel = (): void => {
     const token = tokenRef.current;
@@ -203,12 +229,43 @@ export default function SetupTokenTerminal({
       {phase === 'error' && (
         <div className="px-3 py-3">
           <p className="text-[12px] text-ios-red">{errorMsg}</p>
-          <button
-            onClick={onClose}
-            className="mt-2 text-[12px] font-semibold text-ios-blue hover:opacity-90 active:scale-95"
-          >
-            Close
-          </button>
+          {cliMissing && (
+            <>
+              <p className="mt-2 text-[11px] text-white/60">
+                Adding an account signs in through Claude Code (free, no subscription needed).
+                Install it with the command below, then retry.
+              </p>
+              <div className="mt-2 flex items-center gap-2 rounded-lg bg-white/5 ring-1 ring-white/10 px-2.5 py-1.5">
+                <code className="flex-1 text-[11px] text-white/80 font-mono break-all select-all">
+                  {claudeInstallCommand(navigator.platform)}
+                </code>
+                <button
+                  onClick={copyInstallCommand}
+                  className="text-white/50 hover:text-white active:scale-90 transition shrink-0"
+                  title="Copy install command"
+                  aria-label="Copy install command"
+                >
+                  {copied ? <Check size={13} className="text-ios-green" /> : <Copy size={13} />}
+                </button>
+              </div>
+            </>
+          )}
+          <div className="mt-2 flex items-center gap-3">
+            {cliMissing && (
+              <button
+                onClick={retry}
+                className="text-[12px] font-semibold text-white bg-ios-blue hover:opacity-90 active:scale-95 px-3 py-1.5 rounded-full transition"
+              >
+                Retry
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="text-[12px] font-semibold text-ios-blue hover:opacity-90 active:scale-95"
+            >
+              Close
+            </button>
+          </div>
         </div>
       )}
 
