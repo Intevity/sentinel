@@ -53,9 +53,31 @@ fn home_dir() -> Option<PathBuf> {
 fn augmented_path() -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(home) = home_dir() {
-        parts.push(home.join(".local/bin").to_string_lossy().into_owned());
-        parts.push(home.join(".bun/bin").to_string_lossy().into_owned());
+        #[cfg(windows)]
+        {
+            parts.push(
+                home.join(".local")
+                    .join("bin")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            parts.push(home.join(".bun").join("bin").to_string_lossy().into_owned());
+            if let Some(appdata) = std::env::var_os("APPDATA") {
+                parts.push(
+                    PathBuf::from(appdata)
+                        .join("npm")
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            parts.push(home.join(".local/bin").to_string_lossy().into_owned());
+            parts.push(home.join(".bun/bin").to_string_lossy().into_owned());
+        }
     }
+    #[cfg(not(windows))]
     for p in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
         parts.push(p.to_string());
     }
@@ -63,6 +85,16 @@ fn augmented_path() -> String {
         parts.push(existing);
     }
     parts.join(if cfg!(windows) { ";" } else { ":" })
+}
+
+/// Claude **Desktop**'s MSIX package publishes an app-execution alias named
+/// `claude.exe` under `%LOCALAPPDATA%\Microsoft\WindowsApps` that launches the
+/// desktop GUI, not the CLI — spawning it for `setup-token` would pop the
+/// desktop app. Never treat it as the CLI.
+#[cfg(windows)]
+fn is_desktop_alias(p: &str) -> bool {
+    p.to_ascii_lowercase()
+        .contains("\\microsoft\\windowsapps\\")
 }
 
 /// Resolve the `claude` executable. Honors `SENTINEL_TEST_CLAUDE_BIN` (tests
@@ -76,10 +108,29 @@ pub fn resolve_claude_binary() -> Option<PathBuf> {
     }
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(home) = home_dir() {
-        candidates.push(home.join(".local/bin/claude"));
-        candidates.push(home.join(".bun/bin/claude"));
+        #[cfg(windows)]
+        {
+            // Windows executables carry extensions — a bare `claude` path never
+            // `exists()`. Native installer → .local\bin\claude.exe; npm global
+            // → %APPDATA%\npm\claude.cmd; bun → .bun\bin\claude.exe.
+            candidates.push(home.join(".local").join("bin").join("claude.exe"));
+            candidates.push(home.join(".bun").join("bin").join("claude.exe"));
+            if let Some(appdata) = std::env::var_os("APPDATA") {
+                candidates.push(PathBuf::from(appdata).join("npm").join("claude.cmd"));
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            candidates.push(home.join(".local/bin/claude"));
+            candidates.push(home.join(".bun/bin/claude"));
+        }
     }
-    for p in ["/opt/homebrew/bin/claude", "/usr/local/bin/claude", "/usr/bin/claude"] {
+    #[cfg(not(windows))]
+    for p in [
+        "/opt/homebrew/bin/claude",
+        "/usr/local/bin/claude",
+        "/usr/bin/claude",
+    ] {
         candidates.push(PathBuf::from(p));
     }
     for c in &candidates {
@@ -104,11 +155,22 @@ pub fn resolve_claude_binary() -> Option<PathBuf> {
     }
     #[cfg(windows)]
     {
-        if let Ok(out) = std::process::Command::new("where").arg("claude").output() {
+        // `where` searches the caller's PATH; use the augmented one so a CLI
+        // installed after Sentinel launched (or one only on the user PATH the
+        // GUI process didn't inherit) is still found. Take the first hit that
+        // isn't Claude Desktop's WindowsApps GUI alias.
+        if let Ok(out) = std::process::Command::new("where")
+            .arg("claude")
+            .env("PATH", augmented_path())
+            .output()
+        {
             if out.status.success() {
-                if let Some(first) = String::from_utf8_lossy(&out.stdout).lines().next() {
-                    let p = first.trim().to_string();
-                    if !p.is_empty() && Path::new(&p).exists() {
+                for line in String::from_utf8_lossy(&out.stdout).lines() {
+                    let p = line.trim();
+                    if p.is_empty() || is_desktop_alias(p) {
+                        continue;
+                    }
+                    if Path::new(p).exists() {
                         return Some(PathBuf::from(p));
                     }
                 }
@@ -119,7 +181,22 @@ pub fn resolve_claude_binary() -> Option<PathBuf> {
 }
 
 fn build_command(claude: &Path) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new(claude);
+    // npm's Windows global install is a `claude.cmd` batch shim, which
+    // CreateProcess can't exec directly — route batch files through
+    // `cmd.exe /c`. Real executables (and all Unix paths) spawn as-is.
+    let is_batch = claude
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
+        .unwrap_or(false);
+    let mut cmd = if is_batch {
+        let mut c = CommandBuilder::new("cmd.exe");
+        c.arg("/c");
+        c.arg(claude);
+        c
+    } else {
+        CommandBuilder::new(claude)
+    };
     cmd.arg("setup-token");
     // Inherit a scrubbed environment so setup-token does the real subscription
     // OAuth and is not routed through Sentinel's proxy or an injected API key.
@@ -202,7 +279,9 @@ pub fn setup_token_start(
 pub fn setup_token_write(state: State<'_, SetupTokenState>, data: String) -> Result<(), String> {
     let mut guard = state.0.lock().unwrap();
     if let Some(s) = guard.as_mut() {
-        s.writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+        s.writer
+            .write_all(data.as_bytes())
+            .map_err(|e| e.to_string())?;
         s.writer.flush().map_err(|e| e.to_string())?;
     }
     Ok(())
