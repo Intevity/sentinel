@@ -8,9 +8,7 @@ describe('claudeInstallCommand', () => {
   });
 
   it('returns the shell installer on macOS and Linux', () => {
-    expect(claudeInstallCommand('MacIntel')).toBe(
-      'curl -fsSL https://claude.ai/install.sh | bash',
-    );
+    expect(claudeInstallCommand('MacIntel')).toBe('curl -fsSL https://claude.ai/install.sh | bash');
     expect(claudeInstallCommand('Linux x86_64')).toBe(
       'curl -fsSL https://claude.ai/install.sh | bash',
     );
