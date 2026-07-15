@@ -433,4 +433,59 @@ describe('sandbox-sync', () => {
       expect(engine.getStatus().lastPulledAt).toBe(pulledAfterStart);
     });
   });
+
+  describe('stop() races in-flight work (generation guards)', () => {
+    // These pin the fix for the order-dependent integration flake: an
+    // in-flight pull/push that outlives stop() must never write settings —
+    // in tests a late write resolves the settings path from the env seams at
+    // call time and lands on the NEXT daemon's freshly-seeded file.
+
+    it('an in-flight pushNow started before stop() never writes the file', async () => {
+      // Not awaited before stop(): stop() runs synchronously while pushNow is
+      // parked on its first await, so the post-read generation check aborts.
+      const inFlight = engine.pushNow();
+      engine.stop();
+      await inFlight;
+      expect(existsSync(settingsPath)).toBe(false);
+      expect(engine.getStatus().lastPushedAt).toBeNull();
+    });
+
+    it('an in-flight pullNow started before stop() never calls setPolicy', async () => {
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          sandbox: {
+            enabled: false,
+            network: { allowedDomains: ['pulled.test'], deniedDomains: [] },
+            filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] },
+            credentials: { files: [], envVars: [] },
+          },
+        }),
+      );
+      const before = policy;
+      const inFlight = engine.pullNow('merge');
+      engine.stop();
+      await inFlight;
+      expect(policy).toBe(before); // identity: setPolicy never ran
+      expect(engine.getStatus().lastPulledAt).toBeNull();
+    });
+
+    it('a fresh pullNow AFTER stop() still works (manual pull with sync off)', async () => {
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          sandbox: {
+            enabled: false,
+            network: { allowedDomains: ['pulled.test'], deniedDomains: [] },
+            filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] },
+            credentials: { files: [], envVars: [] },
+          },
+        }),
+      );
+      engine.stop(); // e.g. the user disabled sync earlier
+      await engine.pullNow('merge');
+      expect(engine.getStatus().lastPulledAt).not.toBeNull();
+      expect(policy.network.allowedDomains).toContain('pulled.test');
+    });
+  });
 });

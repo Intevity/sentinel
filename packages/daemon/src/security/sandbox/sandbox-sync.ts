@@ -90,6 +90,14 @@ export function createSandboxSyncEngine(deps: CreateSandboxSyncDeps): SandboxSyn
   /** Set by stop(); checked by an in-flight start() after each await so a
    *  stop() that races start()'s `await fs.mkdir` can't leak a watcher. */
   let disposed = false;
+  /** Bumped by stop(). Async pull/push paths capture the generation at entry
+   *  and bail after each await when it moved — in-flight work belonging to a
+   *  stopped engine must never write. (A late write resolves the settings
+   *  path from the env seams at call time, so in tests it lands on the NEXT
+   *  daemon's freshly-seeded file — the order-dependent sandbox-sync flake;
+   *  in production it races shutdown.) A FRESH pullNow after stop() still
+   *  works: it captures the post-stop generation. */
+  let generation = 0;
 
   const getStatus = (): ClaudeSyncStatus => ({ active, lastPulledAt, lastPushedAt, lastError });
 
@@ -156,9 +164,10 @@ export function createSandboxSyncEngine(deps: CreateSandboxSyncDeps): SandboxSyn
 
   /** Atomic write via temp file + rename. Preserves every top-level key other
    *  than `sandbox`. Sorts arrays for stable diffs. */
-  const writeSandboxToFile = async (policy: IsolationPolicy): Promise<void> => {
+  const writeSandboxToFile = async (policy: IsolationPolicy, gen: number): Promise<void> => {
     const block = toClaudeCodeSandboxBlock(policy);
     const current = await readFileAsJson();
+    if (generation !== gen) return; // stop() ran while reading — never write
     current['sandbox'] = {
       enabled: block.enabled,
       network: {
@@ -196,8 +205,10 @@ export function createSandboxSyncEngine(deps: CreateSandboxSyncDeps): SandboxSyn
   };
 
   const pushNow = async (): Promise<void> => {
+    const gen = generation;
     try {
-      await writeSandboxToFile(deps.getPolicy());
+      await writeSandboxToFile(deps.getPolicy(), gen);
+      if (generation !== gen) return; // write suppressed: stop() ran mid-flight
       lastPushedAt = Date.now();
       lastError = null;
       broadcastStatus();
@@ -209,6 +220,7 @@ export function createSandboxSyncEngine(deps: CreateSandboxSyncDeps): SandboxSyn
   };
 
   const pullNow = async (mode: SandboxSyncMode = 'merge'): Promise<void> => {
+    const gen = generation;
     if (mode === 'export') {
       // Sentinel wins: don't read the file, just assert our policy onto it.
       await pushNow();
@@ -216,6 +228,11 @@ export function createSandboxSyncEngine(deps: CreateSandboxSyncDeps): SandboxSyn
     }
     try {
       const obj = await readFileAsJson();
+      // Same straddle guard as writeSandboxToFile: never setPolicy (which
+      // persists via writeSettings, resolving its path at call time) after
+      // stop() — an in-flight debounced pull outliving shutdown otherwise
+      // leaks this engine's policy into unrelated state.
+      if (generation !== gen) return;
       const parsed = fromClaudeCodeSandboxBlock(obj['sandbox']);
       const merged = applyPulledSandboxContent(deps.getPolicy(), parsed, mode);
       deps.setPolicy(merged);
@@ -233,10 +250,12 @@ export function createSandboxSyncEngine(deps: CreateSandboxSyncDeps): SandboxSyn
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       void (async () => {
+        const gen = generation;
         try {
           const obj = await readFileAsJson();
           const h = canonHash(fromClaudeCodeSandboxBlock(obj['sandbox']));
           if (h === lastSeenHash) return; // our own echo
+          if (generation !== gen) return; // stopped while reading — don't pull
           await pullNow('merge');
         } catch (err) {
           lastError = formatSyncError(err);
@@ -304,6 +323,7 @@ export function createSandboxSyncEngine(deps: CreateSandboxSyncDeps): SandboxSyn
 
   const stop = (): void => {
     disposed = true;
+    generation++;
     if (debounceTimer) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
