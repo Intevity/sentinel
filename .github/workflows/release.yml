@@ -89,6 +89,14 @@ jobs:
     # dep recompile + AppImage/deb/rpm bundling there runs ~34 min and exceeded the old
     # 30-min cap whenever Cargo.lock changes (e.g. the rename); warm builds finish far under.
     timeout-minutes: 50
+    # id-token is required by the WINDOWS leg's Azure login (OIDC federated
+    # credential for Authenticode signing — no stored client secret). Job-scoped
+    # so the rest of the workflow runs with contents-only permissions. Removing
+    # this broke the v0.8.7 windows-x64 leg ("Unable to get
+    # ACTIONS_ID_TOKEN_REQUEST_URL") — it is NOT only for the retired S3 job.
+    permissions:
+      contents: write
+      id-token: write
     # Single source of truth for channel + version across this job's steps. Tag pushes
     # always publish `stable`; a manual workflow_dispatch can target `staging`.
     env:
