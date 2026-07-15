@@ -6,7 +6,7 @@ usage metrics; and overage alerts.
 
 **Website:** https://intevity.github.io/sentinel · **Documentation:** https://intevity.github.io/sentinel/docs/
 
-[![CI](https://github.com/Intevity/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/Intevity/sentinel/actions/workflows/ci.yml)
+[![CI](https://github.com/Intevity/sentinel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Intevity/sentinel/actions/workflows/ci.yml?query=branch%3Amain)
 [![Latest release](https://img.shields.io/github/v/release/Intevity/sentinel?include_prereleases)](https://github.com/Intevity/sentinel/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/Intevity/sentinel/total)](https://github.com/Intevity/sentinel/releases)
 [![License: MIT](https://img.shields.io/github/license/Intevity/sentinel)](./LICENSE)

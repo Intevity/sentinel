@@ -1,13 +1,20 @@
 name: CI
 
 on:
-  # PR-only by design. The PR run already validates the exact commit that
-  # merges (no-ff merge of an up-to-date branch), so re-running quality
-  # checks + Playwright on push-to-main would only burn CI minutes. No
-  # branch protection requires a push-to-main run, so dropping it strands
-  # nothing. (Verified via `gh api repos/.../branches/main/protection` → 404.)
-  # Main-branch work that legitimately needs `push` lives elsewhere:
-  # deploy-site.yml (site) and release.yml (tag-triggered builds).
+  # PRs are the gate; pushes to main additionally validate the actual merge
+  # commit (a no-ff merge commit is new history the PR run never built) and
+  # feed the README's CI badge, which filters on branch=main — without a
+  # main run the badge would surface whichever PR run happened to finish
+  # last, including red ones from in-flight branches (bit us when the repo
+  # went public).
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'CHANGELOG.md'
   pull_request:
     branches: [main]
     paths-ignore:
@@ -77,7 +84,11 @@ jobs:
   lint-test:
     name: Quality Checks
     needs: changes
-    if: needs.changes.outputs.app == 'true'
+    # PRs: gated on the site-only filter above. Pushes to main: the filter job
+    # is skipped (no base ref), so run unconditionally — this is the run the
+    # README badge reports. !cancelled() lets the job proceed past a skipped
+    # dependency without also running after a real cancellation.
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.app == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -185,7 +196,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [changes, lint-test]
-    if: needs.changes.outputs.app == 'true'
+    # Mirror of Quality Checks' condition, plus a hard success requirement on
+    # it (needs.* results are bypassed once !cancelled() is used).
+    if: ${{ !cancelled() && needs.lint-test.result == 'success' && (github.event_name == 'push' || needs.changes.outputs.app == 'true') }}
 
     steps:
       - uses: actions/checkout@v4
