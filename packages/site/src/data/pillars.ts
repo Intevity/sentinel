@@ -36,7 +36,7 @@ export const pillars: Pillar[] = [
     eyebrow: 'Multi-account',
     title: 'Every Claude account you own, in one place',
     intro:
-      'Keep the accounts you own in one place and let Sentinel switch the active one for you, so you are not copying credentials between machines or losing track of which account is in use.',
+      'Keep the accounts you own in one place and let Sentinel switch the active one for you, so you are not copying credentials between machines or losing track of which account is in use. The Claude Desktop app routes through the same proxy with one click, so Chat and Code inference share the pool, usage tracking, and alerts.',
     subFeatures: [
       {
         icon: 'rotate',

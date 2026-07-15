@@ -15,13 +15,43 @@ remove them.
 
 ## Enrolling accounts
 
-Click **Add Account** and complete the OAuth flow in your browser. The token is scoped to whichever
-org claude.ai is currently showing, so switch to the right org **before** approving. You can enroll
-as many accounts as you own.
+Click **Add Account**. Sentinel opens an in-app terminal running `claude setup-token` — the
+official Claude Code sign-in — and captures the long-lived token it produces. Complete the browser
+sign-in for the account you want to enroll, then give the account a name and (optionally) an
+organization label. You can enroll as many accounts as you own.
 
-Each enrolled account stores metadata Sentinel uses throughout the UI: email, display name, account
-UUID, subscription type, org UUID and name, rate-limit tier, and your organization/workspace roles.
-You can assign a **color tag** to each account to tell them apart at a glance.
+**Why the name is asked:** setup tokens are inference-only by Anthropic's design. They can't read
+your profile, so Sentinel cannot derive the account's email, display name, or organization from the
+token — the name and organization you type are how you tell accounts apart in the UI. Both are
+editable later, and you can also assign a **color tag** to each account.
+
+### Editing name and organization
+
+Click **Edit** on any account card to change its display name or organization label at any time —
+useful for filling in an organization you skipped during enrollment or fixing a typo'd name. The
+change applies immediately across the UI.
+
+<Aside type="note" title="Claude Code CLI required">
+  The add flow signs in through the [Claude Code CLI](https://code.claude.com/docs) — free, no
+  separate subscription needed. If the `claude` binary isn't installed, the panel shows the official
+  one-line installer with a copy button and a **Retry** button. On Windows, Sentinel finds installs
+  in `%USERPROFILE%\.local\bin`, npm's global directory, and bun's bin even when they're missing
+  from `PATH`.
+</Aside>
+
+### Restoring a deleted account
+
+Because setup tokens carry no identity, re-adding an account Sentinel once knew would normally
+create a fresh entry. If you removed an account with **Keep Data**, the name step instead offers
+**Restore** choices for each deleted account — pick one and the new token attaches to the old
+account, bringing back its name, organization, and usage history.
+
+### Re-authenticating
+
+Setup tokens last about a year. When one expires or is revoked (surfaces as upstream 401s — for
+example, Claude Desktop reporting rejected credentials), the account shows a **Re-authenticate**
+action that runs the same terminal flow and refreshes the credential in place, keeping all of the
+account's data.
 
 <Aside type="note" title="Credentials live in the OS keychain">
   Inactive-account credentials are stored under the `Sentinel-credentials` service in your OS
@@ -56,8 +86,13 @@ you on capacity that's about to refresh rather than capacity you've already spen
 
 - **Sync** — capture or refresh an account's credentials from Claude Code.
 - **Pause / unpause** — temporarily take an account out of the Auto pool.
-- **Remove** — soft-delete an account (it moves to a removed list and can be restored).
+- **Remove** — soft-delete an account. It moves to **Deleted Accounts** and can be brought back
+  later via [Restore](#restoring-a-deleted-account) with all of its data.
 - **Purge** — hard-delete an account and all data associated with it.
+
+Removing or purging the account that is currently serving requests is safe: Sentinel hands the
+proxy to another enrolled account automatically (or stops injecting credentials when none remain),
+so Claude Code and Claude Desktop never keep riding a deleted account's token.
 
 ## Pool view
 

@@ -29,7 +29,9 @@ per-user gateway config that Sentinel writes for you — **no MDM or admin setup
    **Settings → General**.
 
 3. **Fully quit and reopen Claude Desktop** (⌘Q / tray → Quit — a reopen from the dock won't reload
-   the config). On next launch it no longer needs a separate login; it routes through Sentinel.
+   the config). On Windows, closing the window is not enough: check Task Manager for lingering
+   `claude.exe` processes and end them before relaunching. On next launch it no longer needs a
+   separate login; it routes through Sentinel.
 
 4. Confirm traffic is flowing:
 
@@ -42,8 +44,21 @@ per-user gateway config that Sentinel writes for you — **no MDM or admin setup
 <Aside type="note" title="What routes through Sentinel">
   Enabling covers the desktop app's **Chat** and **Code** inference. **Cowork** runs tasks in a
   separate VM whose network egress may not use the host gateway, so Cowork coverage isn't
-  guaranteed. macOS is verified end-to-end; Windows and Linux use the same mechanism.
+  guaranteed. macOS and Windows are verified end-to-end; Linux uses the same mechanism.
 </Aside>
+
+## Credential health lives in Sentinel
+
+The gateway config holds a placeholder key — the proxy injects a real account token into every
+request. That means when the desktop app reports **"The provider rejected your credentials"** or
+its Setup shows a 401 from `/v1/models`, the problem is never solved inside the desktop app: the
+pooled account's token has expired or the account was removed. Fix it in Sentinel
+(**Re-authenticate** the account, or add one), and the desktop app recovers on its own — don't
+re-enter credentials in the desktop app's Setup.
+
+If the model picker stays stuck on **"Models are still loading"** after Sentinel is healthy again,
+fully restart the desktop app — see
+[Troubleshooting](/sentinel/docs/reference/troubleshooting/#claude-desktop-is-stuck-on-models-are-still-loading).
 
 ## Drift and re-apply
 

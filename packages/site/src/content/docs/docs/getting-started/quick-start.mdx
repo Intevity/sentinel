@@ -24,9 +24,11 @@ Sentinel, with at least one account enrolled.
 3. **Restart Claude Code** so it picks up the new base URL. Every session now flows through the
    daemon.
 
-4. **Add your first account.** Go to the **Accounts** tab → **Add Account** and complete the OAuth
-   flow in the browser. Sign in to the org you want to enroll before approving — the token is
-   scoped to whichever org claude.ai is currently showing.
+4. **Add your first account.** Go to the **Accounts** tab → **Add Account**. An in-app terminal
+   runs `claude setup-token` — complete Claude Code's sign-in in the browser for the account you
+   want to enroll, then give the account a name. Sentinel stores the long-lived token in your OS
+   keychain. (No Claude Code CLI installed yet? The panel shows the official one-line installer
+   with a copy button — run it, then hit **Retry**.)
 
    ![The Accounts tab listing enrolled accounts](/sentinel/screenshots/accounts-tab.png)
 
@@ -34,6 +36,11 @@ Sentinel, with at least one account enrolled.
    subscription you own. To let Sentinel pick the active account automatically, open
    **Settings → switching mode** and choose **Auto**. See
    [Multi-account routing](/sentinel/docs/features/accounts/).
+
+6. **(Optional) Route the Claude Desktop app too.** If the Claude Desktop app is installed,
+   Sentinel shows a **Claude Desktop** card — one click routes the app's Chat and Code inference
+   through the same account pool. See
+   [Connect Claude Desktop](/sentinel/docs/guides/connect-claude-desktop/).
 
 </Steps>
 

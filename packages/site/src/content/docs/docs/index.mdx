@@ -1,12 +1,13 @@
 ---
 title: Sentinel documentation
-description: An open-source Claude Code companion — security scanning, sandbox isolation, multi-account routing, token optimization, and usage alerts, all running on your own machine.
+description: An open-source companion for Claude Code and Claude Desktop — security scanning, sandbox isolation, multi-account routing, token optimization, and usage alerts, all running on your own machine.
 ---
 
 import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-**Sentinel** is an open-source companion for [Claude Code](https://claude.com/claude-code):
-a tray app and a bundled local daemon that sit between Claude Code and Anthropic's API.
+**Sentinel** is an open-source companion for [Claude Code](https://claude.com/claude-code) and
+the [Claude Desktop app](https://claude.com/download): a tray app and a bundled local daemon that
+sit between Claude and Anthropic's API.
 From one control panel you can scan and sandbox every request, enforce permission rules,
 route across the Claude accounts you own, cut wasted tokens, and catch overage spend before
 it runs away — all without your data ever leaving your machine.
@@ -17,8 +18,8 @@ it runs away — all without your data ever leaving your machine.
     keychain.
   </Card>
   <Card title="Transparent to Claude Code" icon="puzzle">
-    One activation writes `ANTHROPIC_BASE_URL` into Claude Code's settings. Everything else is
-    pass-through.
+    One activation writes `ANTHROPIC_BASE_URL` into Claude Code's settings; one click routes Claude
+    Desktop through the same proxy. Everything else is pass-through.
   </Card>
   <Card title="Cross-platform" icon="seti:html">
     macOS, Windows, and Linux. A single Tauri tray app with an embedded daemon sidecar.
