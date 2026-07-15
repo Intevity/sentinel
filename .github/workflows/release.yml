@@ -4,9 +4,9 @@ on:
   push:
     tags:
       - 'v*'
-  # Manual staging dry-run: publish a fully-signed/notarized candidate to the `staging`
-  # channel (S3 `staging/` prefix + a DRAFT release that is never promoted) to validate the
-  # update pipeline without touching `stable`. Tag pushes are unaffected and always publish
+  # Manual staging dry-run: build a fully-signed/notarized candidate as a DRAFT release
+  # that is never promoted, to validate the update pipeline without touching the live
+  # update channel (releases/latest). Tag pushes are unaffected and always publish
   # `stable`. See the staging dry-run runbook.
   workflow_dispatch:
     inputs:
@@ -32,7 +32,6 @@ concurrency:
 
 permissions:
   contents: write
-  id-token: write # the reusable finalize workflow's S3 publish assumes the AWS role via OIDC
 
 jobs:
   # Release notes, generated mechanically from the conventional commits
@@ -128,16 +127,6 @@ jobs:
       # `vX.Y.Z` form rather than silently shipping a misnamed bundle.
       - name: Sync version from tag
         shell: bash
-        env:
-          # Public HTTPS base that maps to the S3 bucket root (or a CloudFront/custom
-          # domain in front of it), e.g. https://<bucket>.s3.<region>.amazonaws.com or
-          # https://dl.example.com. Set as a repo variable (Settings → Secrets and
-          # variables → Actions → Variables). The same base is used by the
-          # publish-updates job, so the endpoint baked into the binary and the location
-          # latest.json is uploaded to can never drift. When unset, the committed
-          # placeholder stays in place — the build still succeeds, but in-app updates
-          # won't resolve until the variable is set and a release is published.
-          UPDATER_PUBLIC_BASE: ${{ vars.UPDATER_PUBLIC_BASE }}
         run: |
           set -euo pipefail
           VERSION="${RELEASE_TAG#v}"
@@ -147,18 +136,15 @@ jobs:
           fi
           echo "Stamping version=$VERSION into tauri.conf.json + Cargo.toml"
 
-          # tauri.conf.json — bundle metadata + artifact name source. Also stamps the
-          # updater endpoint as <base>/stable/latest.json when UPDATER_PUBLIC_BASE is
-          # set (left as the committed placeholder otherwise).
+          # tauri.conf.json — bundle metadata + artifact name source. The updater
+          # endpoint is committed (GitHub releases/latest/download/latest.json) and
+          # needs no per-build stamping: the publish-manifest job attaches the
+          # matching manifest to every release.
           node -e "
             const fs = require('fs');
             const p = 'packages/app/src-tauri/tauri.conf.json';
             const json = JSON.parse(fs.readFileSync(p, 'utf8'));
             json.version = process.argv[1];
-            const base = (process.env.UPDATER_PUBLIC_BASE || '').replace(/\/+\$/, '');
-            if (base) {
-              json.plugins.updater.endpoints = [base + '/' + (process.env.RELEASE_CHANNEL || 'stable') + '/latest.json'];
-            }
             fs.writeFileSync(p, JSON.stringify(json, null, 2) + '\n');
           " "$VERSION"
 

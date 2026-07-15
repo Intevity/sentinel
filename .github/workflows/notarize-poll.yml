@@ -15,7 +15,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write # the reusable finalize workflow's S3 publish assumes the AWS role via OIDC
 
 jobs:
   discover:

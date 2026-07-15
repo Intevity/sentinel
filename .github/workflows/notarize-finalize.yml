@@ -1,7 +1,9 @@
 name: Notarize finalize (reusable)
 
-# Staple the (already Accepted) notarized macOS artifacts, then promote the release and
-# publish the S3 auto-update channel. Shared by two callers so the logic lives in one place:
+# Staple the (already Accepted) notarized macOS artifacts, then publish the corrected
+# auto-update manifest to the GitHub release and promote it. The release itself is the
+# update channel: installed apps poll releases/latest/download/latest.json. Shared by two
+# callers so the logic lives in one place:
 #   - release.yml      — fast path, right after a short inline notarize-wait, when Apple
 #                        finished quickly.
 #   - notarize-poll.yml — scheduled path, when Apple finished a slow submission later.
@@ -15,28 +17,27 @@ on:
         required: true
         type: string
       channel:
-        description: Update channel / S3 prefix to publish to (stable or staging). Staging never promotes the GitHub release.
+        description: Update channel (stable or staging). Staging never promotes the GitHub release, so its manifest is only ever attached to a draft.
         required: false
         default: stable
         type: string
-  # Manual (re)finalize / recovery for a single tag: staple + publish + S3. Idempotent —
-  # re-stapling and re-promoting an already-finalized release is a no-op. Use this to
-  # republish a release whose S3 step failed, once the cause is fixed.
+  # Manual (re)finalize / recovery for a single tag: staple + manifest + promote.
+  # Idempotent — re-stapling and re-promoting an already-finalized release is a no-op.
+  # Use this to republish a release whose manifest step failed, once the cause is fixed.
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to (re)finalize — staple + publish + S3 (e.g. v0.3.6)
+        description: Release tag to (re)finalize — staple + manifest + promote (e.g. v0.3.6)
         required: true
         type: string
       channel:
-        description: Update channel / S3 prefix (stable or staging). Staging never promotes the GitHub release.
+        description: Update channel (stable or staging). Staging never promotes the GitHub release.
         required: false
         default: stable
         type: string
 
 permissions:
   contents: write
-  id-token: write # publish-updates assumes the AWS role via OIDC
 
 jobs:
   staple:
@@ -66,8 +67,8 @@ jobs:
           mkdir -p dist-staple
           # Drafts are downloadable with the workflow token. macOS-only globs on
           # purpose: stapling is a macOS-only concept (xcrun stapler). The Linux and
-          # Windows bundles need no staple and are mirrored straight from the release
-          # by publish-updates.
+          # Windows bundles need no staple; publish-manifest reads them straight from
+          # the release.
           gh release download "${{ inputs.tag }}" \
             --repo "$GITHUB_REPOSITORY" \
             --dir dist-staple \
@@ -78,17 +79,18 @@ jobs:
       - name: Staple + re-sign updater artifacts
         run: bash scripts/notary-staple.sh dist-staple "${{ inputs.tag }}"
 
-  # Promote LAST — only after publish-updates has populated the S3 channel — so the release
-  # never goes live with a missing update manifest, AND this job can't race publish-updates'
+  # Promote LAST — only after publish-manifest has replaced latest.json on the release —
+  # so the release never goes live with tauri-action's stale manifest (its darwin
+  # signatures predate the staple re-sign), AND this job can't race publish-manifest's
   # download of the (still-draft) release by tag (that race 404'd "release not found" when
-  # the two ran in parallel). Runs when staple succeeded and publish-updates either succeeded
-  # or was skipped (S3 not configured); stays a draft if publish-updates failed.
+  # the two ran in parallel). Stays a draft if publish-manifest failed.
   publish-release:
     name: Publish GitHub Release
-    needs: [staple, publish-updates]
-    # Staging is a throwaway dry-run channel: publish artifacts to staging/ but NEVER promote
-    # the GitHub release out of draft (and never touch stable). Only stable promotes.
-    if: ${{ always() && needs.staple.result == 'success' && needs.publish-updates.result != 'failure' && needs.publish-updates.result != 'cancelled' && inputs.channel == 'stable' }}
+    needs: [staple, publish-manifest]
+    # Staging is a throwaway dry-run channel: assemble its manifest but NEVER promote the
+    # GitHub release out of draft. Only stable promotes — and only a PUBLISHED release can
+    # become releases/latest, so drafts never reach the updater endpoint.
+    if: ${{ inputs.channel == 'stable' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -103,37 +105,28 @@ jobs:
                       --jq '.assets[].name | select(startswith("notary-") and endswith(".json"))'); do
             gh release delete-asset "${{ inputs.tag }}" "$a" --yes --repo "$GITHUB_REPOSITORY" || true
           done
-          # Drop tauri-action's release-attached latest.json: its darwin signatures are
-          # stale (staple re-signed the tarballs after it was generated) and its URLs
-          # point at github.com instead of the S3 channel. The authoritative manifest
-          # is the one publish-updates just wrote to S3.
-          gh release delete-asset "${{ inputs.tag }}" latest.json --yes --repo "$GITHUB_REPOSITORY" || true
           gh release edit "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" --draft=false
 
-  # Publishes the auto-update channel for every platform: mirrors the minisign-signed
-  # updater bundles (macOS .app.tar.gz after staple + re-sign; Linux .AppImage/.deb/.rpm
-  # and Windows -setup.exe/.msi exactly as built) to a public-read S3 bucket and writes
-  # the merged latest.json the in-app updater polls. SKIPPED until S3 is provisioned
-  # (vars.S3_BUCKET unset); the GitHub release is then the only channel. Auth is GitHub
-  # OIDC — no AWS secrets stored.
-  publish-updates:
-    name: Publish auto-update artifacts to S3
+  # Assembles the authoritative updater manifest and attaches it to the GitHub release.
+  # The release IS the update channel now that the repo is public: installed apps poll
+  # releases/latest/download/latest.json, whose per-platform URLs point back at this
+  # release's assets. tauri-action's auto-generated latest.json can't be used as-is —
+  # each matrix leg only knows its own platform, and the darwin signatures it recorded
+  # predate the staple re-sign — so this job rebuilds the manifest from the final
+  # artifacts and replaces the release asset.
+  publish-manifest:
+    name: Publish updater manifest to the release
     needs: [staple]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: vars.S3_BUCKET != ''
     permissions:
-      # contents must be WRITE even though this job only reads: draft releases are
+      # contents must be WRITE even though this job mostly reads: draft releases are
       # invisible to a contents:read token (drafts require push-level access), and this
       # job always downloads from a still-draft release because publish-release promotes
       # LAST. With read, `gh release download` fails with "release not found" (bit the
       # first scheduled-poller finalize of v0.4.0).
       contents: write
-      id-token: write # mint the OIDC token used to assume the AWS role (no stored keys)
     env:
-      S3_BUCKET: ${{ vars.S3_BUCKET }}
-      S3_PREFIX: ${{ inputs.channel }}
-      UPDATER_PUBLIC_BASE: ${{ vars.UPDATER_PUBLIC_BASE }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ inputs.tag }}
     steps:
@@ -141,21 +134,13 @@ jobs:
       # manifest assembly and ran checkout-free).
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: ${{ vars.AWS_REGION }}
-          # OIDC: assume the role provisioned in terraform/ (claude-sentinel-updates-publisher),
-          # scoped to this repo. No long-lived AWS keys are stored.
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-
       - name: Download updater artifacts from the release
         run: |
           set -euo pipefail
           mkdir -p dist-updater
           # Explicit per-bundle globs: .dmg, notary-*.json, and tauri-action's
-          # release-attached latest.json must never land in dist-updater (everything
-          # here is mirrored to S3 verbatim).
+          # release-attached latest.json must never land in dist-updater (every file
+          # here feeds the manifest assembler).
           gh release download "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --dir dist-updater \
@@ -178,26 +163,15 @@ jobs:
           set -euo pipefail
           # Builds the v2 dynamic manifest covering every platform (bundle-suffixed
           # keys + bare fallbacks) and fails loudly if any expected artifact or .sig
-          # is missing — see the script's doc comment for the key scheme.
-          node scripts/assemble-latest-json.mjs dist-updater "${TAG#v}"
+          # is missing — see the script's doc comment for the key scheme. URLs point
+          # at this release's own assets.
+          UPDATER_ARTIFACT_BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" \
+            node scripts/assemble-latest-json.mjs dist-updater "${TAG#v}"
 
-      - name: Upload to S3
+      - name: Replace latest.json on the release
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
-          # Versioned artifacts are immutable → cache forever. latest.json is the
-          # mutable pointer every installed binary polls → near-zero cache so a new
-          # release is picked up promptly.
-          aws s3 cp dist-updater/ "s3://$S3_BUCKET/$S3_PREFIX/$VERSION/" \
-            --recursive --exclude '*' \
-            --include '*.app.tar.gz' --include '*.app.tar.gz.sig' \
-            --include '*.AppImage' --include '*.AppImage.sig' \
-            --include '*.deb' --include '*.deb.sig' \
-            --include '*.rpm' --include '*.rpm.sig' \
-            --include '*-setup.exe' --include '*-setup.exe.sig' \
-            --include '*.msi' --include '*.msi.sig' \
-            --cache-control 'public, max-age=31536000, immutable'
-          aws s3 cp dist-updater/latest.json "s3://$S3_BUCKET/$S3_PREFIX/latest.json" \
-            --content-type application/json \
-            --cache-control 'public, max-age=60, must-revalidate'
-          echo "Published: $UPDATER_PUBLIC_BASE/$S3_PREFIX/latest.json"
+          # --clobber replaces tauri-action's auto-generated manifest (stale darwin
+          # signatures after the staple re-sign; single-platform coverage per leg)
+          # with the authoritative merged one.
+          gh release upload "$TAG" dist-updater/latest.json --clobber --repo "$GITHUB_REPOSITORY"
