@@ -10,8 +10,11 @@ import {
   canonHashDesktopDrift,
   resolveDesktopUserDataBase,
   desktopConfigLibraryDir,
+  installDesktopMcpServer,
+  uninstallDesktopMcpServer,
   SENTINEL_DESKTOP_ENTRY_NAME,
   DESKTOP_GATEWAY_DUMMY_KEY,
+  DESKTOP_MCP_SERVER_NAME,
 } from './claude-desktop-config.js';
 import { SENTINEL_BASE_URL } from './claude-otel-config.js';
 
@@ -242,5 +245,88 @@ describe('activate / deactivate / inspect (real files)', () => {
     mkdirSync(libDir, { recursive: true });
     writeFileSync(join(libDir, '_meta.json'), '{ not json');
     expect((await inspectDesktopConfig()).state).toBe('not-installed');
+  });
+
+  // ─── Sentinel MCP entry (stdio bridge) in claude_desktop_config.json ──────
+
+  describe('installDesktopMcpServer / uninstallDesktopMcpServer', () => {
+    const spec = {
+      command: '/apps/sentinel-daemon',
+      args: ['mcp-stdio'],
+      url: 'http://127.0.0.1:47284/mcp',
+      token: 'tok-123',
+    };
+    const appCfgPath = () => join(workdir, 'claude_desktop_config.json');
+    const readAppCfg = () =>
+      JSON.parse(readFileSync(appCfgPath(), 'utf8')) as {
+        mcpServers?: Record<
+          string,
+          { command: string; args: string[]; env: Record<string, string> }
+        >;
+        [k: string]: unknown;
+      };
+
+    it('creates the file with the sentinel entry when absent', async () => {
+      expect(await installDesktopMcpServer(spec)).toBe(true);
+      const cfg = readAppCfg();
+      expect(cfg.mcpServers?.[DESKTOP_MCP_SERVER_NAME]).toEqual({
+        command: '/apps/sentinel-daemon',
+        args: ['mcp-stdio'],
+        env: { SENTINEL_MCP_URL: spec.url, SENTINEL_MCP_TOKEN: spec.token },
+      });
+    });
+
+    it('preserves foreign keys and other MCP servers on install', async () => {
+      writeFileSync(
+        appCfgPath(),
+        JSON.stringify({
+          deploymentMode: '3p',
+          preferences: { sidebarMode: 'epitaxy' },
+          mcpServers: { other: { command: 'other-bin' } },
+        }),
+      );
+      expect(await installDesktopMcpServer(spec)).toBe(true);
+      const cfg = readAppCfg();
+      expect(cfg.deploymentMode).toBe('3p');
+      expect(cfg.preferences).toEqual({ sidebarMode: 'epitaxy' });
+      expect(cfg.mcpServers?.other).toEqual({ command: 'other-bin' });
+      expect(cfg.mcpServers?.[DESKTOP_MCP_SERVER_NAME]?.command).toBe('/apps/sentinel-daemon');
+    });
+
+    it('is idempotent: re-install with the same spec reports no change', async () => {
+      expect(await installDesktopMcpServer(spec)).toBe(true);
+      expect(await installDesktopMcpServer(spec)).toBe(false);
+    });
+
+    it('refreshes the entry when the token or binary path changes', async () => {
+      await installDesktopMcpServer(spec);
+      expect(await installDesktopMcpServer({ ...spec, token: 'tok-456' })).toBe(true);
+      expect(readAppCfg().mcpServers?.[DESKTOP_MCP_SERVER_NAME]?.env.SENTINEL_MCP_TOKEN).toBe(
+        'tok-456',
+      );
+      expect(
+        await installDesktopMcpServer({ ...spec, token: 'tok-456', command: '/new/bin' }),
+      ).toBe(true);
+      expect(readAppCfg().mcpServers?.[DESKTOP_MCP_SERVER_NAME]?.command).toBe('/new/bin');
+    });
+
+    it('uninstall removes only the sentinel entry', async () => {
+      writeFileSync(
+        appCfgPath(),
+        JSON.stringify({ mcpServers: { other: { command: 'other-bin' } } }),
+      );
+      await installDesktopMcpServer(spec);
+      expect(await uninstallDesktopMcpServer()).toBe(true);
+      const cfg = readAppCfg();
+      expect(cfg.mcpServers?.[DESKTOP_MCP_SERVER_NAME]).toBeUndefined();
+      expect(cfg.mcpServers?.other).toEqual({ command: 'other-bin' });
+    });
+
+    it('uninstall with no file or no entry is a no-op', async () => {
+      expect(await uninstallDesktopMcpServer()).toBe(false);
+      writeFileSync(appCfgPath(), JSON.stringify({ deploymentMode: '3p' }));
+      expect(await uninstallDesktopMcpServer()).toBe(false);
+      expect(readAppCfg().deploymentMode).toBe('3p');
+    });
   });
 });

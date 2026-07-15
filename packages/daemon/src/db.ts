@@ -1245,6 +1245,36 @@ export function listAccounts(db: Database.Database): AccountInfo[] {
 }
 
 /**
+ * Update the user-editable metadata on an account row: display name and/or
+ * organization label. Only the fields present in `patch` are written —
+ * `displayName` is skipped when it trims to empty (a card must keep a visible
+ * name), while `orgName: ''` is a deliberate clear. Returns true when the row
+ * existed and at least one field was written.
+ */
+export function updateAccountMeta(
+  db: Database.Database,
+  id: string,
+  patch: { displayName?: string; orgName?: string },
+): boolean {
+  const sets: string[] = [];
+  const values: string[] = [];
+  const displayName = patch.displayName?.trim();
+  if (displayName) {
+    sets.push('display_name = ?');
+    values.push(displayName);
+  }
+  if (patch.orgName !== undefined) {
+    sets.push('org_name = ?');
+    values.push(patch.orgName.trim());
+  }
+  if (sets.length === 0) return false;
+  const result = db
+    .prepare(`UPDATE accounts SET ${sets.join(', ')} WHERE id = ?`)
+    .run(...values, id);
+  return result.changes > 0;
+}
+
+/**
  * Persist the user-picked avatar color for an account. Pass `null` to clear
  * the custom color so the UI reverts to the hash-derived default gradient.
  * Returns true when the row existed and was updated.

@@ -29,7 +29,9 @@ per-user gateway config that Sentinel writes for you — **no MDM or admin setup
    **Settings → General**.
 
 3. **Fully quit and reopen Claude Desktop** (⌘Q / tray → Quit — a reopen from the dock won't reload
-   the config). On next launch it no longer needs a separate login; it routes through Sentinel.
+   the config). On Windows, closing the window is not enough: check Task Manager for lingering
+   `claude.exe` processes and end them before relaunching. On next launch it no longer needs a
+   separate login; it routes through Sentinel.
 
 4. Confirm traffic is flowing:
 
@@ -42,8 +44,34 @@ per-user gateway config that Sentinel writes for you — **no MDM or admin setup
 <Aside type="note" title="What routes through Sentinel">
   Enabling covers the desktop app's **Chat** and **Code** inference. **Cowork** runs tasks in a
   separate VM whose network egress may not use the host gateway, so Cowork coverage isn't
-  guaranteed. macOS is verified end-to-end; Windows and Linux use the same mechanism.
+  guaranteed. macOS and Windows are verified end-to-end; Linux uses the same mechanism.
 </Aside>
+
+## Credential health lives in Sentinel
+
+The gateway config holds a placeholder key — the proxy injects a real account token into every
+request. That means when the desktop app reports **"The provider rejected your credentials"** or
+its Setup shows a 401 from `/v1/models`, the problem is never solved inside the desktop app: the
+pooled account's token has expired or the account was removed. Fix it in Sentinel
+(**Re-authenticate** the account, or add one), and the desktop app recovers on its own — don't
+re-enter credentials in the desktop app's Setup.
+
+If the model picker stays stuck on **"Models are still loading"** after Sentinel is healthy again,
+fully restart the desktop app — see
+[Troubleshooting](/sentinel/docs/reference/troubleshooting/#claude-desktop-is-stuck-on-models-are-still-loading).
+
+## Sentinel's MCP server in the desktop app
+
+Enabling routing also installs Sentinel's local MCP server — the compression **retrieve** tool and
+the code-mode bridge — into the desktop app's `claude_desktop_config.json`, so desktop Code
+sessions get the same [token-optimization tooling](/sentinel/docs/features/optimization/) the CLI
+has. The desktop app only spawns command-based (stdio) MCP servers and silently drops the HTTP
+entry the CLI uses, so Sentinel's entry runs the daemon binary in a small stdio bridge mode that
+relays to the same local endpoint.
+
+Fully restart the desktop app after enabling routing to pick the server up — `sentinel` then
+appears in the app's local MCP list. Disabling routing removes the entry; any other MCP servers
+you configured there are preserved.
 
 ## Drift and re-apply
 

@@ -5,6 +5,8 @@
  * (via SENTINEL_TEST_CLAUDE_DESKTOP_DIR). No mocks.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import { startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 import { SENTINEL_BASE_URL } from './claude-otel-config.js';
 import type { SurfaceState, ClaudeDesktopDriftDetails, Settings } from '@sentinel/shared';
@@ -43,6 +45,30 @@ describe('desktop surface IPC', () => {
     const surface = await ctx.request<SurfaceState>({ type: 'get_surface_state' });
     expect(surface.data?.desktop.installed).toBe(true);
     expect(surface.data?.desktop.activated).toBe(true);
+  });
+
+  it('activate installs the stdio MCP bridge entry; deactivate removes it', async () => {
+    const appCfgPath = join(ctx.workdir, 'claude-3p', 'claude_desktop_config.json');
+    const readAppCfg = () =>
+      JSON.parse(readFileSync(appCfgPath, 'utf8')) as {
+        mcpServers?: Record<
+          string,
+          { command: string; args: string[]; env: Record<string, string> }
+        >;
+      };
+
+    await ctx.request({ type: 'activate_desktop' });
+    const entry = readAppCfg().mcpServers?.sentinel;
+    expect(entry).toBeDefined();
+    // Desktop only spawns stdio servers: the entry must be command-based and
+    // end in the bridge subcommand, with the endpoint + token in env.
+    expect(entry!.args.at(-1)).toBe('mcp-stdio');
+    expect(entry!.env.SENTINEL_MCP_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+    expect(entry!.env.SENTINEL_MCP_TOKEN?.length ?? 0).toBeGreaterThan(10);
+
+    await ctx.request({ type: 'deactivate_desktop' });
+    expect(existsSync(appCfgPath)).toBe(true);
+    expect(readAppCfg().mcpServers?.sentinel).toBeUndefined();
   });
 
   it('get_claude_desktop_drift_state reflects the applied config', async () => {

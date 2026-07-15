@@ -171,6 +171,31 @@ describe('lifecycle — store_setup_token', () => {
     expect(accts.data?.find((x) => x.email === 'real@corp.com')?.orgName).toBe('Corp');
   });
 
+  it('stores the user-typed organization label when the profile sniff fails', async () => {
+    ctx = await startTestDaemon();
+    const token = `sk-ant-oat01-${'H'.repeat(95)}`;
+    await ctx.request({
+      type: 'store_setup_token',
+      token,
+      label: 'org-typed@example.com',
+      orgName: '  Acme Corp  ',
+    });
+    const bc = await ctx.waitForBroadcast<{
+      type: 'login_complete';
+      email: string;
+      orgName?: string;
+    }>(
+      (m) =>
+        m.type === 'login_complete' && (m as { email?: string }).email === 'org-typed@example.com',
+      8000,
+    );
+    expect(bc.orgName).toBe('Acme Corp');
+    const accts = await ctx.request<Array<{ email: string; orgName: string }>>({
+      type: 'refresh_accounts',
+    });
+    expect(accts.data?.find((x) => x.email === 'org-typed@example.com')?.orgName).toBe('Acme Corp');
+  });
+
   it('rejects a token that is not an sk-ant-oat01 token', async () => {
     ctx = await startTestDaemon();
     const r = await ctx.request({ type: 'store_setup_token', token: 'not-a-token' });

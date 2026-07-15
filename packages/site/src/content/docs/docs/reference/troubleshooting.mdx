@@ -20,21 +20,27 @@ The daemon stores credentials per account UUID the first time you sync. Open the
 **Sync** while each account is active in Claude Code (one at a time) to capture its token. After
 syncing every account, switching works without re-login.
 
-## Add Account completes but shows a blue "already added" notice
+## Add Account says "Claude Code (the `claude` CLI) was not found"
 
-The OAuth consent page returned a token for an org you already have. This happens when your
-claude.ai browser session is signed in to a different org than the one you wanted. Open claude.ai,
-use the org selector (top-left sidebar) to switch to the org you want, then click **Add Account**
-again.
+Adding an account signs in through the Claude Code CLI (free — no separate subscription). The
+panel shows the official one-line installer with a copy button: run it in a terminal, then click
+**Retry**. On Windows, Sentinel looks in `%USERPROFILE%\.local\bin` (native installer),
+`%APPDATA%\npm` (npm global), and `%USERPROFILE%\.bun\bin` even when those directories aren't on
+`PATH`, so a standard install is found without any PATH surgery.
 
-## Add Account completes in the browser but the app says "Login failed or was cancelled"
+## Add Account: "The sign-in ended before a token was created"
 
-Check the daemon log for an `[OAuth]` error after the callback:
+The `claude setup-token` flow exited before printing a token — usually a cancelled or failed
+browser sign-in. Close the panel and try again, completing the authorization page in the browser.
+If it keeps failing, the in-app terminal output shows the CLI's own error message.
 
-- **`Token exchange failed (400)`** — the authorization code expired (the flow took too long). Try
-  again.
-- **`security: SecKeychainItemAdd` error** (macOS) — the OS denied a keychain write. Check
-  **System Settings → Privacy & Security → Keychain**.
+## I deleted an account and re-adding it created a duplicate
+
+Setup tokens carry no identity, so Sentinel can't recognize a re-added account by itself. If the
+old account is under **Deleted Accounts** (removed with Keep Data), remove the duplicate and run
+**Add Account** again — on the name step, pick the **Restore** option for the old account instead
+of typing a name. Its name, organization, and usage history come back. See
+[Restoring a deleted account](/sentinel/docs/features/accounts/#restoring-a-deleted-account).
 
 ## Proxy not intercepting Claude Code requests
 
@@ -45,10 +51,33 @@ missing, click **Activate Sentinel** in the app, then restart Claude Code.
 
 The desktop app reads its own gateway config, not `~/.claude/settings.json`. Click **Enable** on the
 **Claude Desktop** card in Sentinel, then **fully quit and reopen** the desktop app (a reopen from
-the dock won't reload the config). If the card doesn't appear, either the app wasn't detected yet —
-give the detector a few seconds — or routing is already active (the card hides once enabled; check or
-toggle it from **Settings → General**). Confirm traffic with `tail -f ~/.sentinel/daemon.log`. Note
-that **Cowork** runs in a separate VM and may not route through the host gateway.
+the dock won't reload the config; on Windows, end lingering `claude.exe` processes in Task
+Manager). If the card doesn't appear, either the app wasn't detected yet — give the detector a few
+seconds — or routing is already active (the card hides once enabled; check or toggle it from
+**Settings → General**). Confirm traffic with `tail -f ~/.sentinel/daemon.log`. Note that
+**Cowork** runs in a separate VM and may not route through the host gateway.
+
+## Claude Desktop says "The provider rejected your credentials"
+
+The desktop app never holds a real credential — the proxy injects a pooled account token per
+request — so this error means the account Sentinel is serving has an expired or revoked token (the
+daemon log shows `[Proxy] GET /v1/models → 401` with the account id). Fix it **in Sentinel**:
+**Re-authenticate** that account, or add/restore one. Don't re-enter credentials in the desktop
+app's Setup — there's nothing to fix there.
+
+## Claude Desktop is stuck on "Models are still loading"
+
+This is leftover state from launching the desktop app while the gateway was failing (for example,
+during the expired-token 401s above). The desktop app re-checks in the background and its log will
+even report recovery, but **already-open windows don't refresh the model picker**. Fully quit the
+desktop app — on Windows, end all `claude.exe` processes in Task Manager (the window closing is not
+enough) — and relaunch. To confirm what the desktop app itself sees, check its log:
+
+- **macOS** `~/Library/Logs/Claude-3p/main.log`
+- **Windows** `%LOCALAPPDATA%\Claude-3p\logs\main.log`
+
+Healthy looks like `[custom-3p] Model discovery: 10 found … picker = 10 (discovery)`; a credential
+problem shows `credential rejected by server { channel: 'discovery', httpStatus: 401 }`.
 
 ## "Continue with Google" doesn't work in the Connect claude.ai window
 

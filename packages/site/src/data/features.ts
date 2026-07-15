@@ -54,7 +54,7 @@ export const features: Feature[] = [
     title: 'Every Claude account you own, in one place',
     tagline: 'Switch the active account without copying credentials around.',
     description:
-      'Add the accounts you own and let Sentinel switch the active one for you. Auto mode favors the account whose limit resets soonest, so you are not switching by hand, and every switch is one click that rewrites the active credential safely.',
+      'Add the accounts you own and let Sentinel switch the active one for you. Auto mode favors the account whose limit resets soonest, so you are not switching by hand, and every switch is one click that rewrites the active credential safely. Claude Desktop can route through the same pool with one click.',
     icon: 'rotate',
     video: 'accounts.mp4',
     poster: 'accounts.jpg',

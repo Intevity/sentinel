@@ -6,6 +6,7 @@ import { getAccountStatus } from '../lib/account-status.js';
 import { avatarStyle } from '../lib/accountColor.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import AccountColorPicker from './AccountColorPicker.js';
+import AccountEditPopover from './AccountEditPopover.js';
 import ResetCountdown from './ResetCountdown.js';
 
 export type RefreshUsageStatus = 'loading' | 'ok' | 'err';
@@ -141,6 +142,7 @@ export default function AccountCard({
   const plan = { label: planLabel(account.planType), color: planColor(account.planType) };
   const avatar = avatarStyle(account);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   // Matches UsageView's rounding: plain round on the header value. Pin the
   // 0 / 100 boundaries so a fresh account isn't mislabeled.
@@ -227,6 +229,16 @@ export default function AccountCard({
       title="Refresh this account's OAuth access token"
     >
       {refreshing ? 'Refreshing…' : 'Refresh'}
+    </button>
+  );
+
+  const editAction = (
+    <button
+      onClick={() => setEditOpen(true)}
+      className="text-[11px] font-medium text-muted hover:text-ios-blue transition-colors"
+      title="Edit this account's name and organization"
+    >
+      Edit
     </button>
   );
 
@@ -407,11 +419,13 @@ export default function AccountCard({
         <div className="flex items-center gap-3 flex-shrink-0">
           {primaryAction}
           {refreshAction}
+          {editAction}
           {removeAction}
         </div>
       </div>
 
       {pickerOpen && <AccountColorPicker account={account} onClose={() => setPickerOpen(false)} />}
+      {editOpen && <AccountEditPopover account={account} onClose={() => setEditOpen(false)} />}
 
       {/* ── Sign-in expired banner ────────────────────────────
           Warning copy on top, a Re-authenticate button below. Re-authenticate

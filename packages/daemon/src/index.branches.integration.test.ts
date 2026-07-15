@@ -4,7 +4,8 @@
  * fills the gaps — scope variations, error branches, alternate-input modes.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import type { OAuthAccount } from '@sentinel/shared';
+import { readFileSync } from 'fs';
+import type { AccountInfo, OAuthAccount } from '@sentinel/shared';
 import { makeCreds, startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 
 let ctx: TestDaemon | null = null;
@@ -171,6 +172,57 @@ describe('update_account', () => {
     ctx = await startTestDaemon();
     const r = await ctx.request({ type: 'update_account', accountId: 'unknown', color: '#00FF00' });
     expect(r.success).toBe(false);
+  });
+
+  it('edits displayName/orgName on the ACTIVE account and survives a refresh_accounts capture', async () => {
+    const a = defaultAccount();
+    ctx = await startTestDaemon({
+      claudeState: { oauthAccount: a },
+      sentinelCredentials: { [a.organizationUuid]: makeCreds({ accessToken: 'tok' }) },
+      registerTokens: ['tok'],
+    });
+    const r = await ctx.request<AccountInfo>({
+      type: 'update_account',
+      accountId: a.organizationUuid,
+      displayName: '  Renamed  ',
+      orgName: 'New Org',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.displayName).toBe('Renamed');
+    expect(r.data?.orgName).toBe('New Org');
+
+    // The edit is mirrored into ~/.claude.json so the capture path can't
+    // clobber it back with the stale values.
+    const onDisk = JSON.parse(readFileSync(ctx.claudeJsonPath, 'utf-8')) as {
+      oauthAccount?: OAuthAccount;
+    };
+    expect(onDisk.oauthAccount?.displayName).toBe('Renamed');
+    expect(onDisk.oauthAccount?.organizationName).toBe('New Org');
+
+    // refresh_accounts runs captureActiveClaudeAccount, which upserts the
+    // active row from ~/.claude.json — the edited values must survive it.
+    const list = await ctx.request<AccountInfo[]>({ type: 'refresh_accounts' });
+    const row = list.data?.find((x) => x.id === a.organizationUuid);
+    expect(row?.displayName).toBe('Renamed');
+    expect(row?.orgName).toBe('New Org');
+  });
+
+  it('ignores an empty displayName but honors an empty orgName as a clear', async () => {
+    const a = defaultAccount();
+    ctx = await startTestDaemon({
+      claudeState: { oauthAccount: a },
+      sentinelCredentials: { [a.organizationUuid]: makeCreds({ accessToken: 'tok' }) },
+      registerTokens: ['tok'],
+    });
+    const r = await ctx.request<AccountInfo>({
+      type: 'update_account',
+      accountId: a.organizationUuid,
+      displayName: '   ',
+      orgName: '',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.displayName).toBe('Test User');
+    expect(r.data?.orgName).toBe('');
   });
 });
 

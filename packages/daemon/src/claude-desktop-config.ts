@@ -104,6 +104,12 @@ export function desktopConfigLibraryDir(): string {
 
 const metaPath = (): string => join(desktopConfigLibraryDir(), '_meta.json');
 const configPath = (id: string): string => join(desktopConfigLibraryDir(), `${id}.json`);
+/** The desktop app's own settings file (`claude_desktop_config.json`), sibling
+ *  of `configLibrary/`. Chosen as the MCP install target because the CLI never
+ *  reads it — Sentinel's `~/.claude.json` entry stays http for Claude Code
+ *  while the desktop app gets the stdio bridge here. */
+const desktopAppConfigPath = (): string =>
+  join(dirname(desktopConfigLibraryDir()), 'claude_desktop_config.json');
 
 async function readJson<T>(p: string): Promise<T | null> {
   let text: string;
@@ -266,4 +272,68 @@ export async function deactivateDesktop(ourId: string | null): Promise<ClaudeDes
   let applied: DesktopGatewayConfig | null = null;
   if (appliedId) applied = await readJson<DesktopGatewayConfig>(configPath(appliedId));
   return classifyDesktopConfig(nextMeta, applied);
+}
+
+// ─── Sentinel MCP server (stdio bridge) in claude_desktop_config.json ────────
+//
+// The desktop app only spawns stdio (`command`-based) local MCP servers — its
+// config schema and the embedded-session collector both drop `type: 'http'`
+// entries silently. Sentinel's MCP server (compression retrieve + code-mode)
+// is HTTP on the daemon, so we install a `sentinel` entry that spawns the
+// daemon binary in its `mcp-stdio` bridge mode (see mcp-stdio-bridge.ts).
+
+/** Name of Sentinel's entry under `mcpServers` in claude_desktop_config.json.
+ *  Matches the CLI-side server name so the tools read the same everywhere. */
+export const DESKTOP_MCP_SERVER_NAME = 'sentinel';
+
+export interface DesktopMcpBridgeSpec {
+  /** Executable that runs the bridge (the daemon binary, or `node` in dev). */
+  command: string;
+  /** Args up to and including the `mcp-stdio` command. */
+  args: string[];
+  /** The daemon's MCP endpoint, e.g. `http://127.0.0.1:47284/mcp`. */
+  url: string;
+  /** Per-installation bearer for the endpoint. */
+  token: string;
+}
+
+function buildDesktopMcpEntry(spec: DesktopMcpBridgeSpec): Record<string, unknown> {
+  return {
+    command: spec.command,
+    args: [...spec.args],
+    env: { SENTINEL_MCP_URL: spec.url, SENTINEL_MCP_TOKEN: spec.token },
+  };
+}
+
+/** Install (or refresh) Sentinel's stdio-bridge MCP entry, preserving every
+ *  other key and server in the file. Returns true when the file changed
+ *  (idempotent re-asserts return false). */
+export async function installDesktopMcpServer(spec: DesktopMcpBridgeSpec): Promise<boolean> {
+  const p = desktopAppConfigPath();
+  const cfg = (await readJson<Record<string, unknown>>(p)) ?? {};
+  const servers =
+    cfg.mcpServers && typeof cfg.mcpServers === 'object' && !Array.isArray(cfg.mcpServers)
+      ? { ...(cfg.mcpServers as Record<string, unknown>) }
+      : {};
+  const next = buildDesktopMcpEntry(spec);
+  if (JSON.stringify(servers[DESKTOP_MCP_SERVER_NAME]) === JSON.stringify(next)) return false;
+  servers[DESKTOP_MCP_SERVER_NAME] = next;
+  await writeJsonAtomic(p, { ...cfg, mcpServers: servers });
+  return true;
+}
+
+/** Remove Sentinel's MCP entry, preserving everything else. Returns true when
+ *  the file changed. A missing file or entry is a no-op. */
+export async function uninstallDesktopMcpServer(): Promise<boolean> {
+  const p = desktopAppConfigPath();
+  const cfg = await readJson<Record<string, unknown>>(p);
+  if (!cfg) return false;
+  const servers =
+    cfg.mcpServers && typeof cfg.mcpServers === 'object' && !Array.isArray(cfg.mcpServers)
+      ? { ...(cfg.mcpServers as Record<string, unknown>) }
+      : null;
+  if (!servers || !(DESKTOP_MCP_SERVER_NAME in servers)) return false;
+  delete servers[DESKTOP_MCP_SERVER_NAME];
+  await writeJsonAtomic(p, { ...cfg, mcpServers: servers });
+  return true;
 }

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Assemble the Tauri updater manifest (latest.json) from a directory of
 // downloaded release artifacts. Runs in notarize-finalize.yml's
-// publish-updates job after the macOS tarballs have been stapled +
+// publish-manifest job after the macOS tarballs have been stapled +
 // re-signed, so the signatures read here are the final ones.
 //
 // Usage:
-//   UPDATER_PUBLIC_BASE=https://host S3_PREFIX=stable \
+//   UPDATER_ARTIFACT_BASE=https://github.com/OWNER/REPO/releases/download/vX.Y.Z \
 //     node scripts/assemble-latest-json.mjs <dir> <version>
 //
 // <dir> holds the updater artifacts + their minisign .sig companions
@@ -13,8 +13,10 @@
 // (tag minus the leading v). Writes <dir>/latest.json and prints it.
 //
 // Env:
-//   UPDATER_PUBLIC_BASE  public HTTPS base mapping to the S3 bucket root
-//   S3_PREFIX            channel prefix under the bucket (e.g. stable)
+//   UPDATER_ARTIFACT_BASE  public HTTPS base the artifact filenames are
+//                          appended to — the GitHub release's download URL
+//                          (the manifest itself is uploaded to that release
+//                          and served via releases/latest/download/latest.json)
 //
 // Exit codes:
 //   0  manifest written, all expected platforms present
@@ -74,10 +76,8 @@ const REQUIRED_KEYS = [
 const [dir, version] = process.argv.slice(2);
 if (!dir || !version) fail('usage: assemble-latest-json.mjs <dir> <version>');
 
-const base = (process.env.UPDATER_PUBLIC_BASE || '').replace(/\/+$/, '');
-const prefix = process.env.S3_PREFIX;
-if (!base) fail('UPDATER_PUBLIC_BASE is not set');
-if (!prefix) fail('S3_PREFIX is not set');
+const base = (process.env.UPDATER_ARTIFACT_BASE || '').replace(/\/+$/, '');
+if (!base) fail('UPDATER_ARTIFACT_BASE is not set');
 
 const platforms = {};
 for (const f of readdirSync(dir).sort()) {
@@ -92,7 +92,7 @@ for (const f of readdirSync(dir).sort()) {
   } catch {
     fail(`missing signature companion ${f}.sig`);
   }
-  const entry = { signature, url: `${base}/${prefix}/${version}/${encodeURIComponent(f)}` };
+  const entry = { signature, url: `${base}/${encodeURIComponent(f)}` };
   for (const key of keys) {
     if (platforms[key]) fail(`both ${platforms[key].url} and ${f} map to ${key}`);
     platforms[key] = entry;

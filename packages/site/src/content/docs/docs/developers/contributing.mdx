@@ -36,6 +36,7 @@ This documentation lives in `packages/site/src/content/docs/docs/` as Markdown/M
 locally with `pnpm --filter @sentinel/site dev` and visit `/sentinel/docs/`. Each page has an
 **Edit page** link in the footer that points at its source on GitHub.
 
-Screenshots referenced by the docs are tracked in
-[`documentation/SCREENSHOTS.md`](https://github.com/Intevity/sentinel/blob/main/documentation/SCREENSHOTS.md);
-drop real captures into `packages/site/public/screenshots/` using the filenames listed there.
+Screenshots live in `packages/site/public/screenshots/` and are referenced from the MDX pages by
+hard-coded filename — replace a placeholder with a real capture under the **same name** and the
+docs pick it up automatically. Capture the tray window at 2× (Retina) in the dark theme, and
+redact any real email addresses or org names you don't want public.

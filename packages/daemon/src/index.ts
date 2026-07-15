@@ -12,6 +12,7 @@ import {
   hasActiveAccount,
   getAccount,
   setAccountColor,
+  updateAccountMeta,
   getUsageByDayModel,
   acknowledgeNotification,
   acknowledgeAllNotifications,
@@ -129,6 +130,9 @@ import {
   inspectDesktopConfig,
   activateDesktop,
   deactivateDesktop,
+  installDesktopMcpServer,
+  uninstallDesktopMcpServer,
+  type DesktopMcpBridgeSpec,
 } from './claude-desktop-config.js';
 import { createClaudeDesktopConfigWatcher } from './claude-desktop-config-watcher.js';
 import {
@@ -146,7 +150,8 @@ import { createAgentsSyncEngine } from './optimize/agents-sync.js';
 import { getCuratedLibrary, getCuratedSubagent } from './optimize/curated-library.js';
 import { createOptimizationAnalyzer } from './optimize/optimization-analyzer.js';
 import { homedir, hostname } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { runScanBenchmark } from './security/scanner-benchmark.js';
 import { parseRule as parsePermissionRule } from './security/permissions/parser.js';
 import type { Settings, MetricsWindow } from '@sentinel/shared';
@@ -1233,6 +1238,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     token: string,
     label: string | undefined,
     accountId?: string,
+    orgLabel?: string,
   ): Promise<{ email: string; orgName?: string; wasKnown: boolean }> => {
     // setup-token mints a long-lived (~1yr) inference-scoped token with no
     // refresh token. Stamp a 330-day expiry so the refresher's validity check
@@ -1302,7 +1308,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
     const credKey = sentinelKey(orgUuid, accountUuid) || accountUuid;
     const email = profile.email || label || 'Claude account';
     const displayName = profile.displayName || label || email;
-    const orgName = profile.orgName || '';
+    // Profile-derived org wins; the user's typed org label is the fallback
+    // (inference-only tokens can't read the profile, so it's usually the
+    // only source). Editable later via `update_account`.
+    const orgName = profile.orgName || orgLabel?.trim() || '';
 
     const creds: ClaudeCodeCredentials = {
       accessToken: token,
@@ -1632,6 +1641,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
             desktopConfigWatcher.markWritten(details);
             ipcServer.broadcast({ type: 'claude_desktop_drift_state', details });
             await ensureDesktopWatcher();
+            // Give desktop sessions the same Sentinel MCP server the CLI has
+            // (retrieve + code-mode). Desktop only spawns stdio servers, so
+            // the entry runs the daemon binary's mcp-stdio bridge.
+            await syncDesktopMcpServer(true);
             await surfaceDetector.refresh();
             respond({ requestType, success: true, data: details });
           } catch (err) {
@@ -1653,6 +1666,9 @@ export async function startDaemon(): Promise<DaemonHandle> {
             ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
             desktopConfigWatcher.markWritten(details);
             ipcServer.broadcast({ type: 'claude_desktop_drift_state', details });
+            // Routing off → remove Sentinel's MCP entry from the desktop
+            // config too (other servers/keys in the file are preserved).
+            await syncDesktopMcpServer(false);
             await surfaceDetector.refresh();
             respond({ requestType: 'deactivate_desktop', success: true, data: details });
           } catch (err) {
@@ -2137,9 +2153,37 @@ export async function startDaemon(): Promise<DaemonHandle> {
 
       case 'update_account': {
         // Only the fields the message carries are persisted; others are
-        // left untouched. Currently just `color` (with `null` meaning reset).
+        // left untouched. `color: null` means reset; `orgName: ''` clears the
+        // org label; a `displayName` that trims to empty is ignored.
         if (msg.color !== undefined) {
           setAccountColor(db, msg.accountId, msg.color);
+        }
+        if (msg.displayName !== undefined || msg.orgName !== undefined) {
+          const metaPatch = {
+            ...(msg.displayName !== undefined ? { displayName: msg.displayName } : {}),
+            ...(msg.orgName !== undefined ? { orgName: msg.orgName } : {}),
+          };
+          const changed = updateAccountMeta(db, msg.accountId, metaPatch);
+          // When the edited account is the ACTIVE one, mirror the new values
+          // into ~/.claude.json too: the startup seed and every
+          // refresh_accounts capture upsert displayName/orgName FROM that
+          // file, so leaving it stale would clobber this edit right back.
+          if (changed) {
+            const activeNow = getActiveAccount();
+            const activeKeyNow = activeNow
+              ? sentinelKey(activeNow.organizationUuid ?? '', activeNow.accountUuid)
+              : null;
+            if (activeNow && activeKeyNow === msg.accountId) {
+              const row = getAccount(db, msg.accountId);
+              if (row) {
+                setActiveAccount({
+                  ...activeNow,
+                  displayName: row.displayName,
+                  organizationName: row.orgName,
+                });
+              }
+            }
+          }
         }
         const updated = getAccount(db, msg.accountId);
         if (updated) {
@@ -2893,7 +2937,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
         // announces completion via login_complete — same async shape the old
         // login path used.
         respond({ requestType: 'store_setup_token', success: true });
-        void storeSetupTokenAccount(msg.token, msg.label, msg.accountId)
+        void storeSetupTokenAccount(msg.token, msg.label, msg.accountId, msg.orgName)
           .then(({ email, orgName, wasKnown }) => {
             ipcServer.broadcast({
               type: 'login_complete',
@@ -3970,6 +4014,42 @@ export async function startDaemon(): Promise<DaemonHandle> {
       console.error('[DesktopDrift] start failed:', err);
     }
   };
+
+  /**
+   * How Claude Desktop should spawn Sentinel's MCP server. The desktop app
+   * only accepts stdio (`command`) servers, so the entry runs this very
+   * binary in its `mcp-stdio` bridge mode (cli.ts → mcp-stdio-bridge.ts).
+   * Packaged (pkg) builds are a single self-contained executable; dev runs
+   * point node at the built cli.js next to this module.
+   */
+  const desktopMcpBridgeSpec = (): DesktopMcpBridgeSpec => {
+    const url = `http://127.0.0.1:${getDaemonPort()}/mcp`;
+    const token = getOrCreateMcpToken();
+    const isPkg = Boolean((process as NodeJS.Process & { pkg?: unknown }).pkg);
+    if (isPkg) {
+      return { command: process.execPath, args: ['mcp-stdio'], url, token };
+    }
+    const cliJs = join(dirname(fileURLToPath(import.meta.url)), 'cli.js');
+    return { command: process.execPath, args: [cliJs, 'mcp-stdio'], url, token };
+  };
+
+  /** Install or remove the desktop MCP entry to match the routing state.
+   *  Idempotent and best-effort: a config write failure must never take down
+   *  an activate/deactivate that already succeeded. */
+  const syncDesktopMcpServer = async (routingActive: boolean): Promise<void> => {
+    try {
+      const changed = routingActive
+        ? await installDesktopMcpServer(desktopMcpBridgeSpec())
+        : await uninstallDesktopMcpServer();
+      if (changed) {
+        console.log(
+          `[DesktopMcp] ${routingActive ? 'Installed' : 'Removed'} the Sentinel MCP entry in claude_desktop_config.json`,
+        );
+      }
+    } catch (err) {
+      console.error('[DesktopMcp] sync failed:', err);
+    }
+  };
   const surfaceDetector = createSurfaceDetector({
     ipcServer,
     probeCliInstalled: () => isCliInstalled(),
@@ -4270,6 +4350,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
   });
   if (isDesktopInstalled() && currentSettings.claudeDesktopConfigId) {
     void ensureDesktopWatcher();
+    // Self-heal the desktop MCP entry on every boot while routing is active:
+    // catches pre-feature activations, a moved daemon binary (app update path
+    // change), and a rotated port/token — the install is a cheap idempotent
+    // read-modify-write that no-ops when the entry is already current.
+    void syncDesktopMcpServer(true);
   }
 
   // Sprint 2: surface settings-file tamper to the UI as soon as a client
