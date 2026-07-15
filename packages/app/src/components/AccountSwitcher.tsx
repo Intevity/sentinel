@@ -559,6 +559,7 @@ export default function AccountSwitcher({
           <motion.div {...TRANSIENT_ANIM} className="overflow-hidden">
             <SetupTokenTerminal
               {...(reauthAccountId ? { reauthAccountId } : {})}
+              removedAccounts={removedAccounts}
               onClose={() => setShowSetupTerminal(false)}
             />
           </motion.div>

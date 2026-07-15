@@ -701,7 +701,10 @@ export interface StoreSetupTokenMessage {
   label?: string;
   /** When re-authenticating an existing account, its Sentinel key. The daemon
    *  refreshes that account's credential in place instead of creating a new
-   *  one (the inference-only token can't be matched back to it by identity). */
+   *  one (the inference-only token can't be matched back to it by identity).
+   *  Also the RESTORE path for a soft-removed account: passing its key
+   *  reactivates the row, preserving its metadata (name, org) and usage
+   *  history — the "Restore a deleted account" choice in the add flow. */
   accountId?: string;
 }
 
