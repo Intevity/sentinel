@@ -5,6 +5,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { Check, Copy, Loader2, X } from 'lucide-react';
+import type { AccountInfo } from '@sentinel/shared';
 import { extractSetupToken } from '../lib/setupToken.js';
 import { claudeInstallCommand } from '../lib/claudeInstall.js';
 import { sendToSentinel } from '../lib/ipc.js';
@@ -17,6 +18,11 @@ interface SetupTokenTerminalProps {
   /** When set, re-authenticating this existing account: the captured token
    *  refreshes it in place (no "name this account" step). */
   reauthAccountId?: string;
+  /** Soft-removed accounts offered as "Restore" choices on the name step.
+   *  Picking one attaches the captured token to the old account — its name,
+   *  org, and usage history come back (the inference-only token carries no
+   *  identity, so the user is the only one who can make this match). */
+  removedAccounts?: AccountInfo[];
 }
 
 /**
@@ -29,6 +35,7 @@ interface SetupTokenTerminalProps {
 export default function SetupTokenTerminal({
   onClose,
   reauthAccountId,
+  removedAccounts,
 }: SetupTokenTerminalProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -195,6 +202,15 @@ export default function SetupTokenTerminal({
     storeToken(token, label.trim() ? { label: label.trim() } : {});
   };
 
+  // Attach the captured token to a previously removed account instead of
+  // creating a new one. The daemon treats this like a re-auth: credential
+  // refreshed in place, row reactivated, metadata + usage history preserved.
+  const restoreRemoved = (id: string): void => {
+    const token = tokenRef.current;
+    if (!token) return;
+    storeToken(token, { accountId: id });
+  };
+
   return (
     <div className="rounded-2xl bg-[#1E1E1E] ring-1 ring-white/10 overflow-hidden">
       <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
@@ -297,6 +313,28 @@ export default function SetupTokenTerminal({
               Add account
             </button>
           </div>
+          {removedAccounts && removedAccounts.length > 0 && (
+            <div className="pt-1.5 space-y-1.5">
+              <p className="text-[11px] text-white/40">
+                Re-adding a deleted account? Restore it to keep its name, organization, and usage
+                history:
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {removedAccounts.map((a) => (
+                  <button
+                    key={a.id}
+                    onClick={() => restoreRemoved(a.id)}
+                    disabled={phase === 'storing'}
+                    className="text-[11px] text-white/80 bg-white/5 ring-1 ring-white/10
+                               hover:ring-ios-blue/60 hover:text-white px-2.5 py-1 rounded-full
+                               transition disabled:opacity-50"
+                  >
+                    Restore {a.email}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
