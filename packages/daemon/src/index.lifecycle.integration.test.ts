@@ -6,7 +6,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { readFileSync, writeFileSync } from 'fs';
 import { userInfo } from 'os';
-import type { OAuthAccount } from '@sentinel/shared';
+import type { AccountInfo, OAuthAccount } from '@sentinel/shared';
+import { markAccountRemoved, upsertAccount } from './db.js';
 import { makeCreds, startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 
 let ctx: TestDaemon | null = null;
@@ -496,5 +497,222 @@ describe('lifecycle — shutdown_daemon', () => {
       await ctx?.cleanup();
       ctx = null;
     }
+  });
+});
+
+// ─── removed-account handoff + restore ────────────────────────────────────────
+// The proxy must never keep injecting a removed account's token (the Windows
+// Claude Desktop 401 bug): removal hands off to a live account or clears the
+// token, a fresh add adopts the vacant active slot, startup heals a stale
+// ~/.claude.json pointer, and store_setup_token with a removed account's id
+// restores it in place (metadata + history preserved).
+
+/** Build an AccountInfo DB row matching an OAuthAccount (id = sentinel key:
+ *  orgUuid when present, else accountUuid). */
+function accountRow(acct: OAuthAccount, planType: AccountInfo['planType'] = 'max'): AccountInfo {
+  return {
+    id: acct.organizationUuid || acct.accountUuid,
+    accountUuid: acct.accountUuid,
+    email: acct.emailAddress,
+    displayName: acct.displayName ?? '',
+    orgUuid: acct.organizationUuid ?? '',
+    orgName: acct.organizationName ?? '',
+    planType,
+    isActive: false,
+    createdAt: Date.now(),
+    color: null,
+  };
+}
+
+describe('lifecycle — removed-account handoff & restore', () => {
+  it('hands the active slot to another live account when the active account is removed', async () => {
+    const a = defaultAccount();
+    const b = defaultAccount(
+      '00000000-0000-0000-0000-00000000000b',
+      '00000000-0000-0000-0000-00000000000c',
+      'b@example.com',
+    );
+    const keyA = a.organizationUuid;
+    const keyB = b.organizationUuid;
+    ctx = await startTestDaemon({
+      claudeState: { oauthAccount: a },
+      // Tokens deliberately NOT registered with the fake, and no refresh
+      // tokens: the startup reconciliation's profile fetches then 401
+      // ("unverifiable") instead of resolving to the fake's DEFAULT_PROFILE
+      // org, which would org-drift row B and soft-remove it mid-test.
+      sentinelCredentials: {
+        [keyA]: makeCreds({ accessToken: 'token-a', refreshToken: '' }),
+        [keyB]: makeCreds({ accessToken: 'token-b', refreshToken: '' }),
+      },
+      seedDb: (db) => {
+        upsertAccount(db, accountRow(b));
+      },
+    });
+
+    const r = await ctx.request({ type: 'remove_account', accountId: keyA });
+    expect(r.success).toBe(true);
+
+    // The daemon switched Claude Code + the proxy to B.
+    const bc = await ctx.waitForBroadcast<{ type: 'account_switched'; to: OAuthAccount }>(
+      (m) => m.type === 'account_switched',
+      8000,
+    );
+    expect(bc.to.emailAddress).toBe('b@example.com');
+    const onDisk = JSON.parse(readFileSync(ctx.claudeJsonPath, 'utf-8')) as {
+      oauthAccount?: OAuthAccount;
+    };
+    expect(onDisk.oauthAccount?.emailAddress).toBe('b@example.com');
+
+    // A is soft-removed (restorable), B reads as the active row.
+    const removed = await ctx.request<AccountInfo[]>({ type: 'get_removed_accounts' });
+    expect(removed.data?.map((x) => x.id)).toContain(keyA);
+    const list = await ctx.request<AccountInfo[]>({ type: 'refresh_accounts' });
+    expect(list.data?.find((x) => x.id === keyB)?.isActive).toBe(true);
+  });
+
+  it('clears the injected token when the last account is removed — clients fall back to their own credentials', async () => {
+    const a = defaultAccount();
+    const keyA = a.organizationUuid;
+    const deadCreds = makeCreds({ accessToken: 'token-a', refreshToken: '' });
+    ctx = await startTestDaemon({
+      claudeState: { oauthAccount: a },
+      // token-a is deliberately NOT registered with the fake: it stands in for
+      // the dead credential of a deleted account. Seeding Claude Code's slot
+      // too lets the startup capture seed activeToken (capture reads CC's
+      // slot, not Sentinel's store); no refresh token, so the startup
+      // refresher can't swap in a fake-minted (and fake-accepted) token.
+      sentinelCredentials: { [keyA]: deadCreds },
+      claudeCodeCredentials: { [userInfo().username]: deadCreds },
+      registerTokens: ['client-own-token'],
+    });
+    const url = `http://127.0.0.1:${ctx.daemonPort}/v1/models`;
+
+    // Before removal the proxy injects the active account's (dead) token,
+    // overriding the client's own header — exactly the Desktop 401 shape.
+    const before = await fetch(url, { headers: { authorization: 'Bearer client-own-token' } });
+    expect(before.status).toBe(401);
+
+    const r = await ctx.request({ type: 'remove_account', accountId: keyA });
+    expect(r.success).toBe(true);
+
+    // No successor exists, so the proxy stops injecting and forwards the
+    // client's own (valid) credential upstream.
+    const after = await fetch(url, { headers: { authorization: 'Bearer client-own-token' } });
+    expect(after.status).toBe(200);
+  });
+
+  it('adopts a new setup-token account when the active account was removed', async () => {
+    const a = defaultAccount();
+    const keyA = a.organizationUuid;
+    ctx = await startTestDaemon({
+      claudeState: { oauthAccount: a },
+      sentinelCredentials: { [keyA]: makeCreds({ accessToken: 'token-a' }) },
+    });
+    await ctx.request({ type: 'remove_account', accountId: keyA });
+
+    // Fresh add (unregistered token → label path). The active slot is vacant
+    // (A is removed), so the new account must take over the proxy + CC session.
+    const token = `sk-ant-oat01-${'F'.repeat(95)}`;
+    const r = await ctx.request({ type: 'store_setup_token', token, label: 'fresh@example.com' });
+    expect(r.success).toBe(true);
+    await ctx.waitForBroadcast(
+      (m) => m.type === 'login_complete' && (m as { email?: string }).email === 'fresh@example.com',
+      8000,
+    );
+
+    const onDisk = JSON.parse(readFileSync(ctx.claudeJsonPath, 'utf-8')) as {
+      oauthAccount?: OAuthAccount;
+    };
+    expect(onDisk.oauthAccount?.emailAddress).toBe('fresh@example.com');
+    const list = await ctx.request<AccountInfo[]>({ type: 'refresh_accounts' });
+    expect(list.data?.find((x) => x.email === 'fresh@example.com')?.isActive).toBe(true);
+  });
+
+  it('switches to a live account at startup when ~/.claude.json names a removed account', async () => {
+    const a = defaultAccount();
+    const b = defaultAccount(
+      '00000000-0000-0000-0000-00000000000b',
+      '00000000-0000-0000-0000-00000000000c',
+      'b@example.com',
+    );
+    const keyA = a.organizationUuid;
+    const keyB = b.organizationUuid;
+    ctx = await startTestDaemon({
+      claudeState: { oauthAccount: a },
+      // Unregistered tokens + no refresh tokens, so the async startup
+      // reconciliation can't org-drift row B against the fake's default
+      // profile (see the handoff test above for the full rationale).
+      sentinelCredentials: {
+        [keyA]: makeCreds({ accessToken: 'dead-token', refreshToken: '' }),
+        [keyB]: makeCreds({ accessToken: 'token-b', refreshToken: '' }),
+      },
+      // Pre-upgrade state: the active account was removed while a healthy
+      // replacement exists (deleted-then-re-added before the handoff fix).
+      seedDb: (db) => {
+        upsertAccount(db, accountRow(a));
+        markAccountRemoved(db, keyA);
+        upsertAccount(db, accountRow(b));
+      },
+    });
+
+    // The startup heal switched to B before startDaemon() resolved.
+    const onDisk = JSON.parse(readFileSync(ctx.claudeJsonPath, 'utf-8')) as {
+      oauthAccount?: OAuthAccount;
+    };
+    expect(onDisk.oauthAccount?.emailAddress).toBe('b@example.com');
+    const list = await ctx.request<AccountInfo[]>({ type: 'refresh_accounts' });
+    expect(list.data?.find((x) => x.id === keyB)?.isActive).toBe(true);
+    // A stays removed — heal must not resurrect it.
+    const removed = await ctx.request<AccountInfo[]>({ type: 'get_removed_accounts' });
+    expect(removed.data?.map((x) => x.id)).toContain(keyA);
+  });
+
+  it('restores a soft-removed account in place via store_setup_token accountId', async () => {
+    const a = defaultAccount();
+    const keyA = a.organizationUuid;
+    ctx = await startTestDaemon({
+      claudeState: { oauthAccount: a },
+      sentinelCredentials: { [keyA]: makeCreds({ accessToken: 'dead-token' }) },
+      // The user's exact scenario: the only account was removed (data kept)
+      // while ~/.claude.json still names it.
+      seedDb: (db) => {
+        upsertAccount(db, accountRow(a, 'pro'));
+        markAccountRemoved(db, keyA);
+      },
+    });
+
+    const NEW = `sk-ant-oat01-${'G'.repeat(95)}`;
+    const r = await ctx.request({ type: 'store_setup_token', token: NEW, accountId: keyA });
+    expect(r.success).toBe(true);
+    const bc = await ctx.waitForBroadcast<{ type: 'login_complete'; email: string }>(
+      (m) => m.type === 'login_complete' && (m as { reauth?: boolean }).reauth === true,
+      8000,
+    );
+    expect(bc.email).toBe(a.emailAddress);
+
+    // Row is live again with its metadata intact — no duplicate created.
+    const list = await ctx.request<AccountInfo[]>({ type: 'refresh_accounts' });
+    expect(list.data?.length).toBe(1);
+    const row = list.data?.find((x) => x.id === keyA);
+    expect(row?.orgName).toBe('Test Org');
+    expect(row?.displayName).toBe('Test User');
+    expect(row?.isActive).toBe(true);
+    const removed = await ctx.request<AccountInfo[]>({ type: 'get_removed_accounts' });
+    expect(removed.data?.length ?? 0).toBe(0);
+
+    // Credential replaced under the OLD key, and — since this account is the
+    // active one — mirrored into Claude Code's keychain slot.
+    const keychain = JSON.parse(readFileSync(ctx.keychainPath, 'utf-8')) as {
+      'Sentinel-credentials'?: Record<string, string>;
+      'Claude Code-credentials'?: Record<string, string>;
+    };
+    const sentinelCreds = JSON.parse(keychain['Sentinel-credentials']![keyA]!) as {
+      accessToken: string;
+    };
+    expect(sentinelCreds.accessToken).toBe(NEW);
+    const ccSlot = JSON.parse(keychain['Claude Code-credentials']![userInfo().username]!) as {
+      claudeAiOauth?: { accessToken?: string };
+    };
+    expect(ccSlot.claudeAiOauth?.accessToken).toBe(NEW);
   });
 });

@@ -63,6 +63,11 @@ export interface StartTestDaemonOptions {
    *  the daemon boots. Exercises the boot-time desktop-drift-watcher start
    *  path (desktop installed + Sentinel-managed). */
   seedDesktopActive?: boolean;
+  /** Seed the SQLite DB before the daemon boots — e.g. removed-account rows
+   *  the startup heal should act on. Receives a handle opened via the real
+   *  `getDb()` (schema + migrations applied); closed again before
+   *  `startDaemon()` so the daemon re-opens the seeded file itself. */
+  seedDb?: (db: import('better-sqlite3').Database) => void;
 }
 
 export interface TestDaemon {
@@ -252,6 +257,18 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   process.env.ANTHROPIC_UPSTREAM_URL = fake.origin;
   process.env.OAUTH_TOKEN_URL = fake.tokenUrl;
   process.env.OAUTH_AUTH_URL = fake.authUrl;
+
+  // Pre-seed the DB through the real schema/migration path, then close the
+  // singleton so startDaemon() re-opens the seeded file itself.
+  if (opts.seedDb) {
+    const { getDb, closeDb } = await import('./db.js');
+    const seedHandle = getDb(dbPath);
+    try {
+      opts.seedDb(seedHandle);
+    } finally {
+      closeDb();
+    }
+  }
 
   const handle = await startDaemon();
   // In test mode startDaemon binds an OS-assigned port (listen(0)); use the

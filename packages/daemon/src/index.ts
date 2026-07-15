@@ -1018,6 +1018,52 @@ export async function startDaemon(): Promise<DaemonHandle> {
     return { success: true, data: oauthAccount };
   }
 
+  /**
+   * True when ~/.claude.json's active account maps to a live (not removed)
+   * Sentinel row with a stored credential — i.e. the proxy's activeToken
+   * fallback can actually serve traffic. False means the slot is effectively
+   * vacant (no active account, the user removed it from Sentinel, or its
+   * credential is gone) and a newly stored account should take over.
+   */
+  const activeAccountUsable = (): boolean => {
+    const active = getActiveAccount();
+    if (!active) return false;
+    const key = sentinelKey(active.organizationUuid ?? '', active.accountUuid);
+    if (!key || !hasActiveAccount(db, key)) return false;
+    return Boolean(readSentinelCredentials(key)?.accessToken);
+  };
+
+  /**
+   * After an account is removed or purged, make sure the proxy isn't left
+   * injecting its token: when it was the active account, hand off to another
+   * live account with a stored credential, or — with no successor — clear the
+   * injected token so clients fall back to their own Authorization headers.
+   * Without this, every surface (Claude Desktop included) keeps getting the
+   * removed account's usually-dead token and opaque upstream 401s.
+   */
+  const handleRemovedAccountHandoff = (removedId: string): void => {
+    const active = getActiveAccount();
+    const activeKey = active
+      ? sentinelKey(active.organizationUuid ?? '', active.accountUuid)
+      : null;
+    if (removedId !== activeKey && removedId !== activeAccountId.value) return;
+    const successor = listAccounts(db).find(
+      (a) => a.id !== removedId && Boolean(readSentinelCredentials(a.id)?.accessToken),
+    );
+    if (successor) {
+      console.log(
+        `[Accounts] Removed the active account (${removedId}) — switching to ${successor.email}`,
+      );
+      performSwitch(successor.id, successor.email);
+      return;
+    }
+    console.log(
+      `[Accounts] Removed the active account (${removedId}) with no successor — clearing the proxy token`,
+    );
+    activeToken.value = null;
+    activeAccountId.value = 'default';
+  };
+
   // Restore persisted rate-limit windows from SQLite so the Usage tab shows
   // data immediately on restart without waiting for a new API request.
   for (const [accountId, windows] of loadRateLimits(db)) {
@@ -1171,14 +1217,17 @@ export async function startDaemon(): Promise<DaemonHandle> {
    * Store a long-lived token captured from `claude setup-token` as a Sentinel
    * account. The token is `user:inference`-scoped (no refresh token, ~1yr).
    *
-   * When `accountId` is given (re-authentication), the existing account's
-   * credential is refreshed in place — keeping its metadata — since the
-   * inference-only token can't be matched back to it by identity. Otherwise this
-   * is a new add: we try `fetchProfile` for identity and fall back to the
-   * user-provided `label`. A new account does NOT change Claude Code's active
-   * session (the user switches to it in Sentinel), except the very first account
-   * is made active so the proxy has a token to serve. Returns fields for the
-   * `login_complete` broadcast.
+   * When `accountId` is given (re-authentication — or RESTORE of a soft-removed
+   * account, which is the same operation), the existing account's credential is
+   * refreshed in place and the row reactivated — keeping its metadata and usage
+   * history — since the inference-only token can't be matched back to it by
+   * identity. Otherwise this is a new add: we try `fetchProfile` for identity
+   * and fall back to the user-provided `label`. A new account does NOT change
+   * Claude Code's active session (the user switches to it in Sentinel), except
+   * when the proxy has no USABLE active account — first account ever, or the
+   * previously-active account was removed / lost its credential — then the new
+   * account is adopted so the proxy has a working token to serve. Returns
+   * fields for the `login_complete` broadcast.
    */
   const storeSetupTokenAccount = async (
     token: string,
@@ -1209,6 +1258,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
       // mirror it into Claude Code's keychain slot so CC's own local copy isn't a
       // stale/expired oat token. (The proxy overrides the auth header anyway, but
       // Claude Code checks its slot's local expiry before sending.)
+      const adoptAsActive = accountId !== activeAccountId.value && !activeAccountUsable();
       if (accountId === activeAccountId.value) {
         activeToken.value = token;
         try {
@@ -1218,9 +1268,17 @@ export async function startDaemon(): Promise<DaemonHandle> {
             `[SetupToken] Could not update Claude Code keychain: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
+      } else if (adoptAsActive) {
+        // Restoring/re-authing while the active slot can't serve traffic (the
+        // active account was removed or lost its credential) — adopt this
+        // account as active. performSwitch probes and refreshes the rotator,
+        // so skip the duplicates below.
+        performSwitch(accountId, existingForReauth.email);
       }
-      probeRateLimits(accountId, ipcServer, token);
-      tokenRotator.refresh();
+      if (!adoptAsActive) {
+        probeRateLimits(accountId, ipcServer, token);
+        tokenRotator.refresh();
+      }
       void claudeAiUsageStore.refresh(accountId);
       console.log(`[SetupToken] Re-authenticated ${existingForReauth.email} (${accountId})`);
       return {
@@ -1291,10 +1349,13 @@ export async function startDaemon(): Promise<DaemonHandle> {
       console.log(`[SetupToken] Seeded default 95% alert for ${credKey}`);
     }
 
-    // First account ever → make it active so the proxy immediately has a token
-    // to serve (the credential lives in Sentinel's store, read back on startup),
-    // and mirror it into Claude Code's keychain slot so CC's local copy is fresh.
-    if (!getActiveAccount()) {
+    // Make this account active when the proxy has nothing usable to serve —
+    // the first account ever, or the previously-active account was removed /
+    // lost its credential (e.g. the user deleted an expired account and then
+    // enrolled its replacement; without the takeover the proxy would keep
+    // injecting the dead token and every surface would see upstream 401s).
+    // Mirrors into Claude Code's keychain slot so CC's local copy is fresh.
+    if (!activeAccountUsable()) {
       setActiveAccount(acctMeta);
       activeToken.value = token;
       activeAccountId.value = credKey;
@@ -1786,6 +1847,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
           ? purgeAccount(db, msg.accountId)
           : markAccountRemoved(db, msg.accountId);
         tokenRotator.refresh();
+        if (removed) handleRemovedAccountHandoff(msg.accountId);
         respond({ requestType: 'remove_account', success: removed });
         break;
       }
@@ -1793,6 +1855,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
       case 'purge_account': {
         const purged = purgeAccount(db, msg.accountId);
         tokenRotator.refresh();
+        if (purged) handleRemovedAccountHandoff(msg.accountId);
         respond({ requestType: 'purge_account', success: purged });
         break;
       }
@@ -4287,7 +4350,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
       onUpstreamAuthFailure: (accountId) => {
         if (inFlightAuthRefresh.has(accountId)) return;
         const acct = getAccount(db, accountId);
-        if (!acct) return;
+        // Skip removed accounts: they can't be re-authed from the UI, so the
+        // refresh-failure broadcast would raise a reauth banner for an account
+        // the user can't see (only reachable in a pre-handoff race).
+        if (!acct || !hasActiveAccount(db, accountId)) return;
         inFlightAuthRefresh.add(accountId);
         console.log(`[Proxy] 401 from upstream for ${accountId} — forcing token refresh`);
         void refreshIfNeeded(
@@ -4396,13 +4462,36 @@ export async function startDaemon(): Promise<DaemonHandle> {
       );
       // Probe for fresh rate-limit headers through the proxy now that it is ready.
       // The proxy injects the active OAuth token, so this works even for accounts
-      // whose tokens cannot be used to call api.anthropic.com directly.
-      if (startupKey) {
+      // whose tokens cannot be used to call api.anthropic.com directly. Skip
+      // when the active account was removed from Sentinel — the heal right
+      // after this block hands off to a live account and probes that instead.
+      if (startupKey && hasActiveAccount(db, startupKey)) {
         probeRateLimits(startupKey, ipcServer);
       }
       resolve();
     });
   });
+
+  // ─── Startup active-account heal ──────────────────────────────────────
+  // ~/.claude.json can name an account the user has removed from Sentinel
+  // (deleted-then-replaced before this fix existed, or an external edit).
+  // The optimistic seed near the top of startDaemon then leaves the proxy
+  // injecting the removed account's token — usually an expired one — so every
+  // surface (Claude Desktop included) gets opaque upstream 401s while a
+  // perfectly healthy replacement account sits unused. Hand off to the first
+  // live account that has a stored credential; with no successor, leave state
+  // untouched (same tokens either way, and ~/.claude.json stays the user's).
+  if (startupKey && !hasActiveAccount(db, startupKey)) {
+    const successor = listAccounts(db).find((a) =>
+      Boolean(readSentinelCredentials(a.id)?.accessToken),
+    );
+    if (successor) {
+      console.log(
+        `[Startup] Active account ${startupKey} was removed — switching to ${successor.email}`,
+      );
+      performSwitch(successor.id, successor.email);
+    }
+  }
 
   // ─── Code-mode subagent-bridge self-heal ────────────────────────────
   // The CLAUDE.md block and curated-agent skill preload can drift (a daemon
