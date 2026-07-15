@@ -22,6 +22,9 @@ describe('buildContextInventory', () => {
     process.env['SENTINEL_TEST_HOME'] = homeDir;
     process.env['SENTINEL_TEST_CLAUDE_JSON'] = claudeJsonPath;
     process.env['SENTINEL_TEST_DB_FILE'] = TMP_DB;
+    // Hermetic desktop config: desktopAppConfigPath() resolves to the parent
+    // of the configLibrary dir, so point the seam inside the temp home.
+    process.env['SENTINEL_TEST_CLAUDE_DESKTOP_DIR'] = join(homeDir, 'claude-3p', 'configLibrary');
     db = getDb(TMP_DB);
     db.exec('DELETE FROM tool_calls; DELETE FROM subagent_installs');
   });
@@ -30,6 +33,7 @@ describe('buildContextInventory', () => {
     delete process.env['SENTINEL_TEST_HOME'];
     delete process.env['SENTINEL_TEST_CLAUDE_JSON'];
     delete process.env['SENTINEL_TEST_DB_FILE'];
+    delete process.env['SENTINEL_TEST_CLAUDE_DESKTOP_DIR'];
     rmSync(homeDir, { recursive: true, force: true });
     rmSync(projectDir, { recursive: true, force: true });
     try {
@@ -170,5 +174,34 @@ describe('buildContextInventory', () => {
     const inv = buildContextInventory(db);
     expect(inv.mcpServers).toEqual([]);
     expect(inv.claudeMdFiles).toEqual([]);
+  });
+
+  it('lists user-scope and Claude Desktop MCP servers with scope labels', () => {
+    // User scope: top-level mcpServers in ~/.claude.json (loads into every
+    // CLI project). Desktop: claude_desktop_config.json next to the
+    // configLibrary — the surface a Desktop-only machine relies on.
+    writeFileSync(
+      claudeJsonPath,
+      JSON.stringify({
+        mcpServers: { sentinel: { type: 'http', url: 'http://127.0.0.1:1/mcp' } },
+        projects: { [projectDir]: { mcpServers: { projScoped: {} } } },
+      }),
+    );
+    mkdirSync(join(homeDir, 'claude-3p'), { recursive: true });
+    writeFileSync(
+      join(homeDir, 'claude-3p', 'claude_desktop_config.json'),
+      JSON.stringify({
+        deploymentMode: '3p',
+        mcpServers: { sentinel: { command: '/apps/sentinel-daemon', args: ['mcp-stdio'] } },
+      }),
+    );
+
+    const rows = buildContextInventory(db).mcpServers;
+    expect(rows.map((r) => `${r.project}:${r.name}`).sort()).toEqual([
+      '(claude desktop):sentinel',
+      '(user):sentinel',
+      `${projectDir}:projScoped`,
+    ]);
+    expect(rows.every((r) => r.enabled)).toBe(true);
   });
 });
