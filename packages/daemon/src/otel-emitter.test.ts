@@ -67,6 +67,15 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
   };
 }
 
+/** Batch accessors by OTLP path. The emitter posts metrics and logs as
+ *  SEPARATE requests from one tick, so `fake.received.length > 0` proves only
+ *  that the FIRST of them landed — under CI load the other can still be in
+ *  flight when the assertion runs (bit PR #46's Quality Checks). Waits must
+ *  name the batch they are about to assert on. */
+function batchesOf(received: Array<{ url: string }>, url: string): number {
+  return received.filter((r) => r.url === url).length;
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 1500): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -348,7 +357,7 @@ describe('OtelEmitter', () => {
     build(makeSettings({ otelExporterEndpoint: fake.url }));
     emitter.bumpProxyRequest({ accountId: 'a', statusClass: '2xx', errorKind: null });
     emitter.tick();
-    await waitFor(() => fake.received.length > 0);
+    await waitFor(() => batchesOf(fake.received, '/v1/metrics') > 0);
     const firstBatchCount = fake.received.length;
 
     emitter.bumpProxyRequest({ accountId: 'a', statusClass: '2xx', errorKind: null });
@@ -394,7 +403,7 @@ describe('OtelEmitter', () => {
     listeners.forEach((l) => l({ type: 'account_switched', to: acct }));
     listeners.forEach((l) => l({ type: 'account_switched', to: acct }));
     emitter.tick();
-    await waitFor(() => fake.received.length > 0);
+    await waitFor(() => batchesOf(fake.received, '/v1/metrics') > 0);
 
     const metricsBatch = fake.received.find((r) => r.url === '/v1/metrics');
     expect(metricsBatch).toBeDefined();
@@ -449,7 +458,7 @@ describe('OtelEmitter', () => {
       }),
     );
     emitter.tick();
-    await waitFor(() => fake.received.length > 0);
+    await waitFor(() => batchesOf(fake.received, '/v1/metrics') > 0);
 
     const metricsBatch = fake.received.find((r) => r.url === '/v1/metrics');
     expect(metricsBatch).toBeDefined();
@@ -502,7 +511,9 @@ describe('OtelEmitter', () => {
       source: 'claude-code',
     });
     emitter.tick();
-    await waitFor(() => fake.received.length > 0);
+    await waitFor(
+      () => batchesOf(fake.received, '/v1/metrics') > 0 && batchesOf(fake.received, '/v1/logs') > 0,
+    );
 
     const metricsBatch = fake.received.find((r) => r.url === '/v1/metrics');
     expect(metricsBatch).toBeDefined();
@@ -620,7 +631,7 @@ describe('OtelEmitter', () => {
       costRead: 0,
     });
     emitter.tick();
-    await waitFor(() => fake.received.length > 0);
+    await waitFor(() => batchesOf(fake.received, '/v1/metrics') > 0);
     expect(fake.received.every((r) => r.url !== '/v1/logs')).toBe(true);
   });
 
@@ -658,7 +669,7 @@ describe('OtelEmitter', () => {
       costRead: 0,
     });
     emitter.tick();
-    await waitFor(() => fake.received.length > 0);
+    await waitFor(() => batchesOf(fake.received, '/v1/metrics') > 0);
 
     const payload = JSON.parse(
       fake.received.find((r) => r.url === '/v1/metrics')!.body.toString('utf-8'),
@@ -695,7 +706,7 @@ describe('OtelEmitter', () => {
       costRead: 0,
     });
     emitter.tick();
-    await waitFor(() => fake.received.length > 0);
+    await waitFor(() => batchesOf(fake.received, '/v1/metrics') > 0);
 
     const payload = JSON.parse(
       fake.received.find((r) => r.url === '/v1/metrics')!.body.toString('utf-8'),
@@ -743,7 +754,7 @@ describe('OtelEmitter', () => {
       costRead: 0,
     });
     emitter.tick();
-    await waitFor(() => fake.received.length > 0);
+    await waitFor(() => batchesOf(fake.received, '/v1/metrics') > 0);
 
     const payload = JSON.parse(
       fake.received.find((r) => r.url === '/v1/metrics')!.body.toString('utf-8'),
@@ -776,10 +787,10 @@ describe('OtelEmitter', () => {
       costRead: 0,
     });
     emitter.tick();
-    await waitFor(() => fake.received.length > 0);
-    const firstCount = fake.received.length;
+    await waitFor(() => batchesOf(fake.received, '/v1/metrics') > 0);
+    const firstCount = batchesOf(fake.received, '/v1/metrics');
     emitter.tick();
-    await waitFor(() => fake.received.length > firstCount);
+    await waitFor(() => batchesOf(fake.received, '/v1/metrics') > firstCount);
 
     const idOf = (r: { body: Buffer }): string | undefined => {
       const payload = JSON.parse(r.body.toString('utf-8'));
