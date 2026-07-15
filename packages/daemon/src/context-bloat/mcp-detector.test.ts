@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { detectMcpServers } from './mcp-detector.js';
+import {
+  detectMcpServers,
+  detectUserScopeMcpServers,
+  detectDesktopMcpServers,
+} from './mcp-detector.js';
 
 describe('detectMcpServers', () => {
   it('returns [] for non-object inputs', () => {
@@ -78,5 +82,41 @@ describe('detectMcpServers', () => {
     });
     expect(out).toHaveLength(1);
     expect(out[0]?.name).toBe('ok');
+  });
+});
+
+describe('detectUserScopeMcpServers', () => {
+  it('returns [] for non-object inputs and missing/invalid mcpServers', () => {
+    expect(detectUserScopeMcpServers(null)).toEqual([]);
+    expect(detectUserScopeMcpServers('nope')).toEqual([]);
+    expect(detectUserScopeMcpServers({})).toEqual([]);
+    expect(detectUserScopeMcpServers({ mcpServers: ['array-not-object'] })).toEqual([]);
+  });
+
+  it('returns the top-level user-scope server names', () => {
+    expect(
+      detectUserScopeMcpServers({
+        mcpServers: { sentinel: { type: 'http' }, HubSpotDev: { command: 'npx' } },
+        projects: { '/p': { mcpServers: { projectScoped: {} } } },
+      }),
+    ).toEqual(['sentinel', 'HubSpotDev']);
+  });
+});
+
+describe('detectDesktopMcpServers', () => {
+  it('returns [] for non-object inputs and missing/invalid mcpServers', () => {
+    expect(detectDesktopMcpServers(null)).toEqual([]);
+    expect(detectDesktopMcpServers(42)).toEqual([]);
+    expect(detectDesktopMcpServers({ deploymentMode: '3p' })).toEqual([]);
+    expect(detectDesktopMcpServers({ mcpServers: 'nope' })).toEqual([]);
+  });
+
+  it('returns the desktop config server names (stdio entries)', () => {
+    expect(
+      detectDesktopMcpServers({
+        deploymentMode: '3p',
+        mcpServers: { sentinel: { command: '/apps/sentinel-daemon', args: ['mcp-stdio'] } },
+      }),
+    ).toEqual(['sentinel']);
   });
 });

@@ -16,8 +16,15 @@ import { join } from 'path';
 import type Database from 'better-sqlite3';
 import type { ContextInventory } from '@sentinel/shared';
 import { getClaudeJsonPath } from '../claude-state.js';
+import { desktopAppConfigPath } from '../claude-desktop-config.js';
 import { listSubagentInstalls } from '../db.js';
-import { detectMcpServers } from './mcp-detector.js';
+import {
+  detectMcpServers,
+  detectUserScopeMcpServers,
+  detectDesktopMcpServers,
+  USER_SCOPE_LABEL,
+  DESKTOP_SCOPE_LABEL,
+} from './mcp-detector.js';
 import { detectClaudeMdFiles } from './claude-md-detector.js';
 import { detectMemoryDirs } from './memory-detector.js';
 import { detectPlugins } from './plugin-detector.js';
@@ -43,7 +50,26 @@ export function buildContextInventory(db: Database.Database): ContextInventory {
   const claudeJson = safeReadJson(getClaudeJsonPath());
   const settings = safeReadJson(join(home, '.claude', 'settings.json'));
 
-  const mcpServersRaw = detectMcpServers(claudeJson);
+  // MCP servers from every configured surface, tagged by scope:
+  //   - per-project entries in ~/.claude.json (absolute path as before)
+  //   - user-scope entries at the top of ~/.claude.json ("(user)") — these
+  //     load into every CLI project and were previously invisible here
+  //   - Claude Desktop's claude_desktop_config.json ("(claude desktop)") —
+  //     the desktop app injects these into Chat and its embedded Code
+  //     sessions, including Sentinel's own bridge entry
+  const mcpServersRaw = [
+    ...detectMcpServers(claudeJson),
+    ...detectUserScopeMcpServers(claudeJson).map((name) => ({
+      project: USER_SCOPE_LABEL,
+      name,
+      enabled: true,
+    })),
+    ...detectDesktopMcpServers(safeReadJson(desktopAppConfigPath())).map((name) => ({
+      project: DESKTOP_SCOPE_LABEL,
+      name,
+      enabled: true,
+    })),
+  ];
   const mcpCosts = estimateMcpCosts(db);
   const costsByServer = new Map(mcpCosts.map((c) => [c.server, c]));
 

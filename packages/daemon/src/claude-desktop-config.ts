@@ -107,8 +107,10 @@ const configPath = (id: string): string => join(desktopConfigLibraryDir(), `${id
 /** The desktop app's own settings file (`claude_desktop_config.json`), sibling
  *  of `configLibrary/`. Chosen as the MCP install target because the CLI never
  *  reads it — Sentinel's `~/.claude.json` entry stays http for Claude Code
- *  while the desktop app gets the stdio bridge here. */
-const desktopAppConfigPath = (): string =>
+ *  while the desktop app gets the stdio bridge here. Exported for the
+ *  context-bloat inventory, which lists the desktop's MCP servers as a
+ *  context surface. */
+export const desktopAppConfigPath = (): string =>
   join(dirname(desktopConfigLibraryDir()), 'claude_desktop_config.json');
 
 async function readJson<T>(p: string): Promise<T | null> {

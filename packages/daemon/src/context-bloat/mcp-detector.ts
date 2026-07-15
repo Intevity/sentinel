@@ -57,3 +57,36 @@ export function detectMcpServers(state: unknown): DetectedMcpServer[] {
   }
   return out;
 }
+
+/** Pseudo-project labels for MCP config surfaces that aren't a project
+ *  directory. The inventory panel renders `project` verbatim, so these read
+ *  as scope tags rather than paths. */
+export const USER_SCOPE_LABEL = '(user)';
+export const DESKTOP_SCOPE_LABEL = '(claude desktop)';
+
+/**
+ * User-scope servers from the top level of `~/.claude.json:mcpServers` —
+ * these load into every CLI project, so a context inventory that omits them
+ * (as this module did before Desktop support) undercounts the biggest
+ * always-on contributors.
+ */
+export function detectUserScopeMcpServers(state: unknown): string[] {
+  if (!state || typeof state !== 'object') return [];
+  const servers = (state as { mcpServers?: unknown }).mcpServers;
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return [];
+  return Object.keys(servers);
+}
+
+/**
+ * Local MCP servers Claude Desktop spawns from `claude_desktop_config.json:
+ * mcpServers` (stdio entries — includes Sentinel's own bridge entry when
+ * desktop routing is on). The desktop app injects these into its Chat and
+ * embedded Code sessions, so they contribute request context exactly like
+ * the CLI's servers do.
+ */
+export function detectDesktopMcpServers(desktopConfig: unknown): string[] {
+  if (!desktopConfig || typeof desktopConfig !== 'object') return [];
+  const servers = (desktopConfig as { mcpServers?: unknown }).mcpServers;
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return [];
+  return Object.keys(servers);
+}
