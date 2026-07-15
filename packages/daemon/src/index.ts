@@ -12,6 +12,7 @@ import {
   hasActiveAccount,
   getAccount,
   setAccountColor,
+  updateAccountMeta,
   getUsageByDayModel,
   acknowledgeNotification,
   acknowledgeAllNotifications,
@@ -1233,6 +1234,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     token: string,
     label: string | undefined,
     accountId?: string,
+    orgLabel?: string,
   ): Promise<{ email: string; orgName?: string; wasKnown: boolean }> => {
     // setup-token mints a long-lived (~1yr) inference-scoped token with no
     // refresh token. Stamp a 330-day expiry so the refresher's validity check
@@ -1302,7 +1304,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
     const credKey = sentinelKey(orgUuid, accountUuid) || accountUuid;
     const email = profile.email || label || 'Claude account';
     const displayName = profile.displayName || label || email;
-    const orgName = profile.orgName || '';
+    // Profile-derived org wins; the user's typed org label is the fallback
+    // (inference-only tokens can't read the profile, so it's usually the
+    // only source). Editable later via `update_account`.
+    const orgName = profile.orgName || orgLabel?.trim() || '';
 
     const creds: ClaudeCodeCredentials = {
       accessToken: token,
@@ -2137,9 +2142,37 @@ export async function startDaemon(): Promise<DaemonHandle> {
 
       case 'update_account': {
         // Only the fields the message carries are persisted; others are
-        // left untouched. Currently just `color` (with `null` meaning reset).
+        // left untouched. `color: null` means reset; `orgName: ''` clears the
+        // org label; a `displayName` that trims to empty is ignored.
         if (msg.color !== undefined) {
           setAccountColor(db, msg.accountId, msg.color);
+        }
+        if (msg.displayName !== undefined || msg.orgName !== undefined) {
+          const metaPatch = {
+            ...(msg.displayName !== undefined ? { displayName: msg.displayName } : {}),
+            ...(msg.orgName !== undefined ? { orgName: msg.orgName } : {}),
+          };
+          const changed = updateAccountMeta(db, msg.accountId, metaPatch);
+          // When the edited account is the ACTIVE one, mirror the new values
+          // into ~/.claude.json too: the startup seed and every
+          // refresh_accounts capture upsert displayName/orgName FROM that
+          // file, so leaving it stale would clobber this edit right back.
+          if (changed) {
+            const activeNow = getActiveAccount();
+            const activeKeyNow = activeNow
+              ? sentinelKey(activeNow.organizationUuid ?? '', activeNow.accountUuid)
+              : null;
+            if (activeNow && activeKeyNow === msg.accountId) {
+              const row = getAccount(db, msg.accountId);
+              if (row) {
+                setActiveAccount({
+                  ...activeNow,
+                  displayName: row.displayName,
+                  organizationName: row.orgName,
+                });
+              }
+            }
+          }
         }
         const updated = getAccount(db, msg.accountId);
         if (updated) {
@@ -2893,7 +2926,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
         // announces completion via login_complete — same async shape the old
         // login path used.
         respond({ requestType: 'store_setup_token', success: true });
-        void storeSetupTokenAccount(msg.token, msg.label, msg.accountId)
+        void storeSetupTokenAccount(msg.token, msg.label, msg.accountId, msg.orgName)
           .then(({ email, orgName, wasKnown }) => {
             ipcServer.broadcast({
               type: 'login_complete',

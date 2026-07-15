@@ -15,6 +15,7 @@ import {
   hasNonPurgedAccount,
   hasActiveAccount,
   setAccountColor,
+  updateAccountMeta,
   insertUsageEvent,
   getUsageEvents,
   getTodayUsageSummary,
@@ -268,6 +269,36 @@ describe('Database', () => {
         setAccountColor(db, 'uuid-1', '#30D158');
         upsertAccount(db, { ...account, displayName: 'Renamed', color: null });
         expect(getAccount(db, 'uuid-1')?.color).toBe('#30D158');
+      });
+    });
+
+    describe('updateAccountMeta', () => {
+      it('updates displayName and orgName, trimming both', () => {
+        upsertAccount(db, account);
+        expect(
+          updateAccountMeta(db, 'uuid-1', { displayName: '  New Name ', orgName: ' Acme ' }),
+        ).toBe(true);
+        const row = getAccount(db, 'uuid-1');
+        expect(row?.displayName).toBe('New Name');
+        expect(row?.orgName).toBe('Acme');
+      });
+
+      it('skips a displayName that trims to empty but still clears orgName', () => {
+        upsertAccount(db, account);
+        expect(updateAccountMeta(db, 'uuid-1', { displayName: '   ', orgName: '' })).toBe(true);
+        const row = getAccount(db, 'uuid-1');
+        expect(row?.displayName).toBe(account.displayName);
+        expect(row?.orgName).toBe('');
+      });
+
+      it('returns false when no writable field is present', () => {
+        upsertAccount(db, account);
+        expect(updateAccountMeta(db, 'uuid-1', { displayName: '  ' })).toBe(false);
+        expect(updateAccountMeta(db, 'uuid-1', {})).toBe(false);
+      });
+
+      it('returns false for an unknown id', () => {
+        expect(updateAccountMeta(db, 'no-such-id', { displayName: 'X' })).toBe(false);
       });
     });
   });

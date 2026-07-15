@@ -699,6 +699,9 @@ export interface StoreSetupTokenMessage {
   /** User-provided account label, used when profile metadata can't be fetched
    *  (the inference-only token typically can't read /api/oauth/profile). */
   label?: string;
+  /** User-provided organization label for a new add. Like `label`, only a
+   *  fallback: profile-derived org metadata wins when the token can read it. */
+  orgName?: string;
   /** When re-authenticating an existing account, its Sentinel key. The daemon
    *  refreshes that account's credential in place instead of creating a new
    *  one (the inference-only token can't be matched back to it by identity).
@@ -1464,6 +1467,13 @@ export interface UpdateAccountMessage {
   accountId: string;
   /** 7-char hex string like "#FF9F0A", or null to reset. */
   color?: string | null;
+  /** New display name shown on the account card. Trimmed; an empty result is
+   *  ignored (a card must keep a visible name). */
+  displayName?: string;
+  /** Organization label shown under the account. Trimmed; an empty string
+   *  clears it. Setup-token accounts can't derive this from the API (the
+   *  token is inference-only), so it's user-maintained. */
+  orgName?: string;
 }
 
 export interface ListAlertsMessage {

@@ -51,6 +51,7 @@ export default function SetupTokenTerminal({
 
   const [phase, setPhase] = useState<Phase>('running');
   const [label, setLabel] = useState('');
+  const [orgLabel, setOrgLabel] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   // The CLI wasn't found: swap the plain error for the guided-install panel
   // (copyable install one-liner + Retry once the user has run it).
@@ -78,8 +79,12 @@ export default function SetupTokenTerminal({
   };
 
   // Send the captured token to the daemon, then close. Re-auth refreshes the
-  // existing account in place; a new add carries the user's label.
-  const storeToken = (token: string, extra: { label?: string; accountId?: string }): void => {
+  // existing account in place; a new add carries the user's label + optional
+  // organization (setup tokens can't derive either from the API).
+  const storeToken = (
+    token: string,
+    extra: { label?: string; orgName?: string; accountId?: string },
+  ): void => {
     setPhase('storing');
     void sendToSentinel({ type: 'store_setup_token', token, ...extra })
       .catch(() => undefined)
@@ -199,7 +204,10 @@ export default function SetupTokenTerminal({
   const submitLabel = (): void => {
     const token = tokenRef.current;
     if (!token) return;
-    storeToken(token, label.trim() ? { label: label.trim() } : {});
+    storeToken(token, {
+      ...(label.trim() ? { label: label.trim() } : {}),
+      ...(orgLabel.trim() ? { orgName: orgLabel.trim() } : {}),
+    });
   };
 
   // Attach the captured token to a previously removed account instead of
@@ -298,6 +306,17 @@ export default function SetupTokenTerminal({
               if (e.key === 'Enter') submitLabel();
             }}
             placeholder="you@example.com"
+            disabled={phase === 'storing'}
+            className="w-full text-[12px] bg-white/5 text-white placeholder-white/30 rounded-lg px-2.5 py-1.5
+                       outline-none ring-1 ring-white/10 focus:ring-ios-blue/60 disabled:opacity-50"
+          />
+          <input
+            value={orgLabel}
+            onChange={(e) => setOrgLabel(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submitLabel();
+            }}
+            placeholder="Organization (optional)"
             disabled={phase === 'storing'}
             className="w-full text-[12px] bg-white/5 text-white placeholder-white/30 rounded-lg px-2.5 py-1.5
                        outline-none ring-1 ring-white/10 focus:ring-ios-blue/60 disabled:opacity-50"
