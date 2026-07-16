@@ -1,9 +1,12 @@
 /**
- * Pure SSE observer that captures structured tool_use metadata from the
- * Claude API response stream. Mirrors {@link SseUsageExtractor}'s contract:
- * onChunk / flush, no participation in forwarding. Intentionally separate
- * from `permissions/sse-interceptor.ts` — that interceptor mutates the
- * stream; this one only watches.
+ * Pure response observer that captures structured tool_use metadata from
+ * the Claude API. Two ingestion paths: `onChunk` parses an SSE stream
+ * (mirroring {@link SseUsageExtractor}'s contract), and `onJsonBody`
+ * parses a complete non-streaming JSON message — Claude Code falls back
+ * to stream-less requests after repeated stream errors, and those turns
+ * carry the same tool_use blocks. No participation in forwarding.
+ * Intentionally separate from `permissions/sse-interceptor.ts` — that
+ * interceptor mutates the stream; this one only watches.
  *
  * What we keep per tool_use block:
  *   - tool_use_id (Anthropic's `toolu_...` id, used to match against
@@ -82,6 +85,7 @@ export interface ToolCallExtractorOptions {
  */
 export function createToolCallExtractor(opts: ToolCallExtractorOptions): {
   onChunk(chunk: Buffer | string): void;
+  onJsonBody(body: Buffer | string): void;
   flush(): PendingToolCall[];
   /** For tests: read the buffered tool calls without inserting. */
   peek(): PendingToolCall[];
@@ -168,6 +172,40 @@ export function createToolCallExtractor(opts: ToolCallExtractorOptions): {
     }
   };
 
+  // Non-streaming ingestion. Claude Code retries a conversation turn as a
+  // stream-less request after repeated stream failures (429/529/SSE
+  // `event: error`), and the response is then one complete JSON message
+  // whose `content[]` carries the same tool_use blocks the SSE path would
+  // have streamed. `input` arrives as a parsed object here, so serialize it
+  // back to JSON to reuse extractFilePath and keep inputSizeBytes on the
+  // same scale as the SSE path's concatenated partial_json.
+  const onJsonBody = (body: Buffer | string): void => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(typeof body === 'string' ? body : body.toString('utf-8'));
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object') return;
+    const content = (parsed as Record<string, unknown>)['content'];
+    if (!Array.isArray(content)) return;
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const b = block as Record<string, unknown>;
+      if (b['type'] !== 'tool_use') continue;
+      const toolName = typeof b['name'] === 'string' ? b['name'] : '';
+      const toolUseId = typeof b['id'] === 'string' ? (b['id'] as string) : null;
+      const inputJson = JSON.stringify(b['input'] ?? {});
+      const overflowed = inputJson.length > MAX_TOOL_INPUT_BYTES;
+      collected.push({
+        toolUseId,
+        toolName,
+        filePath: overflowed ? null : extractFilePath(inputJson),
+        inputSizeBytes: inputJson.length,
+      });
+    }
+  };
+
   const flush = (): PendingToolCall[] => {
     for (const c of collected) {
       try {
@@ -193,7 +231,7 @@ export function createToolCallExtractor(opts: ToolCallExtractorOptions): {
     return collected.slice();
   };
 
-  return { onChunk, flush, peek: () => collected.slice() };
+  return { onChunk, onJsonBody, flush, peek: () => collected.slice() };
 }
 
 /**

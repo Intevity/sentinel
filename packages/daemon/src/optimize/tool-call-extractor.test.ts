@@ -217,6 +217,97 @@ describe('createToolCallExtractor', () => {
     expect(rows[0]?.filePath).toBeNull();
     expect(rows[0]?.inputSizeBytes).toBeGreaterThan(MAX_TOOL_INPUT_BYTES);
   });
+
+  // Non-streaming path: Claude Code retries stream-less after repeated
+  // stream errors, so the response is one complete JSON message.
+  it('onJsonBody captures tool_use blocks from a non-streaming JSON message', () => {
+    const ex = makeExtractor();
+    const message = {
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-4-7',
+      content: [
+        { type: 'thinking', thinking: 'let me look' },
+        { type: 'text', text: 'Reading the file.' },
+        { type: 'tool_use', id: 'toolu_json_01', name: 'Read', input: { path: '/etc/hosts' } },
+        { type: 'tool_use', id: 'toolu_json_02', name: 'Bash', input: { command: 'ls -la' } },
+      ],
+      usage: { input_tokens: 10, output_tokens: 20 },
+    };
+    ex.onJsonBody(Buffer.from(JSON.stringify(message)));
+    ex.flush();
+
+    const rows = listRecentToolCalls(db, { sessionId: 'sess-1' });
+    expect(rows).toHaveLength(2);
+    const byId = new Map(rows.map((r) => [r.toolUseId, r]));
+    expect(byId.get('toolu_json_01')).toMatchObject({
+      toolName: 'Read',
+      filePath: '/etc/hosts',
+      inputSizeBytes: JSON.stringify({ path: '/etc/hosts' }).length,
+    });
+    expect(byId.get('toolu_json_02')).toMatchObject({
+      toolName: 'Bash',
+      filePath: 'ls -la',
+      inputSizeBytes: JSON.stringify({ command: 'ls -la' }).length,
+    });
+  });
+
+  it('onJsonBody ignores error bodies, malformed JSON, and non-array content', () => {
+    const ex = makeExtractor();
+    ex.onJsonBody(JSON.stringify({ type: 'error', error: { type: 'overloaded_error' } }));
+    ex.onJsonBody('{not json');
+    ex.onJsonBody('null');
+    ex.onJsonBody('"a bare string"');
+    ex.onJsonBody(JSON.stringify({ type: 'message', content: 'plain string' }));
+    ex.onJsonBody(JSON.stringify({ type: 'message', content: [null, 'str', { type: 'text' }] }));
+    ex.flush();
+    expect(listRecentToolCalls(db, { sessionId: 'sess-1' })).toHaveLength(0);
+  });
+
+  it('onJsonBody records oversized inputs with size but without field extraction', () => {
+    const ex = makeExtractor();
+    const huge = 'x'.repeat(MAX_TOOL_INPUT_BYTES + 1024);
+    ex.onJsonBody(
+      JSON.stringify({
+        type: 'message',
+        content: [
+          { type: 'tool_use', id: 'toolu_json_big', name: 'Bash', input: { command: huge } },
+        ],
+      }),
+    );
+    ex.flush();
+    const rows = listRecentToolCalls(db, { sessionId: 'sess-1' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.toolUseId).toBe('toolu_json_big');
+    expect(rows[0]?.filePath).toBeNull();
+    expect(rows[0]?.inputSizeBytes).toBeGreaterThan(MAX_TOOL_INPUT_BYTES);
+  });
+
+  it('onJsonBody defaults missing id/name/input fields', () => {
+    const ex = makeExtractor();
+    ex.onJsonBody(
+      JSON.stringify({
+        type: 'message',
+        content: [
+          { type: 'tool_use', id: 'toolu_json_noinput' },
+          { type: 'tool_use', name: 'Read', input: { path: '/x' } },
+        ],
+      }),
+    );
+    const collected = ex.flush();
+    expect(collected).toHaveLength(2);
+    expect(collected[0]).toMatchObject({
+      toolUseId: 'toolu_json_noinput',
+      toolName: '',
+      filePath: null,
+      inputSizeBytes: 2,
+    });
+    expect(collected[1]).toMatchObject({
+      toolUseId: null,
+      toolName: 'Read',
+      filePath: '/x',
+    });
+  });
 });
 
 describe('createToolCallExtractor — flush error tolerance', () => {

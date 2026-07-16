@@ -410,6 +410,86 @@ describe('proxy Optimize tool-call capture (real HTTP, real SSE)', () => {
     expect(rows[0]).toMatchObject({ tool_use_id: 'toolu_ae_01', tool_name: 'Grep' });
   });
 
+  it('records tool_use blocks from a non-streaming JSON response', async () => {
+    ctx = await startProxyWithFake({
+      accounts: [{ id: 'acct-ns', email: 'ns@example.com', token: 'integration-token' }],
+      settings: { optimizeCaptureEnabled: true },
+    });
+
+    // Real-world shape: Claude Code retries a turn stream-less after
+    // repeated 429/529/SSE-error responses; the reply is then one
+    // complete application/json message carrying the tool_use blocks.
+    ctx.fake.queueResponse('/v1/messages', {
+      body: JSON.stringify({
+        id: 'msg_ns_01',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-opus-4-7',
+        content: [
+          { type: 'text', text: 'Reading the file.' },
+          { type: 'tool_use', id: 'toolu_ns_01', name: 'Read', input: { path: '/etc/hosts' } },
+          { type: 'tool_use', id: 'toolu_ns_02', name: 'Bash', input: { command: 'ls -la' } },
+        ],
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 10, output_tokens: 20 },
+      }),
+    });
+
+    const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', {
+      model: 'claude-opus-4-7',
+      // stream deliberately omitted — the non-streaming fallback shape.
+      messages: [{ role: 'user', content: 'read /etc/hosts' }],
+      metadata: { user_id: JSON.stringify({ session_id: 'sess-NS', account_uuid: 'u1' }) },
+    });
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 80));
+
+    const rows = ctx.db
+      .prepare('SELECT * FROM tool_calls WHERE session_id = ? ORDER BY id ASC')
+      .all('sess-NS') as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      account_id: 'acct-ns',
+      tool_use_id: 'toolu_ns_01',
+      tool_name: 'Read',
+      file_path: '/etc/hosts',
+      model: 'claude-opus-4-7',
+    });
+    expect(rows[1]).toMatchObject({
+      tool_use_id: 'toolu_ns_02',
+      tool_name: 'Bash',
+      file_path: 'ls -la',
+    });
+  });
+
+  it('does not record rows from a non-streaming error body', async () => {
+    ctx = await startProxyWithFake({
+      accounts: [{ id: 'acct-err', email: 'err@example.com', token: 'integration-token' }],
+      settings: { optimizeCaptureEnabled: true },
+    });
+
+    ctx.fake.queueResponse('/v1/messages', {
+      status: 529,
+      body: JSON.stringify({
+        type: 'error',
+        error: { type: 'overloaded_error', message: 'Overloaded' },
+      }),
+    });
+
+    const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', {
+      model: 'claude-opus-4-7',
+      messages: [{ role: 'user', content: 'anything' }],
+      metadata: { user_id: JSON.stringify({ session_id: 'sess-ERR', account_uuid: 'u1' }) },
+    });
+    expect(res.status).toBe(529);
+    await new Promise((r) => setTimeout(r, 80));
+
+    const row = ctx.db
+      .prepare('SELECT COUNT(*) AS n FROM tool_calls WHERE session_id = ?')
+      .get('sess-ERR') as { n: number };
+    expect(row.n).toBe(0);
+  });
+
   it('routes an encoded response away from the SSE observers and forwards it intact', async () => {
     ctx = await startProxyWithFake({
       accounts: [{ id: 'acct-gz', email: 'gz@example.com', token: 'integration-token' }],
