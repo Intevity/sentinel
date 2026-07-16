@@ -1363,11 +1363,10 @@ async function proxyToAnthropic(
         cacheTtlCtx.nonSseBytes += chunk.length;
       }
     }
-    // Optimize feature: pure observer. Only feed when this is an SSE
-    // response — non-SSE /v1/messages responses don't carry tool_use
-    // blocks in the same shape and would just confuse the parser.
-    // The extractor's onChunk silently no-ops on non-SSE bytes anyway,
-    // but skipping here keeps the hot path tighter.
+    // Optimize feature: pure observer. Only feed SSE bytes here — a
+    // non-SSE /v1/messages response is one complete JSON message, and
+    // finalizeToolCalls hands the buffered nonSseChunks to the
+    // extractor's onJsonBody once the body is whole.
     if (toolCallCtx && cacheTtlCtx?.isSse) {
       toolCallCtx.extractor.onChunk(chunk);
     }
@@ -1426,6 +1425,16 @@ async function proxyToAnthropic(
   const finalizeToolCalls = (): void => {
     if (!toolCallCtx) return;
     try {
+      // Non-streaming turn: Claude Code retries a conversation request
+      // stream-less after repeated 429/529/`event: error` responses, and
+      // the tool_use blocks then arrive as one JSON message that the SSE
+      // feed path never saw. cacheTtlCtx buffers the first 256 KB of
+      // every non-SSE response for its usage parse — hand the same bytes
+      // to the extractor. Error bodies (`{"type":"error",...}`) have no
+      // content[] and no-op inside onJsonBody.
+      if (cacheTtlCtx && !cacheTtlCtx.isSse && cacheTtlCtx.nonSseChunks.length > 0) {
+        toolCallCtx.extractor.onJsonBody(Buffer.concat(cacheTtlCtx.nonSseChunks));
+      }
       const flushed = toolCallCtx.extractor.flush();
       // Optimize feature: poke the analyzer when this turn captured at
       // least one tool_use. The analyzer's debounce collapses bursts
@@ -1603,10 +1612,14 @@ async function proxyToAnthropic(
             capture.responseStatus = proxyRes.statusCode ?? null;
             capture.responseHeaders = redactHeaders(proxyRes.headers, capture.redactAuth);
             const encodingHeader = proxyRes.headers['content-encoding'];
+            // Label by what the response actually is, not just the route:
+            // a stream-less /v1/messages retry returns application/json,
+            // which must not be flagged is_sse in the request log.
             capture.isSse =
               !encodingHeader &&
               req.method === 'POST' &&
-              (req.url?.startsWith('/v1/messages') ?? false);
+              (req.url?.startsWith('/v1/messages') ?? false) &&
+              String(proxyRes.headers['content-type'] ?? '').includes('text/event-stream');
           }
           if (cacheTtlCtx) {
             const ct = String(proxyRes.headers['content-type'] ?? '');
