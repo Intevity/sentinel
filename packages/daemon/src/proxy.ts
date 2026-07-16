@@ -1090,6 +1090,19 @@ async function proxyToAnthropic(
     delete req.headers['accept-encoding'];
   }
 
+  // Force identity encoding on ALL conversation requests, not just the
+  // enforcement path above. Newer Claude Code clients advertise
+  // `accept-encoding: gzip, deflate, br, zstd` on /v1/messages and upstream
+  // then compresses the SSE stream (`content-encoding: gzip` with
+  // `content-type: text/event-stream`), which blinds every plaintext
+  // response observer at once: the tool-call extractor and cache-TTL usage
+  // parser receive undecodable bytes and the security response tap skips
+  // encoded responses entirely. The observers are wired for every
+  // /v1/messages POST when a db is present, so the strip matches that scope.
+  if (isMessagesPost && db) {
+    delete req.headers['accept-encoding'];
+  }
+
   // Cache TTL override — when the user has opted in, rewrite every existing
   // `cache_control` block on outbound /v1/messages (including subpath
   // /v1/messages/count_tokens) requests to `{type: 'ephemeral', ttl: '1h'}`.
@@ -1597,7 +1610,14 @@ async function proxyToAnthropic(
           }
           if (cacheTtlCtx) {
             const ct = String(proxyRes.headers['content-type'] ?? '');
-            cacheTtlCtx.isSse = ct.includes('text/event-stream');
+            // Defense-in-depth: a compressed body is not parseable SSE no
+            // matter what the content-type claims. The accept-encoding
+            // strip at the request layer should make this unreachable, but
+            // if an encoded stream arrives anyway, route it to the non-SSE
+            // buffer (where the JSON parse fails quietly) instead of
+            // feeding binary to the SSE observers.
+            cacheTtlCtx.isSse =
+              !proxyRes.headers['content-encoding'] && ct.includes('text/event-stream');
           }
 
           // Record requestId → account so OtelReceiver can re-bucket OTEL

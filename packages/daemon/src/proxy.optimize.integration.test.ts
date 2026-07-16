@@ -343,4 +343,115 @@ describe('proxy Optimize tool-call capture (real HTTP, real SSE)', () => {
     await new Promise((r) => setTimeout(r, 80));
     expect(flushCount).toBe(0);
   });
+
+  it('strips accept-encoding from /v1/messages so upstream cannot compress the SSE stream', async () => {
+    ctx = await startProxyWithFake({
+      accounts: [{ id: 'acct-ae', email: 'ae@example.com', token: 'integration-token' }],
+      settings: { optimizeCaptureEnabled: true },
+    });
+
+    ctx.fake.queueResponse('/v1/messages', {
+      sseEvents: [
+        {
+          event: 'message_start',
+          data: {
+            type: 'message_start',
+            message: { model: 'claude-opus-4-7', usage: { input_tokens: 1 } },
+          },
+        },
+        {
+          event: 'content_block_start',
+          data: {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'tool_use', id: 'toolu_ae_01', name: 'Grep', input: {} },
+          },
+        },
+        {
+          event: 'content_block_delta',
+          data: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'input_json_delta', partial_json: '{"pattern":"needle"}' },
+          },
+        },
+        { event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } },
+        { event: 'message_delta', data: { type: 'message_delta', usage: { output_tokens: 5 } } },
+        { event: 'message_stop', data: { type: 'message_stop' } },
+      ],
+    });
+
+    // Real-world shape: claude-cli ≥ 2.1.211 advertises compression on
+    // conversation requests; if the header reaches upstream, the SSE body
+    // comes back gzip-encoded and every response observer goes blind.
+    await postThroughProxy(
+      ctx.proxyPort,
+      '/v1/messages',
+      {
+        model: 'claude-opus-4-7',
+        messages: [{ role: 'user', content: 'grep for needle' }],
+        metadata: { user_id: JSON.stringify({ session_id: 'sess-STRIP', account_uuid: 'u1' }) },
+      },
+      { headers: { 'accept-encoding': 'gzip, deflate, br, zstd' } },
+    );
+    await new Promise((r) => setTimeout(r, 80));
+
+    const upstream = ctx.fake
+      .requests()
+      .filter((r) => r.method === 'POST' && r.url.startsWith('/v1/messages'));
+    expect(upstream).toHaveLength(1);
+    expect(upstream[0]?.headers['accept-encoding']).toBeUndefined();
+
+    // And with identity encoding negotiated, extraction works end to end.
+    const rows = ctx.db
+      .prepare('SELECT tool_use_id, tool_name FROM tool_calls WHERE session_id = ?')
+      .all('sess-STRIP') as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ tool_use_id: 'toolu_ae_01', tool_name: 'Grep' });
+  });
+
+  it('routes an encoded response away from the SSE observers and forwards it intact', async () => {
+    ctx = await startProxyWithFake({
+      accounts: [{ id: 'acct-gz', email: 'gz@example.com', token: 'integration-token' }],
+      settings: { optimizeCaptureEnabled: true },
+    });
+
+    // Upstream misbehaves: gzip body despite identity negotiation. The
+    // fake gzips `body` once because extraHeaders declares the encoding.
+    const sseScript =
+      'event: message_start\n' +
+      'data: {"type":"message_start","message":{"model":"claude-opus-4-7","usage":{"input_tokens":1}}}\n\n' +
+      'event: content_block_start\n' +
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_gz_01","name":"Read","input":{}}}\n\n' +
+      'event: content_block_delta\n' +
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"/tmp/x\\"}"}}\n\n' +
+      'event: content_block_stop\n' +
+      'data: {"type":"content_block_stop","index":0}\n\n' +
+      'event: message_stop\n' +
+      'data: {"type":"message_stop"}\n\n';
+    ctx.fake.queueResponse('/v1/messages', {
+      body: sseScript,
+      extraHeaders: {
+        'content-encoding': 'gzip',
+        'content-type': 'text/event-stream; charset=utf-8',
+      },
+    });
+
+    const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', {
+      model: 'claude-opus-4-7',
+      messages: [{ role: 'user', content: 'read /tmp/x' }],
+      metadata: { user_id: JSON.stringify({ session_id: 'sess-GZ', account_uuid: 'u1' }) },
+    });
+    // fetch transparently decodes gzip, so an intact forward means the
+    // client sees the original SSE script byte-for-byte.
+    expect(await res.text()).toBe(sseScript);
+    await new Promise((r) => setTimeout(r, 80));
+
+    // The compressed bytes must not be fed to the extractor as SSE — no
+    // rows, no garbage, no crash.
+    const row = ctx.db
+      .prepare('SELECT COUNT(*) AS n FROM tool_calls WHERE session_id = ?')
+      .get('sess-GZ') as { n: number };
+    expect(row.n).toBe(0);
+  });
 });
