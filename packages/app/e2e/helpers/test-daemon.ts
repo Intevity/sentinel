@@ -50,6 +50,13 @@ export interface TestDaemonInit {
    * and import flows to start in a known "signed into Claude Code" state.
    */
   seedActiveId?: string;
+  /**
+   * Overrides merged onto the seeded settings.json. Use for specs that need a
+   * non-default setting — e.g. `manualRateLimitProbeEnabled` for the spec that
+   * exercises the manual rate-limit probe, which is off by default so Sentinel
+   * never originates inference requests on its own.
+   */
+  settings?: Record<string, unknown>;
 }
 
 /**
@@ -109,7 +116,7 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
       budgetWeeklyUsdByAccount: {},
       budgetWeeklyUsdGlobal: null,
       overageBufferPct: 5,
-      backgroundProbeIntervalSec: 300,
+      manualRateLimitProbeEnabled: false,
       telemetryRetentionDays: 30,
       securityScanEnabled: true,
       securityEnforcementMode: null,
@@ -140,6 +147,7 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
       cacheTtlForceOneHour: false,
       securitySetupCompleted: true,
       tourCompleted: true,
+      ...init.settings,
     },
     null,
     2,

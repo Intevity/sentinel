@@ -1,19 +1,22 @@
 /**
  * Flow 5 — View usage metrics.
  *
- * Seed one account with the fake in `healthy-account` mode. On daemon
- * startup the background probe fires a real /v1/messages call through
- * the proxy, the proxy parses the fake's `anthropic-ratelimit-*`
- * headers, and broadcasts `rate_limits_updated`. The spec:
+ * Seed one account with the fake in `healthy-account` mode. The spec:
  *
- *   1. Verifies the initial broadcast lands and the Usage tab renders
- *      the 10% 5h utilization from `healthy-account`.
- *   2. Flips the fake to `5h-warning` (92% utilization), probes again
- *      via the `probe_rate_limits` IPC, awaits a second broadcast,
- *      asserts the rendered percentage has changed.
+ *   1. Verifies the Usage tab renders the 5h utilization the daemon learned
+ *      from the claude.ai usage sync at startup (18%, metadata-only — no
+ *      inference request involved).
+ *   2. Flips the fake to `5h-warning` (92% utilization), fires an explicit
+ *      `probe_rate_limits` IPC, and asserts the rendered percentage changed
+ *      via the proxy's rate-limit header path.
+ *
+ * Note the daemon does NOT probe on startup, on switch, or on any timer — it
+ * originates no inference requests of its own. The probe exercised in step 2 is
+ * manual-only and gated behind `manualRateLimitProbeEnabled`, which this spec
+ * opts into explicitly; with the shipped default the IPC is a no-op.
  *
  * This pins three seams in a single pass:
- *   - probe path round-trips through real proxy → fake HTTP listener.
+ *   - manual probe round-trips through real proxy → fake HTTP listener.
  *   - proxy's header parser matches current wire shape.
  *   - E2E SSE bridge delivers the broadcast to the browser.
  */
@@ -39,6 +42,8 @@ test.beforeAll(async () => {
   daemon = await startTestDaemon({
     seedAccounts: [ACCT],
     seedActiveId: ACCT.id,
+    // Step 2 drives the manual probe, which ships off by default.
+    settings: { manualRateLimitProbeEnabled: true },
   });
   // Fake defaults to 'healthy-account' — no setScenario needed for bring-up.
   app = await startAppHarness(daemon.bridgeUrl);

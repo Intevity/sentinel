@@ -16,6 +16,22 @@ const REFRESH_THRESHOLD_MS = 30 * 60 * 1000;
 /** How often the background scanner walks every stored credential. */
 const CHECK_INTERVAL_MS = 15 * 60 * 1000;
 
+/** Randomize each scan's wait by ±this fraction. A fixed 15-minute interval
+ *  makes the refresh train land on a perfectly predictable grid; combined with
+ *  N accounts refreshing back-to-back it reads as scripted rather than
+ *  user-driven. Only the *schedule* is randomized — which accounts actually
+ *  refresh is still governed by REFRESH_THRESHOLD_MS, so jitter never causes an
+ *  extra token call. */
+const CHECK_JITTER_RATIO = 0.2;
+
+/** Pause between per-account refreshes within one scan, so N due accounts don't
+ *  hit the token endpoint as a single concurrent burst from one IP. */
+const SCAN_STAGGER_MS = 2_000;
+
+function jittered(ms: number, random: () => number = Math.random): number {
+  return Math.round(ms * (1 + (random() * 2 - 1) * CHECK_JITTER_RATIO));
+}
+
 export interface TokenRefresherDeps {
   db: Database;
   activeToken: ActiveToken;
@@ -182,9 +198,18 @@ export async function refreshIfNeeded(
   }
 }
 
-async function scanAll(deps: TokenRefresherDeps): Promise<void> {
+async function scanAll(deps: TokenRefresherDeps, staggerMs = SCAN_STAGGER_MS): Promise<void> {
   const accounts = listAccounts(deps.db);
-  for (const acct of accounts) {
+  for (let i = 0; i < accounts.length; i++) {
+    const acct = accounts[i];
+    /* v8 ignore next -- listAccounts never yields holes; index guard for TS. */
+    if (!acct) continue;
+    // Space out consecutive refreshes. Only accounts actually due for a refresh
+    // make a network call, so in the common case this loop is a no-op walk and
+    // the delay never materializes.
+    if (i > 0 && staggerMs > 0) {
+      await new Promise((r) => setTimeout(r, staggerMs));
+    }
     await refreshIfNeeded(deps, acct.id, acct.email);
   }
 }
@@ -192,14 +217,35 @@ async function scanAll(deps: TokenRefresherDeps): Promise<void> {
 /**
  * Start the background token refresher. Runs an immediate pass so a token
  * that expired overnight gets refreshed before the user's first API call,
- * then re-scans every CHECK_INTERVAL_MS. Returns a stop function.
+ * then re-scans on a jittered ~CHECK_INTERVAL_MS cadence. Returns a stop
+ * function.
+ *
+ * Uses a self-rescheduling timeout rather than setInterval so each wait gets
+ * its own jitter instead of one fixed period repeating forever.
  */
-export function startTokenRefresher(deps: TokenRefresherDeps): () => void {
-  void scanAll(deps);
-  const timer = setInterval(() => {
-    void scanAll(deps);
-  }, CHECK_INTERVAL_MS);
+export function startTokenRefresher(
+  deps: TokenRefresherDeps,
+  opts: { random?: () => number; staggerMs?: number } = {},
+): () => void {
+  const random = opts.random ?? Math.random;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+
+  const scheduleNext = (): void => {
+    if (stopped) return;
+    timer = setTimeout(
+      () => {
+        void scanAll(deps, opts.staggerMs).finally(scheduleNext);
+      },
+      jittered(CHECK_INTERVAL_MS, random),
+    );
+  };
+
+  void scanAll(deps, opts.staggerMs);
+  scheduleNext();
+
   return (): void => {
-    clearInterval(timer);
+    stopped = true;
+    if (timer) clearTimeout(timer);
   };
 }

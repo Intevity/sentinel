@@ -476,11 +476,18 @@ export interface Settings {
    *  full saturation (legacy pre-buffer behavior). Ignored unless
    *  `switchingMode === 'auto'`. */
   overageBufferPct: number;
-  /** Seconds between background probes of each non-active account's
-   *  rate-limit state. Keeps the Usage tab in sync with claude.ai / other
-   *  Anthropic surfaces when Claude Code isn't actively driving the
-   *  account. Clamped to [60, 3600]. Default 300 (5 min). */
-  backgroundProbeIntervalSec: number;
+  /** Allow the explicit per-account "Refresh" action to additionally send a
+   *  minimal `POST /v1/messages` probe, capturing rate-limit headers the
+   *  metadata endpoint may not carry.
+   *
+   *  **Off by default, and never automatic.** The probe is a real billable
+   *  inference request that no Claude Code session produced. It previously ran
+   *  for every account every 300s on a timer, which is both a cost and — with
+   *  its fabricated `claude-cli/...` user-agent — the clearest bot signal
+   *  Sentinel emitted. The timer is gone; this flag only widens what an
+   *  explicit user click does. Primary sources are `/api/oauth/usage` and
+   *  headers observed on genuinely proxied traffic. */
+  manualRateLimitProbeEnabled: boolean;
   /** @deprecated Superseded by {@link Settings.dataRetentionDays}, which now
    *  governs telemetry, optimize, and compression retention from a single
    *  control. Kept for settings round-trip + one-time migration: on first load

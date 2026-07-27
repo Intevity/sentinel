@@ -17,6 +17,11 @@ import type { SwitchingMode } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import { DUR, EASE_OUT } from '../lib/motion.js';
 
+/** Minimum gap between focus-triggered auth-liveness sweeps. Tray focus is a
+ *  cheap, high-frequency event (every tray open, every app switch back); the
+ *  liveness check it drives only needs to be roughly current. */
+const AUTH_CHECK_MIN_INTERVAL_MS = 60_000;
+
 const TRANSIENT_ANIM = {
   initial: { opacity: 0, y: -8, height: 0 },
   animate: { opacity: 1, y: 0, height: 'auto' as const },
@@ -114,29 +119,31 @@ export default function AccountSwitcher({
       return next;
     });
 
-    // Fire both in parallel per account: refresh_claude_ai_usage is free
-    // and covers auth liveness + overage/extra-usage numbers;
-    // probe_rate_limits costs ~1 Haiku token and is what actually advances
-    // the 5h-reset countdown (claude.ai's usage endpoint often returns
-    // null for that field). Only the usage call's result drives the
-    // per-card OK/error chip — the probe broadcasts rate_limits_updated
-    // on its own and is best-effort.
-    const usageResults = await Promise.all(
-      targetIds.map((id) => {
-        void sendToSentinel({ type: 'probe_rate_limits', accountId: id }).catch(() => undefined);
-        return sendToSentinel({ type: 'refresh_claude_ai_usage', accountId: id })
-          .then((res) => ({
-            id,
-            ok: !!res.success,
-            error: res.error ?? null,
-          }))
-          .catch((err: unknown) => ({
-            id,
-            ok: false,
-            error: err instanceof Error ? err.message : 'Refresh failed',
-          }));
-      }),
-    );
+    // Serial, not Promise.all. Fanning N accounts out concurrently put N
+    // different credentials on the wire from one IP in a single burst on every
+    // click — a correlation signal worth avoiding for what is not a
+    // latency-sensitive path.
+    //
+    // `probe_rate_limits` is deliberately NOT fired here. It sends a real
+    // billable inference request; the daemon now gates it behind the
+    // off-by-default `manualRateLimitProbeEnabled` setting and ignores it
+    // otherwise. refresh_claude_ai_usage is free, covers auth liveness plus
+    // overage/extra-usage numbers, and carries the 5h reset.
+    const usageResults: { id: string; ok: boolean; error: string | null }[] = [];
+    for (const id of targetIds) {
+      const result = await sendToSentinel({ type: 'refresh_claude_ai_usage', accountId: id })
+        .then((res) => ({
+          id,
+          ok: !!res.success,
+          error: res.error ?? null,
+        }))
+        .catch((err: unknown) => ({
+          id,
+          ok: false,
+          error: err instanceof Error ? err.message : 'Refresh failed',
+        }));
+      usageResults.push(result);
+    }
     await syncPromise;
 
     setCardRefreshStatus((prev) => {
@@ -235,25 +242,46 @@ export default function AccountSwitcher({
   }, [refreshAccounts]);
 
   // Auto-fire a free auth-liveness check for every account on mount and
-  // every time the tray window regains focus. If an account's OAuth token
-  // was revoked server-side while the app was closed, the daemon's inline
-  // force-refresh cascade lights up the Re-authenticate banner within
-  // seconds of the user opening the tray — so the user doesn't discover
-  // the dead token by failing to run a Claude Code command. No Haiku cost:
+  // when the tray window regains focus. If an account's OAuth token was
+  // revoked server-side while the app was closed, the daemon's inline
+  // force-refresh cascade lights up the Re-authenticate banner within seconds
+  // of the user opening the tray — so the user doesn't discover the dead token
+  // by failing to run a Claude Code command. No Haiku cost:
   // refresh_claude_ai_usage only hits /api/oauth/usage.
+  //
+  // Throttled. This used to fire unconditionally on EVERY focus event, and the
+  // daemon's force path used to bypass its own 429 cooldown, so opening and
+  // closing the tray a few times re-hit a rate-limited endpoint with every
+  // credential each time — which is what held an org's usage budget pinned at
+  // zero for days. The daemon-side cooldown is now authoritative (see
+  // claude-ai-usage.ts `fetchOne`); this is defense in depth so the burst never
+  // reaches the wire at all.
   const accountIdsKey = accounts.map((a) => a.id).join(',');
   useEffect(() => {
     if (accounts.length === 0) return;
+    let lastRun = 0;
+    let cancelled = false;
     const fireAuthCheck = (): void => {
-      for (const a of accounts) {
-        void sendToSentinel({ type: 'refresh_claude_ai_usage', accountId: a.id }).catch(
-          () => undefined,
-        );
-      }
+      const now = Date.now();
+      if (now - lastRun < AUTH_CHECK_MIN_INTERVAL_MS) return;
+      lastRun = now;
+      void (async () => {
+        // Serial: N credentials in one concurrent burst per focus is the
+        // pattern being removed, not just the frequency.
+        for (const a of accounts) {
+          if (cancelled) return;
+          await sendToSentinel({ type: 'refresh_claude_ai_usage', accountId: a.id }).catch(
+            () => undefined,
+          );
+        }
+      })();
     };
     fireAuthCheck();
     window.addEventListener('focus', fireAuthCheck);
-    return () => window.removeEventListener('focus', fireAuthCheck);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', fireAuthCheck);
+    };
     // accountIdsKey captures the set of IDs so re-mounts after add/remove
     // re-arm the focus listener with the current accounts.
     // eslint-disable-next-line react-hooks/exhaustive-deps

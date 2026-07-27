@@ -261,11 +261,18 @@ pub async fn stop_daemon_for_update() {
 /// been built), a warning is logged and the function returns. The IPC module
 /// will keep retrying its connection so the app remains functional once the
 /// developer starts the daemon manually.
-pub fn spawn(_app: &AppHandle) {
+pub fn spawn(app: &AppHandle) {
     let Some(path) = sidecar_path() else {
         app_log("Could not resolve daemon sidecar path");
         return;
     };
+
+    // The daemon stamps this into the User-Agent on every request it originates
+    // itself (see `http-identity.ts`). The app bundle is the only component
+    // that knows the release version — CI writes it into tauri.conf.json at tag
+    // time, while the daemon's own package.json is never bumped. Absent (daemon
+    // run standalone in dev/CI) the UA honestly reports `Sentinel/dev`.
+    let version = app.package_info().version.to_string();
 
     if !path.exists() {
         app_log(&format!(
@@ -295,6 +302,7 @@ pub fn spawn(_app: &AppHandle) {
 
         let mut cmd = tokio::process::Command::new(&path);
         cmd.arg("start")
+            .env("SENTINEL_VERSION", &version)
             .stdin(Stdio::piped())
             // Pipe stdout/stderr and tee them into app.log below. Release
             // builds use windows_subsystem="windows", so inherited pipes go

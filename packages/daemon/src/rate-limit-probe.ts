@@ -3,10 +3,20 @@ import { getDaemonPort } from './proxy.js';
 import type { IpcServer } from './ipc.js';
 import { isOAuthForbiddenBodyString } from './claude-ai-usage.js';
 import { readSentinelCredentials } from './accounts.js';
+import { sentinelUserAgent } from './http-identity.js';
 
 /**
  * Probe POST /v1/messages through the local proxy to obtain fresh
  * rate-limit headers for an account.
+ *
+ * MANUAL ONLY. This sends a real (billable) inference request that no user
+ * action produced, so it must never run on a timer or as a side effect of
+ * startup, an account switch, or a window-focus event. The background prober
+ * that used to drive it every 300s per account has been deleted; the sole
+ * remaining caller is the explicit `probe_rate_limits` IPC, itself gated behind
+ * the off-by-default `manualRateLimitProbeEnabled` setting. Anything automatic
+ * belongs on `/api/oauth/usage` (metadata, non-inference) or on passively
+ * observed headers from genuinely proxied traffic.
  *
  * Routing through the proxy (rather than calling api.anthropic.com directly)
  * lets the proxy inject the OAuth Bearer token and handle auth — direct calls
@@ -51,7 +61,11 @@ export function probeRateLimits(accountId: string, ipcServer?: IpcServer, token?
   const baseHeaders: Record<string, string | number> = {
     'anthropic-version': '2023-06-01',
     'anthropic-beta': 'oauth-2025-04-20',
-    'user-agent': 'claude-cli/sentinel-probe',
+    // Identify honestly. This used to send `claude-cli/sentinel-probe` — a
+    // fabricated Claude Code version string on a request Claude Code never
+    // made, which is exactly the shape an abuse-detection system reads as a
+    // bot impersonating a first-party client. Sentinel names itself instead.
+    'user-agent': sentinelUserAgent(),
     accept: 'application/json',
     // Deliberately no accept-encoding — keeps failure bodies readable
     // in daemon.log instead of printing gzip binary.

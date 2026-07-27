@@ -252,8 +252,8 @@ export default function SettingsPanel({
     void update({ cacheTtlForceOneHour: enabled }).catch(() => undefined);
   };
 
-  const setBackgroundProbeIntervalSec = (secs: number): void => {
-    void update({ backgroundProbeIntervalSec: secs }).catch(() => undefined);
+  const setManualRateLimitProbeEnabled = (enabled: boolean): void => {
+    void update({ manualRateLimitProbeEnabled: enabled }).catch(() => undefined);
   };
 
   const setOptimizeRetentionDays = (days: number): void => {
@@ -745,36 +745,12 @@ export default function SettingsPanel({
 
             {activeTab === 'data' && dataSubTab === 'retention' && (
               <Section title="Usage sync">
-                <div className="px-3 py-2.5">
-                  <div className="flex items-center justify-between text-[13px] mb-0.5">
-                    <span className="font-medium text-black dark:text-white">
-                      Background refresh interval
-                    </span>
-                    <span className="font-semibold text-black dark:text-white tabular-nums">
-                      {settings.backgroundProbeIntervalSec < 60
-                        ? `${settings.backgroundProbeIntervalSec}s`
-                        : `${Math.round(settings.backgroundProbeIntervalSec / 60)} min`}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-muted leading-snug mb-2">
-                    Sentinel probes each non-active account on this interval so usage stays in sync
-                    with claude.ai and other Anthropic tools. Each probe sends one minimal request
-                    per account.
-                  </p>
-                  <input
-                    type="range"
-                    min={60}
-                    max={3600}
-                    step={60}
-                    value={settings.backgroundProbeIntervalSec}
-                    onChange={(e) => setBackgroundProbeIntervalSec(Number(e.target.value))}
-                    className="w-full accent-ios-blue"
-                  />
-                  <div className="flex justify-between text-[10px] text-muted mt-0.5 tabular-nums">
-                    <span>1 min</span>
-                    <span>60 min</span>
-                  </div>
-                </div>
+                <ToggleRow
+                  label="Send a test request on manual refresh"
+                  description="Off by default. Usage syncs from Anthropic's usage endpoint and from your real Claude Code traffic, which costs nothing. Enabling this makes the Refresh button additionally send one minimal, billable request per account to read rate-limit headers directly. Sentinel never sends these on a timer — only when you click Refresh."
+                  checked={settings.manualRateLimitProbeEnabled}
+                  onChange={setManualRateLimitProbeEnabled}
+                />
               </Section>
             )}
 

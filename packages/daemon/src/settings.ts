@@ -63,7 +63,7 @@ export const DEFAULT_SETTINGS: Settings = {
   budgetWeeklyUsdByAccount: {},
   budgetWeeklyUsdGlobal: null,
   overageBufferPct: 5,
-  backgroundProbeIntervalSec: 300,
+  manualRateLimitProbeEnabled: false,
   telemetryRetentionDays: 30,
   dataRetentionDays: 365,
   optimizeRetentionDays: 365,
@@ -489,9 +489,11 @@ function coerce(raw: unknown): Settings {
   ) {
     next.overageBufferPct = Math.floor(obj['overageBufferPct'] as number);
   }
-  if (typeof obj['backgroundProbeIntervalSec'] === 'number') {
-    const n = Math.floor(obj['backgroundProbeIntervalSec']);
-    if (n >= 60 && n <= 3600) next.backgroundProbeIntervalSec = n;
+  // `backgroundProbeIntervalSec` was the cadence of the deleted synthetic
+  // prober. Deliberately not read: an existing value in a user's settings.json
+  // is ignored and drops out on the next write, rather than erroring.
+  if (typeof obj['manualRateLimitProbeEnabled'] === 'boolean') {
+    next.manualRateLimitProbeEnabled = obj['manualRateLimitProbeEnabled'];
   }
   if (typeof obj['telemetryRetentionDays'] === 'number') {
     const n = Math.floor(obj['telemetryRetentionDays']);
