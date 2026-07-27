@@ -236,7 +236,7 @@ describe('proxy tool_result compression (integration)', () => {
     await start({ compressionEnabled: true, compressionLevel: 'aggressive' });
     const noisy = `${ESC}[36mprobe${ESC}[0m`;
     const res = await postThroughProxy(started!.proxyPort, '/v1/messages', messagesBody(noisy), {
-      headers: { 'User-Agent': 'sentinel-probe/1.0' },
+      headers: { 'User-Agent': 'Sentinel/test' },
     });
     await res.text();
 

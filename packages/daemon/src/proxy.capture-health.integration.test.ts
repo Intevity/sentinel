@@ -36,7 +36,7 @@ describe('proxy capture-health signal (onRealMessagesRequest)', () => {
     expect(onReal).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT fire for a background usage probe (sentinel-probe user-agent)', async () => {
+  it('does NOT fire for a Sentinel-originated probe (Sentinel/ user-agent)', async () => {
     const onReal = vi.fn();
     ctx = await startProxyWithFake({
       accounts: [{ id: 'acct-1', email: 'a1@example.com', token: 'integration-token' }],
@@ -44,7 +44,7 @@ describe('proxy capture-health signal (onRealMessagesRequest)', () => {
     });
 
     await postThroughProxy(ctx.proxyPort, '/v1/messages', REAL_BODY, {
-      headers: { 'user-agent': 'claude-cli/sentinel-probe' },
+      headers: { 'user-agent': 'Sentinel/test' },
     });
     expect(onReal).not.toHaveBeenCalled();
   });

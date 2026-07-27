@@ -2,6 +2,7 @@ import type { IpcServer } from './ipc.js';
 import type { ClaudeAiUsageSnapshot } from '@sentinel/shared';
 import { readSentinelCredentials } from './accounts.js';
 import { fetchRunBudget } from './claude-ai-run-budget.js';
+import { headerValue, sentinelRequest, type SentinelResponse } from './http-identity.js';
 
 /**
  * Shape of Anthropic's `/api/oauth/usage` response. Undocumented; treat
@@ -117,22 +118,6 @@ export function isOAuthForbiddenBodyString(
   return { forbidden: false };
 }
 
-/** Read + parse a Response body to check for the OAuth-forbidden signal.
- *  Returns only the boolean verdict; `fetchOrgUsage` doesn't need the
- *  message. The rate-limit-probe path uses {@link isOAuthForbiddenBodyString}
- *  directly because it has the body string already. */
-async function isOAuthForbiddenBody(resp: Response): Promise<boolean> {
-  let body: string;
-  try {
-    body = await resp.text();
-    /* v8 ignore next 3 -- Paranoid guard. Node's undici doesn't reject
-     * `.text()` on a cleanly-closed 403 body; reproducing this branch
-     * would require a harness that destroys the socket mid-body. */
-  } catch {
-    return false;
-  }
-  return isOAuthForbiddenBodyString(body).forbidden;
-}
 /** Beta header required by the OAuth usage endpoint. Matches the value
  *  the Claude Code CLI sends today (GitHub issue anthropics/claude-code#31021). */
 const OAUTH_BETA = 'oauth-2025-04-20';
@@ -158,15 +143,15 @@ export async function fetchOrgUsage(
   const runBudgetPromise = fetchRunBudget(orgUuid, trimmed).catch(() => null);
 
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${trimmed}`,
+    authorization: `Bearer ${trimmed}`,
     'anthropic-beta': OAUTH_BETA,
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
+    'content-type': 'application/json',
+    accept: 'application/json',
   };
 
-  let resp: Response;
+  let resp: SentinelResponse;
   try {
-    resp = await fetch(`${baseUrl()}${USAGE_PATH}`, {
+    resp = await sentinelRequest(`${baseUrl()}${USAGE_PATH}`, {
       method: 'GET',
       headers,
     });
@@ -180,7 +165,7 @@ export async function fetchOrgUsage(
     // currently not allowed for this organization" message. Surface it as a
     // distinct error so the UI doesn't offer a Reconnect button that would
     // just reissue a token with the same restriction.
-    if (await isOAuthForbiddenBody(resp)) {
+    if (isOAuthForbiddenBodyString(resp.body).forbidden) {
       return { snapshot: null, error: 'oauth_forbidden' };
     }
     return { snapshot: null, error: 'auth_expired' };
@@ -195,20 +180,20 @@ export async function fetchOrgUsage(
     // while three accounts polled every 90s). Non-numeric or absent header
     // (the HTTP-date form, or nothing) falls back to a conservative wait;
     // the clamp keeps a hostile/buggy header from parking an account.
-    const raSeconds = Number(resp.headers.get('retry-after'));
+    const raSeconds = Number(headerValue(resp.headers, 'retry-after'));
     const retryAfterMs =
       Number.isFinite(raSeconds) && raSeconds > 0
         ? Math.min(raSeconds * 1000, RATE_LIMIT_MAX_BACKOFF_MS)
         : RATE_LIMIT_FALLBACK_BACKOFF_MS;
     return { snapshot: null, error: 'network', retryAfterMs };
   }
-  if (!resp.ok) {
+  if (resp.status < 200 || resp.status >= 300) {
     return { snapshot: null, error: 'network' };
   }
 
   let raw: RawUsageResponse;
   try {
-    raw = (await resp.json()) as RawUsageResponse;
+    raw = JSON.parse(resp.body) as RawUsageResponse;
   } catch {
     return { snapshot: null, error: 'parse' };
   }
@@ -244,6 +229,19 @@ export function parseUsage(raw: RawUsageResponse): ClaudeAiUsageSnapshot {
       (l) => l?.kind === 'weekly_scoped' && l?.scope?.model?.display_name === 'Fable',
     ) ?? null;
   const extra = raw.extra_usage ?? null;
+
+  // The response carries the 5h window twice: the top-level `five_hour` block
+  // and a redundant `limits[]` entry with `kind: 'session'` (same percent, same
+  // resets_at — see the real capture in
+  // packages/test-harness/src/fixtures/usage.response.json). We used to read
+  // only `five_hour`, so a response that populated just the `limits[]` form
+  // looked like "no 5h data" and left the countdown stale — which is a large
+  // part of why the synthetic Haiku probe looked load-bearing. Prefer
+  // `five_hour`, fall back to the session limit field-by-field so a partially
+  // populated top-level block still gets completed rather than discarded.
+  const session = raw.limits?.find((l) => l?.kind === 'session' || l?.group === 'session') ?? null;
+  const fiveHourUtilizationRaw = fiveHour?.utilization ?? session?.percent ?? null;
+  const fiveHourResetsAt = fiveHour?.resets_at ?? session?.resets_at ?? null;
 
   // claude.ai returns utilization as a percent on the 0-100 scale —
   // verified live for both Max (5h=36, 7d=3, extra_usage=77.22) and Team
@@ -283,8 +281,8 @@ export function parseUsage(raw: RawUsageResponse): ClaudeAiUsageSnapshot {
       : null;
 
   return {
-    fiveHourUtilization: utilFraction(fiveHour?.utilization),
-    fiveHourResetsAt: fiveHour?.resets_at ?? null,
+    fiveHourUtilization: utilFraction(fiveHourUtilizationRaw),
+    fiveHourResetsAt,
     sevenDayUtilization: utilFraction(sevenDay?.utilization),
     sevenDayResetsAt: sevenDay?.resets_at ?? null,
     sevenDayFableUtilization: utilFraction(fable?.percent),
@@ -315,6 +313,23 @@ function toUsd(minorUnits: number | null | undefined): number {
  *  recordFailure's Retry-After backoff is what keeps a rate-limited
  *  account from being polled straight back into the limit. */
 const POLL_INTERVAL_MS = 90 * 1000;
+/** Cadence once no real Claude Code request has been proxied for
+ *  {@link ACTIVITY_WINDOW_MS}. The fast 90s cadence exists to catch a
+ *  server-side-revoked token before Claude Code trips over it — which only
+ *  matters while the user is actually driving Claude Code. Polling every
+ *  account every 90s around the clock on an idle machine buys nothing and is
+ *  precisely the fixed-grid, presence-independent pattern that makes Sentinel's
+ *  traffic look automated rather than user-driven. */
+const IDLE_POLL_INTERVAL_MS = 10 * 60 * 1000;
+/** How long after the last proxied request we keep polling at the fast
+ *  cadence. Generous: a user reading Claude Code's output between prompts is
+ *  still "active", and re-entering the fast tier costs one poll. */
+const ACTIVITY_WINDOW_MS = 15 * 60 * 1000;
+/** Fraction of a computed delay to randomize, ±. Every scheduled wait in this
+ *  store is jittered: without it, N accounts polled off one interval produce a
+ *  perfectly periodic request train per credential, which is trivially
+ *  distinguishable from human-driven use by inter-arrival regularity alone. */
+const JITTER_RATIO = 0.2;
 /** 429 backoff when Retry-After is absent or unparseable (HTTP-date form).
  *  Conservative: observed server cooldowns run 20-60 min. */
 const RATE_LIMIT_FALLBACK_BACKOFF_MS = 15 * 60 * 1000;
@@ -363,10 +378,19 @@ export interface ClaudeAiUsageStoreDeps {
    *  still satisfies). Optional for tests / legacy callers — without it,
    *  `auth_expired` keeps the pre-refresh-retry behavior. */
   refreshCredential?: (accountId: string) => Promise<UsageStoreRefreshOutcome>;
+  /** Timestamp (ms) of the last genuinely-proxied Claude Code request, or
+   *  null when the proxy has served none this run. Drives cadence tiering:
+   *  poll at the fast cadence only while a real session is active, and fall
+   *  back to the idle cadence otherwise. Wired to `getProxyActivity()` in
+   *  index.ts, which already excludes Sentinel's own probe traffic. Omitted →
+   *  always fast (legacy behavior), used by unit tests that don't care. */
+  getLastClientActivityAt?: () => number | null;
   /** Test seam: swap fetch for a stub. */
   fetch?: typeof fetchOrgUsage;
   /** Test seam: deterministic clock. */
   now?: () => number;
+  /** Test seam: deterministic jitter source. Must return [0, 1). */
+  random?: () => number;
 }
 
 /**
@@ -379,6 +403,14 @@ export class ClaudeAiUsageStore {
   private snapshots = new Map<string, ClaudeAiUsageSnapshot>();
   private lastError = new Map<string, UsageFetchError>();
   private nextPollAt = new Map<string, number>();
+  /** Server-directed cooldowns (429 Retry-After) per account. Distinct from
+   *  `nextPollAt`, which is our own cadence and which a user-initiated refresh
+   *  is allowed to jump. This one nothing may jump — see `fetchOne`. */
+  private cooldownUntil = new Map<string, number>();
+  /** When each account last fetched successfully. The success-path cadence is
+   *  measured from here so a cadence-tier change applies on the next tick — see
+   *  `isDue`. */
+  private lastSuccessAt = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly fetchImpl: typeof fetchOrgUsage;
   private readonly subscribers: ((accountId: string) => void)[] = [];
@@ -406,6 +438,26 @@ export class ClaudeAiUsageStore {
 
   private clock(): number {
     return this.deps.now ? this.deps.now() : Date.now();
+  }
+
+  /** Spread a delay by ±{@link JITTER_RATIO} so repeated waits never land on a
+   *  fixed grid. */
+  private jitter(ms: number): number {
+    const rand = this.deps.random ? this.deps.random() : Math.random();
+    return Math.round(ms * (1 + (rand * 2 - 1) * JITTER_RATIO));
+  }
+
+  /** Fast cadence while a real Claude Code session is live, idle cadence
+   *  otherwise. No activity dep → always fast. */
+  private pollIntervalMs(): number {
+    const lastActivity = this.deps.getLastClientActivityAt?.() ?? null;
+    if (lastActivity == null && this.deps.getLastClientActivityAt) {
+      return IDLE_POLL_INTERVAL_MS;
+    }
+    if (lastActivity == null) return POLL_INTERVAL_MS;
+    return this.clock() - lastActivity <= ACTIVITY_WINDOW_MS
+      ? POLL_INTERVAL_MS
+      : IDLE_POLL_INTERVAL_MS;
   }
 
   start(): void {
@@ -439,16 +491,57 @@ export class ClaudeAiUsageStore {
     await this.fetchOne(accountId, /* force */ true);
   }
 
+  /** Whether the background poller should fetch this account now.
+   *
+   *  Two regimes, deliberately kept apart:
+   *
+   *  - **After a failure** (including a server 429), the recorded backoff is
+   *    authoritative and is never shortened. An `oauth_forbidden` 24h wait must
+   *    stay 24h no matter what else changes.
+   *  - **After a success**, due-ness is recomputed against the *current* cadence
+   *    tier rather than a delay frozen at store time. Otherwise a session
+   *    resuming after an idle stretch would wait out the full idle interval
+   *    before its first refresh — the tier would only take effect one poll late.
+   */
+  private isDue(accountId: string, now: number): boolean {
+    if (this.lastError.get(accountId) != null) {
+      return now >= (this.nextPollAt.get(accountId) ?? 0);
+    }
+    const last = this.lastSuccessAt.get(accountId);
+    if (last == null) return true;
+    return now - last >= this.jitter(this.pollIntervalMs());
+  }
+
   private async tick(): Promise<void> {
     const now = this.clock();
     for (const accountId of this.deps.getAccountIds()) {
-      const nextAt = this.nextPollAt.get(accountId) ?? 0;
-      if (now < nextAt) continue;
+      if (!this.isDue(accountId, now)) continue;
       await this.fetchOne(accountId, /* force */ false);
     }
   }
 
   private async fetchOne(accountId: string, force: boolean): Promise<void> {
+    // A server-directed 429 cooldown binds EVERY caller, including the
+    // user-initiated refresh path. Previously `force` skipped this check
+    // entirely, so the tray's on-focus refresh fan-out re-hit a rate-limited
+    // endpoint on every window focus — which is what held an org's usage
+    // budget pinned at zero for days (see POLL_INTERVAL_MS). `force` may still
+    // jump our own 90s cadence; it may not jump the server's backoff.
+    const cooldown = this.cooldownUntil.get(accountId) ?? 0;
+    if (this.clock() < cooldown) {
+      // Re-broadcast the cached state so a user-initiated refresh still
+      // resolves the UI's loading indicator instead of hanging.
+      if (force) {
+        this.deps.ipcServer.broadcast({
+          type: 'claude_ai_usage_updated',
+          accountId,
+          snapshot: this.snapshots.get(accountId) ?? null,
+          error: this.lastError.get(accountId) ?? null,
+        });
+      }
+      return;
+    }
+
     const creds = readSentinelCredentials(accountId);
     const orgUuid = this.deps.getOrgUuid(accountId);
     if (!creds?.accessToken) {
@@ -507,7 +600,9 @@ export class ClaudeAiUsageStore {
   private storeSnapshot(accountId: string, snapshot: ClaudeAiUsageSnapshot): void {
     this.snapshots.set(accountId, snapshot);
     this.lastError.delete(accountId);
-    this.nextPollAt.set(accountId, this.clock() + POLL_INTERVAL_MS);
+    this.cooldownUntil.delete(accountId);
+    this.nextPollAt.delete(accountId);
+    this.lastSuccessAt.set(accountId, this.clock());
     this.deps.ipcServer.broadcast({
       type: 'claude_ai_usage_updated',
       accountId,
@@ -535,14 +630,24 @@ export class ClaudeAiUsageStore {
     if (retryAfterMs != null) {
       backoff = retryAfterMs;
     } else if (force) {
-      backoff = POLL_INTERVAL_MS;
+      backoff = this.pollIntervalMs();
     } else if (error === 'oauth_forbidden') {
       backoff = OAUTH_FORBIDDEN_BACKOFF_MS;
     } else if (error === 'auth_expired') {
       backoff = AUTH_EXPIRED_BACKOFF_MS;
     } else {
-      backoff = POLL_INTERVAL_MS;
+      backoff = this.pollIntervalMs();
     }
+    // A server-directed Retry-After is recorded separately so no caller —
+    // including a user-initiated refresh — can poll through it.
+    if (retryAfterMs != null) {
+      this.cooldownUntil.set(accountId, this.clock() + retryAfterMs);
+    }
+    // Deliberately NOT jittered. Jitter exists to break up the periodic grid of
+    // *successful* polling; an error backoff is rare and event-driven, so it
+    // contributes no grid. More importantly, jitter is two-sided: applying it to
+    // a server-directed Retry-After would sometimes shorten it, which is the
+    // exact behavior this whole change set is removing.
     this.nextPollAt.set(accountId, this.clock() + backoff);
     this.lastError.set(accountId, error);
     // Don't zero out the snapshot on transient failures — the UI keeps

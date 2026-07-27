@@ -72,9 +72,28 @@ const OTEL_PATHS = ['/v1/metrics', '/v1/logs'];
 // interrupted. Module-level on purpose — one proxy per daemon, mirroring
 // getDaemonPort()'s module-level convention. Sentinel's own rate-limit
 // probes (rate-limit-probe.ts routes them through this server) are excluded
-// via their user-agent marker so background probing doesn't make an idle
-// machine look busy.
-const PROBE_USER_AGENT = 'claude-cli/sentinel-probe';
+// via their user-agent so Sentinel-originated traffic can't make an idle
+// machine look busy — which matters doubly now that the usage poller's cadence
+// tiering reads `lastRequestTs` as its "is a real session live" signal.
+//
+// Prefix match, not equality: every Sentinel-originated request identifies as
+// `Sentinel/<version>` (see http-identity.ts), and real Claude Code never
+// sends that UA.
+const SENTINEL_UA_PREFIX = 'Sentinel/';
+
+/** True when a request arriving at the proxy was originated by Sentinel itself
+ *  rather than by Claude Code — today, only the manual rate-limit probe.
+ *
+ *  Several call sites need this: activity tracking, capture-health (a probe must
+ *  not mask a real bypass), request-log capture, and permission observation.
+ *  They previously each substring-matched the probe's fabricated
+ *  `claude-cli/sentinel-probe` user-agent. Now that Sentinel identifies itself
+ *  honestly there is one predicate, and it keys on the `Sentinel/` prefix that
+ *  every Sentinel-originated request carries. */
+function isSentinelOriginated(headers: IncomingMessage['headers']): boolean {
+  const ua = headers['user-agent'];
+  return typeof ua === 'string' && ua.startsWith(SENTINEL_UA_PREFIX);
+}
 
 const proxyActivity = {
   inFlightRequests: 0,
@@ -91,7 +110,7 @@ export function getProxyActivity(): { inFlightRequests: number; lastRequestTs: n
  *  once per response on both clean finish and client abort, balancing the
  *  increment. */
 function trackUpstreamRequest(req: IncomingMessage, res: ServerResponse): void {
-  if (req.headers['user-agent'] === PROBE_USER_AGENT) return;
+  if (isSentinelOriginated(req.headers)) return;
   proxyActivity.inFlightRequests += 1;
   proxyActivity.lastRequestTs = Date.now();
   res.once('close', () => {
@@ -568,7 +587,7 @@ export function createProxyServer(
     // is traffic NOT reaching the proxy at all). Probes and count_tokens are
     // excluded so they can't mask a true bypass, matching `isMessagesPost`.
     const userAgent = String(req.headers['user-agent'] ?? '');
-    const isProbeRequest = userAgent.includes('sentinel-probe');
+    const isProbeRequest = isSentinelOriginated(req.headers);
     const isCountTokens = req.url?.includes('count_tokens') ?? false;
     if (!isProbeRequest && !isCountTokens) {
       onRealMessagesRequest?.();
@@ -924,7 +943,7 @@ async function proxyToAnthropic(
   // per-request so the toggle takes effect without a daemon restart. Probe
   // requests skip capture — they're internal noise, not user-originated.
   const settings = loadSettings();
-  const isProbe = String(req.headers['user-agent'] ?? '').includes('sentinel-probe');
+  const isProbe = isSentinelOriginated(req.headers);
   const capture: CaptureContext | null =
     requestLogStore && settings.requestLoggingEnabled && !isProbe
       ? {
@@ -1058,7 +1077,7 @@ async function proxyToAnthropic(
     req.method === 'POST' &&
     req.url?.startsWith('/v1/messages') &&
     !req.url.includes('count_tokens') &&
-    !String(req.headers['user-agent'] ?? '').includes('sentinel-probe')
+    !isSentinelOriginated(req.headers)
   ) {
     permissionsEnforcer.observeRequest(req.headers);
   }

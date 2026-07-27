@@ -555,5 +555,170 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
       await poll();
       expect(fake.requests().filter((r) => r.url === '/api/oauth/usage')).toHaveLength(baseline);
     });
+
+    it('refuses to poll through an active cooldown even on a forced refresh', async () => {
+      writeSentinelCredentials('acct-1', makeCreds({ accessToken: TOKEN }));
+      fake.queueResponse('/api/oauth/usage', {
+        status: 429,
+        body: '',
+        extraHeaders: { 'retry-after': '600' },
+      });
+
+      let clock = 1_000_000;
+      const store = new ClaudeAiUsageStore({
+        ipcServer,
+        getOrgUuid: () => 'org-1',
+        getAccountIds: () => ['acct-1'],
+        now: () => clock,
+      });
+
+      // Trip the 429 via the forced path.
+      await store.refresh('acct-1');
+      const baseline = fake.requests().filter((r) => r.url === '/api/oauth/usage').length;
+      expect(baseline).toBe(1);
+
+      // THE REGRESSION: `force` used to skip the cooldown check entirely, so
+      // the tray's on-focus refresh fan-out re-hit a rate-limited endpoint on
+      // every window focus — observed live holding an org's usage budget at
+      // zero for days. Five forced refreshes inside the cooldown must produce
+      // zero additional requests.
+      for (let i = 0; i < 5; i++) {
+        clock += 30 * 1000;
+        await store.refresh('acct-1');
+      }
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage')).toHaveLength(baseline);
+
+      // Once the server's window has passed, a forced refresh works again.
+      clock += 600 * 1000;
+      await store.refresh('acct-1');
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage').length).toBe(baseline + 1);
+      expect(store.getSnapshot('acct-1')).not.toBeNull();
+    });
+
+    it('still resolves the UI while a cooldown blocks a forced refresh', async () => {
+      writeSentinelCredentials('acct-1', makeCreds({ accessToken: TOKEN }));
+      fake.queueResponse('/api/oauth/usage', {
+        status: 429,
+        body: '',
+        extraHeaders: { 'retry-after': '600' },
+      });
+
+      let clock = 1_000_000;
+      const store = new ClaudeAiUsageStore({
+        ipcServer,
+        getOrgUuid: () => 'org-1',
+        getAccountIds: () => ['acct-1'],
+        now: () => clock,
+      });
+
+      await store.refresh('acct-1');
+      const before = broadcasts.length;
+
+      // Suppressing the request must not leave a spinner up forever: the
+      // handler re-broadcasts cached state so the UI settles.
+      clock += 30 * 1000;
+      await store.refresh('acct-1');
+      const emitted = broadcasts.slice(before).filter((m) => m.type === 'claude_ai_usage_updated');
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]).toMatchObject({ accountId: 'acct-1', error: 'network' });
+    });
+
+    it('jitters the next poll instead of landing on a fixed grid', async () => {
+      writeSentinelCredentials('acct-1', makeCreds({ accessToken: TOKEN }));
+      let clock = 1_000_000;
+      const store = new ClaudeAiUsageStore({
+        ipcServer,
+        getOrgUuid: () => 'org-1',
+        getAccountIds: () => ['acct-1'],
+        now: () => clock,
+        // Bottom of the jitter range: 90s * (1 - 0.2) = 72s.
+        random: () => 0,
+        // Recent traffic → fast tier.
+        getLastClientActivityAt: () => clock,
+      });
+      const poll = () => (store as unknown as { tick(): Promise<void> }).tick();
+
+      await poll();
+      const baseline = fake.requests().filter((r) => r.url === '/api/oauth/usage').length;
+      expect(baseline).toBe(1);
+
+      // One second short of the jittered delay — no fetch.
+      clock += 71 * 1000;
+      await poll();
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage')).toHaveLength(baseline);
+
+      // At the jittered delay — fetch. An unjittered store would have fired at
+      // exactly 90s and stayed silent here.
+      clock += 1 * 1000;
+      await poll();
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage').length).toBe(baseline + 1);
+    });
+
+    it('drops to the idle cadence when no real Claude Code request is recent', async () => {
+      writeSentinelCredentials('acct-1', makeCreds({ accessToken: TOKEN }));
+      let clock = 1_000_000;
+      const store = new ClaudeAiUsageStore({
+        ipcServer,
+        getOrgUuid: () => 'org-1',
+        getAccountIds: () => ['acct-1'],
+        now: () => clock,
+        // Midpoint of the jitter range → the tier value verbatim.
+        random: () => 0.5,
+        // Last proxied request was 20 min ago, past the 15 min activity window.
+        getLastClientActivityAt: () => clock - 20 * 60 * 1000,
+      });
+      const poll = () => (store as unknown as { tick(): Promise<void> }).tick();
+
+      await poll();
+      const baseline = fake.requests().filter((r) => r.url === '/api/oauth/usage').length;
+      expect(baseline).toBe(1);
+
+      // The fast cadence would have refetched here; the idle tier must not.
+      // This is what stops an idle machine from polling every account every
+      // 90s around the clock.
+      clock += 90 * 1000;
+      await poll();
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage')).toHaveLength(baseline);
+
+      // 10 min idle cadence reached.
+      clock += 9 * 60 * 1000 + 30 * 1000;
+      await poll();
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage').length).toBe(baseline + 1);
+    });
+
+    it('returns to the fast cadence once real traffic resumes', async () => {
+      writeSentinelCredentials('acct-1', makeCreds({ accessToken: TOKEN }));
+      let clock = 1_000_000;
+      let lastActivity = clock - 20 * 60 * 1000;
+      const store = new ClaudeAiUsageStore({
+        ipcServer,
+        getOrgUuid: () => 'org-1',
+        getAccountIds: () => ['acct-1'],
+        now: () => clock,
+        random: () => 0.5,
+        getLastClientActivityAt: () => lastActivity,
+      });
+      const poll = () => (store as unknown as { tick(): Promise<void> }).tick();
+
+      await poll();
+      const baseline = fake.requests().filter((r) => r.url === '/api/oauth/usage').length;
+      expect(baseline).toBe(1);
+
+      // Halfway through the idle interval with the machine still idle: silent.
+      clock += 5 * 60 * 1000;
+      await poll();
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage')).toHaveLength(baseline);
+
+      // A real Claude Code request lands. Due-ness is recomputed against the
+      // CURRENT tier, so the account is immediately overdue by the fast cadence
+      // (5 min since the last success > 90s) and refreshes on this tick. Before
+      // `isDue` recomputed the tier, the delay chosen at store time would have
+      // held this account silent for the rest of the 10 min idle interval — a
+      // user resuming work would see stale usage and a late revoked-token
+      // signal.
+      lastActivity = clock;
+      await poll();
+      expect(fake.requests().filter((r) => r.url === '/api/oauth/usage').length).toBe(baseline + 1);
+    });
   });
 });

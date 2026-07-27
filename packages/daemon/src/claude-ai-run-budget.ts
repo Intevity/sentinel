@@ -25,6 +25,7 @@
  */
 
 import { getAnthropicOrigin } from './hosts.js';
+import { sentinelRequest, type SentinelResponse } from './http-identity.js';
 
 interface RawRunBudgetResponse {
   limit?: string | number | null;
@@ -68,17 +69,17 @@ export async function fetchRunBudget(
   const trimmed = accessToken.trim();
   if (!trimmed || !orgUuid) return null;
 
-  let resp: Response;
+  let resp: SentinelResponse;
   try {
-    resp = await fetch(`${getAnthropicOrigin()}/v1/code/routines/run-budget`, {
+    resp = await sentinelRequest(`${getAnthropicOrigin()}/v1/code/routines/run-budget`, {
       method: 'GET',
       headers: {
-        Authorization: `Bearer ${trimmed}`,
+        authorization: `Bearer ${trimmed}`,
         // Beta header gating + org routing header are both required.
         'anthropic-beta': 'ccr-triggers-2026-01-30',
         'anthropic-version': '2023-06-01',
         'x-organization-uuid': orgUuid,
-        Accept: '*/*',
+        accept: '*/*',
       },
     });
   } catch {
@@ -89,11 +90,11 @@ export async function fetchRunBudget(
   // plan" responses (Max/Pro individual). 401 means auth_expired —
   // also a graceful-null case here, since the primary usage path has
   // its own auth_expired surfacing.
-  if (!resp.ok) return null;
+  if (resp.status < 200 || resp.status >= 300) return null;
 
   let raw: RawRunBudgetResponse;
   try {
-    raw = (await resp.json()) as RawRunBudgetResponse;
+    raw = JSON.parse(resp.body) as RawRunBudgetResponse;
   } catch {
     return null;
   }

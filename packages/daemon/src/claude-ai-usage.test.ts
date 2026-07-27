@@ -176,4 +176,50 @@ describe('parseUsage', () => {
     });
     expect(snap.fiveHourUtilization).toBeNull();
   });
+
+  // The response carries the 5h window twice — the top-level `five_hour` block
+  // and a `limits[]` entry with `kind: 'session'`. The parser used to read only
+  // the former, so a response populating just the latter looked like "no 5h
+  // data" and left the countdown stale. That gap is a large part of why the
+  // synthetic Haiku probe appeared to be the only way to advance the countdown.
+  it('falls back to the limits[] session entry when five_hour is absent', () => {
+    const snap = parseUsage({
+      five_hour: null,
+      limits: [
+        {
+          kind: 'session',
+          group: 'session',
+          percent: 18,
+          resets_at: '2026-07-27T18:00:00Z',
+          is_active: true,
+        },
+      ],
+    });
+    expect(snap.fiveHourUtilization).toBeCloseTo(0.18, 6);
+    expect(snap.fiveHourResetsAt).toBe('2026-07-27T18:00:00Z');
+  });
+
+  it('completes a partially-populated five_hour block from the session entry', () => {
+    const snap = parseUsage({
+      // Utilization present, reset missing — the shape that left the UI with a
+      // number but no countdown.
+      five_hour: { utilization: 42, resets_at: null },
+      limits: [
+        { kind: 'session', group: 'session', percent: 42, resets_at: '2026-07-27T21:30:00Z' },
+      ],
+    });
+    expect(snap.fiveHourUtilization).toBeCloseTo(0.42, 6);
+    expect(snap.fiveHourResetsAt).toBe('2026-07-27T21:30:00Z');
+  });
+
+  it('prefers the top-level five_hour block when both are populated', () => {
+    const snap = parseUsage({
+      five_hour: { utilization: 10, resets_at: '2026-07-27T12:00:00Z' },
+      limits: [
+        { kind: 'session', group: 'session', percent: 99, resets_at: '2026-07-27T23:00:00Z' },
+      ],
+    });
+    expect(snap.fiveHourUtilization).toBeCloseTo(0.1, 6);
+    expect(snap.fiveHourResetsAt).toBe('2026-07-27T12:00:00Z');
+  });
 });

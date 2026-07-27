@@ -17,6 +17,7 @@
  */
 
 import { getAnthropicOrigin, getOAuthTokenUrl } from './hosts.js';
+import { sentinelRequest } from './http-identity.js';
 
 /** Sentinel error thrown when the refresh_token itself is rejected by the
  *  token endpoint (400/401). Callers catch this to drive re-login UX. */
@@ -63,16 +64,16 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRes
   const tokenUrl = getOAuthTokenUrl();
   console.log(`[OAuth] Token refresh → POST ${tokenUrl}`);
   const startedAt = Date.now();
-  const res = await fetch(tokenUrl, {
+  const res = await sentinelRequest(tokenUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(TOKEN_FETCH_TIMEOUT_MS),
+    timeoutMs: TOKEN_FETCH_TIMEOUT_MS,
   });
   console.log(`[OAuth] Token refresh ← ${res.status} (${Date.now() - startedAt}ms)`);
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
+  if (res.status < 200 || res.status >= 300) {
+    const text = res.body || `HTTP ${res.status}`;
     if (res.status === 400 || res.status === 401) {
       console.warn(`[OAuth] Refresh token rejected (${res.status}): ${text}`);
       throw new Error(REFRESH_TOKEN_EXPIRED);
@@ -80,7 +81,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRes
     throw new Error(`Token refresh failed (${res.status}): ${text}`);
   }
 
-  return res.json() as Promise<TokenResponse>;
+  return JSON.parse(res.body) as TokenResponse;
 }
 
 // ─── Profile fetch ─────────────────────────────────────────────────────────────
@@ -134,16 +135,16 @@ export async function fetchProfile(accessToken: string): Promise<ProfileResult> 
 
   const startedAt = Date.now();
   try {
-    const res = await fetch(`${getAnthropicOrigin()}/api/oauth/profile`, {
+    const res = await sentinelRequest(`${getAnthropicOrigin()}/api/oauth/profile`, {
       headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
+        authorization: `Bearer ${accessToken}`,
+        'content-type': 'application/json',
       },
-      signal: AbortSignal.timeout(PROFILE_FETCH_TIMEOUT_MS),
+      timeoutMs: PROFILE_FETCH_TIMEOUT_MS,
     });
     console.log(`[OAuth] GET /api/oauth/profile ← ${res.status} (${Date.now() - startedAt}ms)`);
-    if (!res.ok) return empty;
-    const data = (await res.json()) as OAuthProfile;
+    if (res.status < 200 || res.status >= 300) return empty;
+    const data = JSON.parse(res.body) as OAuthProfile;
 
     const orgType = data.organization?.organization_type ?? '';
     const subscriptionType =

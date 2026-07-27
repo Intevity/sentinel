@@ -33,7 +33,7 @@ function defaultSettings(over: Partial<Settings> = {}): Settings {
     budgetWeeklyUsdByAccount: {},
     budgetWeeklyUsdGlobal: null,
     overageBufferPct: 5,
-    backgroundProbeIntervalSec: 300,
+    manualRateLimitProbeEnabled: false,
     telemetryRetentionDays: 30,
     dataRetentionDays: 365,
     optimizeRetentionDays: 365,

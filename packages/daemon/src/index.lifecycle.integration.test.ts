@@ -404,17 +404,24 @@ describe('lifecycle — update_settings cascades', () => {
     expect(r2.success).toBe(true);
   });
 
-  it('changing backgroundProbeIntervalSec restarts the prober', async () => {
+  it('defaults manualRateLimitProbeEnabled to false and round-trips an opt-in', async () => {
     ctx = await startTestDaemon();
-    const r = await ctx.request({
-      type: 'update_settings',
-      settings: { backgroundProbeIntervalSec: 600 },
-    });
-    expect(r.success).toBe(true);
-    const after = await ctx.request<{ backgroundProbeIntervalSec: number }>({
+    const initial = await ctx.request<{ manualRateLimitProbeEnabled: boolean }>({
       type: 'get_settings',
     });
-    expect(after.data?.backgroundProbeIntervalSec).toBe(600);
+    // Default-off is the security-relevant half of this assertion: a fresh
+    // install must never send synthetic inference.
+    expect(initial.data?.manualRateLimitProbeEnabled).toBe(false);
+
+    const r = await ctx.request({
+      type: 'update_settings',
+      settings: { manualRateLimitProbeEnabled: true },
+    });
+    expect(r.success).toBe(true);
+    const after = await ctx.request<{ manualRateLimitProbeEnabled: boolean }>({
+      type: 'get_settings',
+    });
+    expect(after.data?.manualRateLimitProbeEnabled).toBe(true);
   });
 
   it('changing poolExcludedIds persists through settings_changed broadcast', async () => {

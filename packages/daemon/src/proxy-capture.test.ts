@@ -221,7 +221,7 @@ describe('proxy request capture', () => {
     ).listeners('request')[0];
 
     const req = makeReq('/v1/messages');
-    req.headers['user-agent'] = 'sentinel-probe/1.0';
+    req.headers['user-agent'] = 'Sentinel/test';
     const { res } = makeRes();
     handler?.(req, res);
     await new Promise((r) => setTimeout(r, 40));

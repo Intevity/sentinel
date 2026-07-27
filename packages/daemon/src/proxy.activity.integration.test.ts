@@ -84,7 +84,7 @@ describe('proxy activity tracking (idle gate for silent updates)', () => {
     const baseline = getProxyActivity().lastRequestTs;
 
     const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', MESSAGES_BODY, {
-      headers: { 'user-agent': 'claude-cli/sentinel-probe' },
+      headers: { 'user-agent': 'Sentinel/test' },
     });
     expect(res.status).toBe(200);
 

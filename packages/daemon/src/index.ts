@@ -173,7 +173,6 @@ import {
   markAccountReauthenticated,
 } from './token-refresher.js';
 import { probeRateLimits } from './rate-limit-probe.js';
-import { startUsageProber, type UsageProberHandle } from './usage-probe.js';
 import { startRateLimitSweeper, type RateLimitSweeperHandle } from './rate-limit-sweeper.js';
 import type {
   OAuthAccount,
@@ -747,7 +746,6 @@ export async function startDaemon(): Promise<DaemonHandle> {
 
   // Assigned after the proxy is listening — update_settings references it
   // via optional-chain so handler registration order doesn't matter.
-  let usageProber: UsageProberHandle | null = null;
   // Internal-timer fallback that rolls over rate-limit windows whose reset has
   // elapsed, so usage statistics reset even when no requests flow through the
   // proxy. Started after the rate-limit onUpdate callbacks are registered.
@@ -866,6 +864,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
       return acc?.orgUuid || null;
     },
     getAccountIds: () => listAccounts(db).map((a) => a.id),
+    // Presence signal for cadence tiering: poll every account at the fast
+    // cadence only while Claude Code is actually being driven, and drop to the
+    // idle cadence otherwise. `getProxyActivity()` already excludes
+    // Sentinel-originated requests by user-agent, so this can't self-sustain.
+    getLastClientActivityAt: () => getProxyActivity().lastRequestTs,
     // Force a token refresh on auth_expired so a silently-revoked refresh
     // token surfaces as `token_refresh_failed` within one poll cycle. The
     // background refresher alone can't catch this — it keys on local
@@ -979,15 +982,19 @@ export async function startDaemon(): Promise<DaemonHandle> {
     activeToken.value = creds.accessToken;
     activeAccountId.value = lookupKey;
 
-    // Drop any cached rate-limit data for the target account BEFORE probing.
-    // Without this the UI reads whatever was persisted the last time this
-    // account was used (possibly hours or days ago) and flashes those stale
-    // numbers until the probe's response lands. probeRateLimits will
-    // repopulate the store with fresh headers via rateLimitStore.update().
+    // Drop any cached rate-limit data for the target account. Without this the
+    // UI reads whatever was persisted the last time this account was used
+    // (possibly hours or days ago) and flashes those stale numbers.
+    //
+    // Repopulation is passive: the usage poller's next fetch for this account
+    // and the first genuinely proxied Claude Code request both write fresh
+    // state. We deliberately do NOT fire a synthetic probe here — a switch is a
+    // local bookkeeping operation, and making it originate a billable inference
+    // request Claude Code never asked for is the pattern this daemon no longer
+    // exhibits. The Usage tab is briefly empty for this account instead.
     rateLimitStore.clearAccount(lookupKey);
     deleteRateLimitsForAccount(db, lookupKey);
-
-    probeRateLimits(lookupKey, ipcServer);
+    void claudeAiUsageStore.refresh(lookupKey);
 
     try {
       writeClaudeCodeCredentials(creds);
@@ -1277,12 +1284,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
       } else if (adoptAsActive) {
         // Restoring/re-authing while the active slot can't serve traffic (the
         // active account was removed or lost its credential) — adopt this
-        // account as active. performSwitch probes and refreshes the rotator,
-        // so skip the duplicates below.
+        // account as active. performSwitch refreshes usage + the rotator, so
+        // skip the duplicates below.
         performSwitch(accountId, existingForReauth.email);
       }
       if (!adoptAsActive) {
-        probeRateLimits(accountId, ipcServer, token);
         tokenRotator.refresh();
       }
       void claudeAiUsageStore.refresh(accountId);
@@ -1377,7 +1383,6 @@ export async function startDaemon(): Promise<DaemonHandle> {
       }
     }
 
-    probeRateLimits(credKey, ipcServer, token);
     markAccountReauthenticated(credKey);
     tokenRotator.refresh();
     void claudeAiUsageStore.refresh(credKey);
@@ -2047,11 +2052,19 @@ export async function startDaemon(): Promise<DaemonHandle> {
       case 'probe_rate_limits': {
         // Fire a minimal /v1/messages request through our local proxy to
         // capture a fresh `unified-5h-reset` header into RateLimitStore.
-        // Claude.ai's usage endpoint often returns null for that field,
-        // and syncFromClaudeAiSnapshot's merge preserves a stale value —
-        // the probe is the only reliable way to force the countdown to
-        // advance. Skipped for silent-sibling team enrollments that have
-        // no OAuth token. Costs ~1 Haiku token, fire-and-forget.
+        //
+        // Off by default. This is a real, billable inference request that no
+        // Claude Code session produced, so it only runs when the user has
+        // explicitly opted in AND explicitly asked for a refresh. The primary
+        // path for these numbers is `/api/oauth/usage` (metadata, free) plus
+        // headers observed on genuinely proxied traffic; this remains as an
+        // escape hatch for accounts where that proves insufficient.
+        //
+        // Skipped for silent-sibling team enrollments that have no OAuth token.
+        if (!currentSettings.manualRateLimitProbeEnabled) {
+          respond({ requestType: 'probe_rate_limits', success: true });
+          break;
+        }
         const credsForProbe = readSentinelCredentials(msg.accountId);
         if (credsForProbe?.accessToken) {
           probeRateLimits(msg.accountId, ipcServer, credsForProbe.accessToken);
@@ -2086,11 +2099,6 @@ export async function startDaemon(): Promise<DaemonHandle> {
         if (poolChanged) {
           evaluatePoolOnce(poolAlertDeps);
           evaluateWeeklyPoolOnce(poolAlertDeps);
-        }
-        // Interval change → restart the background prober so the new cadence
-        // takes effect immediately (no daemon restart).
-        if (prev.backgroundProbeIntervalSec !== next.backgroundProbeIntervalSec) {
-          usageProber?.restart();
         }
         // Log level change — single mutation on the logger; next emit sees it.
         if (prev.logLevel !== next.logLevel) {
@@ -4545,14 +4553,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
           `db=${join(homedir(), '.sentinel', 'sentinel.db')} ` +
           `listen=127.0.0.1:${boundPort} endpoint=${SENTINEL_BASE_URL}`,
       );
-      // Probe for fresh rate-limit headers through the proxy now that it is ready.
-      // The proxy injects the active OAuth token, so this works even for accounts
-      // whose tokens cannot be used to call api.anthropic.com directly. Skip
-      // when the active account was removed from Sentinel — the heal right
-      // after this block hands off to a live account and probes that instead.
-      if (startupKey && hasActiveAccount(db, startupKey)) {
-        probeRateLimits(startupKey, ipcServer);
-      }
+      // No startup probe. Daemon boot is not a user action, and firing a
+      // synthetic inference request per launch — on top of the all-accounts
+      // profile/refresh work below — produced a recognizable burst of
+      // multi-credential traffic from one IP every time the app started.
+      // Rate-limit state arrives from the usage poller's first tick and from
+      // the first genuinely proxied Claude Code request.
       resolve();
     });
   });
@@ -4678,11 +4684,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
   queueMicrotask(() => {
     void (async () => {
       for (const acct of listAccounts(db)) {
+        // NOT forced. The previous `force: true` refreshed every account's
+        // token on every single daemon launch, producing an N-credential burst
+        // against the token endpoint per app start — with Claude Code's own
+        // client_id — regardless of whether any token was close to expiring.
+        // `refreshIfNeeded` without force honors the 30-min expiry threshold,
+        // so a normal boot now makes zero token calls.
         const refreshResult = await refreshIfNeeded(
           { db, activeToken, activeAccountId, ipcServer, tokenRotator },
           acct.id,
           acct.email,
-          /* force */ true,
         );
         if (!refreshResult.success) continue;
         // Refresh succeeded — use the fresh token to fetch profile and write
@@ -4691,6 +4702,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
         // subscriptionType (merged on top of existing fields).
         const freshCreds = readSentinelCredentials(acct.id);
         if (!freshCreds?.accessToken) continue;
+        // Only fetch when there is something to learn. The write below is
+        // already a no-op once `subscriptionType` is populated, but the fetch
+        // used to run regardless — N profile calls with N different credentials
+        // from one IP on every launch, in perpetuity, to discover nothing. A
+        // steady-state install now makes zero calls here.
+        if (freshCreds.subscriptionType) continue;
         try {
           const profile = await fetchProfile(freshCreds.accessToken);
           if (profile.subscriptionType && !freshCreds.subscriptionType) {
@@ -4716,34 +4733,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
   });
   /* v8 ignore stop */
 
-  // Keep rate-limit / usage state fresh for all non-active accounts so the
-  // Usage tab reflects consumption from other Anthropic surfaces (claude.ai,
-  // Claude Desktop, direct API) even when Claude Code isn't driving them.
-  //
-  // `shouldSkipProbe` pauses probing on accounts the user has excluded from
-  // the Auto-switching pool. Each probe is a real `POST /v1/messages` that
-  // consumes ~1 output token on the target account — probing an excluded
-  // account keeps its 5h utilization climbing from Sentinel traffic, which
-  // is exactly the signal the user wanted to stop. The exception: once the
-  // stored `unified-5h.reset` is in the past, the window has rolled over on
-  // Anthropic's side, so one probe runs to capture fresh numbers (util ≈ 0,
-  // new reset ~5h ahead) for the dashboard. The next tick sees a future
-  // reset again and skips — net effect: one probe per excluded account per
-  // 5h window. Outside Auto mode the predicate never short-circuits.
-  usageProber = startUsageProber({
-    db,
-    ipcServer,
-    getIntervalSec: () => currentSettings.backgroundProbeIntervalSec,
-    shouldSkipProbe: (accountId: string): boolean => {
-      if (currentSettings.switchingMode !== 'auto') return false;
-      if (!currentSettings.poolExcludedIds.includes(accountId)) return false;
-      const w = rateLimitStore.getAll(accountId).find((x) => x.name === 'unified-5h');
-      // No stored reset → let the first probe happen so we have a baseline.
-      if (!w || w.reset == null) return false;
-      // Reset is still in the future → window hasn't rolled over yet → skip.
-      return Date.now() / 1000 < w.reset;
-    },
-  });
+  // The background usage prober used to live here: every account, every 300s,
+  // forever, each tick a real `POST /v1/messages`. It has been removed
+  // outright. Non-active accounts now stay fresh via the ClaudeAiUsageStore
+  // poller (`/api/oauth/usage` — metadata, non-inference, presence-tiered and
+  // jittered) plus `rateLimitStore` writes from genuinely proxied traffic. The
+  // 60s local `rateLimitSweeper` rolls elapsed windows with no network at all.
 
   // Graceful shutdown. Idempotent (guarded by shuttingDown) so tests can call
   // it from afterEach without fear of double-close exceptions, and so a
@@ -4755,7 +4750,6 @@ export async function startDaemon(): Promise<DaemonHandle> {
     shuttingDown = true;
     console.log('[Sentinel] Shutting down...');
     stopTokenRefresher();
-    usageProber?.stop();
     rateLimitSweeper?.stop();
     // Stop the claude.ai usage poller BEFORE closing the DB so an in-flight
     // tick() cannot land on a freed connection. The tick reads listAccounts
