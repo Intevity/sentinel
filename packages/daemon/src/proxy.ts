@@ -649,22 +649,17 @@ export function createProxyServer(
       }
     }
 
-    // 429-retry callback. Only the messages path has a buffered body to
-    // replay, so only this path offers retry. The provider picks a fresh
-    // Auto-routed credential excluding the account that just 429'd — when
-    // the rotator returns the same account (pool of one, or all others
-    // unavailable), we skip the retry so the client sees the 429.
-    const retryProvider = tokenProvider
-      ? (currentAccountId: string): TokenSelection | null => {
-          for (let i = 0; i < 5; i++) {
-            const next = tokenProvider({ isFable });
-            if (!next) return null;
-            if (next.accountId !== currentAccountId) return next;
-          }
-          return null;
-        }
-      : undefined;
-
+    // No 429 retry. Sentinel used to replay a throttled request verbatim under
+    // a DIFFERENT account's Bearer token — byte-identical payload, second
+    // credential, immediately after the first was rate-limited. That is
+    // indistinguishable from credential rotation to evade a rate limit, which
+    // is exactly the kind of signal that gets an account actioned.
+    //
+    // Auto-switching still moves FUTURE requests off a saturated account via
+    // the rotator (the rate-limit store is updated from the 429's own headers
+    // just below, so the next pick avoids it). What is gone is re-sending THIS
+    // request under a second identity; the 429 now reaches the client, which is
+    // what Claude Code expects and already handles.
     await proxyToAnthropic(
       req,
       res,
@@ -680,7 +675,6 @@ export function createProxyServer(
       body,
       requestAccountMap,
       onUpstreamAuthFailure,
-      retryProvider,
       onToolCallsFlushed,
       compressionStore,
       contextCostStore,
@@ -852,7 +846,6 @@ export function createProxyServer(
         undefined,
         requestAccountMap,
         onUpstreamAuthFailure,
-        undefined,
         onToolCallsFlushed,
       ).catch((err) => {
         console.error('[Proxy] Proxy error:', err);
@@ -878,7 +871,6 @@ export function createProxyServer(
       undefined,
       requestAccountMap,
       onUpstreamAuthFailure,
-      undefined,
       onToolCallsFlushed,
     ).catch((err) => {
       console.error('[Proxy] Default proxy error:', err);
@@ -920,13 +912,6 @@ async function proxyToAnthropic(
   /** Fire-and-forget hook invoked when an upstream response returns 401
    *  for an identified account. See ProxyOptions.onUpstreamAuthFailure. */
   onUpstreamAuthFailure?: (accountId: string) => void,
-  /** Retry callback consulted only on a 429 response. Given the account id
-   *  whose request just 429'd, returns a replacement credential to retry
-   *  with (or null to forward the 429 unmodified). Only one retry is
-   *  attempted per request; a second 429 is forwarded to the client.
-   *  Not provided for non-messages endpoints (probes, GETs) — those have
-   *  no buffered body to replay. */
-  retryCredentialProvider?: (currentAccountId: string) => TokenSelection | null,
   /** Optimize feature: invoked when the per-request tool-call extractor
    *  flushes a non-empty batch. See ProxyOptions.onToolCallsFlushed. */
   onToolCallsFlushed?: () => void,
@@ -1514,23 +1499,17 @@ async function proxyToAnthropic(
     const upstream = getProxyUpstream(settings.alternateApiUrl);
     const makeRequest = upstream.protocol === 'http:' ? httpRequest : httpsRequest;
 
-    /** Dispatch one upstream attempt. On a 429 where a retry credential is
-     *  available, drains the response and re-dispatches with the new
-     *  credential — bounded to one retry per request to cap worst-case
-     *  latency. Any other status code flows through the normal response
-     *  forwarding path.
+    /** Dispatch the upstream request. Exactly one attempt: every status code,
+     *  429 included, flows through the normal response-forwarding path.
      *
-     *  `currentRlKey` is the attribution id for this attempt: the initial
-     *  attempt uses the caller-supplied rlKey; a retry uses the
-     *  replacement account's id so its rate-limit headers land in the
-     *  correct bucket. Captures and cache-ttl state are reused (they
-     *  represent the caller's logical request, not the per-attempt wire
-     *  exchange). */
+     *  This used to re-dispatch a 429 under a different account's credential.
+     *  It no longer does — see the comment at the `proxyToAnthropic` call site.
+     *
+     *  `currentRlKey` is the attribution id used to bucket this request's
+     *  rate-limit headers. */
     const dispatch = (
       attemptHeaders: Record<string, string | string[] | undefined>,
       currentRlKey: string,
-      currentAccountId: string,
-      retriesLeft: number,
     ): void => {
       const proxyReq = makeRequest(
         {
@@ -1589,40 +1568,6 @@ async function proxyToAnthropic(
                 ipcServer.broadcast({ type: 'rate_limits_updated', accountId: currentRlKey });
                 console.log(`[Proxy] Broadcast rate_limits_updated for ${currentRlKey}`);
               }
-            }
-          }
-
-          // 429 retry path: drain the upstream response and re-dispatch
-          // with a different account's credentials when one is available.
-          // The rate-limit store was just updated above so the rotator
-          // won't re-pick the account we just hit. If the provider returns
-          // the same account (pool of one, or all others paused), fall
-          // through to the normal forwarding path so the client sees 429.
-          if (proxyRes.statusCode === 429 && retriesLeft > 0 && retryCredentialProvider) {
-            const next = retryCredentialProvider(currentAccountId);
-            if (next && next.accountId !== currentAccountId) {
-              console.log(`[Proxy] 429 on ${currentRlKey} → retrying with ${next.accountId}`);
-              proxyRes.resume();
-              proxyRes.on('end', () => {
-                const nextHeaders = {
-                  ...attemptHeaders,
-                  authorization: `Bearer ${next.token}`,
-                };
-                dispatch(nextHeaders, next.accountId, next.accountId, retriesLeft - 1);
-              });
-              // Mid-drain error on the 429 response. Triggering this via
-              // real HTTP requires the upstream to RST the socket after
-              // sending a 429 with headers but before the end — very tight
-              // window. Not worth a brittle test; cleanup path is identical
-              // in shape to the already-covered primary response error.
-              /* v8 ignore start */
-              proxyRes.on('error', (err) => {
-                if (capture) capture.errorMessage = err.message;
-                finalizeCapture();
-                reject(err);
-              });
-              /* v8 ignore stop */
-              return;
             }
           }
 
@@ -1828,15 +1773,9 @@ async function proxyToAnthropic(
       }
     };
 
-    // Kick off the first attempt. `rlKey` is already set above from the
-    // per-request `attributionAccountId`. Retry budget = 1 by policy so
-    // worst-case wall time is bounded to ~2x a single upstream round-trip.
-    dispatch(
-      { ...req.headers },
-      rlKey,
-      attributionAccountId ?? rlKey,
-      retryCredentialProvider ? 1 : 0,
-    );
+    // Kick off the single upstream attempt. `rlKey` is already set above from
+    // the per-request `attributionAccountId`.
+    dispatch({ ...req.headers }, rlKey);
   });
 }
 
