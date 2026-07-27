@@ -1,24 +1,27 @@
 /**
- * Migrated from `proxy.test.ts` — 429 retry, request-id → account
- * mapping, and rate_limits_updated broadcast debouncing. The 429-retry
- * test is the highest-value part of the migration: the mock version only
- * proved that `https.request` was called twice; the integration version
- * proves the real body is replayed to the real upstream with the real
- * rotator selection, and that the rate-limit store reflects both
- * attempts.
+ * 429 handling, request-id → account mapping, and rate_limits_updated
+ * broadcast debouncing, all against a real upstream listener.
+ *
+ * The 429 tests used to assert the opposite of what they assert now. Sentinel
+ * replayed a throttled request under a DIFFERENT account's Bearer token —
+ * byte-identical payload, second credential, immediately after the first was
+ * rate-limited, which reads as credential rotation to evade a rate limit. That
+ * replay is gone; a 429 reaches the client. Auto-switching still moves FUTURE
+ * requests off the saturated account via the rotator, which is what these tests
+ * now pin down.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { startProxyWithFake, postThroughProxy, type StartedProxy } from './proxy.test-helpers.js';
 
-describe('proxy 429 rotator retry (real HTTP)', () => {
+describe('proxy 429 handling (real HTTP)', () => {
   let ctx: StartedProxy;
 
   afterEach(async () => {
     if (ctx) await ctx.cleanup();
   });
 
-  it('retries once against a different rotator account when the first returns 429', async () => {
+  it('forwards a 429 to the client without replaying it under another credential', async () => {
     const provided = [
       { token: 'first-token', accountId: 'first-acc' },
       { token: 'second-token', accountId: 'second-acc' },
@@ -31,10 +34,11 @@ describe('proxy 429 rotator retry (real HTTP)', () => {
         { id: 'first-acc', email: 'first@example.com', token: 'first-token' },
         { id: 'second-acc', email: 'second@example.com', token: 'second-token' },
       ],
+      // A second, healthy account IS available — the point of this test is that
+      // Sentinel does not use it to re-send this request.
       tokenProvider: () => provided[Math.min(call++, provided.length - 1)] ?? null,
     });
 
-    // First upstream hit 429s; second hit succeeds.
     ctx.fake.queueResponse('/v1/messages', {
       status: 429,
       extraHeaders: {
@@ -46,28 +50,29 @@ describe('proxy 429 rotator retry (real HTTP)', () => {
       model: 'claude-opus-4-7',
       messages: [],
     });
-    expect(res.status).toBe(200);
+    // The client sees the 429, which is what Claude Code expects and handles.
+    expect(res.status).toBe(429);
 
-    // Two upstream /v1/messages hits, in order: first-token then second-token.
+    // Exactly ONE upstream hit, under the FIRST account's token. Two hits with
+    // two different Bearer tokens is the pattern being removed.
     const msgsHits = ctx.fake
       .requests()
       .filter((r) => r.url.startsWith('/v1/messages'))
       .map((r) => r.headers.authorization);
-    expect(msgsHits).toEqual(['Bearer first-token', 'Bearer second-token']);
+    expect(msgsHits).toEqual(['Bearer first-token']);
 
-    // Rate-limit store reflects both: first-acc had the 429 headers,
-    // second-acc carried the successful response headers.
+    // The 429's own rate-limit headers still land in the store against the
+    // account that earned them — that is what steers the rotator away from it
+    // on subsequent requests, without replaying this one.
     await new Promise((r) => setTimeout(r, 30));
     expect(ctx.rateLimitStore.getAll('first-acc').length).toBeGreaterThan(0);
-    expect(ctx.rateLimitStore.getAll('second-acc').length).toBeGreaterThan(0);
+    expect(ctx.rateLimitStore.getAll('second-acc')).toEqual([]);
   });
 
-  it('forwards the 429 when the rotator can only return the same account', async () => {
+  it('forwards a 429 unchanged when only one account exists', async () => {
     ctx = await startProxyWithFake({
       tokens: ['only-token'],
       accounts: [{ id: 'only-acc', email: 'only@example.com', token: 'only-token' }],
-      // Provider always returns the same account — the retry path sees
-      // no alternate and must fall through.
       tokenProvider: () => ({ token: 'only-token', accountId: 'only-acc' }),
     });
 
@@ -76,7 +81,6 @@ describe('proxy 429 rotator retry (real HTTP)', () => {
     const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
     expect(res.status).toBe(429);
 
-    // Only ONE upstream hit — no retry happened.
     const hits = ctx.fake.requests().filter((r) => r.url.startsWith('/v1/messages'));
     expect(hits).toHaveLength(1);
   });
