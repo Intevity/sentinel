@@ -2,7 +2,22 @@ import type { Database } from 'better-sqlite3';
 import type { ClaudeCodeCredentials, OAuthAccount } from '@sentinel/shared';
 import { fetchProfile } from './oauth.js';
 import type { ProfileResult } from './oauth.js';
+import { INFERENCE_ONLY_TOKEN_PREFIX } from './claude-ai-usage.js';
 import { listAccounts, markAccountRemoved } from './db.js';
+
+/**
+ * Whether a credential can answer `/api/oauth/profile` at all.
+ *
+ * An inference-only `claude setup-token` credential cannot: the endpoint
+ * replies 403 "OAuth token does not meet scope requirement
+ * any_of(user:profile, user:office)" (verified live 2026-07-27). Both callers
+ * below already discard an empty ProfileResult, so skipping the request is
+ * behavior-preserving — it just stops the daemon from opening every boot with
+ * one guaranteed-to-fail auth request per stored account.
+ */
+function canReadProfile(accessToken: string): boolean {
+  return !accessToken.startsWith(INFERENCE_ONLY_TOKEN_PREFIX);
+}
 
 /**
  * Narrow dependency seams for the startup credential-verification helpers.
@@ -45,6 +60,9 @@ export async function verifyStartupActiveAccount(
   deps: CredentialVerifierDeps,
 ): Promise<StartupDriftResult | null> {
   if (!activeAccount || !startupCreds?.accessToken) return null;
+  // No verifiable starting state — same outcome as the empty-profile bail
+  // below, minus the doomed request.
+  if (!canReadProfile(startupCreds.accessToken)) return null;
   const fetcher = deps.profileFetcher ?? fetchProfile;
   const log = deps.log ?? ((m: string) => console.warn(m));
 
@@ -105,6 +123,9 @@ export async function healDriftedRows(db: Database, deps: CredentialVerifierDeps
   for (const acct of rows) {
     const creds = deps.readCredentials(acct.id);
     if (!creds?.accessToken) continue;
+    // Drift can't be proven for a credential that can't read its own profile;
+    // the `!verified.orgUuid` guard below would discard the answer anyway.
+    if (!canReadProfile(creds.accessToken)) continue;
     let verified: ProfileResult;
     try {
       verified = await fetcher(creds.accessToken);

@@ -53,11 +53,11 @@ export interface RefreshResult {
 }
 
 // Accounts whose refresh token has been rejected. Retried only after the user
-// re-authenticates via start_login (which clears the entry).
+// re-authenticates via store_setup_token (which clears the entry).
 const expiredRefreshTokens = new Set<string>();
 
-/** Called from the start_login success handler so a re-authenticated account
- *  is eligible for background refresh again. */
+/** Called from the store_setup_token success handler so a re-authenticated
+ *  account is eligible for background refresh again. */
 export function markAccountReauthenticated(accountId: string): void {
   expiredRefreshTokens.delete(accountId);
 }

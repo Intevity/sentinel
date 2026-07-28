@@ -18,7 +18,7 @@ sentinel/
 │   │   ├── db.ts              # SQLite schema + queries
 │   │   ├── accounts.ts        # OS keychain read/write (CC + Sentinel stores)
 │   │   ├── claude-state.ts    # ~/.claude.json read/write
-│   │   ├── oauth.ts           # PKCE login flow
+│   │   ├── oauth.ts           # token refresh + profile fetch (no login flow)
 │   │   ├── settings.ts        # ~/.sentinel/settings.json
 │   │   ├── token-rotator.ts   # round-robin account/token selector
 │   │   ├── alerts.ts          # user-configured alert evaluator

@@ -88,7 +88,7 @@ import { RateLimitStore } from './rate-limit-store.js';
 import { TokenRotator } from './token-rotator.js';
 import { OverageGrantStore } from './overage-grant-store.js';
 import { SpendTracker } from './spend-tracker.js';
-import { ClaudeAiUsageStore } from './claude-ai-usage.js';
+import { ClaudeAiUsageStore, INFERENCE_ONLY_TOKEN_PREFIX } from './claude-ai-usage.js';
 import {
   startAlertEvaluator,
   startFableAlertEvaluator,
@@ -4708,6 +4708,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
         // from one IP on every launch, in perpetuity, to discover nothing. A
         // steady-state install now makes zero calls here.
         if (freshCreds.subscriptionType) continue;
+        // An inference-only setup-token credential can't read the profile at
+        // all (403, missing user:profile), so there is nothing to learn here
+        // either — skip rather than spend a request proving it again.
+        if (freshCreds.accessToken.startsWith(INFERENCE_ONLY_TOKEN_PREFIX)) continue;
         try {
           const profile = await fetchProfile(freshCreds.accessToken);
           if (profile.subscriptionType && !freshCreds.subscriptionType) {

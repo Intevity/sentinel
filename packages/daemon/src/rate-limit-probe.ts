@@ -1,7 +1,7 @@
 import { request as httpRequest } from 'http';
 import { getDaemonPort } from './proxy.js';
 import type { IpcServer } from './ipc.js';
-import { isOAuthForbiddenBodyString } from './claude-ai-usage.js';
+import { INFERENCE_ONLY_TOKEN_PREFIX, isOAuthForbiddenBodyString } from './claude-ai-usage.js';
 import { readSentinelCredentials } from './accounts.js';
 import { sentinelUserAgent } from './http-identity.js';
 
@@ -41,7 +41,7 @@ export function probeRateLimits(accountId: string, ipcServer?: IpcServer, token?
   // headers the proxy already records. (Checks the passed token, else the stored
   // credential — covers both the token-provided and active-token-fallback calls.)
   const probeToken = token ?? readSentinelCredentials(accountId)?.accessToken;
-  if (probeToken?.startsWith('sk-ant-oat01-')) return;
+  if (probeToken?.startsWith(INFERENCE_ONLY_TOKEN_PREFIX)) return;
   // Send a minimal inference request (max_tokens: 1) to obtain rate-limit headers.
   // count_tokens rejects OAuth tokens; /v1/messages accepts them as long as the
   // request includes the oauth-2025-04-20 beta flag and matches the shape

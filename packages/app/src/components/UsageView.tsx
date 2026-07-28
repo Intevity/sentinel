@@ -262,17 +262,22 @@ function OverageMeterRow({
   //     response the daemon routes out of the generic auth_expired
   //     bucket.)
   //
-  // (b) `missing_key` / `auth_expired`: the account's OAuth token is
-  //     missing or rejected. Auto-refresh usually fixes auth_expired
-  //     within seconds; persistent failures mean the refresh token
-  //     itself is dead. Surface a Reconnect CTA that reruns OAuth so
-  //     the user ends up with a fresh credential without hunting
-  //     through Settings.
+  // (b) `missing_key` / `auth_expired`: the account's token is missing
+  //     or was rejected outright (401). Surface a Reconnect CTA that
+  //     reruns `claude setup-token` so the user ends up with a fresh
+  //     credential without hunting through Settings.
   //
-  // (c) Any other state (network error, snapshot still loading, or
-  //     connected but without overage enabled): fall back to the plain
-  //     ProgressRow so at least the rate-limit util% the proxy sees
-  //     still shows something. The dollar overlay is skipped.
+  //     NOT reachable for an inference-only setup-token account whose
+  //     token merely lacks `user:profile` — the daemon reports that as
+  //     "no data, no error" (see UsageFetchResult in claude-ai-usage.ts)
+  //     precisely so a healthy account never lands in this branch and
+  //     gets told its sign-in expired.
+  //
+  // (c) Any other state (network error, snapshot still loading, scope-
+  //     limited credential, or connected but without overage enabled):
+  //     fall back to the plain ProgressRow so at least the rate-limit
+  //     util% the proxy sees still shows something. The dollar overlay
+  //     is skipped.
   if (!showAnthropic && !showSentinel) {
     if (usageError === 'oauth_forbidden') {
       return (

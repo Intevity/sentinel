@@ -305,7 +305,13 @@ packages/daemon/src/
   claude-state.ts   — ~/.claude.json read/write
   proxy.ts          — HTTP reverse proxy + overage header inspection
                       per-request token selection via tokenProvider option
-  oauth.ts          — PKCE login flow (browser + token exchange)
+  oauth.ts          — refreshAccessToken() + fetchProfile() only. Sentinel does
+                      NOT run an OAuth login flow; accounts are added by
+                      scraping `claude setup-token` (index.ts
+                      storeSetupTokenAccount). That token is user:inference-
+                      scoped with no refresh token, so it is rejected by the
+                      /api/oauth/* metadata endpoints — see
+                      INFERENCE_ONLY_TOKEN_PREFIX in claude-ai-usage.ts.
   ipc.ts            — Unix socket IPC server/client
   settings.ts       — ~/.sentinel/settings.json load/save
   token-rotator.ts  — round-robin {accountId, token} selector
