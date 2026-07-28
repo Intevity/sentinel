@@ -75,6 +75,23 @@ describe('verifyStartupActiveAccount', () => {
     expect(result).toBeNull();
   });
 
+  it('returns null for an inference-only credential without fetching', async () => {
+    let calls = 0;
+    const res = await verifyStartupActiveAccount(
+      baseActive,
+      makeCreds('sk-ant-oat01-inference-only'),
+      {
+        readCredentials: () => null,
+        profileFetcher: async () => {
+          calls++;
+          return makeProfile();
+        },
+      },
+    );
+    expect(calls).toBe(0);
+    expect(res).toBeNull();
+  });
+
   it('returns null when profile returns an empty orgUuid', async () => {
     const result = await verifyStartupActiveAccount(baseActive, makeCreds('tok'), {
       readCredentials: () => null,
@@ -183,6 +200,41 @@ describe('healDriftedRows', () => {
       color: null,
     });
   }
+
+  it('never calls the profile endpoint for an inference-only credential', async () => {
+    // `claude setup-token` tokens lack user:profile, so /api/oauth/profile
+    // answers 403 and the result is discarded by the `!verified.orgUuid`
+    // guard anyway. Skipping the call keeps the daemon from opening every
+    // boot with one guaranteed-to-fail auth request per stored account.
+    seedRow('key-1', 'org-personal', 'Personal');
+    let calls = 0;
+    const count = await healDriftedRows(getDb(TEST_DB), {
+      readCredentials: () => makeCreds('sk-ant-oat01-inference-only'),
+      profileFetcher: async () => {
+        calls++;
+        return makeProfile({ orgUuid: 'org-somewhere-else' });
+      },
+    });
+    expect(calls).toBe(0);
+    // The row survives — an unverifiable credential must never be soft-removed.
+    expect(count).toBe(0);
+    expect(listAccounts(getDb(TEST_DB))).toHaveLength(1);
+  });
+
+  it('still verifies a profile-scoped credential', async () => {
+    seedRow('key-1', 'org-personal', 'Personal');
+    let calls = 0;
+    const count = await healDriftedRows(getDb(TEST_DB), {
+      readCredentials: () => makeCreds('at-legacy'),
+      profileFetcher: async () => {
+        calls++;
+        return makeProfile({ orgUuid: 'org-somewhere-else' });
+      },
+      log: () => {},
+    });
+    expect(calls).toBe(1);
+    expect(count).toBe(1);
+  });
 
   it('does nothing when there are no rows', async () => {
     const count = await healDriftedRows(getDb(TEST_DB), {

@@ -246,7 +246,8 @@ export interface AlertTriggeredMessage {
 
 /** Broadcast when an automatic or manual token refresh fails because the
  *  stored refresh_token has been revoked or expired. The UI shows a re-auth
- *  banner on the affected account that triggers start_login. */
+ *  banner on the affected account that reruns `claude setup-token`
+ *  (store_setup_token with the existing accountId). */
 export interface TokenRefreshFailedMessage {
   type: 'token_refresh_failed';
   accountId: string;

@@ -106,6 +106,18 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
       expect(result).toEqual({ snapshot: null, error: 'auth_expired' });
     });
 
+    it('returns auth_expired on a permission_error 403 that is neither org-policy nor scope', async () => {
+      // Guards the fall-through: a permission_error we don't recognize must
+      // stay in the actionable auth_expired bucket rather than being silently
+      // swallowed as "no data".
+      fake.queueResponse('/api/oauth/usage', {
+        status: 403,
+        body: { error: { type: 'permission_error', message: 'Something else entirely' } },
+      });
+      const result = await fetchOrgUsage('org-1', TOKEN);
+      expect(result).toEqual({ snapshot: null, error: 'auth_expired' });
+    });
+
     it('returns auth_expired on 403 with an unparseable body', async () => {
       // Covers the `isOAuthForbiddenBodyString` catch branch (JSON.parse
       // throws) as well as `isOAuthForbiddenBody`'s happy-path `await
@@ -114,6 +126,41 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
       fake.queueResponse('/api/oauth/usage', { status: 403, body: 'nope' });
       const result = await fetchOrgUsage('org-1', TOKEN);
       expect(result).toEqual({ snapshot: null, error: 'auth_expired' });
+    });
+
+    it('returns no-data-no-error on the 403 token-scope body, NOT auth_expired', async () => {
+      // Verbatim body Anthropic returns for an inference-only `claude
+      // setup-token` credential (captured live 2026-07-27). It is a
+      // permission_error like the org-policy 403, but a different message —
+      // which is exactly how it used to slip through to auth_expired and make
+      // the Usage tab claim "Sign-in expired" on a healthy account.
+      fake.queueResponse('/api/oauth/usage', {
+        status: 403,
+        body: {
+          type: 'error',
+          error: {
+            type: 'permission_error',
+            message: 'OAuth token does not meet scope requirement user:profile',
+          },
+        },
+      });
+      const result = await fetchOrgUsage('org-1', TOKEN);
+      expect(result).toEqual({ snapshot: null, error: null });
+    });
+
+    it('matches the profile endpoint any_of(...) scope wording too', async () => {
+      fake.queueResponse('/api/oauth/usage', {
+        status: 403,
+        body: {
+          error: {
+            type: 'permission_error',
+            message:
+              'OAuth token does not meet scope requirement any_of(user:profile, user:office)',
+          },
+        },
+      });
+      const result = await fetchOrgUsage('org-1', TOKEN);
+      expect(result).toEqual({ snapshot: null, error: null });
     });
 
     it('returns auth_expired on 401 (unregistered bearer)', async () => {
@@ -224,6 +271,131 @@ describe('claude-ai-usage integration (real fetch, fake endpoint)', () => {
       expect(broadcasts).toContainEqual(
         expect.objectContaining({ type: 'claude_ai_usage_updated', error: null }),
       );
+    });
+
+    // ── Inference-only (`claude setup-token`) credentials ──────────────
+    //
+    // These carry `user:inference` only, so /api/oauth/usage answers 403
+    // "does not meet scope requirement user:profile" — every time, forever.
+    // The store must decide this locally: no request, no error, no
+    // "Sign-in expired" on an account whose sign-in is fine.
+    describe('inference-only credentials', () => {
+      const OAT = 'sk-ant-oat01-not-a-real-token';
+
+      it('never contacts the usage endpoint and reports no error', async () => {
+        writeSentinelCredentials(
+          'acct-1',
+          makeCreds({ accessToken: OAT, refreshToken: '', scopes: ['user:inference'] }),
+        );
+        // A plain counting stub rather than a spy — keeps this file at its
+        // mock-budget floor while still proving the refresh path is untouched.
+        let refreshCalls = 0;
+        const refreshCredential = async (): Promise<UsageStoreRefreshOutcome> => {
+          refreshCalls++;
+          return { success: false };
+        };
+        const store = new ClaudeAiUsageStore({
+          ipcServer,
+          getOrgUuid: () => 'org-1',
+          getAccountIds: () => ['acct-1'],
+          refreshCredential,
+        });
+
+        await store.refresh('acct-1');
+
+        expect(fake.requests().filter((r) => r.url === '/api/oauth/usage')).toHaveLength(0);
+        expect(store.getLastError('acct-1')).toBeNull();
+        expect(store.getSnapshot('acct-1')).toBeNull();
+        expect(refreshCalls).toBe(0);
+        // The UI still needs an answer, or a user-initiated Refresh spins forever.
+        expect(broadcasts).toContainEqual({
+          type: 'claude_ai_usage_updated',
+          accountId: 'acct-1',
+          snapshot: null,
+          error: null,
+        });
+      });
+
+      it('drops the account out of the background poll rotation', async () => {
+        writeSentinelCredentials('acct-1', makeCreds({ accessToken: OAT, refreshToken: '' }));
+        const store = new ClaudeAiUsageStore({
+          ipcServer,
+          getOrgUuid: () => 'org-1',
+          getAccountIds: () => ['acct-1'],
+        });
+
+        // First tick classifies it; every later tick must skip it entirely.
+        store.start();
+        await vi.waitFor(() => expect(broadcasts.length).toBeGreaterThan(0));
+        const afterFirst = broadcasts.length;
+        await store.refresh('acct-1');
+        store.stop();
+
+        expect(fake.requests().filter((r) => r.url === '/api/oauth/usage')).toHaveLength(0);
+        // refresh() re-broadcasts (spinner must resolve) but still sends nothing.
+        expect(broadcasts.length).toBeGreaterThanOrEqual(afterFirst);
+      });
+
+      it('clears a stale auth_expired left over from before the guard', async () => {
+        // Upgrade path: a user mid-session already has "Sign-in expired"
+        // recorded from the old behavior. The first pass after upgrade must
+        // clear it rather than wait out the 30-minute auth_expired backoff.
+        writeSentinelCredentials('acct-1', makeCreds({ accessToken: 'not-a-registered-token' }));
+        const store = new ClaudeAiUsageStore({
+          ipcServer,
+          getOrgUuid: () => 'org-1',
+          getAccountIds: () => ['acct-1'],
+        });
+        await store.refresh('acct-1');
+        expect(store.getLastError('acct-1')).toBe('auth_expired');
+
+        writeSentinelCredentials('acct-1', makeCreds({ accessToken: OAT, refreshToken: '' }));
+        await store.refresh('acct-1');
+
+        expect(store.getLastError('acct-1')).toBeNull();
+      });
+
+      it('resumes polling when the account is re-added with a profile-scoped token', async () => {
+        writeSentinelCredentials('acct-1', makeCreds({ accessToken: OAT, refreshToken: '' }));
+        const store = new ClaudeAiUsageStore({
+          ipcServer,
+          getOrgUuid: () => 'org-1',
+          getAccountIds: () => ['acct-1'],
+        });
+        await store.refresh('acct-1');
+        expect(fake.requests().filter((r) => r.url === '/api/oauth/usage')).toHaveLength(0);
+
+        writeSentinelCredentials('acct-1', makeCreds({ accessToken: TOKEN }));
+        await store.refresh('acct-1');
+
+        expect(fake.requests().filter((r) => r.url === '/api/oauth/usage')).toHaveLength(1);
+        expect(store.getSnapshot('acct-1')).not.toBeNull();
+      });
+
+      it('treats a scope-403 from a non-oat token as no-data, not parse failure', async () => {
+        // Reaches the `{ snapshot: null, error: null }` branch inside fetchOne
+        // (the prefix guard can't catch this one).
+        writeSentinelCredentials('acct-1', makeCreds({ accessToken: TOKEN }));
+        fake.queueResponse('/api/oauth/usage', {
+          status: 403,
+          body: {
+            error: {
+              type: 'permission_error',
+              message: 'OAuth token does not meet scope requirement user:profile',
+            },
+          },
+        });
+        const store = new ClaudeAiUsageStore({
+          ipcServer,
+          getOrgUuid: () => 'org-1',
+          getAccountIds: () => ['acct-1'],
+        });
+
+        await store.refresh('acct-1');
+
+        expect(store.getLastError('acct-1')).toBeNull();
+        expect(store.getSnapshot('acct-1')).toBeNull();
+      });
     });
 
     it('records oauth_forbidden without attempting to refresh', async () => {

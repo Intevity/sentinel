@@ -81,9 +81,10 @@ directly. The daemon is bundled inside the app — there is nothing else to inst
 3. **Restart Claude Code.** From this point on, every Claude Code session routes through the
    Sentinel proxy.
 
-4. **Enroll accounts** via the tray app → **Add Account**, then follow the OAuth flow. In the
-   browser consent page, make sure you're signed in to the org you want to add — the token is
-   scoped to whichever org claude.ai is currently showing.
+4. **Enroll accounts** via the tray app → **Add Account**. Sentinel opens a terminal running
+   `claude setup-token` and captures the token it prints. Complete the browser sign-in it
+   launches, making sure you're signed in to the org you want to add — the token is scoped to
+   whichever org claude.ai is currently showing.
 
 </Steps>
 

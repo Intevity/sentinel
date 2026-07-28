@@ -231,25 +231,42 @@ describe('lifecycle — store_setup_token', () => {
       const row = accts.data?.find((x) => x.email === 'oat@corp.com');
       expect(row).toBeDefined();
 
-      // Force the usage endpoint to 401 (inference-only token can't read usage),
-      // then fire the auth-liveness usage check the UI runs on focus/mount.
+      // Trap: if the daemon ever sends this request again, it gets a 401 and
+      // the zero-requests assertion below fails loudly.
       ctx.fake.queueResponse('/api/oauth/usage', { status: 401 });
+      const before = ctx.fake.requests().filter((r) => r.url === '/api/oauth/usage').length;
+
+      // Fire the auth-liveness usage check the UI runs on focus/mount.
       await ctx.request({ type: 'refresh_claude_ai_usage', accountId: row!.id });
       await ctx.waitForBroadcast(
         (m) =>
           m.type === 'claude_ai_usage_updated' &&
           (m as { accountId?: string }).accountId === row!.id &&
-          (m as { error?: string | null }).error === 'auth_expired',
+          (m as { error?: string | null }).error === null,
         8000,
       );
 
-      // A usage-API 401 is an expected scope limitation for an inference-only
-      // token — it must NOT light the Re-authenticate banner.
+      // An inference-only token can never read /api/oauth/usage — it lacks
+      // user:profile. Sentinel decides that locally rather than spending a
+      // guaranteed-403 request to rediscover it on every poll.
+      const after = ctx.fake.requests().filter((r) => r.url === '/api/oauth/usage').length;
+      expect(after).toBe(before);
+
+      // ...and the account is not accused of an expired sign-in: neither the
+      // Re-authenticate banner (token_refresh_failed) nor the Usage tab's
+      // "Sign-in expired" copy (error: 'auth_expired') may fire.
       const flagged = ctx.broadcasts.filter(
         (m) =>
           m.type === 'token_refresh_failed' && (m as { accountId?: string }).accountId === row!.id,
       );
       expect(flagged).toHaveLength(0);
+      const expiredUsage = ctx.broadcasts.filter(
+        (m) =>
+          m.type === 'claude_ai_usage_updated' &&
+          (m as { accountId?: string }).accountId === row!.id &&
+          (m as { error?: string | null }).error === 'auth_expired',
+      );
+      expect(expiredUsage).toHaveLength(0);
     },
   );
 

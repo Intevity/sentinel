@@ -63,6 +63,15 @@ export type UsageFetchError =
   | 'network'
   | 'parse';
 
+/** Result of one usage fetch.
+ *
+ *  Three meaningful shapes:
+ *   - `{ snapshot, error: null }`  — success.
+ *   - `{ snapshot: null, error }`  — a failure worth surfacing.
+ *   - `{ snapshot: null, error: null }` — **no data, and that is not a
+ *     failure**: the credential is scope-limited and can never read this
+ *     endpoint. Callers must treat it like the inference-only short-circuit
+ *     (clear any recorded error, show nothing), never as a parse failure. */
 export interface UsageFetchResult {
   snapshot: ClaudeAiUsageSnapshot | null;
   error: UsageFetchError | null;
@@ -118,6 +127,50 @@ export function isOAuthForbiddenBodyString(
   return { forbidden: false };
 }
 
+/** Prefix of the long-lived token minted by `claude setup-token`. Such a
+ *  credential carries the `user:inference` scope ONLY — it can serve inference
+ *  through the proxy, but Anthropic's OAuth metadata endpoints reject it. This
+ *  is a permanent property of the token, not a transient auth failure: the sole
+ *  way to "fix" it would be a `user:profile`-scoped token, which setup-token
+ *  does not issue. Shared with rate-limit-probe.ts, which bails on the same
+ *  prefix for the same reason. */
+export const INFERENCE_ONLY_TOKEN_PREFIX = 'sk-ant-oat01-';
+
+/** Pattern identifying Anthropic's "your token lacks the required scope" 403.
+ *  Verified live 2026-07-27 against `/api/oauth/usage`:
+ *
+ *    403 {"error":{"type":"permission_error",
+ *         "message":"OAuth token does not meet scope requirement user:profile"}}
+ *
+ *  `/api/oauth/profile` answers the same way with
+ *  `any_of(user:profile, user:office)`, so the match deliberately stops before
+ *  the scope list rather than pinning an exact set.
+ *
+ *  This is NOT the org-policy 403 above and NOT a dead sign-in: it is the
+ *  expected answer for an inference-only credential. Routing it to
+ *  `auth_expired` is what made the Usage tab claim "Sign-in expired" for a
+ *  perfectly healthy account and offer a Reconnect that could never help. */
+export const SCOPE_REQUIREMENT_MESSAGE_RE = /does not meet scope requirement/i;
+
+/** Inspect a 403 response body to decide whether it is the token-scope error.
+ *  Same contract as isOAuthForbiddenBodyString: the JSON text is consumed, so
+ *  callers pass a pre-read string. */
+export function isScopeLimitedBodyString(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as {
+      error?: { type?: string; message?: string };
+    };
+    return (
+      parsed?.error?.type === 'permission_error' &&
+      typeof parsed?.error?.message === 'string' &&
+      SCOPE_REQUIREMENT_MESSAGE_RE.test(parsed.error.message)
+    );
+  } catch {
+    // Unparseable body — can't prove scope-limited; caller falls through.
+    return false;
+  }
+}
+
 /** Beta header required by the OAuth usage endpoint. Matches the value
  *  the Claude Code CLI sends today (GitHub issue anthropics/claude-code#31021). */
 const OAUTH_BETA = 'oauth-2025-04-20';
@@ -167,6 +220,13 @@ export async function fetchOrgUsage(
     // just reissue a token with the same restriction.
     if (isOAuthForbiddenBodyString(resp.body).forbidden) {
       return { snapshot: null, error: 'oauth_forbidden' };
+    }
+    // Token-scope 403: an inference-only `setup-token` credential asking an
+    // OAuth-metadata endpoint. Report "no data, no failure" so the Usage tab
+    // falls through to its plain rate-limit row rather than accusing a healthy
+    // account of an expired sign-in.
+    if (isScopeLimitedBodyString(resp.body)) {
+      return { snapshot: null, error: null };
     }
     return { snapshot: null, error: 'auth_expired' };
   }
@@ -411,6 +471,13 @@ export class ClaudeAiUsageStore {
    *  measured from here so a cadence-tier change applies on the next tick — see
    *  `isDue`. */
   private lastSuccessAt = new Map<string, number>();
+  /** Accounts whose stored credential is inference-only and therefore can never
+   *  read this endpoint. Populated on first sight in `fetchOne` and consulted by
+   *  `isDue` so the background poller skips them outright — otherwise every tick
+   *  would re-derive the same verdict, and before this guard existed it spent a
+   *  guaranteed-403 request doing so. Cleared automatically if the account is
+   *  later given a profile-scoped token. */
+  private inferenceOnly = new Set<string>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly fetchImpl: typeof fetchOrgUsage;
   private readonly subscribers: ((accountId: string) => void)[] = [];
@@ -504,6 +571,10 @@ export class ClaudeAiUsageStore {
    *    before its first refresh — the tier would only take effect one poll late.
    */
   private isDue(accountId: string, now: number): boolean {
+    // A scope-limited credential has no due-ness: the answer can't change until
+    // the account is re-added with a different token, and that path calls
+    // refresh() explicitly (which re-evaluates and clears the flag).
+    if (this.inferenceOnly.has(accountId)) return false;
     if (this.lastError.get(accountId) != null) {
       return now >= (this.nextPollAt.get(accountId) ?? 0);
     }
@@ -521,6 +592,19 @@ export class ClaudeAiUsageStore {
   }
 
   private async fetchOne(accountId: string, force: boolean): Promise<void> {
+    const creds = readSentinelCredentials(accountId);
+
+    // Decided before the cooldown gate on purpose. This branch issues no
+    // request, so a server-directed backoff has no bearing on it — and an
+    // account that hit a 429 while still being polled (which is how our own
+    // guaranteed-403 traffic got itself rate-limited) would otherwise sit on
+    // the stale "Sign-in expired" until the Retry-After elapsed. Deciding it
+    // here clears that state on the very next tick after upgrade.
+    if (creds?.accessToken?.startsWith(INFERENCE_ONLY_TOKEN_PREFIX)) {
+      this.recordInferenceOnly(accountId);
+      return;
+    }
+
     // A server-directed 429 cooldown binds EVERY caller, including the
     // user-initiated refresh path. Previously `force` skipped this check
     // entirely, so the tray's on-focus refresh fan-out re-hit a rate-limited
@@ -542,12 +626,14 @@ export class ClaudeAiUsageStore {
       return;
     }
 
-    const creds = readSentinelCredentials(accountId);
     const orgUuid = this.deps.getOrgUuid(accountId);
     if (!creds?.accessToken) {
       this.recordFailure(accountId, 'missing_key', force);
       return;
     }
+    // Reached only by a profile-scoped token — undo any prior inference-only
+    // verdict so an account re-added with a better token resumes polling.
+    this.inferenceOnly.delete(accountId);
     if (!orgUuid) {
       this.recordFailure(accountId, 'parse', force);
       return;
@@ -591,10 +677,37 @@ export class ClaudeAiUsageStore {
       return;
     }
     if (!result.snapshot) {
-      this.recordFailure(accountId, 'parse', force);
+      // `{ snapshot: null, error: null }` is fetchOrgUsage's scope-limited
+      // signal (see UsageFetchResult) — the only way to reach here without an
+      // error. Same end state as the prefix short-circuit above: nothing to
+      // show, nothing to report, stop polling.
+      this.recordInferenceOnly(accountId);
       return;
     }
     this.storeSnapshot(accountId, result.snapshot);
+  }
+
+  /**
+   * Record that an account's credential can never read the usage endpoint.
+   *
+   * Clears any error left over from before the guard existed (users upgrading
+   * mid-session would otherwise keep the stale "Sign-in expired" until restart),
+   * drops the account out of the poll rotation, and broadcasts the empty-but-OK
+   * state so a user-initiated Refresh resolves its spinner instead of hanging.
+   */
+  private recordInferenceOnly(accountId: string): void {
+    this.inferenceOnly.add(accountId);
+    this.lastError.delete(accountId);
+    this.snapshots.delete(accountId);
+    this.cooldownUntil.delete(accountId);
+    this.nextPollAt.delete(accountId);
+    this.deps.ipcServer.broadcast({
+      type: 'claude_ai_usage_updated',
+      accountId,
+      snapshot: null,
+      error: null,
+    });
+    this.fireSubscribers(accountId);
   }
 
   private storeSnapshot(accountId: string, snapshot: ClaudeAiUsageSnapshot): void {
