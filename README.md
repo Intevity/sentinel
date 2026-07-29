@@ -123,8 +123,10 @@ The docs are built with [Astro Starlight](https://starlight.astro.build/) and li
 ## Security
 
 - The proxy listens only on `127.0.0.1:47284` — never exposed to the network.
-- Inactive-account credentials are stored in the OS keychain (Keychain on macOS, Credential Manager
-  on Windows, libsecret on Linux) under the service name `Sentinel-credentials`.
+- Inactive-account credentials are stored by the OS credential store: Keychain on macOS and
+  libsecret on Linux, both under the service name `Sentinel-credentials`. Windows has no usable
+  in-box Credential Manager CLI, so Sentinel keeps a single DPAPI-encrypted file at
+  `~/.sentinel/credentials.dat` — readable only by the signed-in user account.
 - The daemon never logs credential values; security findings store redacted fingerprints only.
 - The IPC socket is created with `0600` permissions; `~/.claude.json` and `~/.claude/settings.json`
   writes use atomic rename.

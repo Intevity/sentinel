@@ -6,7 +6,10 @@ authors = ["Intevity"]
 license = "MIT"
 repository = "https://github.com/Intevity/sentinel"
 edition = "2021"
-rust-version = "1.77"
+# 1.80 for std::sync::LazyLock (ipc.rs). The declared floor said 1.77 while the
+# code had already required 1.80, which every stable-toolchain build tolerated
+# but `clippy -D warnings` correctly rejects.
+rust-version = "1.80"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

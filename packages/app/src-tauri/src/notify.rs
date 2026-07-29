@@ -74,6 +74,8 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+// Only used by NOTIFICATION_SEQ and `deliver_notification`, both macOS-only.
+#[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -111,6 +113,7 @@ use objc2_foundation::{
 /// alert layout. Clicking it does the same thing as clicking the
 /// banner body: activates our app, which routes via the consume-on-
 /// focus path in `main.rs`.
+#[cfg(target_os = "macos")]
 const DETAILS_LABEL: &str = "Details";
 
 /// Event fired when a security notification's click activates our
@@ -137,6 +140,7 @@ static APP_HANDLE: OnceLock<AppHandle<Wry>> = OnceLock::new();
 /// silently replace the current banner in-place instead of surfacing
 /// a new one when a second notification arrives quickly after the
 /// first.
+#[cfg(target_os = "macos")]
 static NOTIFICATION_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Most recently posted security-event row id + the instant of

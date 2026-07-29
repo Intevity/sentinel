@@ -17,8 +17,10 @@ Sentinel is built to add safety without adding exposure. The whole system runs o
 
 ## Credentials
 
-- Credentials for inactive accounts are stored in the **OS keychain** — Keychain on macOS,
-  Credential Manager on Windows, libsecret on Linux — under the service name `Sentinel-credentials`.
+- Credentials for inactive accounts are stored by the **OS credential store** — Keychain on macOS,
+  libsecret on Linux — under the service name `Sentinel-credentials`. Windows has no usable in-box
+  Credential Manager CLI, so there Sentinel keeps one **DPAPI-encrypted** file at
+  `~/.sentinel/credentials.dat`, decryptable only by the signed-in user account.
 - The daemon **never logs credential values**. Only metadata (email, account UUID) is stored in the
   local SQLite database.
 - Writes to `~/.claude.json` and `~/.claude/settings.json` use **atomic rename**, so a crash can't

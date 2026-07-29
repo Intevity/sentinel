@@ -45,7 +45,33 @@ directly. The daemon is bundled inside the app — there is nothing else to inst
   </TabItem>
 
 <TabItem label="Windows">
-  Run the `.msi` or the NSIS `-setup.exe`. Released builds are Authenticode-signed.
+  Run the NSIS `-setup.exe` (recommended) or the `.msi`. Released builds are
+  Authenticode-signed.
+
+<Aside type="tip" title="Prefer the -setup.exe for auto-updates">
+  The NSIS installer installs per-user and needs no elevation, so in-app updates apply without a
+  User Account Control prompt. The `.msi` installs per-machine, so every update needs approval — and
+  if that prompt is dismissed or blocked by policy, Windows gives the updater no way to report it.
+  Sentinel detects the failure on the next launch and shows a banner with a manual download link,
+  but the `-setup.exe` avoids the situation entirely.
+</Aside>
+
+  <Aside type="caution" title="Claude Code inside WSL is not supported yet">
+  Sentinel is a native Windows app and assumes Claude Code is too. If your Claude Code lives inside
+  a WSL distribution, two things break:
+
+- **Activation writes the wrong file.** It patches `%USERPROFILE%\.claude\settings.json`, which
+  WSL's Claude Code never reads — it reads `~/.claude/settings.json` inside the distro.
+- **The proxy is unreachable.** The daemon listens on `127.0.0.1:47284` on the Windows host. WSL2
+  can only reach that with [mirrored
+  networking](https://learn.microsoft.com/windows/wsl/wsl-config#configuration-settings-for-wslconfig)
+  (`networkingMode=mirrored` in `%USERPROFILE%\.wslconfig`).
+
+The tell is that account usage percentages update normally while the **Metrics** and **Optimize**
+tabs stay empty — usage is polled over OAuth and never touches the proxy. For now, run Claude
+Code on Windows itself. First-class WSL support is being scoped.
+
+  </Aside>
 </TabItem>
 
   <TabItem label="Linux">

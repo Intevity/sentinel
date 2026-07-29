@@ -19,7 +19,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// lifecycle lines while bounding what users attach to bug reports).
 const MAX_BYTES: u64 = 1024 * 1024;
 
-fn home_dir() -> Option<PathBuf> {
+/// Shared with `update_marker` so the update-attempt marker lands in the same
+/// `~/.sentinel` as this log and the daemon's stores.
+pub fn home_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         std::env::var_os("USERPROFILE").map(PathBuf::from)

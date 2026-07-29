@@ -1,7 +1,8 @@
 import { openUrl } from '@tauri-apps/plugin-opener';
 import type { LogEntry, LogRequestSummary } from '@sentinel/shared';
 
-const REPO = 'Intevity/sentinel';
+/** Exported so every GitHub URL builder in the app shares one source. */
+export const REPO = 'Intevity/sentinel';
 const ISSUE_URL = `https://github.com/${REPO}/issues/new`;
 
 // GitHub URLs hold up to ~8KB before browsers / servers start complaining.

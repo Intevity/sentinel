@@ -14,6 +14,7 @@ mod tray;
 mod tray_icon_render;
 #[cfg(target_os = "windows")]
 mod tray_pin;
+mod update_marker;
 mod updater;
 
 use tauri::{AppHandle, Emitter, LogicalSize, Manager};
@@ -246,9 +247,17 @@ fn main() {
             // Install the persistent NSUserNotificationCenter delegate
             // and stash an AppHandle for it to reach back into Tauri.
             // Must run before any daemon broadcast can trigger a
-            // notification. `init_notification_bundle` is retained as
-            // a no-op shim for symmetry with prior call sites.
-            #[cfg(target_os = "macos")]
+            // notification.
+            //
+            // Called on every platform on purpose. On Windows this registers
+            // the app's AppUserModelID under HKCU, without which the OS
+            // silently drops every winrt toast when an NSIS↔MSI install
+            // overlap has left the Start Menu shortcut (the usual AUMID
+            // carrier) missing. It used to be `#[cfg(target_os = "macos")]`,
+            // which meant the Windows registration never ran at all and the
+            // function read as dead code there; the macOS and Linux
+            // definitions are intentional no-op shims, so an unconditional
+            // call is both correct and cheap.
             notify::init_notification_bundle(&app.config().identifier);
             notify::init(app.handle());
 
@@ -298,7 +307,14 @@ fn main() {
             // in-app update modal. The managed state holds the pending
             // update between the check and the modal's Install click.
             app.manage(updater::PendingUpdate(std::sync::Mutex::new(None)));
+            app.manage(updater::FailedUpdate(std::sync::Mutex::new(None)));
             app.manage(setup_token::SetupTokenState::default());
+            // Read back the marker a previous install attempt left behind. Must
+            // run after `app.manage(FailedUpdate)` (it populates that state) and
+            // after `migrate_data_dir` (the marker lives in ~/.sentinel). On
+            // Windows this is the ONLY way a failed install is ever observed —
+            // the updater plugin exits the process before it can report one.
+            updater::reconcile_update_attempt(app.handle());
             updater::spawn_update_timer(app.handle().clone());
 
             Ok(())
@@ -317,6 +333,7 @@ fn main() {
             notify::display_alert_notification,
             updater::check_for_updates,
             updater::install_update,
+            updater::get_failed_update_attempt,
             setup_token::setup_token_start,
             setup_token::setup_token_write,
             setup_token::setup_token_resize,

@@ -89,9 +89,15 @@ mod tests {
 
     #[test]
     fn paths_match_is_case_insensitive() {
+        // Same path, differing only in case — drive letter, directory, stem,
+        // and extension. The rename commit (dc67930) rewrote only the first
+        // argument here, leaving the second as `claude sentinel\Claude-Sentinel.EXE`
+        // and quietly turning this into "two different paths are equal". It
+        // never failed because tray_pin is Windows-only and nothing ran
+        // `cargo test` on Windows until CI grew a windows-latest leg.
         assert!(paths_match(
-            "C:\\Program Files\\Sentinel\\sentinel.exe",
-            "c:\\program files\\claude sentinel\\Claude-Sentinel.EXE",
+            "C:\\Program Files\\Sentinel\\Sentinel.exe",
+            "c:\\program files\\sentinel\\sentinel.EXE",
         ));
     }
 

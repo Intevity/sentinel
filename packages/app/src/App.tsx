@@ -40,6 +40,7 @@ import type { TourStep } from './lib/tourSteps.js';
 import LogsViewer from './components/LogsViewer.js';
 import { usePendingSecurityBlocks } from './hooks/usePendingSecurityBlocks.js';
 import UpdateModal from './components/UpdateModal.js';
+import UpdateFailedBanner from './components/UpdateFailedBanner.js';
 import AuditTamperBanner from './components/AuditTamperBanner.js';
 import Footer from './components/Footer.js';
 import sentinelMascot from './assets/sentinelMascot.png';
@@ -476,6 +477,13 @@ export default function App(): React.ReactElement {
               Security tab itself (see SecurityPanel + LiveSecurityRow).
               Cross-tab visibility comes from the Security tab dot
               indicator below + the OS notification (daemon-side). */}
+
+            {/* ── An update that tried to install and didn't ─────────── */}
+            {/* Above the routine banners because it is the only surface
+              that ever reports a failed Windows install — the updater
+              plugin exits the process before the modal can show an error,
+              so this is the user's one chance to learn about it. */}
+            <UpdateFailedBanner />
 
             {/* ── Activation banner (patches ~/.claude/settings.json) ─ */}
             <ActivationBanner />
