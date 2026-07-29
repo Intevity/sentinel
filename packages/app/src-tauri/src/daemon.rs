@@ -229,12 +229,28 @@ async fn evict_stale_daemon() {
     }
 }
 
-/// Stop the running daemon so an installer can replace its binary. Windows
-/// locks running executables, so the NSIS/MSI passive installers fail with
-/// "Error opening file for writing: …sentinel-daemon.exe" if the
-/// daemon survives into the install (Tauri #7931 class). Called before every
-/// updater `download_and_install`; harmless on macOS/Linux (no exe lock
-/// there) and the post-install relaunch respawns the daemon regardless.
+/// Stop the running daemon so an installer can replace its binary.
+///
+/// **macOS and Linux only** — `updater::perform_install` gates the call with
+/// `#[cfg(not(windows))]`. Windows locks running executables, so the NSIS/MSI
+/// passive installers fail with "Error opening file for writing:
+/// …sentinel-daemon.exe" if the daemon survives into the install (Tauri #7931
+/// class) — but both Windows installers already kill it themselves
+/// (windows/hooks.nsh `NSIS_HOOK_PREINSTALL`, windows/daemon-close.wxs), and
+/// those hooks have to exist anyway to cover manual installer runs and
+/// uninstalls, where the app never gets a say.
+///
+/// Calling it from the app on Windows was therefore redundant on the success
+/// path and harmful on the failure path: the updater plugin's
+/// `std::process::exit(0)` fires whether or not the installer actually
+/// launched, so the paired `spawn()` recovery could never run and a failed
+/// install left the user with no app AND no proxy. Skipping it means a failed
+/// install degrades to "the app closed, Claude Code keeps working".
+///
+/// There is no crash-safety regression in relying on the installers' kill:
+/// every manual install and uninstall on Windows already hard-kills the daemon
+/// with `taskkill /F`, and every store runs in WAL mode.
+#[cfg_attr(windows, allow(dead_code))]
 pub async fn stop_daemon_for_update() {
     if probe_daemon_pid().await.is_none() {
         return;

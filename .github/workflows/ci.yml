@@ -191,6 +191,91 @@ jobs:
           path: coverage/
           retention-days: 7
 
+  # The Tauri app's Rust unit tests. Separate job because it needs a Rust
+  # toolchain and (on Linux) the GTK/WebKit system deps that the JS Quality
+  # Checks job has no use for; runs in parallel so it costs no extra wall-clock.
+  #
+  # Added with `update_marker` — the update-attempt marker's classify logic is
+  # the only thing standing between a silently-failed Windows install and a
+  # user who never finds out, and before this job nothing ran `cargo test` at
+  # all (release.yml only ever mentioned cargo for caching).
+  #
+  # windows-latest is in the matrix on purpose, not for redundancy: the updater
+  # path is full of `#[cfg(not(windows))]` branches (the pre-install daemon stop
+  # lives only there) and those branches cannot be compiled from a macOS or
+  # Linux dev box — cross-checking needs the MSVC toolchain. Without this leg a
+  # Windows-only compile error would surface for the first time in release.yml,
+  # after merge, on a tag.
+  rust-test:
+    name: Rust Unit Tests (${{ matrix.os }})
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.app == 'true') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/app/src-tauri -> target
+          key: ${{ matrix.os }}
+          shared-key: tauri-ci
+
+      # Same set the release workflow's Linux leg installs — tauri links
+      # against WebKitGTK even for a `cargo test` that never opens a window.
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      # `tauri build` runs `beforeBuildCommand`, which produces both ../dist and
+      # the daemon sidecar. A bare `cargo test` skips it, but tauri-build still
+      # resolves `frontendDist` and hard-fails on a missing `externalBin`
+      # ("resource path binaries/sentinel-daemon-<triple> doesn't exist").
+      # Existence is all it checks at compile time — the bundler only copies
+      # these during a real `tauri build` — so empty stubs are enough, and they
+      # keep this job from having to install pnpm and run a pkg build just to
+      # compile unit tests. bash (not the Windows runner's default pwsh) so one
+      # recipe covers both legs.
+      - name: Stub the frontend dist + daemon sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p packages/app/dist
+          touch packages/app/dist/index.html
+          triple="$(rustc -vV | sed -n 's|^host: ||p')"
+          ext=''
+          [ "$RUNNER_OS" = 'Windows' ] && ext='.exe'
+          mkdir -p packages/app/src-tauri/binaries
+          touch "packages/app/src-tauri/binaries/sentinel-daemon-${triple}${ext}"
+          ls -l packages/app/src-tauri/binaries/
+
+      - name: Rust unit tests
+        working-directory: packages/app/src-tauri
+        run: cargo test
+
+      - name: Clippy
+        working-directory: packages/app/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
   e2e:
     name: Playwright E2E
     runs-on: ubuntu-latest

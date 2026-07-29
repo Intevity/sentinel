@@ -330,6 +330,20 @@ mod tests {
     #[test]
     fn augmented_path_includes_common_bins() {
         let p = augmented_path();
-        assert!(p.contains("/usr/bin"));
+        // The prepended set is platform-specific, and so is the separator.
+        // This assertion was POSIX-only and failed the first time CI ran
+        // `cargo test` on Windows — there is no /usr/bin to prepend there.
+        #[cfg(not(windows))]
+        {
+            assert!(p.contains("/usr/bin"), "got {p}");
+            assert!(p.contains("/.bun/bin"), "got {p}");
+            assert!(p.contains(':'), "POSIX PATH is :-separated, got {p}");
+        }
+        #[cfg(windows)]
+        {
+            assert!(p.contains("\\.local\\bin"), "got {p}");
+            assert!(p.contains("\\.bun\\bin"), "got {p}");
+            assert!(p.contains(';'), "Windows PATH is ;-separated, got {p}");
+        }
     }
 }

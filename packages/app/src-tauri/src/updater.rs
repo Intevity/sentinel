@@ -27,14 +27,16 @@
 //! window hides. At update time it is therefore still running and, on
 //! Windows, still holds an exclusive lock on sentinel-daemon.exe —
 //! the NSIS/MSI passive installers then fail with "Error opening file for
-//! writing" (Tauri #7931 class). Both install sites below download first
-//! (proxy keeps serving), then call `daemon::stop_daemon_for_update()`
-//! (graceful IPC shutdown, kill escalation fallback) right before
-//! `update.install()`; `app.restart()` and the Windows installer's own
-//! relaunch respawn a fresh daemon. If the install fails instead, we
-//! respawn the daemon ourselves so the proxy comes back on the old version
-//! (`daemon::spawn` reuses the session's handshake token, so the existing
-//! IPC client still authenticates).
+//! writing" (Tauri #7931 class). `perform_install` downloads first (proxy
+//! keeps serving), then on macOS/Linux calls
+//! `daemon::stop_daemon_for_update()` (graceful IPC shutdown, kill escalation
+//! fallback) right before `update.install()`; `app.restart()` and the Windows
+//! installer's own relaunch respawn a fresh daemon. On Windows the installers
+//! do that kill themselves — see the note below on why we no longer duplicate
+//! it. If the install fails on macOS/Linux we respawn the daemon ourselves so
+//! the proxy comes back on the old version (`daemon::spawn` reuses the
+//! session's handshake token, so the existing IPC client still
+//! authenticates).
 //!
 //! On macOS the `.app` replacement step requires a signed + notarized bundle;
 //! installs on unsigned builds will fail at the Gatekeeper check. That's why
@@ -46,6 +48,26 @@
 //! are configured (unset — e.g. forks — builds unsigned); Linux bundles carry
 //! no OS code signature. Regardless, every download is still minisign-verified
 //! against the pubkey in tauri.conf.json.
+//!
+//! WINDOWS CANNOT REPORT AN INSTALL FAILURE. `Update::install` hands the
+//! downloaded installer to `ShellExecuteW`, **discards whether that
+//! succeeded**, and calls `std::process::exit(0)` unconditionally. Past the
+//! extraction step it therefore never returns — not `Ok`, not `Err` — so the
+//! error arm below and `app.restart()` are dead code on that platform, and a
+//! declined UAC prompt, a SmartScreen/AV block, or an MSI rollback all look
+//! exactly like success. That is why `perform_install` writes an
+//! `~/.sentinel/update-attempt.json` marker BEFORE calling `install`, and
+//! `reconcile_update_attempt` reads it back on the next launch: if the running
+//! version is unchanged, the install silently failed and the frontend raises a
+//! recovery banner. See `update_marker` for the schema and the verdicts.
+//!
+//! It is also why the pre-install daemon stop is `#[cfg(not(windows))]`. Both
+//! Windows installers already kill the daemon themselves (windows/hooks.nsh
+//! `NSIS_HOOK_PREINSTALL`, windows/daemon-close.wxs), so stopping it here
+//! bought nothing on the success path — and on the failure path the process
+//! was already gone before the respawn could run, leaving the user with no app
+//! AND no proxy. Leaving the daemon up means a failed install degrades to
+//! "the app closed, Claude Code keeps working on the old version".
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -54,6 +76,8 @@ use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
+
+use crate::update_marker::{self, AttemptVerdict};
 
 /// Default cadence for the background check loop.
 const CHECK_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
@@ -68,6 +92,45 @@ const IDLE_THRESHOLD_MS: i64 = 5 * 60 * 1000;
 /// The update found by the most recent check, awaiting user consent via the
 /// modal's Install button. Registered with `app.manage` in main.rs.
 pub struct PendingUpdate(pub Mutex<Option<Update>>);
+
+/// A previous launch's install attempt that never landed, populated by
+/// `reconcile_update_attempt` during setup. Registered with `app.manage` in
+/// main.rs and read by the frontend via `get_failed_update_attempt`.
+pub struct FailedUpdate(pub Mutex<Option<FailedUpdatePayload>>);
+
+/// What the recovery banner needs to explain a silently-failed install.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedUpdatePayload {
+    /// The version that failed to install.
+    pub target_version: String,
+    /// The version still running.
+    pub running_version: String,
+    /// `nsis` | `msi` | `app` | `appimage` | … — decides which likely cause
+    /// the banner names (elevation prompt vs SmartScreen/antivirus).
+    pub installer: String,
+    /// The exact artifact that failed, for support replies.
+    pub artifact: String,
+    /// `modal` (a human clicked Install) or `auto` (silent path).
+    pub trigger: String,
+}
+
+/// Which path asked for the install. Recorded in the marker so the log says
+/// whether a human clicked Install or the background timer ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallTrigger {
+    Modal,
+    Auto,
+}
+
+impl InstallTrigger {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Modal => "modal",
+            Self::Auto => "auto",
+        }
+    }
+}
 
 /// Payload of the `update_available` event the frontend listens for.
 #[derive(Clone, serde::Serialize)]
@@ -202,29 +265,10 @@ async fn scheduled_check(app: &AppHandle, notified_version: &mut Option<String>)
         while proxy_is_busy().await {
             tokio::time::sleep(retry).await;
         }
-        // Download BEFORE stopping the daemon: the proxy keeps serving while
-        // the bytes stream down, and the daemon is only offline for the brief
-        // install window. Download errors are silent like check errors:
-        // recoverable on the next tick and not worth interrupting the user.
-        let Ok(bytes) = update.download(|_, _| {}, || {}).await else {
-            return;
-        };
-        // Stop the daemon so the installer can overwrite its (Windows-locked)
-        // binary; the relaunch respawns it on the new version. On Windows the
-        // passive installer exits + relaunches the process itself, so the
-        // explicit restart is the macOS/Linux path.
-        crate::daemon::stop_daemon_for_update().await;
-        match update.install(bytes) {
-            Ok(()) => app.restart(),
-            Err(e) => {
-                // Bring the daemon back on the current version so the proxy
-                // isn't left dead until the next 4-hourly tick.
-                crate::app_log::app_log(&format!(
-                    "Silent update install failed ({e}); respawning daemon on the current version"
-                ));
-                crate::daemon::spawn(app);
-            }
-        }
+        // Failures are logged inside `perform_install`. There is no modal to
+        // show them in on this path, and the next tick retries — so the error
+        // is dropped here deliberately rather than interrupting the user.
+        let _ = perform_install(app, update, InstallTrigger::Auto).await;
     } else {
         let version = update.version.clone();
         stash_and_emit(app, update);
@@ -286,27 +330,187 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
                 .ok_or_else(|| "No update available.".to_string())?
         }
     };
+    perform_install(&app, update, InstallTrigger::Modal).await
+}
+
+/// The one install path, shared by the modal's Install button and the silent
+/// auto-update tick so both record attempts and log identically.
+///
+/// Ordering is load-bearing, because on Windows this function does not return
+/// (see the module doc):
+///
+/// 1. log the intent, so `app.log` proves the click reached Rust at all
+/// 2. download — before anything destructive, so a download failure leaves the
+///    daemon untouched and the modal's error is the whole story
+/// 3. write the marker, the only channel a Windows failure has
+/// 4. stop the daemon (macOS/Linux only)
+/// 5. hand off to the installer
+async fn perform_install(
+    app: &AppHandle,
+    update: Update,
+    trigger: InstallTrigger,
+) -> Result<(), String> {
+    let version = update.version.clone();
+    let from_version = update.current_version.clone();
+    let attempt = update_marker::new_attempt(
+        &version,
+        &from_version,
+        &update.target,
+        update.download_url.as_str(),
+        trigger.as_str(),
+    );
+    crate::app_log::app_log(&format!(
+        "Update install requested: {from_version} -> {version} (trigger={}, installer={}, target={}, artifact={})",
+        attempt.trigger, attempt.installer, attempt.target, attempt.artifact
+    ));
+
     // download takes two callbacks (progress + done). We ignore both; the
-    // modal shows an indeterminate "Installing…" state and the restart is
-    // the completion signal. Download happens BEFORE the daemon stops so the
-    // proxy keeps serving until the bytes are local.
-    let bytes = update
-        .download(|_, _| {}, || {})
-        .await
-        .map_err(|e| e.to_string())?;
-    // Stop the daemon so the installer can overwrite its (Windows-locked)
-    // binary; the post-install relaunch respawns it on the new version.
-    crate::daemon::stop_daemon_for_update().await;
-    // On Windows the passive installer exits + relaunches the process
-    // itself, so the explicit restart is the macOS/Linux path.
-    if let Err(e) = update.install(bytes) {
-        // Failed install: bring the daemon back on the current version so
-        // the proxy isn't dead behind the error the modal shows.
-        crate::app_log::app_log(&format!(
-            "Update install failed ({e}); respawning daemon on the current version"
-        ));
-        crate::daemon::spawn(&app);
-        return Err(e.to_string());
+    // modal shows an indeterminate "Installing…" state and the restart is the
+    // completion signal.
+    let bytes = match update.download(|_, _| {}, || {}).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            crate::app_log::app_log(&format!("Update download failed: {e}"));
+            return Err(e.to_string());
+        }
+    };
+    crate::app_log::app_log(&format!(
+        "Update payload downloaded ({} bytes)",
+        bytes.len()
+    ));
+
+    if update_marker::record_attempt(&attempt) {
+        crate::app_log::app_log("Recorded update-attempt marker");
+    } else {
+        // Non-fatal: we lose the ability to REPORT a silent failure, not the
+        // ability to update. Say so, since it changes how to read this log.
+        crate::app_log::app_log(
+            "Could not write the update-attempt marker; a silent install failure will go unreported",
+        );
     }
-    app.restart();
+
+    // Windows omits this on purpose — both installers kill the daemon
+    // themselves, and stopping it here made a failed install take the proxy
+    // down with the app. See the module doc.
+    #[cfg(not(windows))]
+    crate::daemon::stop_daemon_for_update().await;
+
+    crate::app_log::app_log(&format!(
+        "Launching installer for {version}; on Windows this process exits here"
+    ));
+
+    // Test seam: reproduce the Windows blind-exit on any platform so the
+    // marker -> reconcile -> banner -> clear cycle can be exercised without a
+    // VM, a real failing installer, or a denied UAC prompt.
+    if std::env::var_os("SENTINEL_SIMULATE_FAILED_INSTALL").is_some() {
+        crate::app_log::app_log(
+            "SENTINEL_SIMULATE_FAILED_INSTALL is set — exiting without installing",
+        );
+        app.exit(0);
+        return Ok(());
+    }
+
+    match update.install(bytes) {
+        Ok(()) => app.restart(),
+        Err(e) => {
+            // Reachable on every platform: the plugin extracts the payload
+            // BEFORE its Windows exit, so temp-write / disk-full / AV-on-write
+            // failures still land here. The caller shows this error, so clear
+            // the marker — otherwise the next launch reports the same failure
+            // a second time.
+            update_marker::clear_attempt();
+            crate::app_log::app_log(&format!(
+                "Update install failed before the installer launched: {e}"
+            ));
+            #[cfg(not(windows))]
+            crate::daemon::spawn(app);
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Reconcile the marker left by a previous install attempt against the version
+/// we actually booted. Called once from main.rs `setup()`.
+///
+/// The marker is cleared on every verdict. A retained one would re-classify
+/// against the same running version on every subsequent launch and re-raise
+/// the banner forever; `app.log` is the durable record instead.
+pub fn reconcile_update_attempt(app: &AppHandle) {
+    let running = app.package_info().version.to_string();
+    let raw = update_marker::read_raw();
+    match update_marker::classify(raw.as_deref(), &running, update_marker::now_secs()) {
+        AttemptVerdict::NoAttempt => {}
+        AttemptVerdict::Succeeded {
+            version,
+            from_version,
+            age_secs,
+        } => {
+            crate::app_log::app_log(&format!(
+                "Update to {version} installed successfully (from {from_version}, {age_secs}s after the attempt)"
+            ));
+            update_marker::clear_attempt();
+        }
+        AttemptVerdict::Failed {
+            attempt,
+            running: still_running,
+            age_secs,
+        } => {
+            crate::app_log::app_log(&format!(
+                "Update to {} did NOT install — still running {still_running} {age_secs}s after the attempt (trigger={}, installer={}, target={}, artifact={}). The installer never replaced the app; on Windows the updater exits before it can report why.",
+                attempt.version, attempt.trigger, attempt.installer, attempt.target, attempt.artifact
+            ));
+            update_marker::clear_attempt();
+            *app.state::<FailedUpdate>()
+                .0
+                .lock()
+                .expect("failed update lock") = Some(FailedUpdatePayload {
+                target_version: attempt.version,
+                running_version: still_running,
+                installer: attempt.installer,
+                artifact: attempt.artifact,
+                trigger: attempt.trigger,
+            });
+        }
+        AttemptVerdict::Expired { attempt, age_secs } => {
+            crate::app_log::app_log(&format!(
+                "Discarding a stale update-attempt marker for {} ({age_secs}s old)",
+                attempt.version
+            ));
+            update_marker::clear_attempt();
+        }
+        AttemptVerdict::Unreadable { raw } => {
+            crate::app_log::app_log(&format!(
+                "Discarding an unreadable update-attempt marker: {raw}"
+            ));
+            update_marker::clear_attempt();
+        }
+    }
+}
+
+/// Frontend pulls this on mount to decide whether to show the recovery banner.
+///
+/// A pull, not an `emit` like `update_available`: the verdict is known during
+/// `setup()`, before the webview exists, and Sentinel starts hidden in the
+/// tray — an event fired at that moment is guaranteed to be dropped. Managed
+/// state plus a command is race-free and idempotent under StrictMode.
+#[tauri::command]
+pub fn get_failed_update_attempt(app: AppHandle) -> Option<FailedUpdatePayload> {
+    app.state::<FailedUpdate>()
+        .0
+        .lock()
+        .expect("failed update lock")
+        .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_trigger_strings_are_stable() {
+        // On-disk vocabulary: the marker, the log lines, and the banner copy
+        // all read these exact strings.
+        assert_eq!(InstallTrigger::Modal.as_str(), "modal");
+        assert_eq!(InstallTrigger::Auto.as_str(), "auto");
+    }
 }
