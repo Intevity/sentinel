@@ -16,6 +16,11 @@ packages/app/src-tauri/binaries/*-unknown-linux-gnu
 .DS_Store
 *.tmp
 
+# Playwright E2E artifacts (per-test output dirs, HTML report, screenshots)
+test-results/
+playwright-report/
+e2e-out/
+
 # Terraform — never commit state or real tfvars. The .example is committed, and the
 # .terraform.lock.hcl dependency lock SHOULD be committed (so it is not ignored).
 **/.terraform/*
