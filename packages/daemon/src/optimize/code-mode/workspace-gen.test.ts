@@ -66,7 +66,10 @@ describe('workspace-gen', () => {
     expect(toolMd).toContain('"required": [\n    "query"\n  ]');
     expect(toolMd).toContain(`http://127.0.0.1:${PORT}/code-mode/call`);
     expect(toolMd).toContain(`$(cat ${codeModeTokenFilePath(dir)})`);
-    expect(toolMd).toContain('"server":"github","tool":"search_code"');
+    expect(toolMd).toContain('\\"server\\":\\"github\\",\\"tool\\":\\"search_code\\"');
+    // cwd is what selects a per-project record's credentials; the generated
+    // example must carry it or every call falls back to the user scope.
+    expect(toolMd).toContain('\\"cwd\\":\\"$PWD\\"');
   });
 
   it('refreshes the global README as servers come and go', async () => {

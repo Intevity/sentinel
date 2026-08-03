@@ -154,7 +154,12 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { runScanBenchmark } from './security/scanner-benchmark.js';
 import { parseRule as parsePermissionRule } from './security/permissions/parser.js';
-import type { Settings, MetricsWindow } from '@sentinel/shared';
+import type {
+  Settings,
+  MetricsWindow,
+  CodeModeMigration,
+  CodeModeCredentialRecord,
+} from '@sentinel/shared';
 import { randomUUID, createHash } from 'crypto';
 import { getActiveAccount, setActiveAccount } from './claude-state.js';
 import {
@@ -209,6 +214,22 @@ import {
   isNativeDisabled,
   findNativeServerEntries,
 } from './optimize/code-mode/server-migration.js';
+import {
+  hydrateEntry,
+  migrateInlineSecretsToKeychain,
+  newSecretRef,
+  writeCodeModeSecrets,
+  deleteCodeModeSecrets,
+  buildStashFields,
+  describeSecretKeys,
+  splitEntrySecrets,
+  readEntrySecrets,
+  lookupSecretField,
+  applySecretChanges,
+  mergeEntrySecrets,
+  selectMigrationForCwd,
+  migrationKey,
+} from './optimize/code-mode/code-mode-secrets.js';
 import {
   generateServerWorkspace,
   removeServerWorkspace,
@@ -3318,12 +3339,15 @@ export async function startDaemon(): Promise<DaemonHandle> {
         try {
           const ref = { server: msg.server, scope: msg.scope, directory };
           const { originalEntry } = disableNativeServer(ref);
+          // Same secret split as a bridge migration: a plain-disabled entry's
+          // env/headers are just as sensitive, and Enable rehydrates from the
+          // keychain slot.
           const stashes = [
             ...currentSettings.mcpDisabledStashes.filter(
               (s) =>
                 !(s.server === msg.server && s.scope === msg.scope && s.directory === directory),
             ),
-            { ...ref, originalEntry, migratedAt: Date.now() },
+            { ...ref, ...buildStashFields(ref, originalEntry), migratedAt: Date.now() },
           ];
           currentSettings = writeSettings({ mcpDisabledStashes: stashes });
           ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
@@ -3356,7 +3380,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
           break;
         }
         try {
-          restoreNativeServer({ ...stash, originalEntry: stash.originalEntry });
+          const { keptExisting } = restoreNativeServer({
+            ...stash,
+            originalEntry: hydrateEntry(stash),
+          });
+          if (stash.secretRef) deleteCodeModeSecrets(stash.secretRef);
           currentSettings = writeSettings({
             mcpDisabledStashes: currentSettings.mcpDisabledStashes.filter((s) => s !== stash),
           });
@@ -3365,7 +3393,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
           respond({
             requestType: 'enable_mcp_server',
             success: true,
-            data: { restartRequired: true },
+            data: { restartRequired: true, keptExisting: keptExisting ? 1 : 0 },
           });
         } catch (err) {
           respond({
@@ -3433,16 +3461,15 @@ export async function startDaemon(): Promise<DaemonHandle> {
               baselineAggs.find((a) => a.server === sanitizeServerName(msg.server))?.requestCount ??
               0;
             const newRecords = entries.map((e) => {
-              const { originalEntry } = disableNativeServer({
-                server: msg.server,
-                scope: e.scope,
-                directory: e.directory,
-              });
+              const ref = { server: msg.server, scope: e.scope, directory: e.directory };
+              const { originalEntry } = disableNativeServer(ref);
+              // Split secrets out at migration time, not on the next daemon
+              // start: the native entry is gone as of this write, so settings
+              // would otherwise hold the user's tokens in the clear until the
+              // process happened to restart. Never throws — see buildStashFields.
               return {
-                server: msg.server,
-                scope: e.scope,
-                directory: e.directory,
-                originalEntry,
+                ...ref,
+                ...buildStashFields(ref, originalEntry),
                 migratedAt,
                 baselineNativeRequests,
                 baselineServerRequests,
@@ -3502,8 +3529,17 @@ export async function startDaemon(): Promise<DaemonHandle> {
           break;
         }
         void (async () => {
+          // Rehydrate from the keychain — the raw stash carries no secrets, so
+          // restoring it would hand the user back a credential-less entry. A
+          // newer entry they hand-added in the meantime wins (keptExisting).
+          let keptExisting = 0;
           for (const migration of mine) {
-            restoreNativeServer({ ...migration, originalEntry: migration.originalEntry });
+            const res = restoreNativeServer({
+              ...migration,
+              originalEntry: hydrateEntry(migration),
+            });
+            if (res.keptExisting) keptExisting++;
+            if (migration.secretRef) deleteCodeModeSecrets(migration.secretRef);
           }
           const remaining = currentSettings.codeModeMigrations.filter(
             (m) => m.server !== msg.server,
@@ -3536,7 +3572,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
           respond({
             requestType: 'revert_server_from_code_mode',
             success: true,
-            data: { restartRequired: true },
+            data: { restartRequired: true, keptExisting },
           });
         })().catch((err: unknown) => {
           respond({
@@ -3551,10 +3587,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
         // `drifted` flags a migration whose native entry has been hand-
         // restored in the config file (the disable is no longer in effect),
         // mirroring get_retrieval_mcp_status's verify-against-reality.
-        const migrations = currentSettings.codeModeMigrations.map((m) => ({
-          ...m,
-          drifted: !isNativeDisabled(m),
-        }));
+        const migrations = currentSettings.codeModeMigrations.map((m) => {
+          // Redacted stderr tail from the bridged child, so an expired token's
+          // 401 is visible in the UI instead of vanishing with the process.
+          const stderr = codeModeManager.lastStderr(m.server);
+          return {
+            ...m,
+            drifted: !isNativeDisabled(m),
+            ...(stderr.length > 0 ? { lastStderr: stderr } : {}),
+          };
+        });
         // Report whether the subagent-bridge CLAUDE.md block is present and
         // current. When code mode is off, nothing is expected on disk.
         const claudeMdBlock = currentSettings.codeModeEnabled
@@ -3577,6 +3619,180 @@ export async function startDaemon(): Promise<DaemonHandle> {
         });
         break;
       }
+      case 'get_code_mode_credentials': {
+        // Field NAMES only — no secret value crosses the boundary here, so
+        // opening the dialog exposes nothing.
+        const records = currentSettings.codeModeMigrations
+          .filter((m) => m.server === msg.server)
+          .map((m) => {
+            const e = (m.originalEntry ?? {}) as Record<string, unknown>;
+            const nonSecret: CodeModeCredentialRecord['nonSecret'] = {};
+            if (typeof e['command'] === 'string') nonSecret.command = e['command'];
+            if (Array.isArray(e['args'])) {
+              nonSecret.args = e['args'].filter((a): a is string => typeof a === 'string');
+            }
+            if (typeof e['type'] === 'string') nonSecret.type = e['type'];
+            if (typeof e['url'] === 'string') nonSecret.url = e['url'];
+            return {
+              scope: m.scope,
+              directory: m.directory,
+              // Records still awaiting the startup keychain migration have no
+              // secretKeys yet; derive them from the inline entry so the dialog
+              // still renders the right fields.
+              secretKeys: m.secretKeys ?? splitEntrySecrets(m.originalEntry).secretKeys,
+              nonSecret,
+            };
+          });
+        if (records.length === 0) {
+          respond({
+            requestType: 'get_code_mode_credentials',
+            success: false,
+            error: `No recorded code-mode migration for '${msg.server}'.`,
+          });
+          break;
+        }
+        respond({
+          requestType: 'get_code_mode_credentials',
+          success: true,
+          data: { server: msg.server, records },
+        });
+        break;
+      }
+      case 'reveal_code_mode_secret': {
+        const record = currentSettings.codeModeMigrations.find(
+          (m) =>
+            m.server === msg.server &&
+            m.scope === msg.scope &&
+            (m.directory ?? null) === (msg.directory ?? null),
+        );
+        if (!record) {
+          respond({
+            requestType: 'reveal_code_mode_secret',
+            success: false,
+            error: `No recorded code-mode migration for '${msg.server}' at ${msg.scope} scope.`,
+          });
+          break;
+        }
+        const secrets = readEntrySecrets(record);
+        const value = lookupSecretField(secrets, msg.key);
+        if (value === undefined) {
+          respond({
+            requestType: 'reveal_code_mode_secret',
+            success: false,
+            error: `No credential field '${msg.key}' on '${msg.server}'.`,
+          });
+          break;
+        }
+        respond({
+          requestType: 'reveal_code_mode_secret',
+          success: true,
+          data: { value },
+        });
+        break;
+      }
+      case 'update_code_mode_credentials': {
+        // Verify BEFORE persisting: a wrong token must leave the running bridge
+        // working on its old credentials. Reuses the same
+        // verify-then-generate-workspace machinery as migration, via an
+        // override entry that outranks the stash in `resolveEntry`.
+        void (async () => {
+          const targets = currentSettings.codeModeMigrations.filter((m) => {
+            if (m.server !== msg.server) return false;
+            if (msg.target === 'all') return true;
+            return (
+              m.scope === msg.target.scope &&
+              (m.directory ?? null) === (msg.target.directory ?? null)
+            );
+          });
+          if (targets.length === 0) {
+            respond({
+              requestType: 'update_code_mode_credentials',
+              success: false,
+              error: `No recorded code-mode migration for '${msg.server}' matching that target.`,
+            });
+            return;
+          }
+          if (Object.keys(msg.changes).length === 0) {
+            respond({
+              requestType: 'update_code_mode_credentials',
+              success: false,
+              error: 'No credential changes supplied.',
+            });
+            return;
+          }
+          // Apply the edits per record; unlisted fields keep their values.
+          const edited = targets.map((record) => ({
+            record,
+            secrets: applySecretChanges(readEntrySecrets(record), msg.changes),
+          }));
+          // Verify against the first target — `resolveEntry` is per-server, so
+          // that is the entry a bridged call would actually use.
+          const first = edited[0]!;
+          const candidate = mergeEntrySecrets(first.record.originalEntry, first.secrets);
+          codeModeOverrideEntries.set(msg.server, candidate);
+          try {
+            await codeModeManager.dropServer(msg.server);
+            const verified = await codeModeManager.verify(msg.server);
+            if (!verified.ok) {
+              respond({
+                requestType: 'update_code_mode_credentials',
+                success: false,
+                error: `Could not connect to '${msg.server}' with the new credentials: ${verified.error}. Nothing was saved.`,
+              });
+              return;
+            }
+            const rewritten = new Map<CodeModeMigration, CodeModeMigration>();
+            for (const { record, secrets } of edited) {
+              const secretRef = record.secretRef ?? newSecretRef(record);
+              writeCodeModeSecrets(secretRef, secrets);
+              rewritten.set(record, {
+                ...record,
+                // A record predating the keychain split still has inline
+                // secrets; strip them now the slot is written, or the stale
+                // copies would win on the next hydrate.
+                originalEntry: splitEntrySecrets(record.originalEntry).nonSecret,
+                secretRef,
+                secretKeys: describeSecretKeys(secrets),
+              });
+            }
+            currentSettings = writeSettings({
+              codeModeMigrations: currentSettings.codeModeMigrations.map(
+                (m) => rewritten.get(m) ?? m,
+              ),
+            });
+            // Tool docs are only otherwise regenerated on migrate, so a server
+            // whose tools changed since bridging is refreshed here too.
+            await generateServerWorkspace({
+              server: msg.server,
+              tools: verified.tools,
+              port: getDaemonPort(),
+            });
+            ipcServer.broadcast({ type: 'settings_changed', settings: currentSettings });
+            ipcServer.broadcast({ type: 'code_mode_status' });
+            respond({
+              requestType: 'update_code_mode_credentials',
+              success: true,
+              data: {
+                verified: true,
+                toolCount: verified.tools.length,
+                recordsUpdated: edited.length,
+              },
+            });
+          } finally {
+            codeModeOverrideEntries.delete(msg.server);
+            // Drop again so the next real call reconnects from the persisted
+            // secrets rather than reusing the client built from the override.
+            await codeModeManager.dropServer(msg.server);
+          }
+        })().catch((err: unknown) => {
+          respond({
+            requestType: 'update_code_mode_credentials',
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+        break;
+      }
       case 'repair_code_mode_bridge': {
         // Re-assert the whole subagent bridge for the current migrations:
         // skill, CLAUDE.md block, curated preloads, endpoint allow rule. Used
@@ -3596,6 +3812,20 @@ export async function startDaemon(): Promise<DaemonHandle> {
           await installCodeModeClaudeMd({ servers, port });
           await resyncCuratedCodeModeSkill(true);
           ensureAllowRule(codeModeCurlRule());
+          // Refresh the generated tool docs too. They were previously written
+          // only at migrate time, so a server that added or removed tools since
+          // bridging left the workspace silently stale. Best-effort per server:
+          // one unreachable server must not fail the whole repair.
+          for (const server of servers) {
+            const verified = await codeModeManager.verify(server);
+            if (!verified.ok) {
+              console.warn(
+                `[CodeMode] Repair: could not re-list tools for '${server}': ${verified.error}`,
+              );
+              continue;
+            }
+            await generateServerWorkspace({ server, tools: verified.tools, port });
+          }
           if (
             !currentSettings.codeModeSkillInstalled ||
             !currentSettings.codeModeClaudeMdInstalled
@@ -3881,6 +4111,31 @@ export async function startDaemon(): Promise<DaemonHandle> {
       console.log('[ContextCost] Backfilled code-mode savings baselines');
     }
   }
+  // Move any bridged/disabled server's inline `env`/`headers` out of
+  // settings.json and into the OS keychain. Per-record and idempotent
+  // (`secretRef` presence is the marker), so a record whose keychain write
+  // fails keeps its secrets inline and is simply retried next start — the
+  // native config entry was deleted at bridge time, so settings.json holds the
+  // user's only copy and must never be stripped on a failed write.
+  {
+    const bridged = migrateInlineSecretsToKeychain(currentSettings.codeModeMigrations);
+    const stashed = migrateInlineSecretsToKeychain(currentSettings.mcpDisabledStashes);
+    if (bridged.migrated > 0 || stashed.migrated > 0) {
+      currentSettings = writeSettings({
+        codeModeMigrations: bridged.records,
+        mcpDisabledStashes: stashed.records,
+      });
+      console.log(
+        `[CodeMode] Moved secrets for ${bridged.migrated + stashed.migrated} MCP record(s) to the keychain`,
+      );
+    }
+    const failed = bridged.failed + stashed.failed;
+    if (failed > 0) {
+      console.error(
+        `[CodeMode] ${failed} MCP record(s) kept inline secrets after a keychain write failure; will retry next start`,
+      );
+    }
+  }
   // Bridged servers the code-mode client manager failed to connect to since
   // startup. Surfaced as bridgeStatus 'unavailable' on the Context tab so a
   // broken bridge is visible rather than silently dropping tool access.
@@ -3890,6 +4145,10 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // connect BEFORE the server is bridged (post-migration connects read the
   // stash in settings instead). Cleared in the handler's finally block.
   const codeModePendingEntries = new Map<string, unknown>();
+  // Candidate entries registered by the credentials handler so `verify()` can
+  // prove edited secrets against the real server before they are persisted.
+  // Checked FIRST in `resolveEntry`; cleared in that handler's finally block.
+  const codeModeOverrideEntries = new Map<string, unknown>();
   // Sandbox feature, Leg B: wraps the code-mode MCP stdio children below in the
   // OS sandbox when `isolationPolicy.enforceCodeMode` is on and the platform can
   // enforce it. `refresh()` (called at startup and on settings change) owns the
@@ -3907,9 +4166,24 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // recorded migrations — the endpoint can never reach a server the user
   // didn't explicitly bridge.
   const codeModeManager = createMcpClientManager({
-    resolveEntry: (server) =>
-      currentSettings.codeModeMigrations.find((m) => m.server === server)?.originalEntry ??
-      codeModePendingEntries.get(server),
+    resolveEntry: (server, cwd) => {
+      // Override wins: the credentials handler registers a candidate entry here
+      // so `verify()` can prove new secrets against the real server BEFORE
+      // anything is persisted. The stash deliberately beats `pendingEntries`
+      // (which the migrate flow uses pre-migration), so a third map is needed
+      // rather than reusing that one.
+      const override = codeModeOverrideEntries.get(server);
+      if (override !== undefined) return { key: `override:${server}`, entry: override };
+      const record = selectMigrationForCwd(currentSettings.codeModeMigrations, server, cwd);
+      // Secrets live in the keychain; `originalEntry` alone would spawn the
+      // server with no credentials.
+      if (record) {
+        return { key: record.secretRef ?? migrationKey(record), entry: hydrateEntry(record) };
+      }
+      const pending = codeModePendingEntries.get(server);
+      if (pending !== undefined) return { key: `pending:${server}`, entry: pending };
+      return undefined;
+    },
     isAllowed: (server) => currentSettings.codeModeMigrations.some((m) => m.server === server),
     onAvailability: (server, available) => {
       const key = sanitizeServerName(server);
@@ -3917,6 +4191,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
       else codeModeUnavailable.add(key);
     },
     wrapStdioCommand: (command, args, env) => sandboxRuntime.wrapStdioCommand(command, args, env),
+    redact: redactSecretsInString,
   });
   const codeModeHandler = createCodeModeHandler({
     manager: codeModeManager,

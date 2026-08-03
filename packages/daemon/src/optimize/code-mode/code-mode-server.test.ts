@@ -9,8 +9,19 @@ import { existsSync, rmSync } from 'node:fs';
 import { startFakeMcpHttpServer, type FakeMcpHttpServer } from '@sentinel/test-harness';
 import { startProxyWithFake, makeTestDbPath, type StartedProxy } from '../../proxy.test-helpers.js';
 import { ContextCostStore } from '../../context-bloat/context-cost-db.js';
+import { redactSecretsInString } from '../../security/detectors.js';
 import { createMcpClientManager, type McpClientManager } from './mcp-client-manager.js';
 import { createCodeModeHandler } from './code-mode-server.js';
+
+/** Adapt a bare `(server) => entry` resolver to the manager's ResolvedEntry
+ *  contract. These tests configure one record per server, so the server name is
+ *  a fine cache key. */
+function byServer(fn: (server: string) => unknown) {
+  return (server: string) => {
+    const entry = fn(server);
+    return entry === undefined ? undefined : { key: server, entry };
+  };
+}
 
 const TOKEN = 'code-mode-test-token-0123456789abcdef';
 
@@ -28,11 +39,13 @@ describe('/code-mode/call endpoint', () => {
     storePath = makeTestDbPath('code-mode-audit');
     store = new ContextCostStore({ dbPath: storePath });
     manager = createMcpClientManager({
-      resolveEntry: (server) =>
+      resolveEntry: byServer((server) =>
         server === 'bridged' || server === 'unlisted'
           ? { type: 'http', url: fakeMcp.url }
           : undefined,
+      ),
       isAllowed: (server) => server === 'bridged',
+      redact: redactSecretsInString,
     });
     const codeModeHandler = createCodeModeHandler({
       manager,

@@ -40,6 +40,45 @@ Your MCP servers' tool definitions ride along in **every** request's context, wh
 Code-execution mode bridges those servers through a loopback endpoint, so their definitions stop
 being injected into each request. It's **loopback-only**, with a per-server allowlist you control.
 
+### What bridging changes on disk
+
+Claude Code decides which MCP servers to load by reading its config, so the only way to stop a
+server's definitions loading is to take its entry out. When you bridge a server, Sentinel:
+
+- **removes** that server's `mcpServers` entry from every scope it appears in — `~/.claude.json`
+  (global and per-project) and any project's `.mcp.json`. Bridging a project-scope server therefore
+  edits a file that's usually committed to your repo, so expect a git diff;
+- **moves** the entry's `env` vars and auth `headers` into your OS keychain (macOS Keychain,
+  Windows Credential Manager, or the Linux secret store), keeping only non-secret config —
+  `command`, `args`, `url` — in `~/.sentinel/settings.json`;
+- keeps everything needed to put it all back, so **Switch back to native MCP** is a one-click revert.
+
+### Rotating credentials for a bridged MCP server
+
+Because the native entry is gone, editing `~/.claude.json` has no effect on a bridged server — and
+re-running **Switch to code execution** won't help either, since the server is already bridged.
+
+Use **Update credentials** on the server's row in the Context tab. It lists the credential fields
+Sentinel holds, and you replace just the one that changed. Sentinel connects to the server with the
+new value **before** saving anything: if the connection fails, nothing is written and your running
+bridge keeps working on its old credentials. On success it also refreshes the server's generated tool
+docs. **No Claude Code restart is needed** — the next call picks up the new credentials.
+
+<Aside type="caution" title="Don't hand-edit settings.json">
+  `~/.sentinel/settings.json` is HMAC-signed. Editing it directly invalidates the signature, and
+  Sentinel falls back to default settings on the next read — losing your whole configuration, not
+  just the credential you meant to change. Use **Update credentials** instead.
+</Aside>
+
+If a bridged server starts failing, expand the **Server reported N messages on stderr** line on its
+row. That's the server's own error output — an expired token usually says so in as many words.
+Secrets are stripped before it's stored.
+
+**Not using code execution?** Nothing changes: update the server with `claude mcp add` or by editing
+your config, then restart your Claude Code session. The same applies to a server you turned off with
+Sentinel's **Disable** button — **Enable** puts it back, and if you re-added the server yourself in
+the meantime, Sentinel keeps your newer entry rather than overwriting it.
+
 ## Reading the savings
 
 Each technique reports:

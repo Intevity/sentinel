@@ -187,19 +187,34 @@ export function disableNativeServer(ref: ServerScopeRef): DisableResult {
 }
 
 /** Put the stashed entry back into `mcpServers` at the scope and clear the
- *  `disabledMcpServers` marker (`local`). Overwrites any entry the user may
- *  have hand-added under the same name in the meantime — restore is an
- *  explicit user action and the stash is the contract. */
+ *  `disabledMcpServers` marker (`local`).
+ *
+ *  A live entry the user hand-added while the server was bridged WINS over the
+ *  stash. It is strictly newer by definition — the stash was captured when the
+ *  server was disabled — so the common case is a rotated credential, and
+ *  overwriting it would silently reinstate a dead token. `keptExisting` reports
+ *  that outcome so the caller can say so in the UI. The `disabledMcpServers`
+ *  marker is still cleared either way, since the disable is no longer in
+ *  effect.
+ *
+ *  Pass the REHYDRATED entry (`hydrateEntry(record)`), not `originalEntry`:
+ *  secrets live in the keychain, so the raw stash would restore an entry with
+ *  no credentials. */
 export function restoreNativeServer(ref: ServerScopeRef & { originalEntry: unknown }): {
   configPath: string;
+  keptExisting: boolean;
 } {
+  const live = readNativeServerEntry(ref);
+  const keptExisting =
+    live !== undefined && JSON.stringify(live) !== JSON.stringify(ref.originalEntry);
+  const entry = keptExisting ? live : ref.originalEntry;
   if (ref.scope === 'user') {
     const state = readClaudeState();
     const servers = asRecord(state['mcpServers']);
-    servers[ref.server] = ref.originalEntry;
+    servers[ref.server] = entry;
     state['mcpServers'] = servers;
     writeClaudeState(state);
-    return { configPath: getClaudeJsonPath() };
+    return { configPath: getClaudeJsonPath(), keptExisting };
   }
 
   if (ref.scope === 'local') {
@@ -208,24 +223,24 @@ export function restoreNativeServer(ref: ServerScopeRef & { originalEntry: unkno
     const projects = asRecord(state['projects']);
     const project = asRecord(projects[dir]);
     const servers = asRecord(project['mcpServers']);
-    servers[ref.server] = ref.originalEntry;
+    servers[ref.server] = entry;
     project['mcpServers'] = servers;
     const disabled = stringArray(project['disabledMcpServers']).filter((s) => s !== ref.server);
     project['disabledMcpServers'] = disabled;
     projects[dir] = project;
     state['projects'] = projects;
     writeClaudeState(state);
-    return { configPath: getClaudeJsonPath() };
+    return { configPath: getClaudeJsonPath(), keptExisting };
   }
 
   const dir = requireDir('project', ref.directory);
   const path = mcpJsonPath(dir);
   const obj = readJsonObject(path);
   const servers = asRecord(obj['mcpServers']);
-  servers[ref.server] = ref.originalEntry;
+  servers[ref.server] = entry;
   obj['mcpServers'] = servers;
   writeJsonObjectAtomic(path, obj);
-  return { configPath: path };
+  return { configPath: path, keptExisting };
 }
 
 function missingEntry(ref: ServerScopeRef): Error {

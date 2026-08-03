@@ -45,6 +45,10 @@ interface CallRequest {
   server: string;
   tool: string;
   args: Record<string, unknown>;
+  /** Calling directory, so a server configured per-project resolves to THAT
+   *  project's credentials. Optional and backwards-compatible: omitting it
+   *  falls back to the deterministic record (user scope first). */
+  cwd?: string;
 }
 
 function parseCallRequest(body: Buffer | null): CallRequest | null {
@@ -63,7 +67,8 @@ function parseCallRequest(body: Buffer | null): CallRequest | null {
     o['args'] && typeof o['args'] === 'object' && !Array.isArray(o['args'])
       ? (o['args'] as Record<string, unknown>)
       : {};
-  return { server: o['server'], tool: o['tool'], args };
+  const cwd = typeof o['cwd'] === 'string' && o['cwd'].length > 0 ? o['cwd'] : undefined;
+  return { server: o['server'], tool: o['tool'], args, ...(cwd ? { cwd } : {}) };
 }
 
 function respondJson(res: ServerResponse, status: number, payload: unknown): void {
@@ -105,7 +110,7 @@ export function createCodeModeHandler(deps: CodeModeServerDeps): CodeModeHttpHan
 
     const startMs = Date.now();
     try {
-      const result = await deps.manager.call(call.server, call.tool, call.args);
+      const result = await deps.manager.call(call.server, call.tool, call.args, call.cwd);
       deps.recordCall({
         ts: startMs,
         server: call.server,

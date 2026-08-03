@@ -88,7 +88,8 @@ describe('code-mode IPC end-to-end', () => {
       expect(statSync(tokenFile).mode & 0o777).toBe(0o600);
     }
 
-    // Settings recorded; stash preserves the secret header for revert.
+    // Settings recorded. The stash keeps only non-secret config: the header
+    // moves to the keychain, so settings.json never holds the credential.
     const settings = await ctx.request<Settings>({ type: 'get_settings' });
     expect(settings.data?.codeModeEnabled).toBe(true);
     expect(settings.data?.codeModeMigrations).toHaveLength(1);
@@ -96,12 +97,15 @@ describe('code-mode IPC end-to-end', () => {
       server: 'fakemcp',
       scope: 'user',
       directory: null,
-      originalEntry: entry,
+      originalEntry: { type: 'http', url: fakeMcp.url },
+      secretKeys: ['headers.X-Fake-Key'],
       // Realized-savings baseline is snapshotted at migration time so the
       // request count starts from zero rather than the day bucket.
       baselineNativeRequests: expect.any(Number),
       baselineServerRequests: expect.any(Number),
     });
+    expect(settings.data?.codeModeMigrations[0]?.secretRef).toMatch(/^fakemcp-[0-9a-f]{32}$/);
+    expect(readFileSync(ctx.settingsPath, 'utf-8')).not.toContain('fake-secret-value');
 
     // Status: one un-drifted migration.
     const status = await ctx.request<CodeModeStatus>({ type: 'get_code_mode_status' });
@@ -472,5 +476,290 @@ describe('code-mode IPC end-to-end', () => {
     expect(md).toContain('preexisting');
     const status = await ctx.request<CodeModeStatus>({ type: 'get_code_mode_status' });
     expect(status.data?.claudeMdBlock).toEqual({ present: true, upToDate: true });
+  });
+});
+
+/**
+ * Credential lifecycle for an already-bridged server. Bridging deletes the
+ * native entry and moves its env/headers into the keychain, so this is the only
+ * path a user has to rotate a token — and the reason the flow must verify
+ * before it writes.
+ */
+describe('code-mode credentials', () => {
+  let ctx: TestDaemon;
+  let fakeMcp: FakeMcpHttpServer | null = null;
+
+  afterEach(async () => {
+    if (ctx) await ctx.cleanup();
+    if (fakeMcp) await fakeMcp.close();
+    fakeMcp = null;
+  });
+
+  function settingsFile(): Settings {
+    return JSON.parse(readFileSync(ctx.settingsPath, 'utf-8')) as Settings;
+  }
+  function keychain(): Record<string, Record<string, string>> {
+    return JSON.parse(readFileSync(ctx.keychainPath, 'utf-8')) as Record<
+      string,
+      Record<string, string>
+    >;
+  }
+  function storedSecrets(): Record<string, string> {
+    const slots = keychain()['Sentinel-code-mode-secrets'] ?? {};
+    const first = Object.values(slots)[0];
+    return first ? (JSON.parse(first) as Record<string, string>) : {};
+  }
+
+  /** Bridge the fake server with a secret header, the shape this flow exists
+   *  for (an auth credential Sentinel now owns). */
+  async function bridgeWithSecret(): Promise<void> {
+    fakeMcp = await startFakeMcpHttpServer();
+    ctx = await startTestDaemon({
+      claudeState: {
+        mcpServers: { fakemcp: { type: 'http', url: fakeMcp.url, headers: SERVER_ENTRY_HEADERS } },
+      },
+    });
+    const m = await ctx.request({ type: 'migrate_server_to_code_mode', server: 'fakemcp' });
+    expect(m.success).toBe(true);
+  }
+
+  it('moves the bridged entry’s secrets to the keychain, out of settings.json', async () => {
+    await bridgeWithSecret();
+    const raw = readFileSync(ctx.settingsPath, 'utf-8');
+    expect(raw).not.toContain('fake-secret-value');
+    const record = settingsFile().codeModeMigrations[0]!;
+    expect(record.secretRef).toMatch(/^fakemcp-[0-9a-f]{32}$/);
+    expect(record.secretKeys).toEqual(['headers.X-Fake-Key']);
+    expect(record.originalEntry).toEqual({ type: 'http', url: fakeMcp!.url });
+    // ...and the keychain is where it went.
+    expect(storedSecrets()).toEqual({ headers: SERVER_ENTRY_HEADERS });
+  });
+
+  it('lists credential field names without exposing any value', async () => {
+    await bridgeWithSecret();
+    const r = await ctx.request<{
+      server: string;
+      records: Array<{ scope: string; secretKeys: string[]; nonSecret: { url?: string } }>;
+    }>({ type: 'get_code_mode_credentials', server: 'fakemcp' });
+    expect(r.success).toBe(true);
+    expect(r.data?.records).toHaveLength(1);
+    expect(r.data?.records[0]?.secretKeys).toEqual(['headers.X-Fake-Key']);
+    expect(r.data?.records[0]?.nonSecret.url).toBe(fakeMcp!.url);
+    // The whole point: no secret value in the payload.
+    expect(JSON.stringify(r.data)).not.toContain('fake-secret-value');
+  });
+
+  it('errors listing credentials for a server that is not bridged', async () => {
+    ctx = await startTestDaemon();
+    const r = await ctx.request({ type: 'get_code_mode_credentials', server: 'nope' });
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/No recorded code-mode migration for 'nope'\./);
+  });
+
+  it('reveals one named value on explicit request', async () => {
+    await bridgeWithSecret();
+    const r = await ctx.request<{ value: string }>({
+      type: 'reveal_code_mode_secret',
+      server: 'fakemcp',
+      scope: 'user',
+      directory: null,
+      key: 'headers.X-Fake-Key',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.value).toBe('fake-secret-value');
+  });
+
+  it('refuses to reveal an unknown field or an unbridged server', async () => {
+    await bridgeWithSecret();
+    const badKey = await ctx.request({
+      type: 'reveal_code_mode_secret',
+      server: 'fakemcp',
+      scope: 'user',
+      directory: null,
+      key: 'env.NOPE',
+    });
+    expect(badKey.success).toBe(false);
+    expect(badKey.error).toMatch(/No credential field 'env\.NOPE'/);
+
+    const badScope = await ctx.request({
+      type: 'reveal_code_mode_secret',
+      server: 'fakemcp',
+      scope: 'local',
+      directory: '/nowhere',
+      key: 'headers.X-Fake-Key',
+    });
+    expect(badScope.success).toBe(false);
+    expect(badScope.error).toMatch(/No recorded code-mode migration/);
+  });
+
+  it('verifies a new credential against the server, then persists it and refreshes the docs', async () => {
+    await bridgeWithSecret();
+    const toolsDir = join(ctx.workdir, 'code-mode', 'servers', 'fakemcp', 'tools');
+    const before = statSync(join(toolsDir, `${FAKE_MCP_TOOLS[0]!.name}.md`)).mtimeMs;
+    // The fake accepts any key, so a changed value still verifies — what is
+    // under test is that the new value is what gets stored and used.
+    fakeMcp!.setRequiredHeader('X-Fake-Key', 'rotated-value');
+
+    const r = await ctx.request<{
+      verified: boolean;
+      toolCount: number;
+      recordsUpdated: number;
+    }>({
+      type: 'update_code_mode_credentials',
+      server: 'fakemcp',
+      target: 'all',
+      changes: { 'headers.X-Fake-Key': 'rotated-value' },
+    });
+    expect(r.success).toBe(true);
+    expect(r.data).toEqual({
+      verified: true,
+      toolCount: FAKE_MCP_TOOLS.length,
+      recordsUpdated: 1,
+    });
+
+    // New value in the keychain, nothing leaked into settings.
+    expect(storedSecrets()).toEqual({ headers: { 'X-Fake-Key': 'rotated-value' } });
+    expect(readFileSync(ctx.settingsPath, 'utf-8')).not.toContain('rotated-value');
+
+    // Docs regenerated — the other thing that only happened on migrate before.
+    expect(statSync(join(toolsDir, `${FAKE_MCP_TOOLS[0]!.name}.md`)).mtimeMs).toBeGreaterThan(
+      before,
+    );
+
+    // And a real bridged call now succeeds against the rotated credential.
+    const call = await fetch(`http://127.0.0.1:${ctx.daemonPort}/code-mode/call`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${getOrCreateCodeModeToken()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ server: 'fakemcp', tool: FAKE_MCP_TOOLS[0]!.name, args: {} }),
+    });
+    expect(call.status).toBe(200);
+    expect(((await call.json()) as { ok: boolean }).ok).toBe(true);
+  });
+
+  it('writes nothing when the new credential fails to verify', async () => {
+    await bridgeWithSecret();
+    // Server now demands a different key than what we are about to save.
+    fakeMcp!.setRequiredHeader('X-Fake-Key', 'the-only-accepted-value');
+
+    const r = await ctx.request({
+      type: 'update_code_mode_credentials',
+      server: 'fakemcp',
+      target: 'all',
+      changes: { 'headers.X-Fake-Key': 'wrong-value' },
+    });
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/Could not connect to 'fakemcp'.*Nothing was saved\./s);
+
+    // The old credential is untouched — this is the guarantee that makes the
+    // dialog safe to use against a live bridge.
+    expect(storedSecrets()).toEqual({ headers: SERVER_ENTRY_HEADERS });
+    expect(settingsFile().codeModeMigrations[0]?.secretKeys).toEqual(['headers.X-Fake-Key']);
+  });
+
+  it('rejects an empty change set and an unmatched target', async () => {
+    await bridgeWithSecret();
+    const empty = await ctx.request({
+      type: 'update_code_mode_credentials',
+      server: 'fakemcp',
+      target: 'all',
+      changes: {},
+    });
+    expect(empty.success).toBe(false);
+    expect(empty.error).toMatch(/No credential changes supplied\./);
+
+    const unmatched = await ctx.request({
+      type: 'update_code_mode_credentials',
+      server: 'fakemcp',
+      target: { scope: 'local', directory: '/nowhere' },
+      changes: { 'headers.X-Fake-Key': 'v' },
+    });
+    expect(unmatched.success).toBe(false);
+    expect(unmatched.error).toMatch(/matching that target/);
+  });
+
+  it('migrates pre-keychain inline secrets at startup, keeping them readable', async () => {
+    ctx = await startTestDaemon({
+      settings: {
+        codeModeEnabled: true,
+        codeModeMigrations: [
+          {
+            server: 'legacy',
+            scope: 'user',
+            directory: null,
+            // The old on-disk shape: secrets inline in settings.json.
+            originalEntry: {
+              command: 'uvx',
+              args: ['legacy-mcp'],
+              env: { LEGACY_TOKEN: 'inline-secret' },
+            },
+            migratedAt: 1,
+          },
+        ],
+      },
+    });
+    const raw = readFileSync(ctx.settingsPath, 'utf-8');
+    expect(raw).not.toContain('inline-secret');
+    const record = settingsFile().codeModeMigrations[0]!;
+    expect(record.secretRef).toMatch(/^legacy-[0-9a-f]{32}$/);
+    expect(record.secretKeys).toEqual(['env.LEGACY_TOKEN']);
+    expect(record.originalEntry).toEqual({ command: 'uvx', args: ['legacy-mcp'] });
+    // Still reachable — a lost credential here would be unrecoverable, since
+    // bridging already deleted the native entry.
+    expect(storedSecrets()).toEqual({ env: { LEGACY_TOKEN: 'inline-secret' } });
+    // And the credentials IPC sees the migrated shape.
+    const creds = await ctx.request<{ records: Array<{ secretKeys: string[] }> }>({
+      type: 'get_code_mode_credentials',
+      server: 'legacy',
+    });
+    expect(creds.data?.records[0]?.secretKeys).toEqual(['env.LEGACY_TOKEN']);
+  });
+
+  it('keeps a newer hand-added entry instead of overwriting it on revert', async () => {
+    await bridgeWithSecret();
+    // Simulate the user rotating the token the old way: re-add the server in
+    // Claude Code's config while it is bridged.
+    const rotated = {
+      type: 'http',
+      url: fakeMcp!.url,
+      headers: { 'X-Fake-Key': 'rotated-by-hand' },
+    };
+    const state = JSON.parse(readFileSync(ctx.claudeJsonPath, 'utf-8')) as Record<string, unknown>;
+    state['mcpServers'] = { ...(state['mcpServers'] as object), fakemcp: rotated };
+    writeFileSync(ctx.claudeJsonPath, JSON.stringify(state, null, 2));
+
+    const r = await ctx.request<{ keptExisting: number }>({
+      type: 'revert_server_from_code_mode',
+      server: 'fakemcp',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.keptExisting).toBe(1);
+
+    // The hand-rotated credential survived; the stale stash did NOT win.
+    const after = JSON.parse(readFileSync(ctx.claudeJsonPath, 'utf-8')) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(after.mcpServers['fakemcp']).toEqual(rotated);
+  });
+
+  it('restores the stashed entry byte-identically when nothing was hand-added', async () => {
+    await bridgeWithSecret();
+    const original = { type: 'http', url: fakeMcp!.url, headers: SERVER_ENTRY_HEADERS };
+    const r = await ctx.request<{ keptExisting: number }>({
+      type: 'revert_server_from_code_mode',
+      server: 'fakemcp',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.keptExisting).toBe(0);
+    const after = JSON.parse(readFileSync(ctx.claudeJsonPath, 'utf-8')) as {
+      mcpServers: Record<string, unknown>;
+    };
+    // Secrets rehydrated out of the keychain — a raw stash restore would have
+    // dropped the headers entirely.
+    expect(after.mcpServers['fakemcp']).toEqual(original);
+    // Slot cleaned up.
+    expect(keychain()['Sentinel-code-mode-secrets'] ?? {}).toEqual({});
   });
 });

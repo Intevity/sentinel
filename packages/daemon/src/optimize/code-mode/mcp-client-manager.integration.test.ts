@@ -9,10 +9,22 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   startFakeMcpHttpServer,
   writeFakeMcpStdioScript,
+  writeFakeMcpStdioScriptWithStderr,
   FAKE_MCP_TOOLS,
   type FakeMcpHttpServer,
 } from '@sentinel/test-harness';
+import { redactSecretsInString } from '../../security/detectors.js';
 import { createMcpClientManager, type McpClientManager } from './mcp-client-manager.js';
+
+/** Adapt a bare `(server) => entry` resolver to the manager's ResolvedEntry
+ *  contract. These tests configure one record per server, so the server name is
+ *  a fine cache key. */
+function byServer(fn: (server: string) => unknown) {
+  return (server: string) => {
+    const entry = fn(server);
+    return entry === undefined ? undefined : { key: server, entry };
+  };
+}
 
 describe('mcp-client-manager (HTTP transport)', () => {
   let fake: FakeMcpHttpServer | null = null;
@@ -34,8 +46,9 @@ describe('mcp-client-manager (HTTP transport)', () => {
     extra: Partial<Parameters<typeof createMcpClientManager>[0]> = {},
   ): McpClientManager {
     manager = createMcpClientManager({
-      resolveEntry: (server) => entries[server],
+      resolveEntry: byServer((server) => entries[server]),
       isAllowed: (server) => allowed.includes(server),
+      redact: redactSecretsInString,
       ...extra,
     });
     return manager;
@@ -181,11 +194,13 @@ describe('mcp-client-manager (stdio transport — real child process)', () => {
     const script = writeFakeMcpStdioScript();
     cleanupScript = script.cleanup;
     manager = createMcpClientManager({
-      resolveEntry: (server) =>
+      resolveEntry: byServer((server) =>
         server === 'fakestdio'
           ? { command: process.execPath, args: [script.path], env }
           : undefined,
+      ),
       isAllowed: (server) => server === 'fakestdio',
+      redact: redactSecretsInString,
     });
     return manager;
   }
@@ -222,11 +237,13 @@ describe('mcp-client-manager (stdio transport — real child process)', () => {
       try {
         manager = createMcpClientManager({
           // `env` resolves via PATH, then execs node (absolute) on the script.
-          resolveEntry: (server) =>
+          resolveEntry: byServer((server) =>
             server === 'fakestdio'
               ? { command: 'env', args: [process.execPath, script.path] }
               : undefined,
+          ),
           isAllowed: (server) => server === 'fakestdio',
+          redact: redactSecretsInString,
         });
         const tools = await manager.listTools('fakestdio');
         expect(tools.map((t) => t.name)).toEqual(FAKE_MCP_TOOLS.map((t) => t.name));
@@ -246,7 +263,7 @@ describe('mcp-client-manager (stdio transport — real child process)', () => {
       const script = writeFakeMcpStdioScript();
       cleanupScript = script.cleanup;
       manager = createMcpClientManager({
-        resolveEntry: (server) =>
+        resolveEntry: byServer((server) =>
           server === 'fakestdio'
             ? {
                 command: 'env',
@@ -254,7 +271,9 @@ describe('mcp-client-manager (stdio transport — real child process)', () => {
                 env: { PATH: '/nonexistent-sentinel-pathdir' },
               }
             : undefined,
+        ),
         isAllowed: (server) => server === 'fakestdio',
+        redact: redactSecretsInString,
       });
       const v = await manager.verify('fakestdio');
       expect(v.ok).toBe(false);
@@ -286,9 +305,11 @@ describe('mcp-client-manager (Leg B sandbox wrapping)', () => {
       env,
     }));
     manager = createMcpClientManager({
-      resolveEntry: (server) =>
+      resolveEntry: byServer((server) =>
         server === 'fakestdio' ? { command: process.execPath, args: [script.path] } : undefined,
+      ),
       isAllowed: (server) => server === 'fakestdio',
+      redact: redactSecretsInString,
       wrapStdioCommand: wrap,
     });
     const tools = await manager.listTools('fakestdio');
@@ -304,9 +325,11 @@ describe('mcp-client-manager (Leg B sandbox wrapping)', () => {
     const script = writeFakeMcpStdioScript();
     cleanupScript = script.cleanup;
     manager = createMcpClientManager({
-      resolveEntry: (server) =>
+      resolveEntry: byServer((server) =>
         server === 'fakestdio' ? { command: process.execPath, args: [script.path] } : undefined,
+      ),
       isAllowed: (server) => server === 'fakestdio',
+      redact: redactSecretsInString,
       // Wrapper substitutes a non-existent binary: if the wrapped command is what
       // gets spawned (it should be), the connection fails.
       wrapStdioCommand: async () => ({
@@ -323,12 +346,91 @@ describe('mcp-client-manager (Leg B sandbox wrapping)', () => {
     const script = writeFakeMcpStdioScript();
     cleanupScript = script.cleanup;
     manager = createMcpClientManager({
-      resolveEntry: (server) =>
+      resolveEntry: byServer((server) =>
         server === 'fakestdio' ? { command: process.execPath, args: [script.path] } : undefined,
+      ),
       isAllowed: (server) => server === 'fakestdio',
+      redact: redactSecretsInString,
       wrapStdioCommand: async () => null,
     });
     const tools = await manager.listTools('fakestdio');
     expect(tools.map((t) => t.name)).toEqual(FAKE_MCP_TOOLS.map((t) => t.name));
+  });
+  it('captures the child stderr tail, redacted, and keeps it after disconnect', async () => {
+    // A server that starts fine and only announces its problem on stderr —
+    // the shape of an expired-token 401, and previously discarded outright.
+    const script = writeFakeMcpStdioScriptWithStderr([
+      'INFO starting up',
+      'ERROR 401 Unauthorized from Jira',
+      'hint: token sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 is expired',
+    ]);
+    cleanupScript = script.cleanup;
+    manager = createMcpClientManager({
+      resolveEntry: byServer((server) =>
+        server === 'fakestdio' ? { command: process.execPath, args: [script.path] } : undefined,
+      ),
+      isAllowed: (server) => server === 'fakestdio',
+      redact: redactSecretsInString,
+    });
+    const mgr = manager;
+    await mgr.listTools('fakestdio');
+    // Give the stderr reader a turn — the pipe is drained asynchronously.
+    await vi.waitFor(() => {
+      expect(mgr.lastStderr('fakestdio').length).toBeGreaterThan(0);
+    });
+
+    const tail = mgr.lastStderr('fakestdio');
+    expect(tail.join('\n')).toContain('ERROR 401 Unauthorized from Jira');
+    // Healthy-startup chatter is filtered out so it can't read as a fault.
+    expect(tail.join('\n')).not.toContain('starting up');
+    // The token in that hint must NOT survive into what the UI will render.
+    expect(tail.join('\n')).not.toContain('sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789');
+
+    // Survives the client going away: a crash-on-startup loop stays diagnosable.
+    await manager.dropServer('fakestdio');
+    expect(manager.connectedCount()).toBe(0);
+    expect(manager.lastStderr('fakestdio').join('\n')).toContain('ERROR 401 Unauthorized');
+  });
+
+  it('reports an empty stderr tail for a quiet server', async () => {
+    const script = writeFakeMcpStdioScript();
+    cleanupScript = script.cleanup;
+    manager = createMcpClientManager({
+      resolveEntry: byServer((server) =>
+        server === 'fakestdio' ? { command: process.execPath, args: [script.path] } : undefined,
+      ),
+      isAllowed: (server) => server === 'fakestdio',
+      redact: redactSecretsInString,
+    });
+    await manager.listTools('fakestdio');
+    expect(manager.lastStderr('fakestdio')).toEqual([]);
+  });
+
+  it('gives each config record its own child so scopes cannot share credentials', async () => {
+    const script = writeFakeMcpStdioScript();
+    cleanupScript = script.cleanup;
+    // Same server name, two records — the situation that previously served one
+    // scope's connection (and token) to every other scope.
+    manager = createMcpClientManager({
+      resolveEntry: (server, cwd) =>
+        server === 'multi'
+          ? {
+              key: cwd === '/repo/b' ? 'record-b' : 'record-a',
+              entry: { command: process.execPath, args: [script.path] },
+            }
+          : undefined,
+      isAllowed: (server) => server === 'multi',
+      redact: redactSecretsInString,
+    });
+    await manager.listTools('multi', '/repo/a');
+    expect(manager.connectedCount()).toBe(1);
+    await manager.listTools('multi', '/repo/b');
+    expect(manager.connectedCount()).toBe(2);
+    // Re-using a cwd reuses its own child rather than spawning a third.
+    await manager.listTools('multi', '/repo/a');
+    expect(manager.connectedCount()).toBe(2);
+    // dropServer evicts every record for the server, not just one.
+    await manager.dropServer('multi');
+    expect(manager.connectedCount()).toBe(0);
   });
 });

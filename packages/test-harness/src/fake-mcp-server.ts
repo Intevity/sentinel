@@ -42,6 +42,17 @@ export interface FakeMcpHttpServer {
   port: number;
   /** Every tools/call received, in order. */
   calls: FakeMcpToolCall[];
+  /**
+   * Change (or, with `null`, drop) the header value this server demands, at
+   * any point in a test. Requests carrying anything else get a 401 before
+   * reaching the MCP layer.
+   *
+   * Models credential rotation from the server's side: rotate the accepted
+   * value, and a client still holding the old one starts failing exactly as a
+   * real server with an expired token would. That is what lets a test prove
+   * Sentinel's credential update verifies before it saves.
+   */
+  setRequiredHeader(name: string, value: string | null): void;
   close(): Promise<void>;
 }
 
@@ -124,6 +135,9 @@ export async function startFakeMcpHttpServer(opts?: {
   requireToken?: string;
 }): Promise<FakeMcpHttpServer> {
   const calls: FakeMcpToolCall[] = [];
+  /** Mutable header requirement, set via `setRequiredHeader`. Lowercased name
+   *  so it matches Node's normalized `req.headers`. */
+  let required: { name: string; value: string } | null = null;
 
   const httpServer: HttpServer = createServer((req, res) => {
     void (async () => {
@@ -134,6 +148,11 @@ export async function startFakeMcpHttpServer(opts?: {
           res.end(JSON.stringify({ error: 'unauthorized' }));
           return;
         }
+      }
+      if (required && req.headers[required.name] !== required.value) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `bad or missing ${required.name}` }));
+        return;
       }
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(chunk as Buffer);
@@ -171,6 +190,9 @@ export async function startFakeMcpHttpServer(opts?: {
     url: `http://127.0.0.1:${port}/mcp`,
     port,
     calls,
+    setRequiredHeader: (name, value) => {
+      required = value === null ? null : { name: name.toLowerCase(), value };
+    },
     close: () =>
       new Promise<void>((resolve) => {
         httpServer.close(() => resolve());
@@ -278,6 +300,30 @@ function handle(msg) {
 export function writeFakeMcpStdioScript(): { path: string; cleanup: () => void } {
   const path = join(tmpdir(), `fake-mcp-stdio-${randomUUID()}.mjs`);
   writeFileSync(path, STDIO_SCRIPT, 'utf-8');
+  return {
+    path,
+    cleanup: () => {
+      if (existsSync(path)) unlinkSync(path);
+    },
+  };
+}
+
+/**
+ * A stdio server that writes the given lines to stderr on startup, then serves
+ * normally. Models the real diagnostic case a bridged server presents — the
+ * process starts fine and the failure is only ever announced on stderr (an
+ * expired token's 401, a Python traceback) — so a test can prove Sentinel
+ * captures and redacts that output instead of discarding it.
+ */
+export function writeFakeMcpStdioScriptWithStderr(lines: string[]): {
+  path: string;
+  cleanup: () => void;
+} {
+  const path = join(tmpdir(), `fake-mcp-stdio-noisy-${randomUUID()}.mjs`);
+  const preamble = lines
+    .map((l) => `process.stderr.write(${JSON.stringify(`${l}\n`)});`)
+    .join('\n');
+  writeFileSync(path, `${preamble}\n${STDIO_SCRIPT}`, 'utf-8');
   return {
     path,
     cleanup: () => {

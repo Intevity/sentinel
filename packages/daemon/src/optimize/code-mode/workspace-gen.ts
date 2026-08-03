@@ -47,13 +47,17 @@ async function writeFileAtomic(path: string, content: string): Promise<void> {
   await fs.rename(tmp, path);
 }
 
+/** `cwd` is included because a server configured per-project can hold different
+ *  credentials per project (a scoped token, a different project filter).
+ *  Sending it makes the daemon pick THAT project's record; omitting it still
+ *  works and falls back to the user-scope record. */
 function curlExample(port: number, server: string, tool: string, tokenFile: string): string {
   return [
     '```sh',
     `curl -s -X POST http://127.0.0.1:${port}/code-mode/call \\`,
     `  -H "Authorization: Bearer $(cat ${tokenFile})" \\`,
     `  -H 'Content-Type: application/json' \\`,
-    `  -d '{"server":"${server}","tool":"${tool}","args":{}}'`,
+    `  -d "{\\"server\\":\\"${server}\\",\\"tool\\":\\"${tool}\\",\\"args\\":{},\\"cwd\\":\\"$PWD\\"}"`,
     '```',
   ].join('\n');
 }
