@@ -16,6 +16,7 @@ import { formatInt } from '../../lib/format.js';
 import { filterMcpInsights, type McpServerChipState } from '../../lib/mcpServerFilter.js';
 import { formatUsd } from './charts/shared.js';
 import { MetricTile } from './MetricTile.js';
+import CredentialsDialog from './CredentialsDialog.js';
 
 /**
  * Context section of the Optimize tab: per-MCP-server definition costs
@@ -34,7 +35,7 @@ import { MetricTile } from './MetricTile.js';
 /** Per-row actions. Migrate can take several seconds (the daemon connects to
  *  the server, lists tools, and generates the workspace + skill), so the UI
  *  must show in-flight feedback rather than appearing to hang. */
-type ServerAction = 'migrate' | 'revert' | 'disable' | 'enable';
+type ServerAction = 'migrate' | 'revert' | 'disable' | 'enable' | 'credentials';
 
 const EMPTY_COSTS: McpContextCosts = {
   insights: [],
@@ -116,6 +117,8 @@ export default function ContextPanel({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [pickedProjects, setPickedProjects] = useState<Record<string, string>>({});
+  /** Server whose credentials dialog is open, or null. */
+  const [credentialsFor, setCredentialsFor] = useState<string | null>(null);
   // Context-tab list filters. `hideUnmanaged` defaults on so servers Sentinel
   // can't bridge or disable (Claude Code plugins, remote connectors, enterprise
   // settings) stay out of view until the user opts to see them.
@@ -157,6 +160,14 @@ export default function ContextPanel({
 
   const act = useCallback(
     async (insight: McpContextInsight, kind: ServerAction): Promise<void> => {
+      // Credentials open a dialog rather than firing an IPC call — the daemon
+      // work happens on its Save, so no busy state is claimed here.
+      if (kind === 'credentials') {
+        setError(null);
+        setNotice(null);
+        setCredentialsFor(insight.server);
+        return;
+      }
       setBusy({ server: insight.server, kind });
       setError(null);
       setNotice(null);
@@ -167,6 +178,9 @@ export default function ContextPanel({
               restartRequired?: boolean;
               toolCount?: number;
               entriesDisabled?: number;
+              /** Entries where a newer hand-added config entry was preserved
+               *  instead of being overwritten by Sentinel's stash. */
+              keptExisting?: number;
             }>
           >
         >;
@@ -209,7 +223,14 @@ export default function ContextPanel({
             } disabled); restart your Claude Code session to apply.`,
           );
         } else if (r.data?.restartRequired) {
-          setNotice('Done; restart your Claude Code session to apply.');
+          const kept = r.data.keptExisting ?? 0;
+          setNotice(
+            kept > 0
+              ? `Done; restart your Claude Code session to apply. Kept ${kept} newer ${
+                  kept === 1 ? 'entry' : 'entries'
+                } you had already re-added rather than overwriting ${kept === 1 ? 'it' : 'them'}.`
+              : 'Done; restart your Claude Code session to apply.',
+          );
         }
         // Refresh inside the busy window so the spinner holds until the row
         // re-renders with its new state (bridged pill, badges) instead of
@@ -226,6 +247,15 @@ export default function ContextPanel({
     () => new Set(status.migrations.map((m) => m.server)),
     [status.migrations],
   );
+  /** Redacted stderr tail per server. This is how an expired token's 401
+   *  becomes visible instead of dying with the child process. */
+  const serverStderr = useMemo(() => {
+    const out: Record<string, string[]> = {};
+    for (const m of status.migrations) {
+      if (m.lastStderr && m.lastStderr.length > 0) out[m.server] = m.lastStderr;
+    }
+    return out;
+  }, [status.migrations]);
   const filtered = useMemo(
     () => filterMcpInsights(costs.insights, { search, hideUnmanaged, chips }),
     [costs.insights, search, hideUnmanaged, chips],
@@ -238,6 +268,20 @@ export default function ContextPanel({
 
   return (
     <div className="glass-card px-4 py-3">
+      {credentialsFor && (
+        <CredentialsDialog
+          server={credentialsFor}
+          onClose={() => setCredentialsFor(null)}
+          onSaved={(result) => {
+            setNotice(
+              `${credentialsFor} credentials verified and saved (${result.toolCount} tools, ` +
+                `${result.recordsUpdated} ${result.recordsUpdated === 1 ? 'entry' : 'entries'}); ` +
+                `no session restart needed.`,
+            );
+            void refresh();
+          }}
+        />
+      )}
       <h3 className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-foreground">
         <Network className="h-3.5 w-3.5" /> MCP context costs
       </h3>
@@ -331,6 +375,7 @@ export default function ContextPanel({
             key={insight.server}
             insight={insight}
             bridged={bridgedServers.has(insight.server)}
+            lastStderr={serverStderr[insight.server]}
             realized={costs.savings.byServer.find((s) => s.server === insight.server)}
             busyAction={busy?.server === insight.server ? busy.kind : null}
             actionsDisabled={busy !== null}
@@ -450,6 +495,7 @@ function McpServerFilters({
 function ServerRow({
   insight,
   bridged,
+  lastStderr,
   realized,
   busyAction,
   actionsDisabled,
@@ -459,6 +505,9 @@ function ServerRow({
 }: {
   insight: McpContextInsight;
   bridged: boolean;
+  /** Redacted stderr tail from the bridged child, when it printed anything
+   *  noteworthy — usually the reason a bridged call is failing. */
+  lastStderr: string[] | undefined;
   /** Realized-savings attribution for bridged servers (undefined until the
    *  first post-migration request lands). */
   realized: McpContextSavings['byServer'][number] | undefined;
@@ -603,6 +652,21 @@ function ServerRow({
           have no config entry Sentinel can disable: bridging one would
           leave the native definitions loading alongside the bridge. No
           actions, just the honest explanation. */}
+      {/* The bridged child's own error output. Previously discarded, which left
+          an expired token looking identical to a healthy bridge that just
+          returned errors. Redacted daemon-side before it ever reaches here. */}
+      {bridged && lastStderr && lastStderr.length > 0 && (
+        <details className="mt-1.5">
+          <summary className="cursor-pointer text-[11px] text-amber-700 dark:text-amber-400">
+            Server reported {lastStderr.length} message
+            {lastStderr.length === 1 ? '' : 's'} on stderr — often an expired token
+          </summary>
+          <pre className="mt-1 max-h-32 overflow-auto rounded bg-foreground/5 p-1.5 font-mono text-[10px] whitespace-pre-wrap text-foreground/70">
+            {lastStderr.join('\n')}
+          </pre>
+        </details>
+      )}
+
       {!insight.managed && (
         <p className="mt-1.5 text-[11px] text-foreground/55">
           Configured outside Claude Code's local config (plugin or remote connector); Sentinel can't
@@ -625,11 +689,18 @@ function ServerRow({
                 />
               )}
               <ActionButton
+                label="Update credentials"
+                spinning={busyAction === 'credentials'}
+                disabled={actionsDisabled}
+                onClick={() => onAct('credentials')}
+                title="Edit this server's tokens or auth headers. Bridging moved them out of Claude Code's config, so this is where they live now. Verified against the server before saving; no session restart needed."
+              />
+              <ActionButton
                 label="Switch back to native MCP"
                 spinning={busyAction === 'revert'}
                 disabled={actionsDisabled}
                 onClick={() => onAct('revert')}
-                title="Restores every entry this migration disabled, byte-identically."
+                title="Restores every entry this migration disabled. An entry you re-added yourself since bridging is kept as-is rather than overwritten."
               />
             </>
           ) : disabledOnly ? (

@@ -1348,6 +1348,76 @@ export interface GetCodeModeStatusMessage {
   type: 'get_code_mode_status';
 }
 
+/** Describe a bridged server's credential fields so the UI can render an edit
+ *  form. Returns field NAMES only — no secret values cross the IPC boundary
+ *  here, so opening the dialog exposes nothing. Use
+ *  {@link RevealCodeModeSecretMessage} for a single value on explicit request. */
+export interface GetCodeModeCredentialsMessage {
+  type: 'get_code_mode_credentials';
+  server: string;
+}
+
+/** One migration record's editable shape. */
+export interface CodeModeCredentialRecord {
+  scope: McpInstallScope;
+  directory: string | null;
+  /** `env.NAME` / `headers.NAME` field names held in the keychain. */
+  secretKeys: string[];
+  /** Non-secret connection config, for display context (which command or URL
+   *  these credentials are used against). */
+  nonSecret: { command?: string; args?: string[]; type?: string; url?: string };
+}
+
+/** Response shape for {@link GetCodeModeCredentialsMessage}. */
+export interface CodeModeCredentials {
+  server: string;
+  records: CodeModeCredentialRecord[];
+}
+
+/** Reveal ONE credential value, for a user who needs to see what a field
+ *  currently holds (e.g. confirming a URL) before editing it. Deliberately
+ *  one field per call and never batched: the dialog can render and submit
+ *  without ever reading a value it doesn't need. */
+export interface RevealCodeModeSecretMessage {
+  type: 'reveal_code_mode_secret';
+  server: string;
+  scope: McpInstallScope;
+  directory: string | null;
+  /** `env.NAME` or `headers.NAME`. */
+  key: string;
+}
+
+/** Update a bridged server's credentials in place.
+ *
+ *  Verifies the edited config against the real server BEFORE persisting
+ *  anything: on failure nothing is written and the running bridge keeps working
+ *  with its old credentials. On success the keychain slot is rewritten, the
+ *  generated tool docs are regenerated from the freshly-listed tools, and the
+ *  cached client is dropped so the next call reconnects with the new secrets.
+ *
+ *  Unlike migrate/revert this needs NO Claude Code session restart — the
+ *  endpoint, skill, and allow rule are all unchanged. */
+export interface UpdateCodeModeCredentialsMessage {
+  type: 'update_code_mode_credentials';
+  server: string;
+  /** A single record, or every record for this server (the common case when
+   *  one rotated token is shared across scopes). */
+  target: { scope: McpInstallScope; directory: string | null } | 'all';
+  /** Changed fields only, keyed `env.NAME` / `headers.NAME`. A `null` value
+   *  deletes the field. Fields the user didn't touch are absent and left
+   *  exactly as they are. */
+  changes: Record<string, string | null>;
+}
+
+/** Response payload for {@link UpdateCodeModeCredentialsMessage}. */
+export interface CodeModeCredentialUpdateResult {
+  /** Always true — a failed verify is reported as an IPC error instead. */
+  verified: true;
+  /** Tools listed during verification; also the count written to the docs. */
+  toolCount: number;
+  recordsUpdated: number;
+}
+
 /** Re-assert everything the code-mode bridge needs to reach subagents for the
  *  currently-migrated servers: the sentinel-code-mode skill, the managed
  *  `~/.claude/CLAUDE.md` block, the installed curated agents' skill preload,
@@ -1364,8 +1434,11 @@ export interface CodeModeStatus {
   /** Mirror of `Settings.codeModeSkillInstalled`. */
   skillInstalled: boolean;
   /** Recorded migrations, each verified still reflected in the config
-   *  file (a hand-restored entry flips the record's `drifted` flag). */
-  migrations: Array<CodeModeMigration & { drifted: boolean }>;
+   *  file (a hand-restored entry flips the record's `drifted` flag).
+   *  `lastStderr` is the bridged child's redacted stderr tail (oldest first),
+   *  present only when it printed something noteworthy — this is where an
+   *  expired token's 401 surfaces. */
+  migrations: Array<CodeModeMigration & { drifted: boolean; lastStderr?: string[] }>;
   /** The loopback endpoint URL the skill calls. */
   endpointUrl: string;
   /** Absolute path of the generated wrapper workspace. */
@@ -2114,6 +2187,9 @@ export type AppToDaemonMessage =
   | MigrateServerToCodeModeMessage
   | RevertServerFromCodeModeMessage
   | GetCodeModeStatusMessage
+  | GetCodeModeCredentialsMessage
+  | RevealCodeModeSecretMessage
+  | UpdateCodeModeCredentialsMessage
   | RepairCodeModeBridgeMessage
   | GetCodeModeAuditMessage
   | GetAgentsSyncStatusMessage

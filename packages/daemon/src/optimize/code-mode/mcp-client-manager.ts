@@ -60,10 +60,22 @@ export interface McpCallResult {
 
 export type VerifyResult = { ok: true; tools: McpToolDescriptor[] } | { ok: false; error: string };
 
+/** A server's connection entry plus the cache key it belongs under. */
+export interface ResolvedEntry {
+  /** Stable identity of the CONFIG RECORD this entry came from, not the server.
+   *  Two scopes of the same server can hold different credentials (a
+   *  per-project token, a different Jira project filter), so they must not
+   *  share one spawned child — keying the client cache by server name alone
+   *  would silently serve one scope's connection to another. */
+  key: string;
+  entry: unknown;
+}
+
 export interface McpClientManagerDeps {
-  /** Resolve a server's connection entry (the `mcpServers[name]` value).
-   *  Returns undefined for unknown servers. */
-  resolveEntry: (server: string) => unknown;
+  /** Resolve a server's connection entry (the `mcpServers[name]` value) for the
+   *  calling directory. `cwd` is optional — callers that don't know it get the
+   *  deterministic fallback record. Returns undefined for unknown servers. */
+  resolveEntry: (server: string, cwd?: string) => ResolvedEntry | undefined;
   /** The bridged-server allowlist (recorded code-mode migrations). */
   isAllowed: (server: string) => boolean;
   /** Availability callback for status surfacing (Context tab's
@@ -79,27 +91,49 @@ export interface McpClientManagerDeps {
     args: string[],
     env: Record<string, string>,
   ) => Promise<{ command: string; args: string[]; env: Record<string, string> } | null>;
+  /** Redactor applied to every captured stderr line before it is stored or
+   *  surfaced. Production wires `redactSecretsInString`; a bridged server that
+   *  echoes its own config on an auth failure would otherwise leak the user's
+   *  token into the status payload. */
+  redact: (text: string) => string;
   /** Test seams. */
   idleShutdownMs?: number;
   maxResultBytes?: number;
 }
 
 export interface McpClientManager {
-  listTools(server: string): Promise<McpToolDescriptor[]>;
-  call(server: string, tool: string, args: Record<string, unknown>): Promise<McpCallResult>;
+  listTools(server: string, cwd?: string): Promise<McpToolDescriptor[]>;
+  call(
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+    cwd?: string,
+  ): Promise<McpCallResult>;
   /** Connect + tools/list without the allowlist gate — the pre-migration
    *  connectivity check. Returns the live tool descriptors on success (the
    *  workspace generator's input, fetched before the server is bridged).
    *  Never throws. */
-  verify(server: string): Promise<VerifyResult>;
+  verify(server: string, cwd?: string): Promise<VerifyResult>;
   /** Number of currently-connected clients (test/status introspection). */
   connectedCount(): number;
+  /** Redacted stderr tail for this server, oldest first, or an empty array when
+   *  it has printed nothing noteworthy. Survives disconnects so a server that
+   *  dies on startup is still diagnosable. */
+  lastStderr(server: string): string[];
+  /** Close and forget this server's client, killing any spawned stdio child.
+   *  The next call reconnects and re-reads its config, which is what makes a
+   *  credential update take effect immediately instead of after the idle
+   *  timeout. No-op when the server isn't connected. */
+  dropServer(server: string): Promise<void>;
   stopAll(): Promise<void>;
 }
 
 interface ManagedClient {
   client: Client;
   idleTimer: NodeJS.Timeout | null;
+  /** Server this client belongs to, so `dropClient` can maintain the
+   *  server → record-keys index without a reverse scan. */
+  server: string;
 }
 
 /** A GUI-launched app (the Tauri shell that spawns this daemon) inherits a
@@ -202,11 +236,15 @@ async function buildTransport(
         spawnEnv = wrapped.env;
       }
     }
+    // 'pipe', not 'ignore': a bridged server's stderr is where an expired
+    // token's 401 shows up, and discarding it left users with a bridge that
+    // silently returned errors and no way to find out why. The caller attaches
+    // a redacted, bounded reader (`attachStderr`).
     return new StdioClientTransport({
       command: spawnCommand,
       args: spawnArgs,
       env: spawnEnv,
-      stderr: 'ignore',
+      stderr: 'pipe',
     });
   }
   if (typeof e['url'] === 'string' && e['url'].length > 0) {
@@ -226,24 +264,70 @@ async function buildTransport(
   );
 }
 
+/** Longest stderr tail kept per server. Enough to hold a short auth error or a
+ *  Python traceback's last frames without letting a chatty server grow the
+ *  daemon's heap. */
+const STDERR_TAIL_LINES = 8;
+const STDERR_TAIL_BYTES = 4 * 1024;
+
+/** Lines a well-behaved MCP server prints on a healthy startup. Keeping them
+ *  out of `lastError` is what stops the UI showing "Starting server..." as
+ *  though it were a fault. */
+const STDERR_NOISE = /^\s*(?:\[?info\]?\b|debug\b|starting\b|listening\b|ready\b)/i;
+
 export function createMcpClientManager(deps: McpClientManagerDeps): McpClientManager {
   const idleMs = deps.idleShutdownMs ?? IDLE_SHUTDOWN_MS;
   const maxBytes = deps.maxResultBytes ?? MAX_RESULT_BYTES;
+  /** Keyed by CONFIG RECORD (`ResolvedEntry.key`), not server name — see the
+   *  note on that field. */
   const clients = new Map<string, ManagedClient>();
+  /** Record keys currently cached per server, so `dropServer` can evict every
+   *  scope's client at once. */
+  const keysByServer = new Map<string, Set<string>>();
+  /** Redacted stderr tail per server, newest last. Survives `dropClient` so a
+   *  crash-on-startup loop is still diagnosable after the client is gone. */
+  const stderrTails = new Map<string, string[]>();
   let stopped = false;
 
-  function touchIdle(server: string, managed: ManagedClient): void {
+  /** Stream a spawned child's stderr into the bounded per-server tail, running
+   *  every line through the secret redactor first — a server that echoes its
+   *  own config on failure would otherwise write the user's token into the
+   *  status payload and the audit UI. */
+  function attachStderr(server: string, transport: ClientTransport): void {
+    const stream = (transport as StdioClientTransport).stderr;
+    if (!stream) return;
+    let carry = '';
+    stream.on('data', (chunk: Buffer | string) => {
+      carry += typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+      const lines = carry.split(/\r?\n/);
+      carry = lines.pop() ?? '';
+      const tail = stderrTails.get(server) ?? [];
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0 || STDERR_NOISE.test(trimmed)) continue;
+        tail.push(deps.redact(trimmed).slice(0, STDERR_TAIL_BYTES));
+      }
+      while (tail.length > STDERR_TAIL_LINES) tail.shift();
+      if (tail.length > 0) stderrTails.set(server, tail);
+    });
+    // A closed/errored stderr pipe must never take the daemon down; the tail we
+    // already captured is still the useful part.
+    stream.on('error', () => {});
+  }
+
+  function touchIdle(key: string, managed: ManagedClient): void {
     if (managed.idleTimer) clearTimeout(managed.idleTimer);
     managed.idleTimer = setTimeout(() => {
-      void dropClient(server);
+      void dropClient(key);
     }, idleMs);
     if (typeof managed.idleTimer.unref === 'function') managed.idleTimer.unref();
   }
 
-  async function dropClient(server: string): Promise<void> {
-    const managed = clients.get(server);
+  async function dropClient(key: string): Promise<void> {
+    const managed = clients.get(key);
     if (!managed) return;
-    clients.delete(server);
+    clients.delete(key);
+    keysByServer.get(managed.server)?.delete(key);
     if (managed.idleTimer) clearTimeout(managed.idleTimer);
     try {
       await managed.client.close();
@@ -252,15 +336,23 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
     }
   }
 
-  async function ensureClient(server: string): Promise<Client> {
-    const existing = clients.get(server);
+  async function ensureClient(server: string, cwd?: string): Promise<Client> {
+    const resolved = deps.resolveEntry(server, cwd);
+    // No record at all: fall through to buildTransport, which raises the
+    // "no usable config entry" error naming the server.
+    const key = resolved?.key ?? server;
+    const existing = clients.get(key);
     if (existing) {
-      touchIdle(server, existing);
+      touchIdle(key, existing);
       return existing.client;
     }
     if (stopped) throw new Error('MCP client manager is shut down');
-    const entry = deps.resolveEntry(server);
+    const entry = resolved?.entry;
     const transport = await buildTransport(server, entry, deps.wrapStdioCommand);
+    // Attach before connect: a server that dies during the handshake writes its
+    // reason to stderr and nowhere else, and that is exactly the case worth
+    // capturing.
+    attachStderr(server, transport);
     const client = new Client({ name: 'sentinel-code-mode', version: '1.0.0' });
     try {
       // Cast bridges the same exactOptionalPropertyTypes mismatch as the
@@ -270,21 +362,32 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
       deps.onAvailability?.(server, false);
       throw clarifySpawnError(server, entry, err);
     }
-    const managed: ManagedClient = { client, idleTimer: null };
-    clients.set(server, managed);
-    touchIdle(server, managed);
+    const managed: ManagedClient = { client, idleTimer: null, server };
+    clients.set(key, managed);
+    let keys = keysByServer.get(server);
+    if (!keys) {
+      keys = new Set();
+      keysByServer.set(server, keys);
+    }
+    keys.add(key);
+    touchIdle(key, managed);
     deps.onAvailability?.(server, true);
     return client;
   }
 
   /** Run an SDK call, dropping the cached client on failure so the next
    *  call reconnects instead of reusing a broken transport. */
-  async function withClient<T>(server: string, fn: (client: Client) => Promise<T>): Promise<T> {
-    const client = await ensureClient(server);
+  async function withClient<T>(
+    server: string,
+    cwd: string | undefined,
+    fn: (client: Client) => Promise<T>,
+  ): Promise<T> {
+    const key = deps.resolveEntry(server, cwd)?.key ?? server;
+    const client = await ensureClient(server, cwd);
     try {
       return await fn(client);
     } catch (err) {
-      await dropClient(server);
+      await dropClient(key);
       throw err;
     }
   }
@@ -296,9 +399,9 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
   }
 
   return {
-    async listTools(server) {
+    async listTools(server, cwd) {
       requireAllowed(server);
-      const result = await withClient(server, (c) => c.listTools());
+      const result = await withClient(server, cwd, (c) => c.listTools());
       return result.tools.map((t) => ({
         name: t.name,
         description: t.description ?? '',
@@ -306,9 +409,11 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
       }));
     },
 
-    async call(server, tool, args) {
+    async call(server, tool, args, cwd) {
       requireAllowed(server);
-      const result = await withClient(server, (c) => c.callTool({ name: tool, arguments: args }));
+      const result = await withClient(server, cwd, (c) =>
+        c.callTool({ name: tool, arguments: args }),
+      );
       const isError = result.isError === true;
       let contentJson = JSON.stringify(result.content ?? []);
       let truncated = false;
@@ -331,9 +436,9 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
       return { contentJson, isError, bytes, truncated };
     },
 
-    async verify(server) {
+    async verify(server, cwd) {
       try {
-        const result = await withClient(server, (c) => c.listTools());
+        const result = await withClient(server, cwd, (c) => c.listTools());
         return {
           ok: true,
           tools: result.tools.map((t) => ({
@@ -351,9 +456,20 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
       return clients.size;
     },
 
+    lastStderr(server) {
+      return [...(stderrTails.get(server) ?? [])];
+    },
+
+    async dropServer(server) {
+      // Every scope's client, not just one: a credential update may rewrite
+      // several records, and any of them could have a live child.
+      const keys = [...(keysByServer.get(server) ?? [])];
+      await Promise.all(keys.map((key) => dropClient(key)));
+    },
+
     async stopAll() {
       stopped = true;
-      await Promise.all([...clients.keys()].map((server) => dropClient(server)));
+      await Promise.all([...clients.keys()].map((key) => dropClient(key)));
     },
   };
 }

@@ -8,6 +8,7 @@ export { SCENARIOS, type ScenarioName, scenarioHeaders } from './scenarios.js';
 export {
   startFakeMcpHttpServer,
   writeFakeMcpStdioScript,
+  writeFakeMcpStdioScriptWithStderr,
   runFakeMcpTool,
   FAKE_MCP_TOOLS,
   type FakeMcpHttpServer,

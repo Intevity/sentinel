@@ -279,19 +279,34 @@ export interface McpInstallRecord {
  *  `/code-mode/call` endpoint instead of carrying the server's tool
  *  definitions in every request.
  *
- *  `originalEntry` is the exact JSON value removed from `mcpServers` so
- *  "Switch back" restores it byte-identically. Secrets the entry may carry
- *  (env vars, auth headers) stay inside settings.json (0600 + HMAC sidecar)
- *  and are only ever read by the daemon at connect time; they are never
- *  written into generated workspace files or the skill. */
+ *  `originalEntry` plus the record's keychain secret blob together reconstitute
+ *  the exact JSON value removed from `mcpServers`, so "Switch back" restores it
+ *  byte-identically. The split exists because the entry's `env` and `headers`
+ *  routinely carry API tokens and PATs: those two objects live in the OS
+ *  keychain (see `code-mode-secrets.ts`), and only non-secret config —
+ *  `command`, `args`, `type`, `url` — stays in settings.json. Rehydrate with
+ *  `hydrateEntry()` before connecting or restoring; secrets are never written
+ *  into generated workspace files or the skill. */
 export interface CodeModeMigration {
   /** Server name as it appeared under `mcpServers`. */
   server: string;
   scope: McpInstallScope;
   /** Directory for `local`/`project` scopes; null for `user`. */
   directory: string | null;
-  /** The exact config object stashed from `mcpServers[server]`. */
+  /** The config object stashed from `mcpServers[server]`, minus `env` and
+   *  `headers` once `secretRef` is set. Records written before the keychain
+   *  split still carry them inline until the startup migration moves them. */
   originalEntry: unknown;
+  /** Keychain account key holding this record's `{ env, headers }` blob.
+   *  Generated once at migration time and persisted, so changing the key
+   *  derivation later cannot orphan an existing slot. Null/absent on records
+   *  whose secrets are still inline in `originalEntry`. */
+  secretRef?: string | null;
+  /** Field names present in the keychain blob, as `env.NAME` / `headers.NAME`.
+   *  Names only — lets the credentials UI render its form without reading the
+   *  keychain, so secret values cross the IPC boundary only on an explicit
+   *  per-field reveal. */
+  secretKeys?: string[];
   migratedAt: number;
   /** All-time `__native__` request count observed at migration time. Realized
    *  savings count requests since bridging as the delta from this baseline, so

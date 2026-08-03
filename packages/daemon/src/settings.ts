@@ -278,7 +278,11 @@ function coerceBaselines(e: Record<string, unknown>): {
  *  malformed entries. Mirrors `coerceMcpInstalls`: `user`-scope records carry
  *  a null directory; `local`/`project` require a non-empty directory string.
  *  `originalEntry` is kept verbatim (it is an opaque stash of the user's own
- *  config; restore must be byte-identical, so no shaping is applied). */
+ *  config, minus the `env`/`headers` now held in the keychain; restore must
+ *  reproduce it byte-identically once rehydrated, so no shaping is applied).
+ *  `secretRef`/`secretKeys` are the pointer to that keychain slot — dropping
+ *  them would orphan the secrets and leave the server unable to authenticate,
+ *  so they are carried through whenever well-formed. */
 function coerceCodeModeMigrations(raw: unknown): CodeModeMigration[] {
   if (!Array.isArray(raw)) return [];
   const out: CodeModeMigration[] = [];
@@ -299,6 +303,7 @@ function coerceCodeModeMigrations(raw: unknown): CodeModeMigration[] {
         directory: null,
         originalEntry: e['originalEntry'],
         migratedAt,
+        ...coerceSecretRef(e),
         ...coerceBaselines(e),
       });
     } else if (typeof directory === 'string' && directory.length > 0) {
@@ -308,11 +313,26 @@ function coerceCodeModeMigrations(raw: unknown): CodeModeMigration[] {
         directory,
         originalEntry: e['originalEntry'],
         migratedAt,
+        ...coerceSecretRef(e),
         ...coerceBaselines(e),
       });
     }
   }
   return out;
+}
+
+/** Pull the keychain pointer off a raw migration record. Both fields are
+ *  omitted (rather than nulled) when absent or malformed, so a record that
+ *  predates the keychain split keeps its inline secrets and gets picked up by
+ *  the startup migration instead of being silently detached from them. */
+function coerceSecretRef(e: Record<string, unknown>): Partial<CodeModeMigration> {
+  const ref = e['secretRef'];
+  if (typeof ref !== 'string' || ref.length === 0) return {};
+  const raw = e['secretKeys'];
+  const secretKeys = Array.isArray(raw)
+    ? raw.filter((k): k is string => typeof k === 'string')
+    : [];
+  return { secretRef: ref, secretKeys };
 }
 
 /** Keep only non-empty, trimmed strings from an arbitrary value. Used for the
