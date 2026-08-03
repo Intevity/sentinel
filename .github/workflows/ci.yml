@@ -167,6 +167,14 @@ jobs:
       - name: Mock budget check
         run: node scripts/mock-budget.mjs
 
+      # Catches colour utilities whose colour the theme doesn't define — those
+      # emit no CSS, so the element renders with no background/text colour at
+      # all. v0.9.5 shipped a fully transparent modal because `bg-background`
+      # (no such theme colour) passed type-check, tests, coverage and every
+      # other gate here: none of them can see an unreadable panel.
+      - name: Tailwind colour class check
+        run: node scripts/tailwind-classes.mjs
+
       - name: Detector ReDoS check
         run: node scripts/check-detector-regex.mjs
 
