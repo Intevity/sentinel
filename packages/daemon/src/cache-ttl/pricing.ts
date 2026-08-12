@@ -17,10 +17,27 @@ const FALLBACK_BASE_PER_MILLION = 3;
 /** `[prefix, input $/MTok, output $/MTok]`. Output rates are listed explicitly
  *  rather than derived from a multiplier: the current Claude family happens to
  *  price output at 5× input, but that is a coincidence of the price list, not a
- *  rule, and a future model breaking it would silently mis-bill every row. */
+ *  rule, and a future model breaking it would silently mis-bill every row.
+ *
+ *  **Order is load-bearing.** Matching is first-hit prefix, so specific entries
+ *  must precede general ones. `claude-opus-4-6` and later are $5/$25, while
+ *  `claude-opus-4-0`/`4-1` remain $15/$75 — a bare `claude-opus-4` row placed
+ *  first silently priced every 4.6+ request at 3× its real rate.
+ *
+ *  Sonnet 5 carries a promotional $2/$10 rate through 2026-08-31. The standard
+ *  $3/$15 is used here deliberately: a date-conditional rate in a pure pricing
+ *  function is a cliff that breaks silently when it passes, and over-reporting
+ *  during a promo is the safer error. */
 const PRICE_TABLE: ReadonlyArray<readonly [string, number, number]> = [
+  ['claude-fable-5', 10, 50],
+  ['claude-mythos-5', 10, 50],
+  ['claude-opus-5', 5, 25],
+  ['claude-opus-4-8', 5, 25],
+  ['claude-opus-4-7', 5, 25],
+  ['claude-opus-4-6', 5, 25],
   ['claude-opus-4', 15, 75],
   ['claude-opus-3', 15, 75],
+  ['claude-sonnet-5', 3, 15],
   ['claude-sonnet-4', 3, 15],
   ['claude-sonnet-3', 3, 15],
   ['claude-haiku-4', 1, 5],

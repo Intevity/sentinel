@@ -23,8 +23,8 @@ const OPENCODE_UA = 'opencode/1.18.16';
 /** The fake answers /v1/messages as claude-opus-4-7 with 10 in / 1 out. */
 const FAKE_INPUT_TOKENS = 10;
 const FAKE_OUTPUT_TOKENS = 1;
-/** 10 × $15/MTok + 1 × $75/MTok */
-const EXPECTED_COST = (FAKE_INPUT_TOKENS * 15) / 1e6 + (FAKE_OUTPUT_TOKENS * 75) / 1e6;
+/** Opus 4.7 is $5/MTok in, $25/MTok out. */
+const EXPECTED_COST = (FAKE_INPUT_TOKENS * 5) / 1e6 + (FAKE_OUTPUT_TOKENS * 25) / 1e6;
 
 async function post(port: number, headers: Record<string, string>): Promise<Response> {
   return fetch(`http://127.0.0.1:${port}/v1/messages`, {

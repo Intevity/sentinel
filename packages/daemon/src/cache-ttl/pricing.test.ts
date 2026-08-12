@@ -10,10 +10,25 @@ import {
 } from './pricing.js';
 
 describe('getBaseInputPricePerMillion', () => {
-  it('prices Opus family at 15', () => {
-    expect(getBaseInputPricePerMillion('claude-opus-4-7')).toBe(15);
-    expect(getBaseInputPricePerMillion('claude-opus-4-7-20260101')).toBe(15);
+  it('prices Opus 4.6 and later at 5, not the legacy 15', () => {
+    // Regression: a bare `claude-opus-4` prefix placed first matched these too
+    // and priced every request at 3× its real rate.
+    expect(getBaseInputPricePerMillion('claude-opus-5')).toBe(5);
+    expect(getBaseInputPricePerMillion('claude-opus-4-8')).toBe(5);
+    expect(getBaseInputPricePerMillion('claude-opus-4-7')).toBe(5);
+    expect(getBaseInputPricePerMillion('claude-opus-4-7-20260101')).toBe(5);
+    expect(getBaseInputPricePerMillion('claude-opus-4-6')).toBe(5);
+  });
+
+  it('keeps the legacy 15 for Opus 4.1 and older', () => {
+    expect(getBaseInputPricePerMillion('claude-opus-4-1')).toBe(15);
+    expect(getBaseInputPricePerMillion('claude-opus-4-0')).toBe(15);
     expect(getBaseInputPricePerMillion('claude-opus-3-5-sonnet')).toBe(15);
+  });
+
+  it('prices Fable at 10', () => {
+    expect(getBaseInputPricePerMillion('claude-fable-5')).toBe(10);
+    expect(getBaseInputPricePerMillion('claude-mythos-5')).toBe(10);
   });
 
   it('prices Sonnet family at 3', () => {
@@ -33,7 +48,7 @@ describe('getBaseInputPricePerMillion', () => {
 
   it('is case-insensitive', () => {
     expect(getBaseInputPricePerMillion('Claude-Sonnet-4-6')).toBe(3);
-    expect(getBaseInputPricePerMillion('CLAUDE-OPUS-4-7')).toBe(15);
+    expect(getBaseInputPricePerMillion('CLAUDE-OPUS-4-7')).toBe(5);
   });
 
   it('returns a safe fallback for unknown models', () => {
@@ -88,7 +103,9 @@ describe('computeCacheCosts', () => {
 
 describe('getModelPrices', () => {
   it.each([
-    ['claude-opus-4-8', 15, 75],
+    ['claude-fable-5', 10, 50],
+    ['claude-opus-5', 5, 25],
+    ['claude-sonnet-5', 3, 15],
     ['claude-sonnet-4-6-20250514', 3, 15],
     ['claude-haiku-4-5', 1, 5],
     ['claude-haiku-3-5', 0.8, 4],
