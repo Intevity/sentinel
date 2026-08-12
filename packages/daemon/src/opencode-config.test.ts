@@ -95,6 +95,28 @@ describe('classifyOpencodeConfig', () => {
     expect(classifyOpencodeConfig(withBaseUrl(OPENCODE_BASE_URL), null).state).toBe('active');
   });
 
+  it('does NOT report active for a Sentinel URL missing the /v1 path', () => {
+    // The AI SDK appends `/messages`, so this URL produces `/messages` and
+    // Anthropic 404s it. Reporting `active` would hide the card behind a green
+    // state on a config that cannot work; it must stay actionable so Enable
+    // rewrites the URL.
+    const r = classifyOpencodeConfig(withBaseUrl('http://127.0.0.1:47284'), null);
+    expect(r.state).not.toBe('active');
+    expect(r.state).toBe('foreign-base-url');
+  });
+
+  it('accepts a routed URL with a trailing slash after /v1', () => {
+    expect(classifyOpencodeConfig(withBaseUrl('http://127.0.0.1:47284/v1/'), null).state).toBe(
+      'active',
+    );
+  });
+
+  it('does not report active for a deeper path under the Sentinel origin', () => {
+    expect(
+      classifyOpencodeConfig(withBaseUrl('http://127.0.0.1:47284/v1/messages'), null).state,
+    ).toBe('foreign-base-url');
+  });
+
   it('reports foreign-base-url when pointed elsewhere', () => {
     const r = classifyOpencodeConfig(withBaseUrl('http://127.0.0.1:3456'), null);
     expect(r.state).toBe('foreign-base-url');
@@ -283,6 +305,29 @@ describe('inspectOpencodeConfig', () => {
     expect(details.configPath).toBe(join(home, '.config', 'opencode', 'opencode.json'));
     expect(details.baseUrl).toBeNull();
     expect(details.manualSnippet).toBeNull();
+  });
+
+  it('reads a config through block comments, while refusing to rewrite it', async () => {
+    // Comments block the *write*, not the *read* — the state has to reflect the
+    // real baseURL so the card reports accurately instead of "not configured".
+    seedConfig(
+      `{
+  /* provider config
+     spans two lines */
+  "provider": { "anthropic": { "options": { "baseURL": "http://127.0.0.1:3456" } } }
+}
+`,
+      'opencode.jsonc',
+    );
+
+    const details = inspectOpencodeConfig();
+
+    expect(details.baseUrl).toBe('http://127.0.0.1:3456');
+    // `unwritable` outranks `foreign-base-url` here on purpose: the actionable
+    // fact is that Sentinel cannot write this file, so the card offers a snippet
+    // rather than an Enable button that would refuse.
+    expect(details.state).toBe('unwritable');
+    expect(details.manualSnippet).toContain(OPENCODE_BASE_URL);
   });
 
   it('reads a jsonc config without comments as ordinary JSON', async () => {

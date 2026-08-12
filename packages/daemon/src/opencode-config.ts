@@ -181,6 +181,26 @@ function readBaseUrl(config: OpencodeConfig): string | null {
   return typeof url === 'string' && url.length > 0 ? url : null;
 }
 
+/**
+ * True when `url` points at Sentinel **and** carries the `/v1` path.
+ *
+ * `isSentinelEndpoint` matches on protocol, host, and port only — by design,
+ * since the desktop gateway appends its own path. Reusing it alone here reports
+ * a bare `http://127.0.0.1:47284` as routed, but the AI SDK appends `/messages`
+ * to it and Anthropic 404s the resulting `/messages`. That state has to read as
+ * not-yet-routed so the card offers Enable and the write repairs the URL —
+ * anything else is a green light on a config that cannot work.
+ */
+function isRoutedBaseUrl(url: string | null): boolean {
+  if (!isSentinelEndpoint(url)) return false;
+  try {
+    return new URL(url as string).pathname.replace(/\/+$/, '') === '/v1';
+  } catch {
+    /* v8 ignore next 2 -- isSentinelEndpoint already parsed this URL */
+    return false;
+  }
+}
+
 /** The block a user pastes when Sentinel cannot write the file itself. */
 export function manualConfigSnippet(): string {
   return JSON.stringify(
@@ -202,7 +222,7 @@ export function classifyOpencodeConfig(
 
   const baseUrl = readBaseUrl(config);
   const overridingPlugins = findOverridingPlugins(config);
-  const routed = isSentinelEndpoint(baseUrl);
+  const routed = isRoutedBaseUrl(baseUrl);
 
   // A plugin override outranks everything: whatever the file says, it is not
   // what opencode will use.
@@ -276,6 +296,8 @@ export async function deactivateOpencode(): Promise<OpencodeConfigDetails> {
   const configPath = opencodeConfigPath();
   const { config, raw } = readConfig(configPath);
   if (!config || raw === null || hasJsonComments(raw)) return inspectOpencodeConfig();
+  // Deactivation still keys on host+port so a Sentinel URL missing `/v1`
+  // (written by hand, or by an older Sentinel) is ours to clean up.
   if (!isSentinelEndpoint(readBaseUrl(config))) return inspectOpencodeConfig();
 
   const provider = { ...(config.provider ?? {}) };

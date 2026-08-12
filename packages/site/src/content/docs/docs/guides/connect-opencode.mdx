@@ -102,5 +102,11 @@ note above. Remove it from the `plugin` array in your opencode config.
 opencode after enabling. `opencode debug config` prints the resolved configuration, including any
 value a plugin replaced.
 
+**The card still offers Enable even though the base URL already points at `127.0.0.1:47284`.** That
+is deliberate: a base URL on Sentinel's host and port but *without* the `/v1` path cannot work,
+because the AI SDK appends `/messages` to it and Anthropic 404s the result. Sentinel reports that as
+not-yet-routed so Enable stays available and repairs the URL, rather than showing a green state on a
+config that would fail on every request.
+
 **Requests fail with 401.** Sentinel forwards your key untouched, so a 401 is between opencode and
 Anthropic — verify the key with `opencode auth list`.
