@@ -2213,6 +2213,28 @@ export interface ReapplyDesktopConfigMessage {
   type: 'reapply_desktop_config';
 }
 
+/** Current state of opencode's provider config — whether it points at
+ *  Sentinel, elsewhere, or is overridden at runtime by a plugin. Response
+ *  payload is `OpencodeConfigDetails`. */
+export interface GetOpencodeConfigStateMessage {
+  type: 'get_opencode_config_state';
+}
+
+/** Point opencode's Anthropic provider at the Sentinel proxy by writing
+ *  `provider.anthropic.options.baseURL` into its global config, preserving
+ *  every other key. Refuses when the file carries comments a JSON round-trip
+ *  would destroy; the response then carries `state: 'unwritable'` and a
+ *  `manualSnippet` to paste. Response payload is `OpencodeConfigDetails`. */
+export interface ActivateOpencodeMessage {
+  type: 'activate_opencode';
+}
+
+/** Remove Sentinel's base URL from opencode's config, leaving a foreign one
+ *  untouched. Response payload is `OpencodeConfigDetails`. */
+export interface DeactivateOpencodeMessage {
+  type: 'deactivate_opencode';
+}
+
 export type AppToDaemonMessage =
   | GetAccountsMessage
   | GetCredentialsMessage
@@ -2322,6 +2344,9 @@ export type AppToDaemonMessage =
   | ActivateDesktopMessage
   | DeactivateDesktopMessage
   | ReapplyDesktopConfigMessage
+  | GetOpencodeConfigStateMessage
+  | ActivateOpencodeMessage
+  | DeactivateOpencodeMessage
   | GetProxyActivityMessage;
 
 /** Response payload alias re-exports for convenience in consumers. */

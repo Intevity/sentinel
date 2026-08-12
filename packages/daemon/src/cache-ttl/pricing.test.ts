@@ -4,7 +4,9 @@ import {
   CACHE_WRITE_1H_MULTIPLIER,
   CACHE_WRITE_5M_MULTIPLIER,
   computeCacheCosts,
+  computeRequestCost,
   getBaseInputPricePerMillion,
+  getModelPrices,
 } from './pricing.js';
 
 describe('getBaseInputPricePerMillion', () => {
@@ -81,5 +83,74 @@ describe('computeCacheCosts', () => {
     const known = computeCacheCosts('claude-sonnet-4-6', 1_000_000, 0, 0);
     const unknown = computeCacheCosts('future-model', 1_000_000, 0, 0);
     expect(unknown.cost5mWrite).toBeCloseTo(known.cost5mWrite, 10);
+  });
+});
+
+describe('getModelPrices', () => {
+  it.each([
+    ['claude-opus-4-8', 15, 75],
+    ['claude-sonnet-4-6-20250514', 3, 15],
+    ['claude-haiku-4-5', 1, 5],
+    ['claude-haiku-3-5', 0.8, 4],
+  ])('%s → $%s in / $%s out per MTok', (model, input, output) => {
+    expect(getModelPrices(model)).toEqual({
+      inputPerMillion: input,
+      outputPerMillion: output,
+    });
+  });
+
+  it('returns null for an unknown model rather than guessing', () => {
+    // Unlike getBaseInputPricePerMillion, which falls back so cache-TTL keeps a
+    // usable relative comparison. A whole-request cost is read as money.
+    expect(getModelPrices('some-future-model')).toBeNull();
+    expect(getBaseInputPricePerMillion('some-future-model')).toBe(3);
+  });
+
+  it('returns null for a null model', () => {
+    expect(getModelPrices(null)).toBeNull();
+  });
+});
+
+describe('computeRequestCost', () => {
+  const TOKENS = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreate5m: 0,
+    cacheCreate1h: 0,
+    cacheRead: 0,
+  };
+
+  it('charges input and output at their own rates', () => {
+    // Sonnet: $3 input + $15 output per MTok.
+    expect(computeRequestCost('claude-sonnet-4-6', TOKENS)).toBeCloseTo(18, 10);
+  });
+
+  it('applies the cache multipliers to each write tier and to reads', () => {
+    const cost = computeRequestCost('claude-sonnet-4-6', {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreate5m: 1_000_000,
+      cacheCreate1h: 1_000_000,
+      cacheRead: 1_000_000,
+    });
+    // 3 * (1.25 + 2.0 + 0.1)
+    expect(cost).toBeCloseTo(10.05, 10);
+  });
+
+  it('is null for an unpriced model so the caller records tokens without a cost', () => {
+    expect(computeRequestCost('some-future-model', TOKENS)).toBeNull();
+    expect(computeRequestCost(null, TOKENS)).toBeNull();
+  });
+
+  it('is zero for a priced model with no tokens', () => {
+    expect(
+      computeRequestCost('claude-opus-4-8', {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreate5m: 0,
+        cacheCreate1h: 0,
+        cacheRead: 0,
+      }),
+    ).toBe(0);
   });
 });

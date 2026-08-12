@@ -17,6 +17,8 @@ import {
   summarizeOverageHeaders,
   extractRequestModel,
   isFableModel,
+  clientPresentsClaudeIdentity,
+  isByokRequest,
 } from './proxy.js';
 import type { IpcServer } from './ipc.js';
 
@@ -129,5 +131,52 @@ describe('isFableModel', () => {
     ['', false],
   ])('isFableModel(%j) === %s', (input, expected) => {
     expect(isFableModel(input)).toBe(expected);
+  });
+});
+
+describe('clientPresentsClaudeIdentity', () => {
+  const CLI_UA = 'claude-cli/2.1.197 (external, cli)';
+  const DESKTOP_UA = 'claude-cli/2.1.197 (external, claude-desktop-3p, agent-sdk/0.3.197)';
+
+  it.each([
+    ['terminal CLI user-agent', { 'user-agent': CLI_UA }, true],
+    ['desktop 3p-gateway user-agent', { 'user-agent': DESKTOP_UA }, true],
+    ['Sentinel probe (oauth beta, own UA)', { 'anthropic-beta': 'oauth-2025-04-20' }, true],
+    [
+      'oauth beta among several',
+      { 'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,afk-mode-2026-01-31' },
+      true,
+    ],
+    ['oauth beta with surrounding spaces', { 'anthropic-beta': ' oauth-2025-04-20 , x' }, true],
+    ['array-valued beta header', { 'anthropic-beta': ['x', 'oauth-2025-04-20'] }, true],
+    ['opencode user-agent', { 'user-agent': 'opencode/1.18.16' }, false],
+    ['generic SDK, unrelated betas', { 'anthropic-beta': 'context-management-2025-06-27' }, false],
+    ['no identifying headers at all', {}, false],
+    // Substring, not prefix: a UA that merely mentions claude-cli later must
+    // not pass — otherwise any client could inherit pooling by name-dropping.
+    ['claude-cli mentioned mid-string', { 'user-agent': 'wrapper (claude-cli/2.1.0)' }, false],
+  ])('%s → %s', (_label, headers, expected) => {
+    expect(clientPresentsClaudeIdentity(headers)).toBe(expected);
+  });
+});
+
+describe('isByokRequest', () => {
+  it.each([
+    [
+      'client key + third-party UA',
+      { 'x-api-key': 'sk-ant-api03-x', 'user-agent': 'opencode' },
+      true,
+    ],
+    ['client key, no other headers', { 'x-api-key': 'sk-ant-api03-x' }, true],
+    [
+      'client key but Claude Code identity',
+      { 'x-api-key': 'dummy', 'user-agent': 'claude-cli/2.1.197 (external, cli)' },
+      false,
+    ],
+    ['empty key is not a credential', { 'x-api-key': '' }, false],
+    ['bearer-only request', { authorization: 'Bearer tok' }, false],
+    ['no credential at all', {}, false],
+  ])('%s → %s', (_label, headers, expected) => {
+    expect(isByokRequest(headers)).toBe(expected);
   });
 });

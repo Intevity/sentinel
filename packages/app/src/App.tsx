@@ -30,6 +30,7 @@ import OptimizeDashboard from './components/OptimizeDashboard.js';
 import AlertsEditor from './components/AlertsEditor.js';
 import ActivationBanner from './components/ActivationBanner.js';
 import DesktopSurfaceCard from './components/DesktopSurfaceCard.js';
+import OpencodeSurfaceCard from './components/OpencodeSurfaceCard.js';
 import HeaderMenu from './components/HeaderMenu.js';
 import PersistenceBanner from './components/PersistenceBanner.js';
 import SettingsPanel from './components/SettingsPanel.js';
@@ -490,6 +491,9 @@ export default function App(): React.ReactElement {
 
             {/* ── Claude Desktop app surface (writes Claude-3p configLibrary) ─ */}
             <DesktopSurfaceCard />
+
+            {/* ── opencode surface (writes provider.anthropic.options.baseURL) ─ */}
+            <OpencodeSurfaceCard />
 
             {/* ── One-time persistence explanation ─────────────────── */}
             <PersistenceBanner />

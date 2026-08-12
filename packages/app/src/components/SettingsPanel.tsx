@@ -25,6 +25,7 @@ import { useDaemon } from '../hooks/useDaemon.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { useAccounts } from '../hooks/useAccounts.js';
 import { useClaudeDesktopDrift } from '../hooks/useClaudeDesktopDrift.js';
+import { useOpencodeConfig } from '../hooks/useOpencodeConfig.js';
 import { useSurfaceState } from '../hooks/useSurfaceState.js';
 import { accountColor } from '../lib/accountColor.js';
 import { isDemoModeEnabled, setDemoModeEnabled } from '../lib/demoMode.js';
@@ -142,6 +143,12 @@ export default function SettingsPanel({
     activate: activateDesktop,
     deactivate: deactivateDesktop,
   } = useClaudeDesktopDrift();
+  const {
+    details: opencodeConfig,
+    acting: opencodeActing,
+    activate: activateOpencode,
+    deactivate: deactivateOpencode,
+  } = useOpencodeConfig();
 
   // Active tab state. Settings is grouped into 4 tabs (General, Accounts,
   // Security, Data) so no single scroll path exceeds the 628 px tray
@@ -222,6 +229,16 @@ export default function SettingsPanel({
   const desktopRouted = desktopDrift?.state === 'active';
   const setDesktopRouting = (enabled: boolean): void => {
     void (enabled ? activateDesktop() : deactivateDesktop());
+  };
+
+  const opencodeInstalled = surfaceState?.opencode.installed ?? false;
+  const opencodeRouted = opencodeConfig?.state === 'active';
+  // A plugin that rewrites the base URL at startup makes the toggle a lie —
+  // writing the config would succeed and change nothing. Disable it and say why.
+  const opencodeBlocked =
+    opencodeConfig?.state === 'plugin-override' || opencodeConfig?.state === 'unwritable';
+  const setOpencodeRouting = (enabled: boolean): void => {
+    void (enabled ? activateOpencode() : deactivateOpencode());
   };
 
   const setTheme = (value: ThemePreference): void => {
@@ -563,6 +580,21 @@ export default function SettingsPanel({
                     checked={desktopRouted}
                     onChange={setDesktopRouting}
                     disabled={desktopActing}
+                  />
+                )}
+                {opencodeInstalled && (
+                  <ToggleRow
+                    label="Route opencode through Sentinel"
+                    description={
+                      opencodeConfig?.state === 'plugin-override'
+                        ? `Unavailable: the ${opencodeConfig.overridingPlugins.join(', ')} plugin rewrites opencode's Anthropic base URL at startup, so it bypasses Sentinel regardless of this setting.`
+                        : opencodeConfig?.state === 'unwritable'
+                          ? 'Unavailable: your opencode config contains comments Sentinel will not rewrite. Add the base URL by hand instead.'
+                          : 'Route opencode through the Sentinel proxy for request logging, security scanning, and permission rules. opencode uses your own Anthropic API key — pooled subscription accounts are not supplied to it. Restart opencode after changing this.'
+                    }
+                    checked={opencodeRouted}
+                    onChange={setOpencodeRouting}
+                    disabled={opencodeActing || opencodeBlocked}
                   />
                 )}
               </Section>
