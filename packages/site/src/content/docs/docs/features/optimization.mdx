@@ -70,6 +70,24 @@ docs. **No Claude Code restart is needed** — the next call picks up the new cr
   just the credential you meant to change. Use **Update credentials** instead.
 </Aside>
 
+### Seeing and restarting a bridged server's process
+
+A bridged server runs as a real process Sentinel manages. Its row in the Context tab shows the live
+state — how long it has been up, its pid, how many tools it listed, and when it was last called — so
+a wedged or duplicated server is visible rather than something you have to infer from `ps`.
+
+**Restart** stops that process and everything it spawned, starts it again, and refreshes the tool
+docs from what the new process reports. Reach for it when a server starts failing in a way that looks
+like the server itself: a wedged child, or a stale build behind an unpinned `uvx`/`npx` launcher that
+resolved its version whenever it happened to start. Nothing else changes — the skill, the config, and
+the endpoint are untouched, so **no Claude Code restart is needed**.
+
+Coding agents can restart a server themselves via `POST /code-mode/restart`, documented in the
+generated skill, so an agent that hits a bad server can recover without waiting for you.
+
+Sentinel also recycles a connection older than four hours on its next use, so a long-running bridge
+picks up upstream changes on its own.
+
 If a bridged server starts failing, expand the **Server reported N messages on stderr** line on its
 row. That's the server's own error output — an expired token usually says so in as many words.
 Secrets are stripped before it's stored.

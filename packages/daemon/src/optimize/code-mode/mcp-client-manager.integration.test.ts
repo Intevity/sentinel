@@ -116,6 +116,40 @@ describe('mcp-client-manager (HTTP transport)', () => {
     expect(availability).toContainEqual(['fakehttp', true]);
   });
 
+  it('flags unavailability when a connected server dies mid-call, not just on connect', async () => {
+    fake = await startFakeMcpHttpServer();
+    const availability: Array<[string, boolean]> = [];
+    const m = managerFor({ fakehttp: { type: 'http', url: fake.url } }, ['fakehttp'], {
+      onAvailability: (s, a) => availability.push([s, a]),
+    });
+    await m.listTools('fakehttp');
+    expect(availability).toEqual([['fakehttp', true]]);
+
+    await fake.close();
+    fake = null;
+    await expect(m.call('fakehttp', 'add', { a: 1, b: 2 })).rejects.toThrow();
+
+    // Availability used to flip only on a failed CONNECT, so a server that
+    // connected and then died kept showing as healthy in the UI.
+    expect(availability).toEqual([
+      ['fakehttp', true],
+      ['fakehttp', false],
+    ]);
+    // The broken client is dropped, and the reason survives it.
+    expect(m.connectedCount()).toBe(0);
+    const runtime = await m.runtime();
+    expect(runtime[0]?.server).toBe('fakehttp');
+    expect(runtime[0]?.lastError ?? '').not.toBe('');
+  });
+
+  it('clears a recorded failure once the server answers again', async () => {
+    fake = await startFakeMcpHttpServer();
+    const m = managerFor({ fakehttp: { type: 'http', url: fake.url } }, ['fakehttp']);
+    await m.listTools('fakehttp');
+    await m.call('fakehttp', 'fail', {});
+    expect((await m.runtime())[0]?.lastError).toBeNull();
+  });
+
   it('verify reports a clear failure for an unknown server and flags unavailability', async () => {
     const availability: Array<[string, boolean]> = [];
     const m = managerFor({}, [], { onAvailability: (s, a) => availability.push([s, a]) });

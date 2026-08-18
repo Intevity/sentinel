@@ -20,13 +20,25 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { CodeModeAuditRow } from '@sentinel/shared';
 import { bearerAuthorized } from '../compress/mcp-retrieve-server.js';
-import type { McpClientManager } from './mcp-client-manager.js';
+import type { McpClientManager, McpToolDescriptor } from './mcp-client-manager.js';
 
 export type CodeModeHttpHandler = (
   req: IncomingMessage,
   res: ServerResponse,
   body: Buffer | null,
+  /** Path the proxy matched, minus the query string. Defaults to the call
+   *  endpoint so existing callers (and tests) keep working unchanged. */
+  path?: string,
 ) => Promise<void>;
+
+/** Endpoint paths this handler serves. */
+export const CODE_MODE_CALL_PATH = '/code-mode/call';
+export const CODE_MODE_RESTART_PATH = '/code-mode/restart';
+
+/** Minimum gap between restarts of the same server. Restart is reachable by
+ *  agents, and an agent that reads a failure as "try again" can otherwise pin a
+ *  server in a spawn loop — each iteration costing a real process spawn. */
+const RESTART_COOLDOWN_MS = 5000;
 
 /** Requests larger than this are refused outright — tool arguments have no
  *  business being megabytes. */
@@ -39,6 +51,34 @@ export interface CodeModeServerDeps {
   isEnabled: () => boolean;
   /** Audit sink (ContextCostStore.recordCall). Metadata only. */
   recordCall: (row: CodeModeAuditRow) => void;
+  /** Invoked after a successful restart so the daemon can regenerate the tool
+   *  docs and broadcast status. Optional: omitting it leaves the endpoint
+   *  purely a reconnect. */
+  onRestarted?: (server: string, tools: McpToolDescriptor[]) => Promise<void>;
+  /** Test seam. */
+  restartCooldownMs?: number;
+}
+
+interface RestartRequest {
+  server: string;
+  cwd?: string;
+}
+
+function parseRestartRequest(body: Buffer | null): RestartRequest | null {
+  if (!body || body.length === 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.toString('utf-8')) as unknown;
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const r = parsed as Record<string, unknown>;
+  if (typeof r['server'] !== 'string' || r['server'].length === 0) return null;
+  return {
+    server: r['server'],
+    ...(typeof r['cwd'] === 'string' ? { cwd: r['cwd'] } : {}),
+  };
 }
 
 interface CallRequest {
@@ -77,7 +117,11 @@ function respondJson(res: ServerResponse, status: number, payload: unknown): voi
 }
 
 export function createCodeModeHandler(deps: CodeModeServerDeps): CodeModeHttpHandler {
-  return async (req, res, body) => {
+  const cooldownMs = deps.restartCooldownMs ?? RESTART_COOLDOWN_MS;
+  /** Last restart per server, for the cooldown. */
+  const lastRestart = new Map<string, number>();
+
+  return async (req, res, body, path = CODE_MODE_CALL_PATH) => {
     // Auth before anything else — unauthorized callers learn nothing about
     // method support, enablement, or allowlist contents.
     if (!bearerAuthorized(req, deps.getToken())) {
@@ -97,6 +141,10 @@ export function createCodeModeHandler(deps: CodeModeServerDeps): CodeModeHttpHan
         ok: false,
         error: `request body exceeds the ${MAX_REQUEST_BYTES}-byte cap`,
       });
+      return;
+    }
+    if (path === CODE_MODE_RESTART_PATH) {
+      await handleRestart(res, body);
       return;
     }
     const call = parseCallRequest(body);
@@ -146,4 +194,37 @@ export function createCodeModeHandler(deps: CodeModeServerDeps): CodeModeHttpHan
       respondJson(res, 502, { ok: false, error: message });
     }
   };
+
+  async function handleRestart(res: ServerResponse, body: Buffer | null): Promise<void> {
+    const request = parseRestartRequest(body);
+    if (!request) {
+      respondJson(res, 400, { ok: false, error: 'expected JSON body { "server": string }' });
+      return;
+    }
+    const since = Date.now() - (lastRestart.get(request.server) ?? 0);
+    if (since < cooldownMs) {
+      respondJson(res, 429, {
+        ok: false,
+        error:
+          `'${request.server}' was restarted ${Math.round(since / 1000)}s ago; ` +
+          `wait ${Math.ceil((cooldownMs - since) / 1000)}s before restarting again`,
+      });
+      return;
+    }
+    lastRestart.set(request.server, Date.now());
+    try {
+      const tools = await deps.manager.restartServer(request.server, request.cwd);
+      if (deps.onRestarted) await deps.onRestarted(request.server, tools);
+      respondJson(res, 200, {
+        ok: true,
+        server: request.server,
+        toolCount: tools.length,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Same distinction the call path draws: asking to restart a server the
+      // user never bridged is a permission answer, not a server fault.
+      respondJson(res, message.includes('not bridged') ? 403 : 502, { ok: false, error: message });
+    }
+  }
 }

@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Network, ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react';
 import type {
   CodeModeAuditRow,
+  CodeModeServerRuntime,
   CodeModeStatus,
   McpContextCosts,
   McpContextInsight,
@@ -14,6 +15,7 @@ import { sendToSentinel, onDaemonMessage } from '../../lib/ipc.js';
 import { formatTokens } from '../../lib/optimizeUnits.js';
 import { formatInt } from '../../lib/format.js';
 import { filterMcpInsights, type McpServerChipState } from '../../lib/mcpServerFilter.js';
+import { summarizeServerRuntime } from '../../lib/codeModeRuntime.js';
 import { formatUsd } from './charts/shared.js';
 import { MetricTile } from './MetricTile.js';
 import CredentialsDialog from './CredentialsDialog.js';
@@ -35,7 +37,7 @@ import CredentialsDialog from './CredentialsDialog.js';
 /** Per-row actions. Migrate can take several seconds (the daemon connects to
  *  the server, lists tools, and generates the workspace + skill), so the UI
  *  must show in-flight feedback rather than appearing to hang. */
-type ServerAction = 'migrate' | 'revert' | 'disable' | 'enable' | 'credentials';
+type ServerAction = 'migrate' | 'revert' | 'disable' | 'enable' | 'credentials' | 'restart';
 
 const EMPTY_COSTS: McpContextCosts = {
   insights: [],
@@ -52,6 +54,7 @@ const EMPTY_STATUS: CodeModeStatus = {
   enabled: false,
   skillInstalled: false,
   migrations: [],
+  runtime: [],
   endpointUrl: '',
   workspaceDir: '',
   claudeMdBlock: { present: false, upToDate: true },
@@ -184,7 +187,12 @@ export default function ContextPanel({
             }>
           >
         >;
-        if (kind === 'migrate' || kind === 'revert') {
+        if (kind === 'restart') {
+          r = await sendToSentinel({
+            type: 'restart_code_mode_server' as const,
+            server: insight.server,
+          });
+        } else if (kind === 'migrate' || kind === 'revert') {
           // Migration and revert act on EVERY configured entry for the
           // server (the daemon discovers user + per-project scopes itself):
           // Claude Code resolves same-named servers local-over-global, so a
@@ -215,7 +223,12 @@ export default function ContextPanel({
           setError(r.error ?? `${kind} failed`);
           return;
         }
-        if (kind === 'migrate') {
+        if (kind === 'restart') {
+          setNotice(
+            `${insight.server} restarted (${r.data?.toolCount ?? 0} tools); ` +
+              `no session restart needed.`,
+          );
+        } else if (kind === 'migrate') {
           const n = r.data?.entriesDisabled ?? 0;
           setNotice(
             `${insight.server} is now bridged (${r.data?.toolCount ?? 0} tools, ${n} native ${
@@ -256,6 +269,12 @@ export default function ContextPanel({
     }
     return out;
   }, [status.migrations]);
+  /** Live process state per server, for the row's runtime line. */
+  const serverRuntime = useMemo(() => {
+    const out: Record<string, CodeModeServerRuntime> = {};
+    for (const r of status.runtime ?? []) out[r.server] = r;
+    return out;
+  }, [status.runtime]);
   const filtered = useMemo(
     () => filterMcpInsights(costs.insights, { search, hideUnmanaged, chips }),
     [costs.insights, search, hideUnmanaged, chips],
@@ -376,6 +395,7 @@ export default function ContextPanel({
             insight={insight}
             bridged={bridgedServers.has(insight.server)}
             lastStderr={serverStderr[insight.server]}
+            runtime={serverRuntime[insight.server]}
             realized={costs.savings.byServer.find((s) => s.server === insight.server)}
             busyAction={busy?.server === insight.server ? busy.kind : null}
             actionsDisabled={busy !== null}
@@ -496,6 +516,7 @@ function ServerRow({
   insight,
   bridged,
   lastStderr,
+  runtime,
   realized,
   busyAction,
   actionsDisabled,
@@ -508,6 +529,9 @@ function ServerRow({
   /** Redacted stderr tail from the bridged child, when it printed anything
    *  noteworthy — usually the reason a bridged call is failing. */
   lastStderr: string[] | undefined;
+  /** Live process state, or undefined when the daemon has never connected to
+   *  this server (the bridge connects lazily — that is idle, not broken). */
+  runtime: CodeModeServerRuntime | undefined;
   /** Realized-savings attribution for bridged servers (undefined until the
    *  first post-migration request lands). */
   realized: McpContextSavings['byServer'][number] | undefined;
@@ -521,6 +545,7 @@ function ServerRow({
   onAct: (kind: ServerAction) => void;
 }): React.ReactElement {
   const d = insight.definition;
+  const live = summarizeServerRuntime(runtime);
   const statusPill =
     insight.bridgeStatus === 'bridged'
       ? { label: 'bridged', cls: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' }
@@ -652,6 +677,23 @@ function ServerRow({
           have no config entry Sentinel can disable: bridging one would
           leave the native definitions loading alongside the bridge. No
           actions, just the honest explanation. */}
+      {/* Live process state. Without this a wedged or duplicated child was
+          invisible: the daemon's own map could believe a server was gone while
+          the OS still ran it. */}
+      {bridged && live.line !== null && (
+        <p className="mt-1.5 font-mono text-[10px] text-foreground/55">{live.line}</p>
+      )}
+      {bridged && live.leaked && (
+        <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+          More processes are running than Sentinel has connections for. Restart to clean up.
+        </p>
+      )}
+      {bridged && live.error !== null && (
+        <p className="mt-1 text-[11px] text-red-700 dark:text-red-300">
+          Last attempt failed: {live.error}
+        </p>
+      )}
+
       {/* The bridged child's own error output. Previously discarded, which left
           an expired token looking identical to a healthy bridge that just
           returned errors. Redacted daemon-side before it ever reaches here. */}
@@ -688,6 +730,13 @@ function ServerRow({
                   title="Some projects still have their own enabled entry for this server (project entries shadow the global one in Claude Code). Bridge those too so the definitions stop loading everywhere."
                 />
               )}
+              <ActionButton
+                label="Restart"
+                spinning={busyAction === 'restart'}
+                disabled={actionsDisabled}
+                onClick={() => onAct('restart')}
+                title="Stop this server's process (and anything it spawned), start it again, and refresh its tool docs. Fixes a wedged server or one running a stale build. Nothing else changes — no session restart needed."
+              />
               <ActionButton
                 label="Update credentials"
                 spinning={busyAction === 'credentials'}

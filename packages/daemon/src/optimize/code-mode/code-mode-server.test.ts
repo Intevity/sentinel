@@ -25,6 +25,230 @@ function byServer(fn: (server: string) => unknown) {
 
 const TOKEN = 'code-mode-test-token-0123456789abcdef';
 
+describe('/code-mode/restart endpoint', () => {
+  let started: StartedProxy;
+  let fakeMcp: FakeMcpHttpServer;
+  let manager: McpClientManager;
+  let store: ContextCostStore;
+  let storePath: string;
+  let restarted: Array<{ server: string; toolCount: number }>;
+
+  beforeEach(async () => {
+    restarted = [];
+    fakeMcp = await startFakeMcpHttpServer();
+    storePath = makeTestDbPath('code-mode-restart');
+    store = new ContextCostStore({ dbPath: storePath });
+    manager = createMcpClientManager({
+      resolveEntry: byServer((server) =>
+        server === 'bridged' || server === 'unlisted'
+          ? { type: 'http', url: fakeMcp.url }
+          : undefined,
+      ),
+      isAllowed: (server) => server === 'bridged',
+      redact: redactSecretsInString,
+    });
+    const codeModeHandler = createCodeModeHandler({
+      manager,
+      getToken: () => TOKEN,
+      isEnabled: () => true,
+      recordCall: (row) => store.recordCall(row),
+      onRestarted: (server, tools) => {
+        restarted.push({ server, toolCount: tools.length });
+        return Promise.resolve();
+      },
+      // Two tests need back-to-back restarts; the cooldown gets its own.
+      restartCooldownMs: 0,
+    });
+    started = await startProxyWithFake({ codeModeHandler });
+  });
+
+  afterEach(async () => {
+    await manager.stopAll();
+    await started.cleanup();
+    await fakeMcp.close();
+    store.close();
+    for (const suffix of ['', '-wal', '-shm']) {
+      if (existsSync(storePath + suffix)) rmSync(storePath + suffix);
+    }
+  });
+
+  function restartEndpoint(
+    body: unknown,
+    init: { token?: string; method?: string } = {},
+  ): Promise<Response> {
+    return fetch(`http://127.0.0.1:${started.proxyPort}/code-mode/restart`, {
+      method: init.method ?? 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init.token === undefined
+          ? { Authorization: `Bearer ${TOKEN}` }
+          : init.token === ''
+            ? {}
+            : { Authorization: `Bearer ${init.token}` }),
+      },
+      ...(init.method === 'GET' ? {} : { body: JSON.stringify(body) }),
+    });
+  }
+
+  it('reconnects a bridged server and reports its tool count', async () => {
+    // Connect first, so the restart is provably a RE-connect.
+    await manager.listTools('bridged');
+    expect(manager.connectedCount()).toBe(1);
+
+    const res = await restartEndpoint({ server: 'bridged' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, server: 'bridged', toolCount: 4 });
+    expect(restarted).toEqual([{ server: 'bridged', toolCount: 4 }]);
+    // Reconnected eagerly, not left for the next call to discover.
+    expect(manager.connectedCount()).toBe(1);
+  });
+
+  it('leaves the server callable afterwards', async () => {
+    await restartEndpoint({ server: 'bridged' });
+    const res = await fetch(`http://127.0.0.1:${started.proxyPort}/code-mode/call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ server: 'bridged', tool: 'add', args: { a: 1, b: 2 } }),
+    });
+    expect(await res.json()).toMatchObject({ ok: true, content: [{ type: 'text', text: '3' }] });
+  });
+
+  it('refuses a server the user never bridged, without restarting anything', async () => {
+    const res = await restartEndpoint({ server: 'unlisted' });
+    expect(res.status).toBe(403);
+    expect((await res.json()) as Record<string, unknown>).toEqual({
+      ok: false,
+      error: "MCP server 'unlisted' is not bridged to code mode",
+    });
+    expect(restarted).toEqual([]);
+  });
+
+  it('rejects an unauthorized caller before it learns anything else', async () => {
+    const res = await restartEndpoint({ server: 'bridged' }, { token: 'wrong-token' });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ ok: false, error: 'unauthorized' });
+    expect(restarted).toEqual([]);
+  });
+
+  it('rejects a GET', async () => {
+    const res = await restartEndpoint(null, { method: 'GET' });
+    expect(res.status).toBe(405);
+    expect(await res.json()).toEqual({ ok: false, error: 'POST only' });
+  });
+
+  it('rejects a body with no server name', async () => {
+    const res = await restartEndpoint({ notServer: 'bridged' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      ok: false,
+      error: 'expected JSON body { "server": string }',
+    });
+  });
+
+  it('rejects a body that is not JSON at all', async () => {
+    const res = await fetch(`http://127.0.0.1:${started.proxyPort}/code-mode/restart`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: 'not json{',
+    });
+    expect(res.status).toBe(400);
+    expect(restarted).toEqual([]);
+  });
+
+  it('rejects a JSON body that is not an object', async () => {
+    const res = await restartEndpoint('just-a-string');
+    expect(res.status).toBe(400);
+    expect(restarted).toEqual([]);
+  });
+
+  it('rejects an empty body', async () => {
+    const res = await fetch(`http://127.0.0.1:${started.proxyPort}/code-mode/restart`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('passes cwd through so a per-project configuration is the one restarted', async () => {
+    const res = await restartEndpoint({ server: 'bridged', cwd: '/some/project' });
+    expect(res.status).toBe(200);
+    expect(restarted).toEqual([{ server: 'bridged', toolCount: 4 }]);
+  });
+
+  it('reports the upstream failure when the server cannot come back', async () => {
+    await fakeMcp.close();
+    const res = await restartEndpoint({ server: 'bridged' });
+    expect(res.status).toBe(502);
+    const payload = (await res.json()) as { ok: boolean; error: string };
+    expect(payload.ok).toBe(false);
+    expect(payload.error.length).toBeGreaterThan(0);
+    expect(restarted).toEqual([]);
+  });
+});
+
+describe('/code-mode/restart cooldown', () => {
+  let started: StartedProxy;
+  let fakeMcp: FakeMcpHttpServer;
+  let manager: McpClientManager;
+  let store: ContextCostStore;
+  let storePath: string;
+
+  beforeEach(async () => {
+    fakeMcp = await startFakeMcpHttpServer();
+    storePath = makeTestDbPath('code-mode-restart-cooldown');
+    store = new ContextCostStore({ dbPath: storePath });
+    manager = createMcpClientManager({
+      resolveEntry: byServer(() => ({ type: 'http', url: fakeMcp.url })),
+      isAllowed: () => true,
+      redact: redactSecretsInString,
+    });
+    started = await startProxyWithFake({
+      codeModeHandler: createCodeModeHandler({
+        manager,
+        getToken: () => TOKEN,
+        isEnabled: () => true,
+        recordCall: (row) => store.recordCall(row),
+        restartCooldownMs: 60_000,
+      }),
+    });
+  });
+
+  afterEach(async () => {
+    await manager.stopAll();
+    await started.cleanup();
+    await fakeMcp.close();
+    store.close();
+    for (const suffix of ['', '-wal', '-shm']) {
+      if (existsSync(storePath + suffix)) rmSync(storePath + suffix);
+    }
+  });
+
+  function restart(server: string): Promise<Response> {
+    return fetch(`http://127.0.0.1:${started.proxyPort}/code-mode/restart`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ server }),
+    });
+  }
+
+  it('refuses a second restart of the same server inside the cooldown', async () => {
+    expect((await restart('alpha')).status).toBe(200);
+
+    const second = await restart('alpha');
+
+    expect(second.status).toBe(429);
+    const payload = (await second.json()) as { ok: boolean; error: string };
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toContain('before restarting again');
+  });
+
+  it('scopes the cooldown per server, so one server cannot block another', async () => {
+    expect((await restart('alpha')).status).toBe(200);
+    expect((await restart('beta')).status).toBe(200);
+  });
+});
+
 describe('/code-mode/call endpoint', () => {
   let started: StartedProxy;
   let fakeMcp: FakeMcpHttpServer;

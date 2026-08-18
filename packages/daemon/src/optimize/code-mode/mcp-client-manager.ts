@@ -16,10 +16,20 @@
  * endpoint can never be used to spawn an arbitrary configured server.
  * `verify` is exempt (it powers the pre-migration connectivity check).
  *
- * Lifecycle: lazy connect on first use; an idle timer closes the client
- * (killing a spawned stdio child) after IDLE_SHUTDOWN_MS without calls;
- * `stopAll()` closes everything on daemon shutdown. A transport error drops
- * the cached client so the next call reconnects fresh.
+ * Lifecycle: lazy connect on first use; an idle timer closes the client after
+ * IDLE_SHUTDOWN_MS without calls; a client older than MAX_CLIENT_AGE_MS is
+ * recycled on the next acquire (never mid-call), so a server launched through
+ * an unpinned `uvx`/`npx` eventually picks up upstream changes instead of
+ * running whatever it resolved months ago; `stopAll()` closes everything on
+ * daemon shutdown. A transport error drops the cached client so the next call
+ * reconnects fresh.
+ *
+ * Teardown is verified, not assumed. The SDK signals the direct child only,
+ * which strands the grandchild that wrapper launchers (`uv tool uvx X`,
+ * `npm exec X`) actually run the server as. Every path that lets go of a
+ * client checks the pid actually died and reaps the tree if it didn't — most
+ * importantly the CONNECT-FAILURE path, where a child that spawned but failed
+ * to hand shake is never registered, so nothing could ever drop it.
  */
 
 import os from 'node:os';
@@ -31,17 +41,36 @@ import {
 } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { isAlive, listDescendants, reapPids, snapshotProcessTree } from './process-tree.js';
 
 /** Concrete transport union — the SDK's `Transport` interface clashes with
  *  exactOptionalPropertyTypes on the concrete classes (same mismatch the
  *  retrieve server bridges with a cast at connect time). */
 type ClientTransport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport;
 
+/** What `buildTransport` produces: the transport plus the two facts about it
+ *  worth keeping for the status payload. */
+interface BuiltTransport {
+  transport: ClientTransport;
+  kind: 'stdio' | 'http' | 'sse';
+  descriptor: string;
+}
+
 const IDLE_SHUTDOWN_MS = 5 * 60 * 1000;
 /** Cap on the serialized tool-result content returned to callers. Large
  *  results defeat the point of code mode (the caller is expected to filter
  *  in code); cap mirrors the cache-TTL non-SSE buffer philosophy. */
 const MAX_RESULT_BYTES = 1024 * 1024;
+/** Recycle a connected client this old on its next acquire. `uvx mcp-atlassian`
+ *  and friends resolve their version at spawn time, so a long-lived child runs
+ *  whatever was current when it started — a bridge that stays busy would never
+ *  otherwise pick up an upstream fix. Enforced on acquire rather than by a
+ *  timer so a recycle can never interrupt an in-flight call. */
+const MAX_CLIENT_AGE_MS = 4 * 60 * 60 * 1000;
+/** How long a `ps` tree snapshot is reused when counting live processes for the
+ *  status payload. The UI refetches status on every broadcast, and the count is
+ *  a health signal, not a live monitor. */
+const LIVE_PROCESS_CACHE_MS = 5000;
 
 export interface McpToolDescriptor {
   name: string;
@@ -99,6 +128,45 @@ export interface McpClientManagerDeps {
   /** Test seams. */
   idleShutdownMs?: number;
   maxResultBytes?: number;
+  maxClientAgeMs?: number;
+}
+
+/** Live state of one connected client, for the status UI and for diagnosing a
+ *  bridge that is misbehaving. One entry per CONFIG RECORD, so a server
+ *  configured differently in two projects reports one row per configuration. */
+export interface McpClientRuntime {
+  /** The config-record cache key. Opaque to the UI; useful in logs. */
+  key: string;
+  /** When this child was spawned / this connection established. */
+  connectedAt: number;
+  /** Direct child pid for stdio servers; null for HTTP/SSE (nothing local
+   *  runs) and if the SDK reports none. */
+  pid: number | null;
+  transport: 'stdio' | 'http' | 'sse';
+  /** Redacted command + args actually spawned, or the URL for HTTP/SSE. This
+   *  is what the user correlates with `ps`. */
+  descriptor: string;
+  /** Tools reported at the last successful list; null until one happens. */
+  toolCount: number | null;
+  lastCallAt: number | null;
+  lastCallOk: boolean | null;
+}
+
+/** Per-server runtime rollup. */
+export interface McpServerRuntime {
+  server: string;
+  /** Redacted message from the most recent failure, and when. Kept per SERVER
+   *  rather than per client because the failures worth reading are exactly the
+   *  ones that dropped the client — a per-client field would vanish with it.
+   *  Cleared by the next success. */
+  lastError: string | null;
+  lastErrorAt: number | null;
+  /** Processes still alive for this server: each tracked pid plus its live
+   *  descendants. Exceeding `clients.length` means something leaked — the
+   *  symptom this whole surface exists to make visible. Always 0 for
+   *  HTTP/SSE-only servers. */
+  liveProcesses: number;
+  clients: McpClientRuntime[];
 }
 
 export interface McpClientManager {
@@ -125,6 +193,15 @@ export interface McpClientManager {
    *  credential update take effect immediately instead of after the idle
    *  timeout. No-op when the server isn't connected. */
   dropServer(server: string): Promise<void>;
+  /** Close, reap, and immediately reconnect every client for this server,
+   *  returning the freshly-listed tools. The recovery path for a server that
+   *  has gone bad in a way a reconnect fixes (stale build, wedged child,
+   *  credentials rotated out of band). Throws if it cannot come back, having
+   *  already dropped the old client. */
+  restartServer(server: string, cwd?: string): Promise<McpToolDescriptor[]>;
+  /** Live per-server state for the status UI. Async because counting live
+   *  processes needs a `ps` snapshot (cached briefly). */
+  runtime(): Promise<McpServerRuntime[]>;
   stopAll(): Promise<void>;
 }
 
@@ -134,6 +211,16 @@ interface ManagedClient {
   /** Server this client belongs to, so `dropClient` can maintain the
    *  server → record-keys index without a reverse scan. */
   server: string;
+  /** Everything below is runtime state surfaced by `runtime()`. `pid` is also
+   *  the hook the teardown paths use to prove the child actually died. */
+  key: string;
+  watch: SpawnWatch;
+  transport: 'stdio' | 'http' | 'sse';
+  descriptor: string;
+  connectedAt: number;
+  toolCount: number | null;
+  lastCallAt: number | null;
+  lastCallOk: boolean | null;
 }
 
 /** A GUI-launched app (the Tauri shell that spawns this daemon) inherits a
@@ -197,7 +284,7 @@ async function buildTransport(
   server: string,
   entry: unknown,
   wrapStdioCommand?: McpClientManagerDeps['wrapStdioCommand'],
-): Promise<ClientTransport> {
+): Promise<BuiltTransport> {
   if (!entry || typeof entry !== 'object') {
     throw new Error(`No usable config entry for MCP server '${server}'`);
   }
@@ -240,12 +327,18 @@ async function buildTransport(
     // token's 401 shows up, and discarding it left users with a bridge that
     // silently returned errors and no way to find out why. The caller attaches
     // a redacted, bounded reader (`attachStderr`).
-    return new StdioClientTransport({
-      command: spawnCommand,
-      args: spawnArgs,
-      env: spawnEnv,
-      stderr: 'pipe',
-    });
+    return {
+      transport: new StdioClientTransport({
+        command: spawnCommand,
+        args: spawnArgs,
+        env: spawnEnv,
+        stderr: 'pipe',
+      }),
+      kind: 'stdio',
+      // The POST-wrap command: under Leg B the direct child is the sandbox
+      // helper, and that is what the user will see in `ps`.
+      descriptor: [spawnCommand, ...spawnArgs].join(' '),
+    };
   }
   if (typeof e['url'] === 'string' && e['url'].length > 0) {
     const headers =
@@ -255,9 +348,17 @@ async function buildTransport(
     const url = new URL(e['url']);
     if (e['type'] === 'sse') {
       // Legacy SSE-only servers.
-      return new SSEClientTransport(url, { requestInit: { headers } });
+      return {
+        transport: new SSEClientTransport(url, { requestInit: { headers } }),
+        kind: 'sse',
+        descriptor: url.toString(),
+      };
     }
-    return new StreamableHTTPClientTransport(url, { requestInit: { headers } });
+    return {
+      transport: new StreamableHTTPClientTransport(url, { requestInit: { headers } }),
+      kind: 'http',
+      descriptor: url.toString(),
+    };
   }
   throw new Error(
     `MCP server '${server}' has neither a command nor a url — cannot bridge this entry`,
@@ -275,9 +376,100 @@ const STDERR_TAIL_BYTES = 4 * 1024;
  *  though it were a fault. */
 const STDERR_NOISE = /^\s*(?:\[?info\]?\b|debug\b|starting\b|listening\b|ready\b)/i;
 
+/** What we know about a transport's spawned child, recorded at the only two
+ *  moments the information is actually available. */
+interface SpawnWatch {
+  /** Direct child pid; null for HTTP/SSE, which spawn nothing locally. */
+  pid: number | null;
+  /** Its descendants as of teardown. */
+  tree: number[];
+}
+
+/** Instrument a transport so its spawned child can still be reaped after the
+ *  SDK has forgotten about it.
+ *
+ *  Two races make the naive approach wrong, and both are lost reliably:
+ *
+ *  - Reading `transport.pid` in a catch block is too late. A failed MCP
+ *    handshake makes the SDK call its own `close()`, which drops the process
+ *    handle synchronously — the pid is gone before we can look. So `start()`
+ *    is wrapped, capturing the pid on the child's `spawn` event.
+ *  - Listing descendants after `close()` is too late. Closing ends the child's
+ *    stdin, it exits, and its own children instantly reparent to init, erasing
+ *    the only links we had to find them by. So `close()` is wrapped too,
+ *    snapshotting the tree while the child is still there to walk from — and
+ *    because the wrapper sits on the transport, it fires whether WE close it or
+ *    the SDK does.
+ *
+ *  Returns a box rather than values because both facts are only known later,
+ *  once `connect()` has run. */
+function watchSpawnedChild(transport: ClientTransport, server: string): SpawnWatch {
+  const watch: SpawnWatch = { pid: null, tree: [] };
+  const start = transport.start.bind(transport);
+  transport.start = async (): Promise<void> => {
+    await start();
+    watch.pid = (transport as StdioClientTransport).pid ?? null;
+  };
+  const close = transport.close.bind(transport);
+  // Shared so EVERY caller of close() awaits the same teardown. The SDK fires
+  // its own `void this.close()` on a failed handshake without awaiting it, so
+  // both it and our own call must converge on one reap rather than racing.
+  let teardown: Promise<void> | null = null;
+  transport.close = async (): Promise<void> => {
+    if (teardown === null) teardown = reapDescendants(watch, server);
+    await teardown;
+    await close();
+  };
+  return watch;
+}
+
+/** Kill everything the child spawned, BEFORE the child itself is closed.
+ *
+ *  The ordering is the whole point, and getting it wrong is dangerous rather
+ *  than merely ineffective. Once the direct child dies, two things happen at
+ *  once: its children reparent to init (so the tree can no longer be walked),
+ *  and its pid becomes free for the kernel to REUSE. Signalling a pid whose
+ *  process is known dead therefore risks killing an unrelated process that
+ *  inherited the number — and walking its "descendants" can return a whole
+ *  foreign process tree. On Linux, where pids recycle quickly, that is not
+ *  theoretical: an earlier revision of this code killed CI's own test workers.
+ *
+ *  While the child is alive its pid unambiguously identifies it and the tree
+ *  below it is real, so capture and signal happen back to back, here. The
+ *  direct child is deliberately NOT signalled: the SDK's `close()` owns it and
+ *  escalates to SIGKILL, and it is our own child, so it is always reaped. */
+async function reapDescendants(watch: SpawnWatch, server: string): Promise<void> {
+  if (watch.pid === null) return;
+  try {
+    const rows = await snapshotProcessTree();
+    // Identity check, not an optimisation. If the child already exited on its
+    // own, its pid may have been REUSED by an unrelated process, and walking
+    // that number would hand us a foreign process tree to kill. A live pid
+    // that is still parented to us is provably the child we spawned.
+    const stillOurs = rows.some(([pid, ppid]) => pid === watch.pid && ppid === process.pid);
+    if (!stillOurs) return;
+    watch.tree = await listDescendants(watch.pid, { snapshot: rows });
+    if (watch.tree.length === 0) return;
+    // Deepest-first: leaves before any wrapper that might restart one.
+    const reaped = await reapPids([...watch.tree].reverse());
+    if (reaped > 0) {
+      console.log(`[CodeMode] '${server}' left ${reaped} child process(es); reaped`);
+    }
+    /* v8 ignore next 4 -- reaping is best-effort: a process-table hiccup or a
+       permission change mid-reap must never reject the close that called it. */
+  } catch (err) {
+    console.error(`[CodeMode] reaping '${server}' pid ${watch.pid} failed:`, err);
+  }
+}
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export function createMcpClientManager(deps: McpClientManagerDeps): McpClientManager {
   const idleMs = deps.idleShutdownMs ?? IDLE_SHUTDOWN_MS;
   const maxBytes = deps.maxResultBytes ?? MAX_RESULT_BYTES;
+  const maxAgeMs = deps.maxClientAgeMs ?? MAX_CLIENT_AGE_MS;
   /** Keyed by CONFIG RECORD (`ResolvedEntry.key`), not server name — see the
    *  note on that field. */
   const clients = new Map<string, ManagedClient>();
@@ -287,6 +479,12 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
   /** Redacted stderr tail per server, newest last. Survives `dropClient` so a
    *  crash-on-startup loop is still diagnosable after the client is gone. */
   const stderrTails = new Map<string, string[]>();
+  /** Most recent failure per server. Like `stderrTails` this deliberately
+   *  outlives the client it belonged to — the interesting error is usually the
+   *  one that caused the drop. */
+  const lastErrors = new Map<string, { message: string; at: number }>();
+  /** Reused `ps` snapshot for the status payload's live-process count. */
+  let treeSnapshot: { at: number; rows: Array<[number, number]> } | null = null;
   let stopped = false;
 
   /** Stream a spawned child's stderr into the bounded per-server tail, running
@@ -318,22 +516,25 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
   function touchIdle(key: string, managed: ManagedClient): void {
     if (managed.idleTimer) clearTimeout(managed.idleTimer);
     managed.idleTimer = setTimeout(() => {
-      void dropClient(key);
+      void dropClient(key, 'idle');
     }, idleMs);
     if (typeof managed.idleTimer.unref === 'function') managed.idleTimer.unref();
   }
 
-  async function dropClient(key: string): Promise<void> {
+  async function dropClient(key: string, reason: string): Promise<void> {
     const managed = clients.get(key);
     if (!managed) return;
     clients.delete(key);
     keysByServer.get(managed.server)?.delete(key);
     if (managed.idleTimer) clearTimeout(managed.idleTimer);
     try {
+      // The transport wrapper reaps the child's own children on the way
+      // through; the SDK's close kills the direct child itself.
       await managed.client.close();
     } catch {
       // Already-broken transport — closing is best-effort.
     }
+    console.log(`[CodeMode] dropped '${managed.server}' (${reason})`);
   }
 
   async function ensureClient(server: string, cwd?: string): Promise<Client> {
@@ -343,26 +544,74 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
     const key = resolved?.key ?? server;
     const existing = clients.get(key);
     if (existing) {
-      touchIdle(key, existing);
-      return existing.client;
+      // Age check happens HERE, on acquire, rather than on a timer: a timer
+      // could fire mid-call and kill a request in flight. The cost is that a
+      // permanently-idle client is recycled lazily, which is free.
+      if (Date.now() - existing.connectedAt < maxAgeMs) {
+        touchIdle(key, existing);
+        return existing.client;
+      }
+      console.log(
+        `[CodeMode] recycling '${server}' after ${Math.round(
+          (Date.now() - existing.connectedAt) / 60000,
+        )}m (max age reached)`,
+      );
+      await dropClient(key, 'max-age');
     }
     if (stopped) throw new Error('MCP client manager is shut down');
     const entry = resolved?.entry;
-    const transport = await buildTransport(server, entry, deps.wrapStdioCommand);
+    const built = await buildTransport(server, entry, deps.wrapStdioCommand);
+    const { transport, kind } = built;
+    const descriptor = deps.redact(built.descriptor);
     // Attach before connect: a server that dies during the handshake writes its
     // reason to stderr and nowhere else, and that is exactly the case worth
     // capturing.
     attachStderr(server, transport);
+    const watch = watchSpawnedChild(transport, server);
     const client = new Client({ name: 'sentinel-code-mode', version: '1.0.0' });
     try {
       // Cast bridges the same exactOptionalPropertyTypes mismatch as the
       // retrieve server's transport (SDK concrete classes vs Transport).
       await client.connect(transport as unknown as Parameters<typeof client.connect>[0]);
     } catch (err) {
+      // The child is already spawned by the time connect() can fail on the
+      // handshake, and it was never registered in `clients` — so nothing else
+      // would ever close it. This is the leak that left daemon-owned MCP
+      // children alive for days despite a 5-minute idle timer. Close and reap
+      // before rethrowing.
+      try {
+        // Idempotent: the SDK fires its own close on a failed handshake, and
+        // both calls converge on the single reap inside the wrapper.
+        await transport.close();
+      } catch {
+        // Best-effort; the wrapper's reap is the guarantee.
+      }
       deps.onAvailability?.(server, false);
-      throw clarifySpawnError(server, entry, err);
+      const clarified = clarifySpawnError(server, entry, err);
+      // Recorded here rather than in `withClient`, whose try block only covers
+      // calls made on an already-connected client. A server that cannot
+      // connect at all is exactly the one whose error the user needs to read.
+      lastErrors.set(server, { message: deps.redact(errText(clarified)), at: Date.now() });
+      console.warn(`[CodeMode] connect to '${server}' failed: ${errText(clarified)}`);
+      throw clarified;
     }
-    const managed: ManagedClient = { client, idleTimer: null, server };
+    const managed: ManagedClient = {
+      client,
+      idleTimer: null,
+      server,
+      key,
+      watch,
+      transport: kind,
+      descriptor,
+      connectedAt: Date.now(),
+      toolCount: null,
+      lastCallAt: null,
+      lastCallOk: null,
+    };
+    console.log(
+      `[CodeMode] connected '${server}' via ${kind}` +
+        `${watch.pid === null ? '' : ` (pid ${watch.pid})`}`,
+    );
     clients.set(key, managed);
     let keys = keysByServer.get(server);
     if (!keys) {
@@ -385,11 +634,44 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
     const key = deps.resolveEntry(server, cwd)?.key ?? server;
     const client = await ensureClient(server, cwd);
     try {
-      return await fn(client);
+      const result = await fn(client);
+      const managed = clients.get(key);
+      if (managed) {
+        managed.lastCallAt = Date.now();
+        managed.lastCallOk = true;
+      }
+      lastErrors.delete(server);
+      return result;
     } catch (err) {
-      await dropClient(key);
+      lastErrors.set(server, { message: deps.redact(errText(err)), at: Date.now() });
+      await dropClient(key, 'call failed');
+      // Previously only a failed CONNECT flipped availability, so a server
+      // that connected and then died mid-call kept showing as healthy.
+      deps.onAvailability?.(server, false);
       throw err;
     }
+  }
+
+  /** Connect (if needed), list, and record the count on the live client.
+   *  Shared by `listTools` (allowlisted) and `verify` (deliberately not). */
+  async function listToolsInternal(server: string, cwd?: string): Promise<McpToolDescriptor[]> {
+    const key = deps.resolveEntry(server, cwd)?.key ?? server;
+    const result = await withClient(server, cwd, (c) => c.listTools());
+    const tools = result.tools.map((t) => ({
+      name: t.name,
+      description: t.description ?? '',
+      inputSchema: t.inputSchema,
+    }));
+    const managed = clients.get(key);
+    if (managed) managed.toolCount = tools.length;
+    return tools;
+  }
+
+  async function dropServerInternal(server: string, reason: string): Promise<void> {
+    // Every scope's client, not just one: a credential update may rewrite
+    // several records, and any of them could have a live child.
+    const keys = [...(keysByServer.get(server) ?? [])];
+    await Promise.all(keys.map((key) => dropClient(key, reason)));
   }
 
   function requireAllowed(server: string): void {
@@ -401,12 +683,7 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
   return {
     async listTools(server, cwd) {
       requireAllowed(server);
-      const result = await withClient(server, cwd, (c) => c.listTools());
-      return result.tools.map((t) => ({
-        name: t.name,
-        description: t.description ?? '',
-        inputSchema: t.inputSchema,
-      }));
+      return listToolsInternal(server, cwd);
     },
 
     async call(server, tool, args, cwd) {
@@ -438,17 +715,9 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
 
     async verify(server, cwd) {
       try {
-        const result = await withClient(server, cwd, (c) => c.listTools());
-        return {
-          ok: true,
-          tools: result.tools.map((t) => ({
-            name: t.name,
-            description: t.description ?? '',
-            inputSchema: t.inputSchema,
-          })),
-        };
+        return { ok: true, tools: await listToolsInternal(server, cwd) };
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        return { ok: false, error: errText(err) };
       }
     },
 
@@ -461,15 +730,69 @@ export function createMcpClientManager(deps: McpClientManagerDeps): McpClientMan
     },
 
     async dropServer(server) {
-      // Every scope's client, not just one: a credential update may rewrite
-      // several records, and any of them could have a live child.
-      const keys = [...(keysByServer.get(server) ?? [])];
-      await Promise.all(keys.map((key) => dropClient(key)));
+      await dropServerInternal(server, 'dropped');
+    },
+
+    async restartServer(server, cwd) {
+      requireAllowed(server);
+      console.log(`[CodeMode] restarting '${server}'`);
+      await dropServerInternal(server, 'restart');
+      // Reconnect eagerly rather than waiting for the next call, so the caller
+      // learns immediately whether the server actually came back — and gets the
+      // fresh tool list, which is what regenerates the docs.
+      return listToolsInternal(server, cwd);
+    },
+
+    async runtime() {
+      const now = Date.now();
+      if (treeSnapshot === null || now - treeSnapshot.at > LIVE_PROCESS_CACHE_MS) {
+        treeSnapshot = { at: now, rows: await snapshotProcessTree() };
+      }
+      const rows = treeSnapshot.rows;
+      const byServer = new Map<string, McpClientRuntime[]>();
+      for (const managed of clients.values()) {
+        const list = byServer.get(managed.server) ?? [];
+        list.push({
+          key: managed.key,
+          connectedAt: managed.connectedAt,
+          pid: managed.watch.pid,
+          transport: managed.transport,
+          descriptor: managed.descriptor,
+          toolCount: managed.toolCount,
+          lastCallAt: managed.lastCallAt,
+          lastCallOk: managed.lastCallOk,
+        });
+        byServer.set(managed.server, list);
+      }
+      // A server with no live client but a recorded failure still needs a row —
+      // "not connected, and here is why" is the whole point.
+      const servers = new Set([...byServer.keys(), ...lastErrors.keys()]);
+      const out: McpServerRuntime[] = [];
+      for (const server of servers) {
+        const list = byServer.get(server) ?? [];
+        let liveProcesses = 0;
+        for (const entry of list) {
+          if (entry.pid === null) continue;
+          if (isAlive(entry.pid)) liveProcesses += 1;
+          for (const child of await listDescendants(entry.pid, { snapshot: rows })) {
+            if (isAlive(child)) liveProcesses += 1;
+          }
+        }
+        const failure = lastErrors.get(server);
+        out.push({
+          server,
+          liveProcesses,
+          lastError: failure?.message ?? null,
+          lastErrorAt: failure?.at ?? null,
+          clients: list,
+        });
+      }
+      return out.sort((a, b) => a.server.localeCompare(b.server));
     },
 
     async stopAll() {
       stopped = true;
-      await Promise.all([...clients.keys()].map((key) => dropClient(key)));
+      await Promise.all([...clients.keys()].map((key) => dropClient(key, 'shutdown')));
     },
   };
 }

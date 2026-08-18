@@ -781,10 +781,14 @@ export function createProxyServer(
     // Code-mode bridge endpoint. Invokes tools on bridged MCP servers via
     // the daemon's client manager; never proxied upstream. The handler
     // validates its own bearer token and enforces the server allowlist.
-    if (codeModeHandler && url.split('?')[0] === '/code-mode/call') {
+    const codeModePath = url.split('?')[0];
+    if (
+      codeModeHandler &&
+      (codeModePath === '/code-mode/call' || codeModePath === '/code-mode/restart')
+    ) {
       void (async () => {
         const body = req.method === 'POST' ? await readBody(req) : null;
-        await codeModeHandler(req, res, body);
+        await codeModeHandler(req, res, body, codeModePath);
       })().catch((err) => {
         console.error('[Proxy] code-mode handler error:', err);
         if (!res.headersSent) {

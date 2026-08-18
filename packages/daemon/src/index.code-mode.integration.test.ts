@@ -763,3 +763,144 @@ describe('code-mode credentials', () => {
     expect(keychain()['Sentinel-code-mode-secrets'] ?? {}).toEqual({});
   });
 });
+
+describe('code-mode restart', () => {
+  let ctx: TestDaemon;
+  let fakeMcp: FakeMcpHttpServer | null = null;
+
+  afterEach(async () => {
+    if (ctx) await ctx.cleanup();
+    if (fakeMcp) await fakeMcp.close();
+    fakeMcp = null;
+  });
+
+  async function bridge(): Promise<void> {
+    fakeMcp = await startFakeMcpHttpServer();
+    ctx = await startTestDaemon({
+      claudeState: { mcpServers: { fakemcp: { type: 'http', url: fakeMcp.url } } },
+    });
+    const m = await ctx.request({ type: 'migrate_server_to_code_mode', server: 'fakemcp' });
+    expect(m.success).toBe(true);
+  }
+
+  it('restarts a bridged server and refreshes its generated docs', async () => {
+    await bridge();
+    // Establish a connection so the restart is provably a RE-connect.
+    const call = await fetch(`http://127.0.0.1:${ctx.daemonPort}/code-mode/call`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${getOrCreateCodeModeToken()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ server: 'fakemcp', tool: FAKE_MCP_TOOLS[0]!.name, args: {} }),
+    });
+    expect(call.status).toBe(200);
+
+    const toolsDir = join(ctx.workdir, 'code-mode', 'servers', 'fakemcp', 'tools');
+    const docPath = join(toolsDir, `${FAKE_MCP_TOOLS[0]!.name}.md`);
+    const before = statSync(docPath).mtimeMs;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const r = await ctx.request<{ toolCount: number; pid: number | null }>({
+      type: 'restart_code_mode_server',
+      server: 'fakemcp',
+    });
+
+    expect(r.success).toBe(true);
+    expect(r.data?.toolCount).toBe(FAKE_MCP_TOOLS.length);
+    // HTTP transport spawns nothing locally, so there is no pid to report.
+    expect(r.data?.pid).toBeNull();
+    expect(statSync(docPath).mtimeMs).toBeGreaterThan(before);
+  });
+
+  it('leaves no lingering connection behind after migrating', async () => {
+    await bridge();
+
+    const status = await ctx.request<CodeModeStatus>({ type: 'get_code_mode_status' });
+
+    // The pre-migration verify connects under a `pending:` key that is never
+    // resolved again. Left cached, it held a second connection — and for a
+    // stdio server a second CHILD PROCESS — alongside the real one.
+    const entry = status.data?.runtime.find((r) => r.server === 'fakemcp');
+    expect(entry?.clients ?? []).toEqual([]);
+  });
+
+  it('refuses to restart a server that was never bridged', async () => {
+    await bridge();
+    const r = await ctx.request({ type: 'restart_code_mode_server', server: 'never-bridged' });
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("No recorded code-mode migration for 'never-bridged'.");
+  });
+
+  it('reports an error, not a crash, when the server cannot be reconnected', async () => {
+    await bridge();
+    await fakeMcp!.close();
+    fakeMcp = null;
+
+    const r = await ctx.request({ type: 'restart_code_mode_server', server: 'fakemcp' });
+
+    expect(r.success).toBe(false);
+    expect(r.error ?? '').not.toBe('');
+    // The daemon is still healthy and serving IPC afterwards.
+    const status = await ctx.request<CodeModeStatus>({ type: 'get_code_mode_status' });
+    expect(status.success).toBe(true);
+    // Generous: a connect to a closed listener spends a real transport timeout
+    // inside the SDK before it gives up.
+  }, 20_000);
+
+  it('reports live runtime state for a connected bridged server', async () => {
+    await bridge();
+    await fetch(`http://127.0.0.1:${ctx.daemonPort}/code-mode/call`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${getOrCreateCodeModeToken()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ server: 'fakemcp', tool: FAKE_MCP_TOOLS[0]!.name, args: {} }),
+    });
+
+    const status = await ctx.request<CodeModeStatus>({ type: 'get_code_mode_status' });
+
+    const entry = status.data?.runtime.find((r) => r.server === 'fakemcp');
+    expect(entry).toBeDefined();
+    expect(entry?.lastError).toBeNull();
+    // No local child for an HTTP server — the count must not invent one.
+    expect(entry?.liveProcesses).toBe(0);
+    const client = entry?.clients[0];
+    expect(client?.transport).toBe('http');
+    expect(client?.pid).toBeNull();
+    expect(client?.descriptor).toBe(fakeMcp!.url);
+    expect(client?.lastCallOk).toBe(true);
+    expect(client?.connectedAt).toBeGreaterThan(0);
+  });
+
+  it('surfaces the failure on a server that cannot connect at all', async () => {
+    fakeMcp = await startFakeMcpHttpServer();
+    ctx = await startTestDaemon({
+      claudeState: { mcpServers: { fakemcp: { type: 'http', url: fakeMcp.url } } },
+    });
+    expect(
+      (await ctx.request({ type: 'migrate_server_to_code_mode', server: 'fakemcp' })).success,
+    ).toBe(true);
+    await fakeMcp.close();
+    fakeMcp = null;
+
+    await fetch(`http://127.0.0.1:${ctx.daemonPort}/code-mode/call`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${getOrCreateCodeModeToken()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ server: 'fakemcp', tool: FAKE_MCP_TOOLS[0]!.name, args: {} }),
+    });
+
+    const status = await ctx.request<CodeModeStatus>({ type: 'get_code_mode_status' });
+
+    const entry = status.data?.runtime.find((r) => r.server === 'fakemcp');
+    // Nothing connected, but the reason is still readable — the whole point of
+    // keeping the error at server level rather than on the dead client.
+    expect(entry?.clients).toEqual([]);
+    expect(entry?.lastError ?? '').not.toBe('');
+    expect(entry?.lastErrorAt).toBeGreaterThan(0);
+  }, 20_000);
+});
