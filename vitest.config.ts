@@ -94,3 +94,5 @@ export default defineConfig({
     },
   },
 });
+
+// CI baseline probe — temporary, not for merge.
