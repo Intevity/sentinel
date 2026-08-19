@@ -3506,6 +3506,13 @@ export async function startDaemon(): Promise<DaemonHandle> {
             });
           } finally {
             codeModePendingEntries.delete(msg.server);
+            // The pre-migration verify connected under a `pending:` cache key
+            // that `resolveEntry` will never produce again, so that client —
+            // and, for a stdio server, its child process — would sit there
+            // until the idle timeout while real calls spawned a SECOND one
+            // under the record key. Same reason the credentials flow drops its
+            // `override:` client.
+            await codeModeManager.dropServer(msg.server);
           }
         })().catch((err: unknown) => {
           respond({
@@ -3584,38 +3591,47 @@ export async function startDaemon(): Promise<DaemonHandle> {
         break;
       }
       case 'get_code_mode_status': {
-        // `drifted` flags a migration whose native entry has been hand-
-        // restored in the config file (the disable is no longer in effect),
-        // mirroring get_retrieval_mcp_status's verify-against-reality.
-        const migrations = currentSettings.codeModeMigrations.map((m) => {
-          // Redacted stderr tail from the bridged child, so an expired token's
-          // 401 is visible in the UI instead of vanishing with the process.
-          const stderr = codeModeManager.lastStderr(m.server);
-          return {
-            ...m,
-            drifted: !isNativeDisabled(m),
-            ...(stderr.length > 0 ? { lastStderr: stderr } : {}),
-          };
-        });
-        // Report whether the subagent-bridge CLAUDE.md block is present and
-        // current. When code mode is off, nothing is expected on disk.
-        const claudeMdBlock = currentSettings.codeModeEnabled
-          ? readCodeModeBlockState({
-              servers: [...new Set(currentSettings.codeModeMigrations.map((m) => m.server))],
-              port: getDaemonPort(),
-            })
-          : { present: false, upToDate: true };
-        respond({
-          requestType: 'get_code_mode_status',
-          success: true,
-          data: {
-            enabled: currentSettings.codeModeEnabled,
-            skillInstalled: currentSettings.codeModeSkillInstalled,
-            migrations,
-            endpointUrl: `http://127.0.0.1:${getDaemonPort()}/code-mode/call`,
-            workspaceDir: resolveCodeModeDir(),
-            claudeMdBlock,
-          },
+        void (async () => {
+          // `drifted` flags a migration whose native entry has been hand-
+          // restored in the config file (the disable is no longer in effect),
+          // mirroring get_retrieval_mcp_status's verify-against-reality.
+          const migrations = currentSettings.codeModeMigrations.map((m) => {
+            // Redacted stderr tail from the bridged child, so an expired token's
+            // 401 is visible in the UI instead of vanishing with the process.
+            const stderr = codeModeManager.lastStderr(m.server);
+            return {
+              ...m,
+              drifted: !isNativeDisabled(m),
+              ...(stderr.length > 0 ? { lastStderr: stderr } : {}),
+            };
+          });
+          // Report whether the subagent-bridge CLAUDE.md block is present and
+          // current. When code mode is off, nothing is expected on disk.
+          const claudeMdBlock = currentSettings.codeModeEnabled
+            ? readCodeModeBlockState({
+                servers: [...new Set(currentSettings.codeModeMigrations.map((m) => m.server))],
+                port: getDaemonPort(),
+              })
+            : { present: false, upToDate: true };
+          respond({
+            requestType: 'get_code_mode_status',
+            success: true,
+            data: {
+              enabled: currentSettings.codeModeEnabled,
+              skillInstalled: currentSettings.codeModeSkillInstalled,
+              migrations,
+              endpointUrl: `http://127.0.0.1:${getDaemonPort()}/code-mode/call`,
+              workspaceDir: resolveCodeModeDir(),
+              claudeMdBlock,
+              runtime: await codeModeManager.runtime(),
+            },
+          });
+        })().catch((err: unknown) => {
+          respond({
+            requestType: 'get_code_mode_status',
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
         });
         break;
       }
@@ -3787,6 +3803,46 @@ export async function startDaemon(): Promise<DaemonHandle> {
         })().catch((err: unknown) => {
           respond({
             requestType: 'update_code_mode_credentials',
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+        break;
+      }
+      case 'restart_code_mode_server': {
+        // Close + reap + reconnect. Deliberately NOT a re-bridge: the skill,
+        // the managed CLAUDE.md block and the endpoint allow rule are all
+        // untouched, so no Claude Code session restart is needed.
+        void (async () => {
+          const bridged = currentSettings.codeModeMigrations.some((m) => m.server === msg.server);
+          if (!bridged) {
+            respond({
+              requestType: 'restart_code_mode_server',
+              success: false,
+              error: `No recorded code-mode migration for '${msg.server}'.`,
+            });
+            return;
+          }
+          const tools = await codeModeManager.restartServer(msg.server);
+          // The tool list may have moved while the old process was up (a stale
+          // build is one of the reasons to restart), so refresh the docs from
+          // what the NEW process actually reports.
+          await generateServerWorkspace({
+            server: msg.server,
+            tools,
+            port: getDaemonPort(),
+          });
+          const runtime = await codeModeManager.runtime();
+          const pid = runtime.find((r) => r.server === msg.server)?.clients[0]?.pid ?? null;
+          ipcServer.broadcast({ type: 'code_mode_status' });
+          respond({
+            requestType: 'restart_code_mode_server',
+            success: true,
+            data: { toolCount: tools.length, pid },
+          });
+        })().catch((err: unknown) => {
+          respond({
+            requestType: 'restart_code_mode_server',
             success: false,
             error: err instanceof Error ? err.message : String(err),
           });
@@ -4198,6 +4254,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
     getToken: () => getOrCreateCodeModeToken(),
     isEnabled: () => currentSettings.codeModeEnabled,
     recordCall: (row) => contextCostStore.recordCall(row),
+    // An agent restarting a wedged server gets the same doc refresh the UI
+    // path does — a restart is usually prompted by the server having changed.
+    onRestarted: async (server, tools) => {
+      await generateServerWorkspace({ server, tools, port: getDaemonPort() });
+      ipcServer.broadcast({ type: 'code_mode_status' });
+    },
   });
   const runContextCostPurge = (): void => {
     try {

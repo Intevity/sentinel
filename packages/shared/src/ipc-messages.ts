@@ -1427,6 +1427,63 @@ export interface RepairCodeModeBridgeMessage {
   type: 'repair_code_mode_bridge';
 }
 
+/** Restart a bridged server: close its child (reaping the whole process tree),
+ *  reconnect, and regenerate its tool docs from the freshly-listed tools.
+ *
+ *  A server configured in several scopes has one child per configuration.
+ *  Restart stops ALL of them, but eagerly reconnects only the default record —
+ *  the others come back lazily on their next call, so restarting cannot spawn
+ *  a process for a project you are not working in.
+ *
+ *  The recovery path for a server that has gone bad in a way a reconnect fixes
+ *  — a wedged child, a stale build behind an unpinned `uvx`/`npx`, credentials
+ *  rotated outside Sentinel. Before this existed the only remedy was
+ *  unbridge/re-bridge, which rewrites the skill, the managed CLAUDE.md block
+ *  and the docs, and costs a Claude Code session restart. Restart touches none
+ *  of that. */
+export interface RestartCodeModeServerMessage {
+  type: 'restart_code_mode_server';
+  server: string;
+}
+
+/** Response payload for {@link RestartCodeModeServerMessage}. */
+export interface CodeModeRestartResult {
+  /** Tools listed by the reconnected server; also the count written to docs. */
+  toolCount: number;
+  /** Direct child pid of the new process, or null for HTTP/SSE servers. */
+  pid: number | null;
+}
+
+/** One live connection behind a bridged server. */
+export interface CodeModeClientRuntime {
+  /** Opaque config-record key — a server configured differently per project
+   *  has one entry per configuration. */
+  key: string;
+  connectedAt: number;
+  /** Direct child pid; null for HTTP/SSE, which spawn nothing locally. */
+  pid: number | null;
+  transport: 'stdio' | 'http' | 'sse';
+  /** Redacted command + args actually spawned, or the URL. What the user
+   *  correlates against `ps`. */
+  descriptor: string;
+  toolCount: number | null;
+  lastCallAt: number | null;
+  lastCallOk: boolean | null;
+}
+
+/** Live runtime state for one bridged server. */
+export interface CodeModeServerRuntime {
+  server: string;
+  /** Processes still alive for this server — each tracked child plus its live
+   *  descendants. More than `clients.length` means something leaked. */
+  liveProcesses: number;
+  /** Most recent failure, surviving the client it killed. Cleared by the next
+   *  success. */
+  lastError: string | null;
+  lastErrorAt: number | null;
+  clients: CodeModeClientRuntime[];
+}
+
 /** Response shape for {@link GetCodeModeStatusMessage}. */
 export interface CodeModeStatus {
   /** Mirror of `Settings.codeModeEnabled`. */
@@ -1450,6 +1507,10 @@ export interface CodeModeStatus {
    *  Reported as `{ present: false, upToDate: true }` when code mode is off
    *  (nothing is expected on disk). */
   claudeMdBlock: { present: boolean; upToDate: boolean };
+  /** Live process state per bridged server. Empty for a server with no
+   *  connection and no recorded failure — the bridge connects lazily, so
+   *  "no entry" means "nothing has needed it yet", not "broken". */
+  runtime: CodeModeServerRuntime[];
 }
 
 /** Read recent bridge calls for the Context tab's audit list. Rows carry
@@ -2191,6 +2252,7 @@ export type AppToDaemonMessage =
   | RevealCodeModeSecretMessage
   | UpdateCodeModeCredentialsMessage
   | RepairCodeModeBridgeMessage
+  | RestartCodeModeServerMessage
   | GetCodeModeAuditMessage
   | GetAgentsSyncStatusMessage
   | GetRemovedAccountsMessage

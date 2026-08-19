@@ -195,6 +195,13 @@ export async function startFakeMcpHttpServer(opts?: {
     },
     close: () =>
       new Promise<void>((resolve) => {
+        // `close()` alone waits for every open connection to end, and a
+        // connected MCP client holds one open indefinitely (the streamable
+        // transport keeps a GET parked for server→client messages). A test
+        // that closes the fake while a client is still bridged would therefore
+        // hang forever. Destroying the sockets is also the honest simulation:
+        // closing the fake models the server going away, not draining politely.
+        httpServer.closeAllConnections();
         httpServer.close(() => resolve());
       }),
   };
@@ -254,6 +261,16 @@ process.stdin.on('end', () => process.exit(0));
 
 function handle(msg) {
   if (msg.method === 'initialize') {
+    if (process.env.FAKE_MCP_BAD_INIT === '1') {
+      // Fail the handshake AFTER the process (and anything it spawned) is
+      // already up — the state in which a spawned child would be stranded.
+      send({
+        jsonrpc: '2.0',
+        id: msg.id,
+        error: { code: -32603, message: 'deliberate initialize failure from fake MCP server' },
+      });
+      return;
+    }
     send({
       jsonrpc: '2.0',
       id: msg.id,
@@ -300,6 +317,47 @@ function handle(msg) {
 export function writeFakeMcpStdioScript(): { path: string; cleanup: () => void } {
   const path = join(tmpdir(), `fake-mcp-stdio-${randomUUID()}.mjs`);
   writeFileSync(path, STDIO_SCRIPT, 'utf-8');
+  return {
+    path,
+    cleanup: () => {
+      if (existsSync(path)) unlinkSync(path);
+    },
+  };
+}
+
+/**
+ * A stdio server that spawns a long-lived GRANDCHILD before serving, modelling
+ * the launchers real MCP servers actually ship with: `uv tool uvx mcp-atlassian`
+ * and `npm exec mongodb-mcp-server` both run the real server one level down.
+ *
+ * This is the shape that leaks. Signalling the direct child does nothing to the
+ * grandchild, which survives and reparents to init — observed in the wild as
+ * months-old MCP processes at ppid 1. A test asserts the grandchild is dead
+ * after teardown; without process-tree reaping it stays alive.
+ *
+ * The grandchild uses `stdio: 'ignore'` so it cannot corrupt the JSON-RPC
+ * stream, and is deliberately NOT detached: a plain child already outlives a
+ * SIGKILLed parent, which is precisely the bug being reproduced.
+ */
+export function writeFakeMcpStdioScriptWithGrandchild(): {
+  path: string;
+  cleanup: () => void;
+} {
+  const path = join(tmpdir(), `fake-mcp-stdio-grandchild-${randomUUID()}.mjs`);
+  const preamble = [
+    "import { spawn } from 'node:child_process';",
+    "import { writeFileSync } from 'node:fs';",
+    // Sleeps effectively forever; the test kills it via the manager's reaper,
+    // and an unref'd handle would let it exit on its own and mask a leak.
+    "const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000000)'], { stdio: 'ignore' });",
+    // Publishing the pid lets a test assert the grandchild died even on paths
+    // where the manager never registered the connection (a failed handshake),
+    // and so has no pid of its own to report.
+    'if (process.env.FAKE_MCP_CHILD_PID_FILE) {',
+    "  writeFileSync(process.env.FAKE_MCP_CHILD_PID_FILE, String(grandchild.pid), 'utf-8');",
+    '}',
+  ].join('\n');
+  writeFileSync(path, `${preamble}\n${STDIO_SCRIPT}`, 'utf-8');
   return {
     path,
     cleanup: () => {

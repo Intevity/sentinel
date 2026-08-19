@@ -9,6 +9,7 @@ export {
   startFakeMcpHttpServer,
   writeFakeMcpStdioScript,
   writeFakeMcpStdioScriptWithStderr,
+  writeFakeMcpStdioScriptWithGrandchild,
   runFakeMcpTool,
   FAKE_MCP_TOOLS,
   type FakeMcpHttpServer,
