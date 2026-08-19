@@ -24,6 +24,19 @@ on:
       - '.gitignore'
       - 'CHANGELOG.md'
 
+# Node 24.19.0 shipped nodejs/node#63642 ("src: add cleanup hooks to
+# node::ObjectWrap"), which makes NAN-style ObjectWrap addons abort during
+# environment teardown: better-sqlite3's Statement destructor calls
+# RemoveEnvironmentCleanupHook after the Environment is gone, tripping
+# `Assertion failed: (env) != nullptr` and killing the process with SIGABRT.
+# In CI that surfaced as vitest workers dying mid-run, taking whole test files
+# with them and dropping coverage below the gate — with no code change to
+# explain it, because a floating `'24'` pin picks up each new patch release.
+# Pinned until better-sqlite3 adapts to the new hook contract; verified locally
+# under both versions (24.19.0: 4-6 workers killed per run; 24.18.0: none).
+env:
+  NODE_VERSION: '24.18.0'
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -46,7 +59,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: ${{ env.NODE_VERSION }}
       - name: Lint commit messages (release notes are generated from them)
         run: node scripts/commit-lint.mjs "origin/${{ github.base_ref }}" HEAD
 
@@ -105,7 +118,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Install dependencies
@@ -302,7 +315,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Install dependencies

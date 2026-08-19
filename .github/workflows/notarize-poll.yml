@@ -13,6 +13,19 @@ on:
     - cron: '13,43 * * * *'
   workflow_dispatch: {}
 
+# Node 24.19.0 shipped nodejs/node#63642 ("src: add cleanup hooks to
+# node::ObjectWrap"), which makes NAN-style ObjectWrap addons abort during
+# environment teardown: better-sqlite3's Statement destructor calls
+# RemoveEnvironmentCleanupHook after the Environment is gone, tripping
+# `Assertion failed: (env) != nullptr` and killing the process with SIGABRT.
+# In CI that surfaced as vitest workers dying mid-run, taking whole test files
+# with them and dropping coverage below the gate — with no code change to
+# explain it, because a floating `'24'` pin picks up each new patch release.
+# Pinned until better-sqlite3 adapts to the new hook contract; verified locally
+# under both versions (24.19.0: 4-6 workers killed per run; 24.18.0: none).
+env:
+  NODE_VERSION: '24.18.0'
+
 permissions:
   contents: write
 
@@ -33,7 +46,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: ${{ env.NODE_VERSION }}
       - name: Scan for a pending release and poll it once
         id: scan
         run: |
