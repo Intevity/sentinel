@@ -1990,6 +1990,140 @@ describe('Optimize window + retention DB helpers', () => {
       await seedOpt(Date.now());
       expect(purgeOptimizationOlderThan(db, Date.now() - 365 * DAY)).toBe(0);
     });
+
+    it('also purges tool_calls, which previously had no retention sweep at all', async () => {
+      const { insertToolCall, purgeOptimizationOlderThan } = await import('./db.js');
+      const now = Date.now();
+      const seedCall = (ts: number, toolUseId: string): void => {
+        insertToolCall(db, {
+          ts,
+          accountId: 'a',
+          sessionId: 's',
+          requestId: 'r',
+          requestSeqInSession: 1,
+          toolUseId,
+          toolName: 'Read',
+          filePath: '/tmp/x',
+          inputSizeBytes: 10,
+          responseSizeBytes: null,
+          denied: false,
+          model: 'm',
+        });
+      };
+      seedCall(now - 400 * DAY, 'toolu_ancient');
+      seedCall(now - 1 * DAY, 'toolu_fresh');
+
+      // Return value covers both tables; only the ancient tool_call goes.
+      expect(purgeOptimizationOlderThan(db, now - 365 * DAY)).toBe(1);
+
+      const remaining = db.prepare('SELECT tool_use_id FROM tool_calls').all() as Array<{
+        tool_use_id: string;
+      }>;
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]!.tool_use_id).toBe('toolu_fresh');
+    });
+  });
+
+  describe('perf_indexes_v1 migration', () => {
+    it('indexes tool_use_id so the backfill lookup seeks instead of scanning', () => {
+      // The regression this guards is a full SCAN of tool_calls once per
+      // tool_result per request, which blocked the daemon's single thread.
+      const plan = db
+        .prepare("EXPLAIN QUERY PLAN SELECT * FROM tool_calls WHERE tool_use_id = 'x' LIMIT 1")
+        .all() as Array<{ detail: string }>;
+      const detail = plan.map((r) => r.detail).join(' ');
+      expect(detail).toContain('idx_tc_tool_use_id');
+      expect(detail).not.toContain('SCAN TABLE tool_calls');
+    });
+
+    it('drops the single-column indexes the new composites supersede', () => {
+      const names = (
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{
+          name: string;
+        }>
+      ).map((r) => r.name);
+      expect(names).toEqual(
+        expect.arrayContaining([
+          'idx_usage_account_ts',
+          'idx_tool_events_account_ts',
+          'idx_api_errors_account_ts',
+          'idx_activity_account_kind_ts',
+        ]),
+      );
+      // Strict prefixes of the composites above — keeping them would only
+      // cost write throughput.
+      for (const dead of [
+        'idx_usage_account',
+        'idx_tool_events_account',
+        'idx_api_errors_account',
+        'idx_activity_account_kind',
+      ]) {
+        expect(names).not.toContain(dead);
+      }
+    });
+
+    it('records the marker so it is not re-run on the next open', () => {
+      const row = db
+        .prepare('SELECT name FROM _migrations WHERE name = ?')
+        .get('perf_indexes_v1') as { name: string } | undefined;
+      expect(row?.name).toBe('perf_indexes_v1');
+    });
+  });
+
+  describe('findPendingToolCallsByToolUseIds', () => {
+    const seed = async (toolUseId: string, overrides: Record<string, unknown> = {}) => {
+      const { insertToolCall } = await import('./db.js');
+      insertToolCall(db, {
+        ts: Date.now(),
+        accountId: 'a',
+        sessionId: 's',
+        requestId: 'r',
+        requestSeqInSession: 1,
+        toolUseId,
+        toolName: 'Read',
+        filePath: '/tmp/x',
+        inputSizeBytes: 10,
+        responseSizeBytes: null,
+        denied: false,
+        model: 'm',
+        ...overrides,
+      });
+    };
+
+    it('returns only rows that still need backfilling', async () => {
+      const {
+        findPendingToolCallsByToolUseIds,
+        backfillToolCallResponseSize,
+        findToolCallByToolUseId,
+      } = await import('./db.js');
+      await seed('toolu_pending');
+      await seed('toolu_done');
+
+      // Complete one of them the way a prior request's backfill would.
+      const done = findToolCallByToolUseId(db, 'toolu_done')!;
+      backfillToolCallResponseSize(db, done.id, 500);
+      db.prepare('UPDATE tool_calls SET was_quoted_in_later_turn = 0 WHERE id = ?').run(done.id);
+
+      const pending = findPendingToolCallsByToolUseIds(db, ['toolu_pending', 'toolu_done']);
+      expect(pending.map((r) => r.toolUseId)).toEqual(['toolu_pending']);
+    });
+
+    it('returns [] for an empty id list without touching the database', async () => {
+      const { findPendingToolCallsByToolUseIds } = await import('./db.js');
+      expect(findPendingToolCallsByToolUseIds(db, [])).toEqual([]);
+    });
+
+    it('chunks past the 500-id boundary and still finds rows in the last chunk', async () => {
+      const { findPendingToolCallsByToolUseIds } = await import('./db.js');
+      // 1200 ids spans three chunks; only the final one exists, so a
+      // chunking bug that dropped trailing chunks would return [].
+      const ids = Array.from({ length: 1200 }, (_, i) => `toolu_bulk_${i}`);
+      await seed(ids[1199]!);
+
+      const pending = findPendingToolCallsByToolUseIds(db, ids);
+      expect(pending).toHaveLength(1);
+      expect(pending[0]!.toolUseId).toBe('toolu_bulk_1199');
+    });
   });
 
   describe('getCacheHealthWindowRange', () => {

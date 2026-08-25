@@ -1,10 +1,22 @@
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import type { LogRequestSummary, RequestDetail } from '@sentinel/shared';
 import { SENTINEL_DIR } from './db.js';
 
 export const REQUEST_LOG_DB_PATH = join(SENTINEL_DIR, 'request-logs.db');
+
+/** Value of `request_logs.body_encoding`. Rows written before the
+ *  compression migration stay `identity` and age out with retention; there
+ *  is no backfill pass. */
+export type BodyEncoding = 'identity' | 'gzip';
+
+/** Bodies are JSON conversation payloads. Measured against real captured
+ *  traffic they compress ~2.8x (≈64% saved) — lower than generic JSON
+ *  because the payloads carry a lot of high-entropy content. Below this
+ *  size the gzip header plus the CPU round-trip is not worth it. */
+const GZIP_MIN_BYTES = 1024;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS request_logs (
@@ -23,7 +35,8 @@ CREATE TABLE IF NOT EXISTS request_logs (
   response_body_truncated  INTEGER NOT NULL DEFAULT 0,
   response_body_size       INTEGER,
   is_sse                   INTEGER NOT NULL DEFAULT 0,
-  error_message            TEXT
+  error_message            TEXT,
+  body_encoding            TEXT NOT NULL DEFAULT 'identity'
 );
 
 CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON request_logs(timestamp);
@@ -69,19 +82,31 @@ export class RequestLogStore {
 
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
+    // 16 MB page cache (default is 2 MB). The detail lookup is a PK seek,
+    // but retention scans the timestamp index over a large file.
+    this.db.pragma('cache_size = -16384');
     this.db.exec(SCHEMA);
+
+    // `CREATE TABLE IF NOT EXISTS` above is a no-op on databases created
+    // before body compression landed, so add the column separately.
+    const cols = this.db.pragma('table_info(request_logs)') as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'body_encoding')) {
+      this.db.exec(
+        "ALTER TABLE request_logs ADD COLUMN body_encoding TEXT NOT NULL DEFAULT 'identity'",
+      );
+    }
 
     this.insertStmt = this.db.prepare(`
       INSERT OR REPLACE INTO request_logs (
         request_id, timestamp, duration_ms, method, url_path, status_code,
         request_headers, request_body, request_body_truncated, request_body_size,
         response_headers, response_body, response_body_truncated, response_body_size,
-        is_sse, error_message
+        is_sse, error_message, body_encoding
       ) VALUES (
         @requestId, @timestamp, @durationMs, @method, @urlPath, @statusCode,
         @requestHeaders, @requestBody, @requestBodyTruncated, @requestBodySize,
         @responseHeaders, @responseBody, @responseBodyTruncated, @responseBodySize,
-        @isSse, @errorMessage
+        @isSse, @errorMessage, @bodyEncoding
       )
     `);
   }
@@ -110,6 +135,10 @@ export class RequestLogStore {
     const stmt = this.insertStmt;
     this.db.transaction(() => {
       for (const r of batch) {
+        // Compression happens AFTER the proxy's `requestLogMaxBodyKb`
+        // truncation, so the cap keeps its plaintext meaning and
+        // `*_body_size` still records the original byte count.
+        const encoding = pickEncoding(r.requestBody, r.responseBody);
         stmt.run({
           requestId: r.requestId,
           timestamp: r.timestamp,
@@ -118,15 +147,16 @@ export class RequestLogStore {
           urlPath: r.urlPath,
           statusCode: r.statusCode,
           requestHeaders: JSON.stringify(r.requestHeaders),
-          requestBody: r.requestBody,
+          requestBody: encodeBody(r.requestBody, encoding),
           requestBodyTruncated: r.requestBodyTruncated ? 1 : 0,
           requestBodySize: r.requestBodySize,
           responseHeaders: r.responseHeaders ? JSON.stringify(r.responseHeaders) : null,
-          responseBody: r.responseBody,
+          responseBody: encodeBody(r.responseBody, encoding),
           responseBodyTruncated: r.responseBodyTruncated ? 1 : 0,
           responseBodySize: r.responseBodySize,
           isSse: r.isSse ? 1 : 0,
           errorMessage: r.errorMessage,
+          bodyEncoding: encoding,
         });
       }
     })();
@@ -180,14 +210,21 @@ export class RequestLogStore {
     }));
   }
 
-  /** Delete rows older than cutoff (Unix ms) and reclaim disk. Bodies are
-   *  large — VACUUM matters here more than it does for telemetry. */
+  /** Delete rows older than cutoff (Unix ms).
+   *
+   *  Deliberately does NOT VACUUM. This runs on the daemon's main thread,
+   *  and VACUUM rewrites the entire file synchronously — on a multi-GB
+   *  request log that stalls the proxy and IPC for minutes, which reads to
+   *  the user as "Sentinel froze". Freed pages go on the freelist and are
+   *  reused by subsequent inserts, so the file reaches a stable ceiling
+   *  instead of growing without bound. Reclaiming space back to the
+   *  filesystem is an explicit user action (`clearAll`, or an offline
+   *  `sqlite3 request-logs.db 'VACUUM;'`). */
   purgeOlderThan(cutoffMs: number): number {
     const result = this.db.prepare('DELETE FROM request_logs WHERE timestamp < ?').run(cutoffMs);
     const deleted = Number(result.changes);
     if (deleted > 0) {
       this.db.pragma('wal_checkpoint(TRUNCATE)');
-      this.db.exec('VACUUM');
     }
     return deleted;
   }
@@ -232,6 +269,7 @@ interface RequestLogRow {
   response_body_size: number | null;
   is_sse: number;
   error_message: string | null;
+  body_encoding: BodyEncoding | null;
 }
 
 function rowToDetail(row: RequestLogRow): RequestDetail {
@@ -247,14 +285,14 @@ function rowToDetail(row: RequestLogRow): RequestDetail {
     isSse: row.is_sse === 1,
     request: {
       headers: safeJsonParse(row.request_headers) ?? {},
-      body: bufferToUtf8(row.request_body),
+      body: bufferToUtf8(row.request_body, row.body_encoding),
       bodyTruncated: row.request_body_truncated === 1,
       bodySize: row.request_body_size,
     },
     response: hasResponse
       ? {
           headers: responseHeaders ?? {},
-          body: bufferToUtf8(row.response_body),
+          body: bufferToUtf8(row.response_body, row.body_encoding),
           bodyTruncated: row.response_body_truncated === 1,
           bodySize: row.response_body_size ?? 0,
         }
@@ -263,12 +301,34 @@ function rowToDetail(row: RequestLogRow): RequestDetail {
   };
 }
 
-function bufferToUtf8(buf: Buffer | null): string {
+function bufferToUtf8(buf: Buffer | null, encoding: BodyEncoding | null): string {
   if (!buf) return '';
+  let bytes = buf;
+  if (encoding === 'gzip') {
+    try {
+      bytes = gunzipSync(buf);
+    } catch {
+      // A corrupt or half-written BLOB must not take down the detail view.
+      return '';
+    }
+  }
   // `fatal: false` replaces invalid sequences with U+FFFD so non-UTF-8
   // payloads (rare — Anthropic API is JSON/SSE text) still render instead
   // of throwing inside the IPC handler.
-  return new TextDecoder('utf-8', { fatal: false }).decode(buf);
+  return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+}
+
+/** Pick one encoding for both bodies of a row. They are written together
+ *  and share a single `body_encoding` column, so the decision is made on
+ *  the pair: gzip only when there is enough payload for it to pay off. */
+function pickEncoding(requestBody: Buffer | null, responseBody: Buffer | null): BodyEncoding {
+  const total = (requestBody?.byteLength ?? 0) + (responseBody?.byteLength ?? 0);
+  return total >= GZIP_MIN_BYTES ? 'gzip' : 'identity';
+}
+
+function encodeBody(buf: Buffer | null, encoding: BodyEncoding): Buffer | null {
+  if (!buf || encoding === 'identity') return buf;
+  return gzipSync(buf);
 }
 
 function safeJsonParse(s: string): Record<string, string> | null {
@@ -311,7 +371,20 @@ export function redactHeaders(
 
 let _store: RequestLogStore | null = null;
 
-export function getRequestLogStore(dbPath: string = REQUEST_LOG_DB_PATH): RequestLogStore {
+/**
+ * Singleton accessor.
+ *
+ * The default MUST consult `SENTINEL_TEST_REQUEST_LOG_DB_FILE` — passing
+ * `REQUEST_LOG_DB_PATH` as the default here used to override the env seam
+ * that `RequestLogStore`'s own constructor honours. Because `startDaemon()`
+ * calls this with no argument, every integration test that booted a daemon
+ * silently opened the developer's real `~/.sentinel/request-logs.db`, and
+ * the `clear_request_logs` IPC test then wiped it. Keep this in sync with
+ * `getDb()` in db.ts, which resolves its seam the same way.
+ */
+export function getRequestLogStore(
+  dbPath: string = process.env.SENTINEL_TEST_REQUEST_LOG_DB_FILE ?? REQUEST_LOG_DB_PATH,
+): RequestLogStore {
   if (!_store) _store = new RequestLogStore(dbPath);
   return _store;
 }

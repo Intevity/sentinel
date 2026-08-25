@@ -4087,7 +4087,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
       const purged = purgeOptimizationOlderThan(db, cutoff);
       if (purged > 0) {
         console.log(
-          `[Optimize] Purged ${purged} optimization row(s) older than ${currentSettings.optimizeRetentionDays} days`,
+          `[Optimize] Purged ${purged} optimization + tool_call row(s) older than ${currentSettings.optimizeRetentionDays} days`,
         );
       }
       /* v8 ignore next 3 */

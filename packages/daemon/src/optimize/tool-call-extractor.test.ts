@@ -599,15 +599,45 @@ describe('applyToolResultBackfill', () => {
     const line = logSpy.mock.calls
       .map((args) => String(args[0] ?? ''))
       .find((s) => s.startsWith('[Optimize/Backfill]'));
-    expect(line).toBeDefined();
-    // Tool-use IDs found vs missing must both be reported.
-    expect(line).toContain('tool_results=2');
-    expect(line).toContain('hits=1');
-    expect(line).toContain('misses=1');
-    expect(line).toContain('size_backfills=1');
-    // The miss prefix surfaces in the log so the user can match against
-    // their tool_calls rows manually when triaging backfill gaps.
-    expect(line).toContain('miss_prefixes=toolu_diag_');
+    // Every tool_result seen is reported, alongside how many of them still
+    // needed work. `pending` replaced the old hits/misses pair: rows that
+    // are already backfilled are no longer fetched at all, so a hit count
+    // would sit near zero on a healthy system and read like a failure.
+    expect(line).toBe(
+      '[Optimize/Backfill] tool_results=2 pending=1 size_backfills=1 quote_backfills=1',
+    );
+  });
+
+  it('reports pending=0 once every tool_result has already been backfilled', () => {
+    // The regression this guards: Claude Code resends the full conversation
+    // each turn, so the second pass over the same tool_result must do no
+    // write work. Before batching, this cost one full-table scan per block.
+    recordToolCall('toolu_repeat');
+    const requestBody = Buffer.from(
+      JSON.stringify({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'toolu_repeat', content: 'a'.repeat(100) },
+            ],
+          },
+        ],
+      }),
+    );
+    applyToolResultBackfill(db, requestBody, 'sess-1');
+    logSpy.mockClear();
+
+    applyToolResultBackfill(db, requestBody, 'sess-1');
+    const line = logSpy.mock.calls
+      .map((args) => String(args[0] ?? ''))
+      .find((s) => s.startsWith('[Optimize/Backfill]'));
+    expect(line).toBe(
+      '[Optimize/Backfill] tool_results=1 pending=0 size_backfills=0 quote_backfills=0',
+    );
+    // The first pass's value is still intact — pending=0 means "nothing left
+    // to do", not "the backfill was lost".
+    expect(findToolCallByToolUseId(db, 'toolu_repeat')!.responseSizeBytes).toBe(100);
   });
 
   it('does not log when the request has no tool_results to scan', () => {
