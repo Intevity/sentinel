@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS activity_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_ts      ON usage_events(ts);
-CREATE INDEX IF NOT EXISTS idx_usage_account ON usage_events(account_id);
+CREATE INDEX IF NOT EXISTS idx_usage_account_ts ON usage_events(account_id, ts);
 CREATE INDEX IF NOT EXISTS idx_overage_account ON overage_events(account_id);
 -- Dedup guarantee: at most one row per (account_id, overage window, transition).
 -- COALESCE on resets_at keeps NULL-reset rows comparable — SQLite otherwise
@@ -245,12 +245,12 @@ CREATE INDEX IF NOT EXISTS idx_alerts_account ON alerts(account_id);
 -- getDb below) so legacy DBs whose alerts table predates the column aren't
 -- tripped up by a CREATE INDEX referencing a column that doesn't exist yet.
 CREATE INDEX IF NOT EXISTS idx_tool_events_ts        ON tool_events(ts);
-CREATE INDEX IF NOT EXISTS idx_tool_events_account   ON tool_events(account_id);
+CREATE INDEX IF NOT EXISTS idx_tool_events_account_ts ON tool_events(account_id, ts);
 CREATE INDEX IF NOT EXISTS idx_tool_events_tool      ON tool_events(tool_name);
 CREATE INDEX IF NOT EXISTS idx_api_errors_ts         ON api_errors(ts);
-CREATE INDEX IF NOT EXISTS idx_api_errors_account    ON api_errors(account_id);
+CREATE INDEX IF NOT EXISTS idx_api_errors_account_ts ON api_errors(account_id, ts);
 CREATE INDEX IF NOT EXISTS idx_activity_ts           ON activity_events(ts);
-CREATE INDEX IF NOT EXISTS idx_activity_account_kind ON activity_events(account_id, kind);
+CREATE INDEX IF NOT EXISTS idx_activity_account_kind_ts ON activity_events(account_id, kind, ts);
 
 -- One row per /v1/messages request that yielded a response usage payload.
 -- Captures BOTH surfaces of the cache-TTL picture so the Metrics tab can
@@ -467,6 +467,7 @@ CREATE INDEX IF NOT EXISTS idx_tc_session_seq ON tool_calls(session_id, request_
 CREATE INDEX IF NOT EXISTS idx_tc_account_ts  ON tool_calls(account_id, ts);
 CREATE INDEX IF NOT EXISTS idx_tc_tool_ts     ON tool_calls(tool_name, ts);
 CREATE INDEX IF NOT EXISTS idx_tc_request     ON tool_calls(request_id);
+CREATE INDEX IF NOT EXISTS idx_tc_tool_use_id ON tool_calls(tool_use_id);
 
 -- Optimize feature: ledger of recommend / install / dismiss / measure
 -- events keyed by curated subagent id. Joined to subagent_installs by
@@ -551,6 +552,17 @@ export function getDb(
   _db = new Database(dbPath);
   _db.pragma('journal_mode = WAL');
   _db.pragma('foreign_keys = ON');
+  // 64 MB page cache, up from SQLite's 2 MB default. The telemetry tables
+  // (activity_events, tool_calls, cache_ttl_events) are hundreds of
+  // thousands of rows; a 2 MB cache forced every index range-scan to go
+  // back to the filesystem, which shows up as pread storms on the daemon's
+  // single synchronous thread.
+  _db.pragma('cache_size = -65536');
+  // NORMAL is the standard pairing with WAL: fsync happens at checkpoint
+  // rather than on every commit. A power loss can cost the last
+  // transaction, but never corrupts the database — and it takes an fsync
+  // off the proxy's per-request write path.
+  _db.pragma('synchronous = NORMAL');
 
   // Collapse legacy duplicates before the unique index is created in SCHEMA.
   // Older daemons persisted every transition blindly, so a single overage
@@ -1055,6 +1067,43 @@ export function getDb(
     _db
       .prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)')
       .run('optimize_v1_schema_2026_05', Date.now());
+  }
+
+  // Query-plan fixes for the read paths that grew unbounded.
+  //
+  // `tool_calls.tool_use_id` is the important one: the Optimize backfill
+  // looks a row up by it once per tool_result block per request, and Claude
+  // Code resends the whole conversation every turn. With no index that was
+  // a full SCAN of the table each time — measured at 5.4s of blocking CPU
+  // for 200 lookups against 211k rows, on the thread that also serves the
+  // proxy. Indexed, the same work is ~1ms.
+  //
+  // The composites match how every metrics helper filters
+  // (`account_id IN (…) AND ts >= ? AND ts < ?`). Previously only separate
+  // single-column indexes existed, so SQLite picked one and post-filtered
+  // the rest. Each new composite strictly contains the old single-column
+  // index as a prefix, so the originals are dropped: they can no longer be
+  // chosen, and keeping them would only slow writes.
+  const perfIndexesApplied = _db
+    .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
+    .get('perf_indexes_v1') as { ok: number } | undefined;
+  if (!perfIndexesApplied) {
+    _db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_tc_tool_use_id          ON tool_calls(tool_use_id);
+      CREATE INDEX IF NOT EXISTS idx_usage_account_ts        ON usage_events(account_id, ts);
+      CREATE INDEX IF NOT EXISTS idx_tool_events_account_ts  ON tool_events(account_id, ts);
+      CREATE INDEX IF NOT EXISTS idx_api_errors_account_ts   ON api_errors(account_id, ts);
+      CREATE INDEX IF NOT EXISTS idx_activity_account_kind_ts ON activity_events(account_id, kind, ts);
+
+      DROP INDEX IF EXISTS idx_usage_account;
+      DROP INDEX IF EXISTS idx_tool_events_account;
+      DROP INDEX IF EXISTS idx_api_errors_account;
+      DROP INDEX IF EXISTS idx_activity_account_kind;
+    `);
+    _db
+      .prepare('INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)')
+      .run('perf_indexes_v1', Date.now());
+    console.log('[DB] perf_indexes_v1: indexed tool_use_id and the metrics (account_id, ts) paths');
   }
 
   return _db;
@@ -1970,13 +2019,22 @@ export function clearSecurityEvents(db: Database.Database, accountId?: string): 
 }
 
 /** Delete OTEL-derived telemetry rows older than the retention window.
- *  Covers usage_events, tool_events, api_errors, and activity_events —
- *  the four tables that grow linearly with Claude Code activity.
+ *  Covers usage_events, tool_events, api_errors, activity_events, and
+ *  cache_ttl_events — the tables that grow linearly with Claude Code
+ *  activity. `cache_ttl_events` is written by the proxy on every
+ *  /v1/messages response and was previously in no retention sweep at all,
+ *  so it grew without bound.
  *  Intended to run at daemon startup AND every 24h. Returns the total
  *  number of rows removed across all tables. */
 export function purgeTelemetryOlderThan(db: Database.Database, cutoffMs: number): number {
   let total = 0;
-  for (const table of ['usage_events', 'tool_events', 'api_errors', 'activity_events'] as const) {
+  for (const table of [
+    'usage_events',
+    'tool_events',
+    'api_errors',
+    'activity_events',
+    'cache_ttl_events',
+  ] as const) {
     const result = db.prepare(`DELETE FROM ${table} WHERE ts < ?`).run(cutoffMs);
     total += Number(result.changes);
   }
@@ -1991,7 +2049,14 @@ export function purgeTelemetryOlderThan(db: Database.Database, cutoffMs: number)
  *  `getOptimizationMetrics`. Returns the number of rows removed. */
 export function purgeOptimizationOlderThan(db: Database.Database, cutoffMs: number): number {
   const result = db.prepare('DELETE FROM optimization_events WHERE ts < ?').run(cutoffMs);
-  return Number(result.changes);
+  // `tool_calls` is one row per tool_use block and was in no retention
+  // sweep, so it grew without bound (the direct cause of the unindexed
+  // backfill scan getting slower every day). It shares this cutoff rather
+  // than having its own so the `source_tool_call_ids` hydration in
+  // `listOptimizationEventsWithSources` ages out together with the
+  // optimization rows that reference it, instead of being left dangling.
+  const toolCalls = db.prepare('DELETE FROM tool_calls WHERE ts < ?').run(cutoffMs);
+  return Number(result.changes) + Number(toolCalls.changes);
 }
 
 /** Sprint 8 — wrap a destructive operation against `security_events` so
@@ -4538,6 +4603,44 @@ export function findToolCallByToolUseId(
     .prepare('SELECT * FROM tool_calls WHERE tool_use_id = ? LIMIT 1')
     .get(toolUseId) as DbToolCallRow | undefined;
   return row ? rowToToolCall(row) : null;
+}
+
+/** Chunk size for the `IN (…)` lookup below. SQLite's compiled parameter
+ *  ceiling is far higher, but a bounded chunk keeps the prepared-statement
+ *  cache from being blown out by one long session. */
+const TOOL_USE_ID_CHUNK = 500;
+
+/**
+ * Batch counterpart to {@link findToolCallByToolUseId}, returning only the
+ * rows that still need backfilling.
+ *
+ * The backfill pass sees every tool_result in the conversation on every
+ * request, because Claude Code resends the full history each turn. Looking
+ * each one up individually meant hundreds of queries per request to
+ * discover that ~all of them were already complete — one observed request
+ * did 282 lookups to perform 1 useful write. Filtering in SQL means only
+ * genuinely-pending rows come back.
+ */
+export function findPendingToolCallsByToolUseIds(
+  db: Database.Database,
+  toolUseIds: string[],
+): ToolCallRow[] {
+  if (toolUseIds.length === 0) return [];
+  const out: ToolCallRow[] = [];
+  for (let i = 0; i < toolUseIds.length; i += TOOL_USE_ID_CHUNK) {
+    const chunk = toolUseIds.slice(i, i + TOOL_USE_ID_CHUNK);
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db
+      .prepare(
+        `SELECT * FROM tool_calls
+          WHERE tool_use_id IN (${placeholders})
+            AND (response_size_bytes IS NULL
+                 OR (was_quoted_in_later_turn IS NULL AND file_path IS NOT NULL))`,
+      )
+      .all(...chunk) as DbToolCallRow[];
+    for (const r of rows) out.push(rowToToolCall(r));
+  }
+  return out;
 }
 
 export function listRecentToolCalls(

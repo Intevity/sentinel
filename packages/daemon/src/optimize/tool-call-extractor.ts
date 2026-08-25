@@ -34,7 +34,7 @@
 import type Database from 'better-sqlite3';
 import {
   insertToolCall,
-  findToolCallByToolUseId,
+  findPendingToolCallsByToolUseIds,
   backfillToolCallResponseSize,
   backfillToolCallQuoteDetection,
 } from '../db.js';
@@ -335,43 +335,52 @@ export function applyToolResultBackfill(
 
   const textBlob = textBlobParts.join('\n');
 
-  // Pass 2: for each tool_result, look up the matching prior tool_call by
-  // tool_use_id and backfill response_size_bytes (if not already set).
-  // Then set was_quoted_in_later_turn based on whether the file_path
-  // appears anywhere in textBlob.
-  let hits = 0;
+  // Pass 2: fetch the tool_calls rows that still need backfilling and
+  // update them. Claude Code resends the whole conversation every turn, so
+  // `toolResults` is dominated by blocks that earlier requests already
+  // backfilled; asking SQLite for only the pending ones keeps this O(1)
+  // queries per request instead of O(tool_results).
+  const pending = findPendingToolCallsByToolUseIds(
+    db,
+    toolResults.map((tr) => tr.toolUseId),
+  );
+  const sizeByToolUseId = new Map(toolResults.map((tr) => [tr.toolUseId, tr.sizeBytes]));
+
   let sizeBackfills = 0;
   let quoteBackfills = 0;
-  const missPrefixes: string[] = [];
-  for (const tr of toolResults) {
-    const row = findToolCallByToolUseId(db, tr.toolUseId);
-    if (!row) {
-      if (missPrefixes.length < 5) missPrefixes.push(tr.toolUseId.slice(0, 12));
-      continue;
-    }
-    hits += 1;
-    if (row.responseSizeBytes === null) {
-      backfillToolCallResponseSize(db, row.id, tr.sizeBytes);
-      sizeBackfills += 1;
-    }
-    if (row.wasQuotedInLaterTurn === null && row.filePath) {
-      const quoted = textBlob.includes(row.filePath);
-      backfillToolCallQuoteDetection(db, row.id, quoted);
-      quoteBackfills += 1;
-    }
+  if (pending.length > 0) {
+    db.transaction(() => {
+      for (const row of pending) {
+        // `tool_use_id` is nullable on the row (a block can stream without
+        // an id), but the batch was keyed by id, so a returned row always
+        // has one. Guard rather than assert so a malformed row is skipped
+        // instead of throwing inside the proxy's response path.
+        const sizeBytes = row.toolUseId === null ? undefined : sizeByToolUseId.get(row.toolUseId);
+        if (row.responseSizeBytes === null && sizeBytes !== undefined) {
+          backfillToolCallResponseSize(db, row.id, sizeBytes);
+          sizeBackfills += 1;
+        }
+        if (row.wasQuotedInLaterTurn === null && row.filePath) {
+          const quoted = textBlob.includes(row.filePath);
+          backfillToolCallQuoteDetection(db, row.id, quoted);
+          quoteBackfills += 1;
+        }
+      }
+    })();
   }
 
-  // Diagnostic line: emitted on every backfill pass that scanned at
-  // least one tool_result. Lets the user grep `[Optimize/Backfill]` and
-  // see whether the proxy is reaching the matching rows. The miss-
-  // prefixes column surfaces tool_use_id mismatches when they happen.
+  // Diagnostic line: emitted on every backfill pass that saw at least one
+  // tool_result. Lets the user grep `[Optimize/Backfill]` and see whether
+  // the proxy is reaching the matching rows.
+  //
+  // `pending` replaced the old `hits`/`misses` pair deliberately: rows that
+  // are already fully backfilled are no longer fetched, so a "hit" count
+  // would report near-zero on a healthy system and read like a failure.
+  // What matters now is how many rows still needed work.
   if (toolResults.length > 0) {
-    const missesSuffix = missPrefixes.length > 0 ? ` miss_prefixes=${missPrefixes.join(',')}` : '';
     console.log(
-      `[Optimize/Backfill] tool_results=${toolResults.length} hits=${hits}` +
-        ` misses=${toolResults.length - hits}` +
-        ` size_backfills=${sizeBackfills} quote_backfills=${quoteBackfills}` +
-        missesSuffix,
+      `[Optimize/Backfill] tool_results=${toolResults.length} pending=${pending.length}` +
+        ` size_backfills=${sizeBackfills} quote_backfills=${quoteBackfills}`,
     );
   }
 
