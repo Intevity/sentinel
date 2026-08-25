@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync, unlinkSync, rmSync, mkdtempSync } from 'fs';
+import { randomBytes } from 'node:crypto';
+import DatabaseCtor from 'better-sqlite3';
 import {
   RequestLogStore,
   getRequestLogStore,
@@ -289,6 +291,183 @@ describe('RequestLogStore', () => {
     expect(store.get('stays')).not.toBeNull();
   });
 
+  it('purgeOlderThan does not VACUUM, so a large log never stalls the daemon', () => {
+    // VACUUM rewrites the whole file synchronously on the daemon's main
+    // thread. On a multi-GB request log that froze the proxy and IPC for
+    // minutes, so the sweep must leave freed pages on the freelist instead.
+    // Enough incompressible payload to span many pages, so a VACUUM would
+    // be unmistakable in page_count. Random bytes defeat the gzip step —
+    // anything repetitive would compress away and never allocate pages.
+    for (let i = 0; i < 30; i++) {
+      const body = randomBytes(30_000);
+      store.enqueue(
+        makeRecord({
+          requestId: `old-${i}`,
+          timestamp: 1000 + i,
+          requestBody: body,
+          requestBodySize: body.byteLength,
+        }),
+      );
+    }
+    store.flush();
+
+    const db = (store as unknown as { db: { pragma(s: string): unknown } }).db;
+    const pageCount = (): number =>
+      Number((db.pragma('page_count') as Array<{ page_count: number }>)[0]!.page_count);
+    const before = pageCount();
+    expect(before).toBeGreaterThan(20); // the payload really did span pages
+
+    expect(store.purgeOlderThan(5000)).toBe(30);
+
+    // A VACUUM would rewrite the file and collapse page_count back toward
+    // empty. Holding steady is the observable signature of having skipped
+    // it; the freed pages sit on the freelist for reuse instead.
+    expect(pageCount()).toBe(before);
+    expect(
+      Number((db.pragma('freelist_count') as Array<{ freelist_count: number }>)[0]!.freelist_count),
+    ).toBeGreaterThan(0);
+  });
+
+  it('round-trips a gzip-compressed body byte-for-byte', () => {
+    // Bodies above the threshold are stored compressed; the detail view
+    // must return exactly what the proxy captured.
+    const body = JSON.stringify({ messages: 'x'.repeat(20_000) });
+    store.enqueue(
+      makeRecord({
+        requestId: 'gz-1',
+        requestBody: Buffer.from(body),
+        requestBodySize: body.length,
+        responseBody: Buffer.from(body),
+        responseBodySize: body.length,
+      }),
+    );
+    store.flush();
+
+    const detail = store.get('gz-1');
+    expect(detail!.request.body).toBe(body);
+    expect(detail!.response!.body).toBe(body);
+
+    const row = (
+      store as unknown as { db: { prepare(s: string): { get(id: string): unknown } } }
+    ).db
+      .prepare(
+        'SELECT body_encoding, length(request_body) AS len FROM request_logs WHERE request_id = ?',
+      )
+      .get('gz-1') as { body_encoding: string; len: number };
+    expect(row.body_encoding).toBe('gzip');
+    // The stored BLOB is the compressed form, not the plaintext.
+    expect(row.len).toBeLessThan(body.length);
+  });
+
+  it('reads identity and gzip rows from the same table', () => {
+    // Rows written before compression landed stay `identity` and are never
+    // backfilled, so both encodings coexist for a full retention window.
+    const big = JSON.stringify({ big: 'y'.repeat(20_000) });
+    store.enqueue(
+      makeRecord({
+        requestId: 'mixed-gz',
+        requestBody: Buffer.from(big),
+        requestBodySize: big.length,
+      }),
+    );
+    store.enqueue(
+      makeRecord({ requestId: 'mixed-id', requestBody: Buffer.from('tiny'), requestBodySize: 4 }),
+    );
+    store.flush();
+
+    expect(store.get('mixed-gz')!.request.body).toBe(big);
+    expect(store.get('mixed-id')!.request.body).toBe('tiny');
+
+    const encodings = (store as unknown as { db: { prepare(s: string): { all(): unknown } } }).db
+      .prepare('SELECT request_id, body_encoding FROM request_logs ORDER BY request_id')
+      .all() as Array<{ request_id: string; body_encoding: string }>;
+    expect(encodings).toEqual([
+      { request_id: 'mixed-gz', body_encoding: 'gzip' },
+      { request_id: 'mixed-id', body_encoding: 'identity' },
+    ]);
+  });
+
+  it('upgrades a pre-compression database in place, keeping existing rows readable', () => {
+    // The real upgrade path: an existing request-logs.db has no
+    // body_encoding column, and `CREATE TABLE IF NOT EXISTS` will not add
+    // one. Opening it must ALTER the table rather than fail, and the rows
+    // already in it must keep reading as plaintext.
+    const legacyPath = dbPath + '.legacy';
+    const legacy = new DatabaseCtor(legacyPath);
+    legacy.exec(`
+      CREATE TABLE request_logs (
+        request_id               TEXT PRIMARY KEY,
+        timestamp                INTEGER NOT NULL,
+        duration_ms              INTEGER,
+        method                   TEXT NOT NULL,
+        url_path                 TEXT NOT NULL,
+        status_code              INTEGER,
+        request_headers          TEXT NOT NULL,
+        request_body             BLOB,
+        request_body_truncated   INTEGER NOT NULL DEFAULT 0,
+        request_body_size        INTEGER NOT NULL,
+        response_headers         TEXT,
+        response_body            BLOB,
+        response_body_truncated  INTEGER NOT NULL DEFAULT 0,
+        response_body_size       INTEGER,
+        is_sse                   INTEGER NOT NULL DEFAULT 0,
+        error_message            TEXT
+      );
+    `);
+    legacy
+      .prepare(
+        `INSERT INTO request_logs (request_id, timestamp, method, url_path,
+           request_headers, request_body, request_body_size)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('legacy-1', 1000, 'POST', '/v1/messages', '{}', Buffer.from('{"old":true}'), 12);
+    legacy.close();
+
+    const upgraded = new RequestLogStore(legacyPath);
+    try {
+      // Pre-existing row still reads, as identity.
+      expect(upgraded.get('legacy-1')!.request.body).toBe('{"old":true}');
+
+      // And new writes on the upgraded file compress normally.
+      const big = JSON.stringify({ big: 'z'.repeat(20_000) });
+      upgraded.enqueue(
+        makeRecord({
+          requestId: 'after-upgrade',
+          requestBody: Buffer.from(big),
+          requestBodySize: big.length,
+        }),
+      );
+      upgraded.flush();
+      expect(upgraded.get('after-upgrade')!.request.body).toBe(big);
+    } finally {
+      upgraded.close();
+      for (const suffix of ['', '-wal', '-shm']) {
+        const p = legacyPath + suffix;
+        if (existsSync(p)) unlinkSync(p);
+      }
+    }
+  });
+
+  it('returns an empty body rather than throwing when a gzip BLOB is corrupt', () => {
+    // A half-written or truncated BLOB must not take down the whole detail
+    // view — the Logs UI should still render the row's metadata.
+    store.enqueue(makeRecord({ requestId: 'corrupt' }));
+    store.flush();
+    const rawDb = (
+      store as unknown as { db: { prepare(s: string): { run(...a: unknown[]): void } } }
+    ).db;
+    rawDb
+      .prepare(
+        "UPDATE request_logs SET request_body = ?, body_encoding = 'gzip' WHERE request_id = ?",
+      )
+      .run(Buffer.from('this is not gzip'), 'corrupt');
+
+    const detail = store.get('corrupt');
+    expect(detail).not.toBeNull();
+    expect(detail!.request.body).toBe('');
+    expect(detail!.requestId).toBe('corrupt');
+  });
+
   it('clearAll deletes every row and drops queued records', () => {
     store.enqueue(makeRecord({ requestId: 'persisted' }));
     store.flush();
@@ -464,5 +643,46 @@ describe('singleton accessor', () => {
     // Ensure no active singleton before the call.
     closeRequestLogStore();
     expect(() => closeRequestLogStore()).not.toThrow();
+  });
+
+  it('honours SENTINEL_TEST_REQUEST_LOG_DB_FILE when called with no argument', () => {
+    // Regression guard. `startDaemon()` calls getRequestLogStore() with no
+    // argument. When this defaulted to REQUEST_LOG_DB_PATH it overrode the
+    // constructor's env seam, so every integration test that booted a
+    // daemon opened the developer's real ~/.sentinel/request-logs.db — and
+    // the clear_request_logs IPC test then deleted every row and VACUUMed
+    // it. A seam that only works when you remember to pass the path is not
+    // a seam.
+    closeRequestLogStore();
+    const seamPath = singletonPath + '.seam';
+    const prev = process.env.SENTINEL_TEST_REQUEST_LOG_DB_FILE;
+    process.env.SENTINEL_TEST_REQUEST_LOG_DB_FILE = seamPath;
+    try {
+      const store = getRequestLogStore();
+      store.enqueue(makeRecord({ requestId: 'seam-1' }));
+      store.flush();
+      closeRequestLogStore();
+
+      // The row must be in the seam file, proving the real path was never
+      // opened.
+      expect(existsSync(seamPath)).toBe(true);
+      const probe = new DatabaseCtor(seamPath, { readonly: true });
+      try {
+        const row = probe
+          .prepare('SELECT request_id FROM request_logs WHERE request_id = ?')
+          .get('seam-1') as { request_id: string } | undefined;
+        expect(row?.request_id).toBe('seam-1');
+      } finally {
+        probe.close();
+      }
+    } finally {
+      if (prev === undefined) delete process.env.SENTINEL_TEST_REQUEST_LOG_DB_FILE;
+      else process.env.SENTINEL_TEST_REQUEST_LOG_DB_FILE = prev;
+      closeRequestLogStore();
+      for (const suffix of ['', '-wal', '-shm']) {
+        const p = seamPath + suffix;
+        if (existsSync(p)) unlinkSync(p);
+      }
+    }
   });
 });
