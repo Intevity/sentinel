@@ -163,9 +163,7 @@ describe('pending usage events', () => {
       expect(events[0]!.cacheRead).toBe(3);
       expect(events[0]!.cacheCreate).toBe(7);
       expect(events[0]!.durationMs).toBe(1234);
-      const raw = db
-        .prepare('SELECT request_id FROM usage_events')
-        .get() as { request_id: string };
+      const raw = db.prepare('SELECT request_id FROM usage_events').get() as { request_id: string };
       expect(raw.request_id).toBe('req_old');
 
       // The fresh row is still pending.

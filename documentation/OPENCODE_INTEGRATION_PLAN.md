@@ -15,7 +15,7 @@ UA `claude-cli/x (external, sdk-cli)`. Two source-verified facts make it compose
 surface's `provider.anthropic.options.baseURL` write:
 
 1. Its `buildRequestUrl` passes the incoming URL's host through untouched — `api.anthropic.com`
-   appears only as the loader's *default* baseURL.
+   appears only as the loader's _default_ baseURL.
 2. opencode (verified at v1.18.29 and dev) re-applies user config **after** auth loaders in the
    provider merge, so Sentinel's baseURL wins while the loader's `fetch` survives the deep-merge.
 
@@ -83,7 +83,7 @@ the proxy. But `usage_events` got **no row** for claude-cli-UA traffic that neve
 from the UA, and both the spawned `claude --print` child (exits before its exporter's first flush)
 and `opencode-claude-auth` (no OTEL at all) broke the prediction — so neither writer ran.
 
-**The general lesson held:** the UA test was a *prediction about client behavior*, and predictions
+**The general lesson held:** the UA test was a _prediction about client behavior_, and predictions
 about client behavior failed three times on this work. The shipped fix decides on an observed fact.
 
 ### Shipped: staged rows + OTEL dedupe keyed on Anthropic's `request-id`
@@ -150,32 +150,32 @@ proxy-priced rows after ~90 s (previously nothing). Tests:
    the pooled account). Public recipe: connect-opencode.mdx "Running both side by side".
 
    **Real-key confirmation (2026-09-05, same install):** one `anthropic-api/claude-haiku-4-5`
-   run produced two `POST /v1/messages → 200 (account: byok)` — note *no* `?beta=true`, the
+   run produced two `POST /v1/messages → 200 (account: byok)` — note _no_ `?beta=true`, the
    plain AI-SDK shape vs. the plugin's Claude-identity requests — and exactly two `usage_events`
    rows under `account_id='byok'` with `cost_usd` and `request_id` populated. Zero duplicate
    `request_id`s table-wide, and pooled `claude-opus-5` rows interleaved untouched: both billing
    paths coexist in one opencode install without cross-contamination.
 
-   **Cost note worth keeping:** that trivial "say hi" cost **$0.125** — 99,945 cache-*creation*
+   **Cost note worth keeping:** that trivial "say hi" cost **$0.125** — 99,945 cache-_creation_
    tokens (opencode's system prompt + tool definitions) at haiku's $1.25/MTok write rate, vs.
    $0.0006 for the actual turn. On the subscription path the plan absorbs this; on BYOK the user
    pays it on every cache miss. BYOK-with-opencode is dominated by cache writes, not by prompts.
 
    **Placement gotcha (fixed):** `AccountViewPicker` renders pool options and accounts as two
-   separate groups, so appending BYOK last in `buildMetricsPoolOptions` still drew it *above* the
+   separate groups, so appending BYOK last in `buildMetricsPoolOptions` still drew it _above_ the
    real accounts. The array-order test passed while the UI was wrong. `PoolOption.trailing` now
    demotes it below the account list; the test asserts the flag, not the array index.
 
 ## Ruled out — do not re-derive
 
-**`opencode-with-claude` / Meridian.** Bridges the Claude *Agent SDK* and owns the endpoint. Four
+**`opencode-with-claude` / Meridian.** Bridges the Claude _Agent SDK_ and owns the endpoint. Four
 routes in, all closed with evidence:
 
-| Route | Result |
-|---|---|
-| Inherited env var | Deliberately stripped (`ANTHROPIC_BASE_URL: _dropBaseUrl`) |
-| `profile.baseUrl` | Honored only for `type: "api"` — API-key billing |
-| `settings.json` env via `claudeConfigDir` | That dir owns credentials; relocating it broke auth |
+| Route                                            | Result                                                                                      |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| Inherited env var                                | Deliberately stripped (`ANTHROPIC_BASE_URL: _dropBaseUrl`)                                  |
+| `profile.baseUrl`                                | Honored only for `type: "api"` — API-key billing                                            |
+| `settings.json` env via `claudeConfigDir`        | That dir owns credentials; relocating it broke auth                                         |
 | `settings.json` env via forced `oauth-token` dir | SDK ignores it; request hit Anthropic directly and 401'd (zero 401s ever reached our proxy) |
 
 Also: its `chat.headers` hook deletes `anthropic-beta`, and it ships
@@ -195,14 +195,14 @@ that removed the 429-replay path.
 ## Incidental findings worth keeping
 
 - **Sentinel's keychain credential is a setup-token** — `scopes: ['user:inference']`,
-  `hasRefreshToken: false`, long expiry. Any third-party tool that expects to *refresh* Claude Code's
+  `hasRefreshToken: false`, long expiry. Any third-party tool that expects to _refresh_ Claude Code's
   credential will break against it. Meridian maintains its own separate login for this reason.
 - **Claude Code credentials on macOS are keychain-only and global** — no `.credentials.json`
   anywhere — so `CLAUDE_CONFIG_DIR` relocates settings and `.claude.json` but not the credential.
   Login state is read from `.claude.json`'s `oauthAccount`, which Sentinel's `setActiveAccount`
   writes.
 - **Meridian's `classifyError` collapses distinct failures** — it matches either "oauth token has
-  expired" *or* "not logged in" and emits only the expiry wording. Cost two misdiagnoses; do not
+  expired" _or_ "not logged in" and emits only the expiry wording. Cost two misdiagnoses; do not
   trust its error text.
 
 ## Verification

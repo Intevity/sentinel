@@ -1195,9 +1195,10 @@ describe('OtelReceiver', () => {
       const { res } = mockRes();
       await receiver.handleLogs(makeRequest(apiRequestPayload('req_otel_1', 0.5), '/v1/logs'), res);
 
-      const row = db
-        .prepare('SELECT request_id, cost_usd FROM usage_events')
-        .get() as { request_id: string | null; cost_usd: number };
+      const row = db.prepare('SELECT request_id, cost_usd FROM usage_events').get() as {
+        request_id: string | null;
+        cost_usd: number;
+      };
       expect(row.request_id).toBe('req_otel_1');
       expect(row.cost_usd).toBe(0.5);
     });
@@ -1219,7 +1220,10 @@ describe('OtelReceiver', () => {
       });
 
       const { res } = mockRes();
-      await receiver.handleLogs(makeRequest(apiRequestPayload('req_claim_1', 0.5), '/v1/logs'), res);
+      await receiver.handleLogs(
+        makeRequest(apiRequestPayload('req_claim_1', 0.5), '/v1/logs'),
+        res,
+      );
 
       // OTEL owns the row; the staged one is gone, not committed later.
       expect(getPendingUsageEvents(db)).toEqual([]);

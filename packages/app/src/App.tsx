@@ -15,7 +15,11 @@ import SecurityShield from './components/SecurityShield.js';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import AccountSwitcher from './components/AccountSwitcher.js';
 import AccountColorDot from './components/AccountColorDot.js';
-import AccountViewPicker, { POOL_VIEW, type PickerValue, type PoolOption } from './components/AccountViewPicker.js';
+import AccountViewPicker, {
+  POOL_VIEW,
+  type PickerValue,
+  type PoolOption,
+} from './components/AccountViewPicker.js';
 import {
   buildMetricsPoolOptions,
   firstDefaultOption,

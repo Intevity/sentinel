@@ -12,7 +12,12 @@ import { startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 import { OPENCODE_BASE_URL } from './opencode-config.js';
 import { stagePendingUsageEvent, insertUsageEvent } from './db.js';
 import { BYOK_ACCOUNT_ID } from '@sentinel/shared';
-import type { OpencodeConfigDetails, SurfaceState, OAuthAccount, ByokState } from '@sentinel/shared';
+import type {
+  OpencodeConfigDetails,
+  SurfaceState,
+  OAuthAccount,
+  ByokState,
+} from '@sentinel/shared';
 
 describe('opencode surface IPC', () => {
   let ctx: TestDaemon;

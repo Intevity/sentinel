@@ -144,11 +144,7 @@ import {
   isDesktopInstalled,
   isOpencodeInstalled,
 } from './surface-detector.js';
-import {
-  activateOpencode,
-  deactivateOpencode,
-  inspectOpencodeConfig,
-} from './opencode-config.js';
+import { activateOpencode, deactivateOpencode, inspectOpencodeConfig } from './opencode-config.js';
 import {
   CaptureHealthTracker,
   composeCaptureHealth,

@@ -1454,17 +1454,15 @@ export function stagePendingUsageEvent(db: Database.Database, ev: PendingUsageEv
 /** OTEL owns this request's accounting: discard the staged row. Returns true
  *  when a row was actually claimed (false: already committed or never staged). */
 export function claimPendingUsageEvent(db: Database.Database, requestId: string): boolean {
-  const result = db
-    .prepare('DELETE FROM pending_usage_events WHERE request_id = ?')
-    .run(requestId);
+  const result = db.prepare('DELETE FROM pending_usage_events WHERE request_id = ?').run(requestId);
   return result.changes > 0;
 }
 
 /** All staged rows, oldest first. Tests and diagnostics. */
 export function getPendingUsageEvents(db: Database.Database): PendingUsageEvent[] {
-  const rows = db
-    .prepare('SELECT * FROM pending_usage_events ORDER BY staged_at')
-    .all() as Array<Record<string, unknown>>;
+  const rows = db.prepare('SELECT * FROM pending_usage_events ORDER BY staged_at').all() as Array<
+    Record<string, unknown>
+  >;
   return rows.map((r) => ({
     requestId: r['request_id'] as string,
     stagedAt: r['staged_at'] as number,
