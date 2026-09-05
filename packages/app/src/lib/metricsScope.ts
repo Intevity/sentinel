@@ -19,13 +19,19 @@ export const BYOK_VIEW = '__byok__';
 
 export type PickerValue = string | typeof POOL_VIEW | typeof ALL_VIEW | typeof BYOK_VIEW;
 
-/** A synthetic non-account row the picker can render at the top of its list
+/** A synthetic non-account row the picker renders alongside the real accounts
  *  (pool/all aggregates, the BYOK scope). Callers pass whichever rows they
- *  want surfaced; the picker does not infer membership. */
+ *  want surfaced; the picker does not infer membership.
+ *
+ *  `trailing` moves the row BELOW the account list instead of above it. The
+ *  picker renders pool options and accounts as two separate groups, so being
+ *  last in this array is not the same as being last on screen — a secondary
+ *  scope has to say so explicitly or it lands above the user's own accounts. */
 export interface PoolOption {
   value: typeof POOL_VIEW | typeof ALL_VIEW | typeof BYOK_VIEW;
   primary: string;
   secondary: string;
+  trailing?: boolean;
 }
 
 /** Describes which accounts a metrics rollup should cover.
@@ -58,7 +64,9 @@ export function firstDefaultOption(poolOptions: readonly PoolOption[]): PoolOpti
  *   the full account list (otherwise the two rows would be duplicates).
  * - "API key" (BYOK) last, and only when BYOK usage actually exists — the row
  *   earns its place with data, and appending it last keeps it out of the
- *   implicit-default slot (see {@link firstDefaultOption}).
+ *   implicit-default slot (see {@link firstDefaultOption}). It is also marked
+ *   `trailing` so it renders below the real accounts: BYOK is an opt-in
+ *   secondary scope and must not outrank the accounts the user actually uses.
  */
 export function buildMetricsPoolOptions(opts: {
   accounts: readonly AccountInfo[];
@@ -88,6 +96,7 @@ export function buildMetricsPoolOptions(opts: {
       value: BYOK_VIEW,
       primary: 'API key',
       secondary: 'Direct API traffic (BYOK)',
+      trailing: true,
     });
   }
   return options;

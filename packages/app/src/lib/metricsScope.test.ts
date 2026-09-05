@@ -56,6 +56,23 @@ describe('buildMetricsPoolOptions', () => {
     expect(options[2]!.primary).toBe('API key');
   });
 
+  it('marks BYOK as trailing so it renders below the accounts, not above them', () => {
+    // The picker draws pool options and accounts as two separate groups, so
+    // array order alone put "API key" directly under "All accounts" and above
+    // the user's real accounts. `trailing` is what actually demotes it.
+    const options = buildMetricsPoolOptions({
+      accounts: TWO_ACCOUNTS,
+      isAuto: true,
+      poolExcludedIds: ['a-2'],
+      byokHasUsage: true,
+    });
+    const byok = options.find((o) => o.value === BYOK_VIEW);
+    expect(byok?.trailing).toBe(true);
+    // The aggregate rows must stay above the accounts.
+    expect(options.filter((o) => o.trailing).map((o) => o.value)).toEqual([BYOK_VIEW]);
+    expect(options.filter((o) => !o.trailing).map((o) => o.value)).toEqual([ALL_VIEW, POOL_VIEW]);
+  });
+
   it('keeps existing all/pool gating: single account, no auto → only BYOK when it has usage', () => {
     const options = buildMetricsPoolOptions({
       accounts: [acct('solo')],

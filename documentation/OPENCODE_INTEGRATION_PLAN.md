@@ -2,7 +2,9 @@
 
 _Last updated: 2026-09-05. Status: **subscription routing works** (two verified plugin paths);
 cost/token accounting **shipped** as staged usage rows with OTEL request-id dedupe. Companion to
-the shipped BYOK surface (`1b9f62e`, `324f90b`)._
+the BYOK surface work ("support opencode as a bring-your-own-key surface" and "require the /v1 path
+before reporting the surface as routed") — referenced by subject rather than SHA so the pointers
+survive a rebase or squash-merge._
 
 ## Second verified subscription path — `opencode-claude-auth` (2026-09-05)
 
@@ -146,6 +148,23 @@ proxy-priced rows after ~90 s (previously nothing). Tests:
    Bogus-key probe returned `POST /v1/messages → 401 (account: byok)` — routed, BYOK-classified,
    key forwarded untouched — while the same session's subscription calls kept pooling (200s under
    the pooled account). Public recipe: connect-opencode.mdx "Running both side by side".
+
+   **Real-key confirmation (2026-09-05, same install):** one `anthropic-api/claude-haiku-4-5`
+   run produced two `POST /v1/messages → 200 (account: byok)` — note *no* `?beta=true`, the
+   plain AI-SDK shape vs. the plugin's Claude-identity requests — and exactly two `usage_events`
+   rows under `account_id='byok'` with `cost_usd` and `request_id` populated. Zero duplicate
+   `request_id`s table-wide, and pooled `claude-opus-5` rows interleaved untouched: both billing
+   paths coexist in one opencode install without cross-contamination.
+
+   **Cost note worth keeping:** that trivial "say hi" cost **$0.125** — 99,945 cache-*creation*
+   tokens (opencode's system prompt + tool definitions) at haiku's $1.25/MTok write rate, vs.
+   $0.0006 for the actual turn. On the subscription path the plan absorbs this; on BYOK the user
+   pays it on every cache miss. BYOK-with-opencode is dominated by cache writes, not by prompts.
+
+   **Placement gotcha (fixed):** `AccountViewPicker` renders pool options and accounts as two
+   separate groups, so appending BYOK last in `buildMetricsPoolOptions` still drew it *above* the
+   real accounts. The array-order test passed while the UI was wrong. `PoolOption.trailing` now
+   demotes it below the account list; the test asserts the flag, not the array index.
 
 ## Ruled out — do not re-derive
 

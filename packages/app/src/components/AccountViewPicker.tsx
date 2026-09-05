@@ -89,6 +89,19 @@ export default function AccountViewPicker({
   const currentLabel = formatValue(resolved, accounts, poolOptions);
   const excludedSet = new Set(poolExcludedIds);
 
+  const renderPoolRow = (opt: PoolOption): React.ReactElement => (
+    <PickerRow
+      key={opt.value}
+      selected={resolved === opt.value}
+      primary={opt.primary}
+      secondary={opt.secondary}
+      onClick={() => {
+        onChange(opt.value);
+        setOpen(false);
+      }}
+    />
+  );
+
   return (
     <div ref={rootRef} className="relative pt-1 pb-2">
       <button
@@ -119,18 +132,7 @@ export default function AccountViewPicker({
           role="listbox"
           className="absolute left-0 top-full mt-1 z-30 min-w-[240px] rounded-xl bg-white dark:bg-[#2C2C2E] shadow-card-md border border-black/5 dark:border-white/10 py-1"
         >
-          {poolOptions.map((opt) => (
-            <PickerRow
-              key={opt.value}
-              selected={resolved === opt.value}
-              primary={opt.primary}
-              secondary={opt.secondary}
-              onClick={() => {
-                onChange(opt.value);
-                setOpen(false);
-              }}
-            />
-          ))}
+          {poolOptions.filter((o) => !o.trailing).map(renderPoolRow)}
           {accounts.map((acct) => (
             <PickerRow
               key={acct.id}
@@ -149,6 +151,8 @@ export default function AccountViewPicker({
               }}
             />
           ))}
+          {/* Secondary scopes (BYOK) sit below the real accounts. */}
+          {poolOptions.filter((o) => o.trailing).map(renderPoolRow)}
         </div>
       )}
     </div>
