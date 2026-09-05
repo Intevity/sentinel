@@ -11,6 +11,7 @@ import {
   insertNotification,
   insertCacheTtlEvent,
   insertUsageEvent,
+  stagePendingUsageEvent,
 } from './db.js';
 import type { IpcServer } from './ipc.js';
 import type { RateLimitStore } from './rate-limit-store.js';
@@ -1066,6 +1067,12 @@ async function proxyToAnthropic(
 
   const rlKey = attributionAccountId ?? accountId;
 
+  // Anthropic's `request-id` response header, captured in dispatch()'s
+  // response callback. It is the correlation key shared with the client's
+  // OTEL api_request events, which is what makes staged-usage dedupe and
+  // RequestAccountMap attribution possible.
+  let upstreamRequestId: string | null = null;
+
   // Cache TTL tracking: one row per /v1/messages POST that yielded usage.
   // Independent of request-log capture so the feature is on even when the
   // broader logging toggle is off. count_tokens and probes are filtered out.
@@ -1488,31 +1495,59 @@ async function proxyToAnthropic(
     if (!result) return;
     const model = result.model ?? 'unknown';
 
-    // Usage accounting for clients that emit no OTEL (Claude Desktop, BYOK
-    // clients such as opencode). Without this their spend is invisible: the
-    // quota windows move — those come from the account-level usage poller —
-    // while the cost and token figures stay blank, with nothing to explain the
-    // gap. Skipped for the Claude Code CLI, whose OTEL export owns this row.
+    // Usage accounting: exactly one writer per request.
+    //
+    // - Non-claude-cli clients (Claude Desktop, BYOK clients such as
+    //   opencode's x-api-key path) emit no OTEL, so the proxy writes the row
+    //   immediately — without it their spend is invisible: the quota windows
+    //   move (account-level poller) while cost and tokens stay blank.
+    // - A claude-cli user-agent MAY mean the real Claude Code CLI, whose OTEL
+    //   export owns this row — but it may also be a client that merely
+    //   presents that UA and never emits OTEL (opencode-claude-auth), or a
+    //   `claude --print` child that exits before its exporter flushes. The UA
+    //   is a prediction, not a fact, so the proxy stages the row keyed on
+    //   Anthropic's request-id: an OTEL api_request carrying the same id
+    //   claims (discards) it, and the pending-usage sweeper commits it if no
+    //   claim arrives within the grace window.
+    // - claude-cli UA with no request-id on the response (not observed in
+    //   practice — Anthropic stamps every /v1/messages response): no dedupe
+    //   key, so keep the historical skip; OTEL owns the row if it ever
+    //   reports.
+    //
     // Cost is null for a model that isn't in the price table rather than
     // guessed; the tokens are still recorded.
+    const usage = {
+      ts: Date.now(),
+      accountId: rlKey,
+      sessionId: cacheTtlCtx.sessionId,
+      model,
+      costUsd: computeRequestCost(result.model, result),
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      cacheRead: result.cacheRead,
+      cacheCreate: result.cacheCreate5m + result.cacheCreate1h,
+      durationMs: Date.now() - requestStartMs,
+    };
     if (!clientEmitsOtel(req.headers)) {
       try {
-        insertUsageEvent(cacheTtlCtx.db, {
-          ts: Date.now(),
-          accountId: rlKey,
-          sessionId: cacheTtlCtx.sessionId,
-          model,
-          costUsd: computeRequestCost(result.model, result),
-          inputTokens: result.inputTokens,
-          outputTokens: result.outputTokens,
-          cacheRead: result.cacheRead,
-          cacheCreate: result.cacheCreate5m + result.cacheCreate1h,
-          durationMs: Date.now() - requestStartMs,
-        });
+        insertUsageEvent(cacheTtlCtx.db, { ...usage, requestId: upstreamRequestId });
       } catch (err) {
         /* v8 ignore next 2 -- insert failure needs a corrupted db */
         console.error('[Proxy] usage_event insert failed:', err);
       }
+    } else if (upstreamRequestId !== null) {
+      try {
+        stagePendingUsageEvent(cacheTtlCtx.db, {
+          requestId: upstreamRequestId,
+          stagedAt: Date.now(),
+          ...usage,
+        });
+      } catch (err) {
+        /* v8 ignore next 2 -- insert failure needs a corrupted db */
+        console.error('[Proxy] usage_event stage failed:', err);
+      }
+    } else {
+      console.log('[Proxy] claude-cli response without request-id; deferring to OTEL');
     }
 
     const costs = computeCacheCosts(
@@ -1729,16 +1764,18 @@ async function proxyToAnthropic(
           }
 
           // Record requestId → account so OtelReceiver can re-bucket OTEL
-          // api_request / api_error events that carry the same id. Anthropic
+          // api_request / api_error events that carry the same id, and hold
+          // it for the staged-usage dedupe key in finalizeCacheTtl. Anthropic
           // emits `request-id` on every /v1/messages response; only skip the
           // write when the header is absent (probes, early errors). Attribute
           // to the account that produced the forwarded response, not any
           // earlier attempt that was retried away from.
-          if (requestAccountMap) {
+          {
             const reqIdRaw = proxyRes.headers['request-id'];
             const reqId = Array.isArray(reqIdRaw) ? reqIdRaw[0] : reqIdRaw;
             if (typeof reqId === 'string' && reqId) {
-              requestAccountMap.set(reqId, currentRlKey);
+              upstreamRequestId = reqId;
+              if (requestAccountMap) requestAccountMap.set(reqId, currentRlKey);
             }
           }
 

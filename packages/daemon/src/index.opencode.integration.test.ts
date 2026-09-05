@@ -10,7 +10,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 import { OPENCODE_BASE_URL } from './opencode-config.js';
-import type { OpencodeConfigDetails, SurfaceState } from '@sentinel/shared';
+import { stagePendingUsageEvent } from './db.js';
+import type { OpencodeConfigDetails, SurfaceState, OAuthAccount } from '@sentinel/shared';
 
 describe('opencode surface IPC', () => {
   let ctx: TestDaemon;
@@ -114,5 +115,55 @@ describe('opencode surface IPC', () => {
     expect(r.data?.state).toBe('unwritable');
     expect(r.data?.manualSnippet).toContain(OPENCODE_BASE_URL);
     expect(readFileSync(path, 'utf8')).toBe(original);
+  });
+
+  it('commits a pending usage row from a previous daemon run into the usage summary', async () => {
+    // opencode-shaped gap: the proxy staged a row (claude-cli UA, no OTEL)
+    // and the daemon went down before the grace window elapsed. On the next
+    // boot the sweeper's startup tick — and the on-demand sweep in
+    // get_usage_summary — must fold the row into the figures.
+    await ctx.cleanup();
+    const account: OAuthAccount = {
+      accountUuid: '00000000-0000-0000-0000-000000000001',
+      organizationUuid: '00000000-0000-0000-0000-000000000002',
+      emailAddress: 'test@example.com',
+      displayName: 'Test User',
+      organizationName: 'Test Org',
+      organizationRole: 'owner',
+      workspaceRole: null,
+      hasExtraUsageEnabled: true,
+      billingType: 'max',
+      accountCreatedAt: new Date().toISOString(),
+      subscriptionCreatedAt: new Date().toISOString(),
+    };
+    ctx = await startTestDaemon({
+      claudeState: { oauthAccount: account },
+      seedDb: (db) => {
+        stagePendingUsageEvent(db, {
+          requestId: 'req_prev_daemon_run',
+          stagedAt: Date.now() - 10 * 60_000,
+          ts: Date.now() - 10 * 60_000,
+          // sentinelKey(orgUuid, accountUuid) = orgUuid when present.
+          accountId: account.organizationUuid,
+          sessionId: null,
+          model: 'claude-opus-4-7',
+          costUsd: 0.05,
+          inputTokens: 10,
+          outputTokens: 1,
+          cacheRead: null,
+          cacheCreate: null,
+          durationMs: 900,
+        });
+      },
+    });
+
+    const r = await ctx.request<{
+      byDayModel: Record<string, Record<string, { costUsd: number; tokens: number }>>;
+    }>({ type: 'get_usage_summary', days: 7 });
+
+    expect(r.success).toBe(true);
+    const days = Object.values(r.data?.byDayModel ?? {});
+    expect(days).toHaveLength(1);
+    expect(days[0]!['claude-opus-4-7']).toEqual({ costUsd: 0.05, tokens: 11 });
   });
 });

@@ -105,7 +105,8 @@ CREATE TABLE IF NOT EXISTS usage_events (
   output_tokens INTEGER,
   cache_read    INTEGER,
   cache_create  INTEGER,
-  duration_ms   INTEGER
+  duration_ms   INTEGER,
+  request_id    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS overage_events (
@@ -279,6 +280,30 @@ CREATE TABLE IF NOT EXISTS cache_ttl_events (
 );
 CREATE INDEX IF NOT EXISTS idx_cache_ttl_account_ts ON cache_ttl_events(account_id, ts);
 CREATE INDEX IF NOT EXISTS idx_cache_ttl_session    ON cache_ttl_events(account_id, session_id, ts);
+
+-- Usage events staged by the proxy for clients that present a claude-cli
+-- user-agent (and so *may* report their own usage via OTEL). An OTEL
+-- api_request event carrying the same Anthropic request-id claims (deletes)
+-- the row; the pending-usage sweeper commits unclaimed rows into
+-- usage_events once the grace window passes. Rows live seconds to minutes;
+-- surviving a daemon restart is the point of putting them on disk (the
+-- short-lived "claude --print" child is exactly the client whose rows are
+-- staged when the daemon goes down).
+CREATE TABLE IF NOT EXISTS pending_usage_events (
+  request_id    TEXT PRIMARY KEY,
+  staged_at     INTEGER NOT NULL,
+  ts            INTEGER NOT NULL,
+  account_id    TEXT NOT NULL,
+  session_id    TEXT,
+  model         TEXT NOT NULL,
+  cost_usd      REAL,
+  input_tokens  INTEGER,
+  output_tokens INTEGER,
+  cache_read    INTEGER,
+  cache_create  INTEGER,
+  duration_ms   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_pending_usage_staged ON pending_usage_events(staged_at);
 
 -- Findings surfaced by the security scanner. Secrets are never stored
 -- verbatim — only the masked form (first 4 + last 4 + length) plus a
@@ -609,6 +634,19 @@ export function getDb(
   if (!teCols.some((c) => c.name === 'decision_type')) {
     _db.exec('ALTER TABLE tool_events ADD COLUMN decision_type TEXT');
   }
+
+  // Migrate usage_events for the request_id column (added with staged-usage
+  // OTEL dedupe). The partial UNIQUE index is what makes the proxy-vs-OTEL
+  // write race idempotent: whichever writer lands second drops on the index.
+  // Created here (not in SCHEMA) so legacy tables get it after the ALTER.
+  const ueCols = _db.pragma('table_info(usage_events)') as Array<{ name: string }>;
+  if (!ueCols.some((c) => c.name === 'request_id')) {
+    _db.exec('ALTER TABLE usage_events ADD COLUMN request_id TEXT');
+  }
+  _db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_request_unique
+     ON usage_events(request_id) WHERE request_id IS NOT NULL`,
+  );
 
   // Migrate security_events for the `approved` column (added in v1.2 for
   // the approve-in-notification flow). Existing rows default to 0.
@@ -1335,16 +1373,27 @@ export function setAccountColor(db: Database.Database, id: string, color: string
 
 // ─── Usage event queries ──────────────────────────────────────────────────────
 
-export type InsertUsageEvent = Omit<UsageEvent, 'id'>;
+export type InsertUsageEvent = Omit<UsageEvent, 'id'> & {
+  /** Anthropic response `request-id`. The partial UNIQUE index on this column
+   *  is the proxy↔OTEL dedupe key; null (unknown id) rows never collide. */
+  requestId?: string | null;
+};
 
-export function insertUsageEvent(db: Database.Database, event: InsertUsageEvent): number {
+/**
+ * Insert a usage event. `INSERT OR IGNORE` against the partial unique index
+ * on request_id, so whichever of the two writers (proxy stage-commit, OTEL
+ * receiver) lands second for the same request drops silently. Returns the new
+ * row id, or `null` when the insert was skipped — the OTEL receiver uses the
+ * null to suppress a redundant metrics broadcast.
+ */
+export function insertUsageEvent(db: Database.Database, event: InsertUsageEvent): number | null {
   const result = db
     .prepare(
       `
-      INSERT INTO usage_events
-        (ts, account_id, session_id, model, cost_usd, input_tokens, output_tokens, cache_read, cache_create, duration_ms)
+      INSERT OR IGNORE INTO usage_events
+        (ts, account_id, session_id, model, cost_usd, input_tokens, output_tokens, cache_read, cache_create, duration_ms, request_id)
       VALUES
-        (@ts, @accountId, @sessionId, @model, @costUsd, @inputTokens, @outputTokens, @cacheRead, @cacheCreate, @durationMs)
+        (@ts, @accountId, @sessionId, @model, @costUsd, @inputTokens, @outputTokens, @cacheRead, @cacheCreate, @durationMs, @requestId)
     `,
     )
     .run({
@@ -1358,8 +1407,117 @@ export function insertUsageEvent(db: Database.Database, event: InsertUsageEvent)
       cacheRead: event.cacheRead ?? null,
       cacheCreate: event.cacheCreate ?? null,
       durationMs: event.durationMs ?? null,
+      requestId: event.requestId ?? null,
     });
+  if (result.changes === 0) return null;
   return Number(result.lastInsertRowid);
+}
+
+// ─── Pending (staged) usage events ────────────────────────────────────────────
+//
+// The proxy cannot tell whether a claude-cli-UA client will report its own
+// usage over OTEL (the real Claude Code CLI does; opencode plugins presenting
+// the same UA do not). Instead of predicting, it stages the observed usage
+// here keyed by Anthropic's request-id. The OTEL receiver claims (deletes)
+// the row when its api_request event for the same id arrives; the sweeper
+// commits unclaimed rows to usage_events after a grace window.
+
+export interface PendingUsageEvent {
+  requestId: string;
+  stagedAt: number;
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  model: string;
+  costUsd: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheRead: number | null;
+  cacheCreate: number | null;
+  durationMs: number | null;
+}
+
+/** Stage a usage event awaiting OTEL claim-or-timeout. `INSERT OR IGNORE` on
+ *  the request_id primary key: a duplicate stage (upstream retry reusing an
+ *  id) keeps the first observation. */
+export function stagePendingUsageEvent(db: Database.Database, ev: PendingUsageEvent): void {
+  db.prepare(
+    `
+    INSERT OR IGNORE INTO pending_usage_events
+      (request_id, staged_at, ts, account_id, session_id, model, cost_usd, input_tokens, output_tokens, cache_read, cache_create, duration_ms)
+    VALUES
+      (@requestId, @stagedAt, @ts, @accountId, @sessionId, @model, @costUsd, @inputTokens, @outputTokens, @cacheRead, @cacheCreate, @durationMs)
+  `,
+  ).run(ev);
+}
+
+/** OTEL owns this request's accounting: discard the staged row. Returns true
+ *  when a row was actually claimed (false: already committed or never staged). */
+export function claimPendingUsageEvent(db: Database.Database, requestId: string): boolean {
+  const result = db
+    .prepare('DELETE FROM pending_usage_events WHERE request_id = ?')
+    .run(requestId);
+  return result.changes > 0;
+}
+
+/** All staged rows, oldest first. Tests and diagnostics. */
+export function getPendingUsageEvents(db: Database.Database): PendingUsageEvent[] {
+  const rows = db
+    .prepare('SELECT * FROM pending_usage_events ORDER BY staged_at')
+    .all() as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    requestId: r['request_id'] as string,
+    stagedAt: r['staged_at'] as number,
+    ts: r['ts'] as number,
+    accountId: r['account_id'] as string,
+    sessionId: r['session_id'] as string | null,
+    model: r['model'] as string,
+    costUsd: r['cost_usd'] as number | null,
+    inputTokens: r['input_tokens'] as number | null,
+    outputTokens: r['output_tokens'] as number | null,
+    cacheRead: r['cache_read'] as number | null,
+    cacheCreate: r['cache_create'] as number | null,
+    durationMs: r['duration_ms'] as number | null,
+  }));
+}
+
+/**
+ * Commit staged rows whose grace window has passed (no OTEL claim arrived)
+ * into usage_events, carrying their request_id. One transaction; the insert
+ * is `INSERT OR IGNORE`, so a row whose request_id already landed via OTEL
+ * (lost-claim race) is deleted without double counting. Returns the number
+ * of rows that actually landed — the caller's broadcast signal.
+ */
+export function commitStalePendingUsage(
+  db: Database.Database,
+  opts: { graceMs: number; now?: number },
+): number {
+  const cutoff = (opts.now ?? Date.now()) - opts.graceMs;
+  const commit = db.transaction((): number => {
+    const stale = db
+      .prepare('SELECT * FROM pending_usage_events WHERE staged_at <= ? ORDER BY staged_at')
+      .all(cutoff) as Array<Record<string, unknown>>;
+    let landed = 0;
+    for (const r of stale) {
+      const inserted = insertUsageEvent(db, {
+        ts: r['ts'] as number,
+        accountId: r['account_id'] as string,
+        sessionId: r['session_id'] as string | null,
+        model: r['model'] as string,
+        costUsd: r['cost_usd'] as number | null,
+        inputTokens: r['input_tokens'] as number | null,
+        outputTokens: r['output_tokens'] as number | null,
+        cacheRead: r['cache_read'] as number | null,
+        cacheCreate: r['cache_create'] as number | null,
+        durationMs: r['duration_ms'] as number | null,
+        requestId: r['request_id'] as string,
+      });
+      if (inserted !== null) landed += 1;
+      db.prepare('DELETE FROM pending_usage_events WHERE request_id = ?').run(r['request_id']);
+    }
+    return landed;
+  });
+  return commit();
 }
 
 export function getUsageEvents(

@@ -12,8 +12,9 @@ request log, security scanning, permission rules, and cache-TTL handling as Clau
 
 <Aside type="caution" title="opencode is bring-your-own-key">
   opencode authenticates with **your own Anthropic API key**. Sentinel does **not** hand it a pooled
-  subscription account, and enabling this will not make your Claude Pro or Max plan available in
-  opencode. See [Why no account pooling](#why-no-account-pooling) below.
+  subscription account — see [Why no account pooling](#why-no-account-pooling) below. Community
+  plugins exist that bring their own subscription auth; one is verified to work alongside Sentinel —
+  see [Subscription plans via community plugins](#subscription-plans-via-community-plugins).
 </Aside>
 
 ## What you get
@@ -24,7 +25,7 @@ request log, security scanning, permission rules, and cache-TTL handling as Clau
 | Security scanning (secrets, PII, prompt injection) | ✅ |
 | Permission rules (allow / deny / ask) | ✅ — minus session-scoped grants |
 | Cache-TTL handling | ✅ |
-| Multi-account pooling and switching | ❌ — Claude Code and Claude Desktop only |
+| Multi-account pooling and switching | ❌ with an API key — works via the `opencode-claude-auth` community plugin (see below) |
 | Claude Code settings sync | ❌ — opencode has its own config |
 
 ## Setup
@@ -77,26 +78,36 @@ Anthropic gates subscription credentials to Claude Code: the request must carry 
 app send both, which is why Sentinel can pool accounts for them. opencode sends neither.
 
 Sentinel could forge those markers, and deliberately does not — it identifies its own traffic
-honestly and never manufactures a client identity it wasn't given. So opencode gets the
-observability and guardrail half of Sentinel, on your own key.
+honestly and never manufactures a client identity it wasn't given. So on Sentinel's own terms,
+opencode gets the observability and guardrail half, on your own key.
 
-<Aside type="caution" title="The opencode-with-claude plugin bypasses Sentinel">
-  Plugins exist that route a Claude subscription into opencode. The `opencode-with-claude` plugin
-  works by starting its own local proxy and **overwriting
-  `provider.anthropic.options.baseURL` at startup** — including the value Sentinel wrote. With that
-  plugin installed, opencode traffic does not pass through Sentinel at all, and nothing about it
-  appears in your request log or usage.
+## Subscription plans via community plugins
 
-  Sentinel detects this and reports it on the card rather than showing a routed state that isn't
-  true. The two are mutually exclusive: remove the plugin from your opencode config to route through
-  Sentinel. Note also that opencode's own documentation states Anthropic prohibits using Pro/Max
-  subscriptions this way.
-</Aside>
+Plugins exist that bring a Claude subscription into opencode by doing the identity work themselves.
+Sentinel neither provides nor endorses this — Anthropic's terms gate subscription credentials to
+official clients, and opencode's own documentation notes Pro/Max use this way is prohibited. If you
+accept that trade-off, the plugins differ in the one way that matters to Sentinel: whether they keep
+opencode's normal provider stack or replace the endpoint.
+
+- **`opencode-claude-auth` — verified working alongside Sentinel.** It authenticates with the Claude
+  Code credentials already on your machine and honors whatever base URL opencode's provider config
+  resolves, so the routing this guide sets up keeps working: its traffic flows through the proxy,
+  attributes to your pooled accounts (its requests present Claude identity, so pooling and switching
+  apply), and shows up in the request log, security scanning, and Metrics cost/token figures.
+  Install it per its README (`"plugin": ["opencode-claude-auth@latest"]`), then enable the opencode
+  card as above — no API key step needed.
+
+- **`opencode-with-claude` (Meridian) — bypasses Sentinel.** It starts its own local proxy and
+  **overwrites `provider.anthropic.options.baseURL` at startup**, including the value Sentinel
+  wrote. With it installed, opencode traffic does not pass through Sentinel at all. Sentinel detects
+  this and reports it on the card rather than showing a routed state that isn't true; remove the
+  plugin from your opencode config to route through Sentinel.
 
 ## Troubleshooting
 
-**The card says "opencode is bypassing Sentinel."** A plugin is rewriting the base URL — see the
-note above. Remove it from the `plugin` array in your opencode config.
+**The card says "opencode is bypassing Sentinel."** A plugin is rewriting the base URL — see
+[Subscription plans via community plugins](#subscription-plans-via-community-plugins). Remove it
+from the `plugin` array in your opencode config.
 
 **No traffic in the daemon log.** Check the base URL actually ends in `/v1`, and that you restarted
 opencode after enabling. `opencode debug config` prints the resolved configuration, including any

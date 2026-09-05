@@ -14,6 +14,7 @@ import {
   setAccountColor,
   updateAccountMeta,
   getUsageByDayModel,
+  commitStalePendingUsage,
   acknowledgeNotification,
   acknowledgeAllNotifications,
   upsertRateLimit,
@@ -185,6 +186,7 @@ import {
 } from './token-refresher.js';
 import { probeRateLimits } from './rate-limit-probe.js';
 import { startRateLimitSweeper, type RateLimitSweeperHandle } from './rate-limit-sweeper.js';
+import { startPendingUsageSweeper, PENDING_USAGE_GRACE_MS } from './pending-usage-sweeper.js';
 import type {
   OAuthAccount,
   PlanType,
@@ -1169,6 +1171,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
     },
   });
 
+  // Commit staged usage rows whose OTEL claim never arrived (claude-cli-UA
+  // clients that don't actually report, e.g. opencode-claude-auth). The
+  // immediate startup pass also commits rows staged by a previous daemon run.
+  const pendingUsageSweeper = startPendingUsageSweeper({ db, ipcServer });
+
   // Spend source of truth is now Anthropic's usage endpoint via
   // ClaudeAiUsageStore. Every successful or failed fetch triggers a
   // tracker recompute so the paused set reflects the freshest numbers.
@@ -1751,6 +1758,14 @@ export async function startDaemon(): Promise<DaemonHandle> {
       }
 
       case 'get_usage_summary': {
+        // Fold in staged rows past their grace window before reading, so the
+        // UI never lags a commit by more than the grace itself. No broadcast —
+        // the requester is about to receive fresh data.
+        try {
+          commitStalePendingUsage(db, { graceMs: PENDING_USAGE_GRACE_MS });
+        } catch {
+          /* v8 ignore next -- degraded db: serve what we have */
+        }
         const active = getActiveAccount();
         if (!active) {
           respond({ requestType: 'get_usage_summary', success: false, error: 'No active account' });
@@ -1770,6 +1785,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
       }
 
       case 'get_metrics_summary': {
+        // Same on-demand fold-in as get_usage_summary above.
+        try {
+          commitStalePendingUsage(db, { graceMs: PENDING_USAGE_GRACE_MS });
+        } catch {
+          /* v8 ignore next -- degraded db: serve what we have */
+        }
         // Scope resolution — priority:
         //   1. msg.accountIds: aggregate across the list (pool/all views)
         //   2. msg.accountId: single explicit account (per-tab picker)
@@ -5153,6 +5174,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     console.log('[Sentinel] Shutting down...');
     stopTokenRefresher();
     rateLimitSweeper?.stop();
+    pendingUsageSweeper.stop();
     // Stop the claude.ai usage poller BEFORE closing the DB so an in-flight
     // tick() cannot land on a freed connection. The tick reads listAccounts
     // from the shared DB handle and subscribers call into SpendTracker.

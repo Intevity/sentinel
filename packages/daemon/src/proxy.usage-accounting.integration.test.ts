@@ -5,14 +5,19 @@
  * to the numbers that explain it. The proxy fills exactly that gap by writing
  * `usage_events` for clients that emit no OTEL.
  *
- * The load-bearing assertion is the negative one: a Claude Code CLI request
- * must NOT produce a proxy row, because its OTEL log event already writes one
- * and two sources for the same request would double every figure the user sees.
+ * The invariant is one row per request from exactly one writer. A claude-cli
+ * user-agent gets a STAGED row (pending_usage_events) rather than an
+ * immediate one, because the UA only predicts an OTEL report: the real CLI's
+ * OTEL event claims the staged row, and the pending-usage sweeper commits it
+ * when no claim arrives (opencode-claude-auth, `claude --print` children).
+ * The claim/commit interleavings live in
+ * proxy.usage-staging.integration.test.ts; this file pins the immediate-write
+ * paths and the CLI's stage-not-write behavior.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { startProxyWithFake, type StartedProxy } from './proxy.test-helpers.js';
-import { getUsageEvents } from './db.js';
+import { getUsageEvents, getPendingUsageEvents } from './db.js';
 import { BYOK_ACCOUNT_ID } from './proxy.js';
 
 const CLIENT_KEY = 'sk-ant-api03-client-owned-key';
@@ -48,8 +53,10 @@ describe('proxy usage accounting (real HTTP)', () => {
     await post(ctx.proxyPort, { 'user-agent': CLI_UA, 'anthropic-beta': 'oauth-2025-04-20' });
     await new Promise((r) => setTimeout(r, 40));
 
-    // A row here would double the CLI's cost and tokens in every window.
+    // A row here would double the CLI's cost and tokens in every window —
+    // the request is STAGED instead, awaiting the OTEL claim (or the sweep).
     expect(getUsageEvents(ctx.db, {})).toEqual([]);
+    expect(getPendingUsageEvents(ctx.db)).toHaveLength(1);
   });
 
   it('writes a row for Claude Desktop, which emits no OTEL', async () => {
