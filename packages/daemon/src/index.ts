@@ -14,6 +14,7 @@ import {
   setAccountColor,
   updateAccountMeta,
   getUsageByDayModel,
+  getUsageEvents,
   commitStalePendingUsage,
   acknowledgeNotification,
   acknowledgeAllNotifications,
@@ -195,7 +196,7 @@ import type {
   AlertScope,
   CaptureHealthState,
 } from '@sentinel/shared';
-import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
+import { FABLE_WEEKLY_WINDOW, BYOK_ACCOUNT_ID } from '@sentinel/shared';
 import { request as httpRequest, type Server } from 'http';
 import { log } from './logger.js';
 import { getRequestLogStore, closeRequestLogStore } from './request-log-db.js';
@@ -1707,6 +1708,19 @@ export async function startDaemon(): Promise<DaemonHandle> {
           requestType: 'get_opencode_config_state',
           success: true,
           data: inspectOpencodeConfig(),
+        });
+        break;
+      }
+
+      case 'get_byok_state': {
+        // "Has any BYOK usage ever been recorded" — gates the "API key"
+        // scope row in the Metrics picker. limit:1 keeps it a cheap probe.
+        respond({
+          requestType: 'get_byok_state',
+          success: true,
+          data: {
+            hasUsage: getUsageEvents(db, { accountId: BYOK_ACCOUNT_ID, limit: 1 }).length > 0,
+          },
         });
         break;
       }

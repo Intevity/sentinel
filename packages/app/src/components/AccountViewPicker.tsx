@@ -6,25 +6,19 @@ import { getAccountStatus, type AccountStatus } from '../lib/account-status.js';
 import { accountColor } from '../lib/accountColor.js';
 import AccountColorDot from './AccountColorDot.js';
 
-/** Sentinel value used in place of an accountId when the user picks the
- *  Auto-switching pool view (Usage + Metrics tabs). */
-export const POOL_VIEW = '__pool__';
-
-/** Sentinel value for the "All accounts (everything)" cross-account rollup
- *  on the Metrics tab. Unlike `POOL_VIEW`, this ignores pool exclusions —
- *  it's a true total across every enrolled account. */
-export const ALL_VIEW = '__all__';
-
-export type PickerValue = string | typeof POOL_VIEW | typeof ALL_VIEW;
-
-/** A synthetic "aggregate across multiple accounts" row the picker can render
- *  at the top of its list. Callers pass whichever pool/all rows they want
- *  surfaced; the picker does not infer membership. */
-export interface PoolOption {
-  value: typeof POOL_VIEW | typeof ALL_VIEW;
-  primary: string;
-  secondary: string;
-}
+// Picker sentinels + option types live in lib/metricsScope.ts (a plain .ts
+// module) so their gating logic is unit-testable; re-exported here because
+// this component is their historical home and callers import them from it.
+import {
+  POOL_VIEW,
+  ALL_VIEW,
+  BYOK_VIEW,
+  firstDefaultOption,
+  type PickerValue,
+  type PoolOption,
+} from '../lib/metricsScope.js';
+export { POOL_VIEW, ALL_VIEW, BYOK_VIEW, firstDefaultOption };
+export type { PickerValue, PoolOption };
 
 interface AccountViewPickerProps {
   accounts: AccountInfo[];
@@ -75,7 +69,7 @@ export default function AccountViewPicker({
   //   4. first account (last resort — should rarely happen)
   const resolved: PickerValue | null =
     value ??
-    poolOptions[0]?.value ??
+    firstDefaultOption(poolOptions)?.value ??
     findActiveId(accounts, activeAccount) ??
     accounts[0]?.id ??
     null;
@@ -242,11 +236,12 @@ function formatValue(
   accounts: AccountInfo[],
   poolOptions: PoolOption[],
 ): { primary: string; secondary?: string | undefined } {
-  if (value === POOL_VIEW || value === ALL_VIEW) {
+  if (value === POOL_VIEW || value === ALL_VIEW || value === BYOK_VIEW) {
     const opt = poolOptions.find((o) => o.value === value);
     if (opt) return { primary: opt.primary, secondary: opt.secondary };
-    // Fallback for the legacy case where a pool sentinel was selected but
-    // the caller hasn't listed it in poolOptions (shouldn't happen in practice).
+    // Fallback for the legacy case where a sentinel was selected but the
+    // caller hasn't listed it in poolOptions (shouldn't happen in practice).
+    if (value === BYOK_VIEW) return { primary: 'API key' };
     return { primary: 'All accounts', secondary: `${accounts.length} accounts` };
   }
   const acct = accounts.find((a) => a.id === value);

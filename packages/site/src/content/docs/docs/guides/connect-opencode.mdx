@@ -103,6 +103,31 @@ opencode's normal provider stack or replace the endpoint.
   this and reports it on the card rather than showing a routed state that isn't true; remove the
   plugin from your opencode config to route through Sentinel.
 
+### Running both side by side
+
+Subscription and API-key billing can coexist in one opencode install. `opencode-claude-auth` scopes
+itself to the provider id `anthropic`, so a second custom provider entry is untouched by it:
+
+```json
+"anthropic-api": {
+  "npm": "@ai-sdk/anthropic",
+  "name": "Anthropic (API key)",
+  "options": {
+    "apiKey": "{env:ANTHROPIC_API_KEY}",
+    "baseURL": "http://127.0.0.1:47284/v1"
+  },
+  "models": {
+    "claude-sonnet-5": { "name": "Sonnet 5 (API)" }
+  }
+}
+```
+
+Pick per conversation: `anthropic/…` models bill the subscription (pooled, switched by Sentinel);
+`anthropic-api/…` models bill your API key. Both route through the proxy — the API-key traffic
+shows up in the Metrics tab under the **API key** scope (the row appears once the first request
+lands). Two caveats: this entry's `baseURL` is not managed by Sentinel's enable/disable toggle, and
+custom providers need their `models` listed explicitly.
+
 ## Troubleshooting
 
 **The card says "opencode is bypassing Sentinel."** A plugin is rewriting the base URL — see

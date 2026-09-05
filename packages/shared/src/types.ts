@@ -1843,6 +1843,21 @@ export interface OverageHeaders {
  */
 export const FABLE_WEEKLY_WINDOW = 'unified-7d_oi';
 
+/** Reserved attribution key for requests that arrive at the proxy carrying the
+ *  client's own API key ("bring your own key"). Real Sentinel account ids are
+ *  UUIDs, so this value can never collide with one — which is the point: a
+ *  foreign key's usage, rate-limit windows, and spend must never be filed
+ *  against a pooled account. Defined here (not in the daemon) so the app can
+ *  scope Metrics queries to it. */
+export const BYOK_ACCOUNT_ID = 'byok';
+
+/** Result of `get_byok_state`: whether any usage has ever been recorded under
+ *  {@link BYOK_ACCOUNT_ID}. The app uses it to gate the "API key" scope row in
+ *  the Metrics picker — shown only when there is something to show. */
+export interface ByokState {
+  hasUsage: boolean;
+}
+
 /**
  * A single rate limit window parsed from anthropic-ratelimit-* response headers.
  *

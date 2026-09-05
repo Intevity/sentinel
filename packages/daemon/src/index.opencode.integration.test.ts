@@ -10,8 +10,9 @@ import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { startTestDaemon, type TestDaemon } from './index.test-helpers.js';
 import { OPENCODE_BASE_URL } from './opencode-config.js';
-import { stagePendingUsageEvent } from './db.js';
-import type { OpencodeConfigDetails, SurfaceState, OAuthAccount } from '@sentinel/shared';
+import { stagePendingUsageEvent, insertUsageEvent } from './db.js';
+import { BYOK_ACCOUNT_ID } from '@sentinel/shared';
+import type { OpencodeConfigDetails, SurfaceState, OAuthAccount, ByokState } from '@sentinel/shared';
 
 describe('opencode surface IPC', () => {
   let ctx: TestDaemon;
@@ -165,5 +166,35 @@ describe('opencode surface IPC', () => {
     const days = Object.values(r.data?.byDayModel ?? {});
     expect(days).toHaveLength(1);
     expect(days[0]!['claude-opus-4-7']).toEqual({ costUsd: 0.05, tokens: 11 });
+  });
+
+  it('get_byok_state reports no usage on a fresh daemon', async () => {
+    const r = await ctx.request<ByokState>({ type: 'get_byok_state' });
+    expect(r.success).toBe(true);
+    expect(r.data).toEqual({ hasUsage: false });
+  });
+
+  it('get_byok_state reports usage once a BYOK row exists', async () => {
+    await ctx.cleanup();
+    ctx = await startTestDaemon({
+      seedDb: (db) => {
+        insertUsageEvent(db, {
+          ts: Date.now(),
+          accountId: BYOK_ACCOUNT_ID,
+          sessionId: null,
+          model: 'claude-haiku-4-5-20251001',
+          costUsd: 0.002,
+          inputTokens: 10,
+          outputTokens: 1,
+          cacheRead: null,
+          cacheCreate: null,
+          durationMs: null,
+        });
+      },
+    });
+
+    const r = await ctx.request<ByokState>({ type: 'get_byok_state' });
+    expect(r.success).toBe(true);
+    expect(r.data).toEqual({ hasUsage: true });
   });
 });

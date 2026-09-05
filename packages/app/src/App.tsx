@@ -15,14 +15,13 @@ import SecurityShield from './components/SecurityShield.js';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import AccountSwitcher from './components/AccountSwitcher.js';
 import AccountColorDot from './components/AccountColorDot.js';
-import AccountViewPicker, {
-  POOL_VIEW,
-  ALL_VIEW,
-  type PickerValue,
-  type PoolOption,
-} from './components/AccountViewPicker.js';
-import type { MetricsScope } from './hooks/useMetricsSummary.js';
-import type { AccountInfo } from '@sentinel/shared';
+import AccountViewPicker, { POOL_VIEW, type PickerValue, type PoolOption } from './components/AccountViewPicker.js';
+import {
+  buildMetricsPoolOptions,
+  firstDefaultOption,
+  metricsViewToScope,
+} from './lib/metricsScope.js';
+import { useByokState } from './hooks/useByokState.js';
 import { accountColor } from './lib/accountColor.js';
 import UsageView from './components/UsageView.js';
 import MetricsDashboard from './components/MetricsDashboard.js';
@@ -206,6 +205,10 @@ export default function App(): React.ReactElement {
   const [metricsView, setMetricsView] = useState<PickerValue | undefined>(undefined);
   const [alertsView, setAlertsView] = useState<string | undefined>(undefined);
   const [securityView, setSecurityView] = useState<string | undefined>(undefined);
+
+  // Whether any bring-your-own-key usage exists — gates the "API key" scope
+  // row in the Metrics picker (lib/metricsScope buildMetricsPoolOptions).
+  const { hasUsage: byokHasUsage } = useByokState();
 
   // First-run tour. Opens when the user has never completed a tour
   // (settings.tourCompleted === false) and no other modal is up. The user
@@ -657,35 +660,24 @@ export default function App(): React.ReactElement {
                         );
                       }
                       if (activeTab === 'metrics') {
-                        // Build pool rows. "All accounts" (ignoring exclusions)
-                        // is always available when ≥2 accounts are enrolled.
-                        // The Auto pool row joins it when Auto switching is
-                        // active AND the pool differs from the full account
-                        // list (otherwise the two rows would be duplicates).
-                        const poolMemberCount = accounts.length - pickerPoolExcludedIds.length;
-                        const metricsPoolOptions: PoolOption[] = [];
-                        if (accounts.length > 1) {
-                          metricsPoolOptions.push({
-                            value: ALL_VIEW,
-                            primary: 'All accounts',
-                            secondary: `${accounts.length} accounts`,
-                          });
-                        }
-                        if (isAuto && poolMemberCount > 0 && poolMemberCount < accounts.length) {
-                          metricsPoolOptions.push({
-                            value: POOL_VIEW,
-                            primary: 'All accounts (pool)',
-                            secondary: `Auto pool · ${poolMemberCount} members`,
-                          });
-                        }
+                        // Synthetic rows (all/pool aggregates + the BYOK
+                        // scope, which appears only once API-key usage
+                        // exists) — logic + gating live in lib/metricsScope.
+                        const metricsPoolOptions: PoolOption[] = buildMetricsPoolOptions({
+                          accounts,
+                          isAuto,
+                          poolExcludedIds: pickerPoolExcludedIds,
+                          byokHasUsage,
+                        });
                         // Mirror the picker's display fallback (see
                         // AccountViewPicker resolve logic) so the chart's
                         // scope matches the dropdown's visible label on the
                         // first render. Without this, an undefined metricsView
                         // makes the picker show the first pool option while
                         // the scope quietly defaults to the active account.
+                        // BYOK is skipped as a default — it is opt-in only.
                         const effectiveMetricsView: PickerValue | undefined =
-                          metricsView ?? metricsPoolOptions[0]?.value;
+                          metricsView ?? firstDefaultOption(metricsPoolOptions)?.value;
                         const picker = (
                           <AccountViewPicker
                             accounts={accounts}
@@ -782,37 +774,5 @@ export default function App(): React.ReactElement {
   );
 }
 
-/**
- * Translate the Metrics-tab picker value into a concrete scope the daemon
- * can execute. Pool membership is decided here (not in the daemon) so the
- * daemon stays ignorant of what "pool" vs. "all" means in this app's model.
- *   - ALL_VIEW   → every enrolled account id
- *   - POOL_VIEW  → enrolled accounts minus the Auto-pool exclusions
- *   - string id  → single-account pin
- *   - undefined  → follow the active account
- */
-function metricsViewToScope(
-  view: PickerValue | undefined,
-  accounts: AccountInfo[],
-  poolExcludedIds: readonly string[],
-): MetricsScope {
-  if (view === ALL_VIEW) {
-    return {
-      kind: 'all',
-      label: 'All accounts',
-      accountIds: accounts.map((a) => a.id),
-    };
-  }
-  if (view === POOL_VIEW) {
-    const excluded = new Set(poolExcludedIds);
-    return {
-      kind: 'pool',
-      label: 'Pool',
-      accountIds: accounts.filter((a) => !excluded.has(a.id)).map((a) => a.id),
-    };
-  }
-  if (typeof view === 'string' && view.length > 0) {
-    return { kind: 'account', id: view };
-  }
-  return { kind: 'active' };
-}
+// metricsViewToScope moved to lib/metricsScope.ts (testable alongside the
+// pool-option building and BYOK gating it must stay consistent with).

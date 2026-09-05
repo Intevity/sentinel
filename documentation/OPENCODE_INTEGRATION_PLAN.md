@@ -130,12 +130,22 @@ proxy-priced rows after ~90 s (previously nothing). Tests:
 3. **Unverified:** switch Pro↔Team in Sentinel, prompt opencode again, confirm the serving
    `account_id` changes. This is the last unproven part of the original requirement.
 
-4. **Roadmap (decided 2026-09-05): surface BYOK usage in the Metrics UI.** The documented API-key
-   path writes `usage_events`/rate-limit rows under the reserved `account_id = 'byok'`
-   (`proxy.ts BYOK_ACCOUNT_ID`), but every UI scope is built from enrolled accounts — so API-key
-   users see blank cost/tokens even though the rows exist. Follow-up: add a "BYOK / opencode"
-   pseudo-account to the Metrics scope picker (`App.tsx metricsViewToScope`,
-   `get_metrics_summary` keys) so those rows become visible. Separate task, not started.
+4. ~~Roadmap: surface BYOK usage in the Metrics UI~~ **Shipped 2026-09-05.** The Metrics picker
+   gains an "API key" scope (`BYOK_VIEW` sentinel) gated on a new `get_byok_state` IPC (true once
+   any `usage_events` row exists under `BYOK_ACCOUNT_ID`, now defined in `@sentinel/shared`). The
+   row renders last and is skipped by every default-selection fallback — BYOK is opt-in only.
+   Scope logic extracted to `packages/app/src/lib/metricsScope.ts` (tested); the daemon handler
+   needed no query changes (`get_metrics_summary` never validated enrollment); MetricsDashboard
+   needed nothing (its OTEL-only sections were already data-gated). "All accounts" deliberately
+   remains an enrolled-accounts total.
+
+   **Dual-provider recipe (verified live 2026-09-05):** alongside the plugin's `anthropic`
+   provider, a custom `anthropic-api` entry (`npm: "@ai-sdk/anthropic"`, `apiKey` +
+   Sentinel `baseURL`, explicit models map) is untouched by opencode-claude-auth (its loader is
+   registered `provider: "anthropic"`; its system transform early-returns for other provider ids).
+   Bogus-key probe returned `POST /v1/messages → 401 (account: byok)` — routed, BYOK-classified,
+   key forwarded untouched — while the same session's subscription calls kept pooling (200s under
+   the pooled account). Public recipe: connect-opencode.mdx "Running both side by side".
 
 ## Ruled out — do not re-derive
 

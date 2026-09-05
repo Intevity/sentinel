@@ -45,7 +45,7 @@ import type { CodeModeHttpHandler } from './optimize/code-mode/code-mode-server.
 import { measureToolDefinitions } from './context-bloat/mcp-definition-cost.js';
 import type { ContextCostStore } from './context-bloat/context-cost-db.js';
 import type { PauseReason } from '@sentinel/shared';
-import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
+import { FABLE_WEEKLY_WINDOW, BYOK_ACCOUNT_ID } from '@sentinel/shared';
 
 export const DAEMON_PORT = 47284;
 
@@ -107,12 +107,10 @@ function isSentinelOriginated(headers: IncomingMessage['headers']): boolean {
  *  {@link clientPresentsClaudeIdentity}. */
 const OAUTH_BETA_TOKEN = 'oauth-2025-04-20';
 
-/** Reserved attribution key for requests that arrive carrying the client's own
- *  API key ("bring your own key"). Real Sentinel account ids are UUIDs, so this
- *  value can never collide with one — which is the point: a foreign key's
- *  rate-limit windows, overage state, and spend must never be filed against a
- *  pooled account. */
-export const BYOK_ACCOUNT_ID = 'byok';
+/** Reserved attribution key for bring-your-own-key requests. Canonical
+ *  definition lives in @sentinel/shared (the app needs it for Metrics
+ *  scoping); re-exported here so daemon-side imports keep working. */
+export { BYOK_ACCOUNT_ID };
 
 /** True when the request carries a client-supplied `x-api-key`. */
 function hasClientApiKey(headers: IncomingMessage['headers']): boolean {

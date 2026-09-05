@@ -2235,6 +2235,14 @@ export interface DeactivateOpencodeMessage {
   type: 'deactivate_opencode';
 }
 
+/** Whether any usage has ever been recorded under the reserved BYOK
+ *  attribution key (clients bringing their own API key through the proxy).
+ *  Gates the "API key" scope row in the Metrics picker. Response payload is
+ *  `ByokState`. */
+export interface GetByokStateMessage {
+  type: 'get_byok_state';
+}
+
 export type AppToDaemonMessage =
   | GetAccountsMessage
   | GetCredentialsMessage
@@ -2345,6 +2353,7 @@ export type AppToDaemonMessage =
   | DeactivateDesktopMessage
   | ReapplyDesktopConfigMessage
   | GetOpencodeConfigStateMessage
+  | GetByokStateMessage
   | ActivateOpencodeMessage
   | DeactivateOpencodeMessage
   | GetProxyActivityMessage;
