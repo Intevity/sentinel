@@ -124,6 +124,23 @@ async function pickFreePort(): Promise<number> {
   });
 }
 
+/**
+ * Ambient env vars that outrank SENTINEL_TEST_HOME when resolving a real
+ * user's config location, and so would punch straight through the temp home.
+ * `opencodeConfigDir` prefers $XDG_CONFIG_HOME and `opencodeConfigPath`
+ * prefers $OPENCODE_CONFIG — deliberately, and unit-tested in
+ * opencode-config.test.ts, because that is what opencode itself honors in
+ * production. Under an integration daemon that precedence is a hazard: on any
+ * machine where these are exported (every GitHub Linux runner sets
+ * XDG_CONFIG_HOME) the daemon would read — and activate_opencode would
+ * WRITE — the real ~/.config/opencode/opencode.json instead of the temp one.
+ *
+ * Cleared for the daemon's lifetime and restored verbatim on cleanup, so the
+ * temp home genuinely owns config resolution the way the SENTINEL_TEST_*
+ * redirects above already ensure for agents, skills, and Desktop.
+ */
+const AMBIENT_CONFIG_ENV_KEYS = ['XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'OPENCODE_CONFIG'] as const;
+
 /** Keys written to process.env by startTestDaemon. Deleted on cleanup. */
 const TEST_ENV_KEYS = [
   'SENTINEL_TEST_DB_FILE',
@@ -249,6 +266,13 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
   process.env.SENTINEL_TEST_CONTEXT_COST_DB_FILE = join(workdir, 'context-cost.db');
   process.env.SENTINEL_TEST_CODE_MODE_DIR = join(workdir, 'code-mode');
   process.env.SENTINEL_TEST_HOME = workdir;
+  // See AMBIENT_CONFIG_ENV_KEYS: these outrank SENTINEL_TEST_HOME by design,
+  // so they have to be out of the way or the temp home isn't actually isolating.
+  const ambientConfigEnv = new Map<string, string | undefined>();
+  for (const key of AMBIENT_CONFIG_ENV_KEYS) {
+    ambientConfigEnv.set(key, process.env[key]);
+    delete process.env[key];
+  }
   process.env.SENTINEL_TEST_CLAUDE_SETTINGS_FILE = claudeSettingsPath;
   // Desktop configLibrary: redirect to tmp so activate/deactivate never touch
   // the dev's real Claude Desktop config. Its existence also drives the
@@ -391,6 +415,11 @@ export async function startTestDaemon(opts: StartTestDaemonOptions = {}): Promis
     }
     for (const key of TEST_ENV_KEYS) {
       delete process.env[key];
+    }
+    // Restore verbatim: absent stays absent, set is put back with its value.
+    for (const [key, prior] of ambientConfigEnv) {
+      if (prior === undefined) delete process.env[key];
+      else process.env[key] = prior;
     }
   };
 

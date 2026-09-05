@@ -140,7 +140,18 @@ async function writeFileAtomic(path: string, content: string): Promise<void> {
  * again whenever the bridged set changes. Returns the file path.
  */
 export async function installCodeModeClaudeMd(opts: CodeModeBlockOpts): Promise<string> {
-  const path = claudeMdPath();
+  return installCodeModeBlockAt(claudeMdPath(), opts);
+}
+
+/**
+ * Path-parameterized form of {@link installCodeModeClaudeMd}. Other agent
+ * runtimes read their own instruction file (opencode uses `AGENTS.md`), and the
+ * block body is identical for all of them — only the destination differs.
+ */
+export async function installCodeModeBlockAt(
+  path: string,
+  opts: CodeModeBlockOpts,
+): Promise<string> {
   let existing = '';
   try {
     existing = await fs.readFile(path, 'utf8');
@@ -161,7 +172,11 @@ export async function installCodeModeClaudeMd(opts: CodeModeBlockOpts): Promise<
  * block is absent.
  */
 export async function uninstallCodeModeClaudeMd(): Promise<void> {
-  const path = claudeMdPath();
+  return uninstallCodeModeBlockAt(claudeMdPath());
+}
+
+/** Path-parameterized form of {@link uninstallCodeModeClaudeMd}. */
+export async function uninstallCodeModeBlockAt(path: string): Promise<void> {
   if (!existsSync(path)) return;
   const existing = await fs.readFile(path, 'utf8');
   if (!existing.includes(BEGIN_PREFIX)) return;
@@ -179,7 +194,14 @@ export function readCodeModeBlockState(opts: CodeModeBlockOpts): {
   present: boolean;
   upToDate: boolean;
 } {
-  const path = claudeMdPath();
+  return readCodeModeBlockStateAt(claudeMdPath(), opts);
+}
+
+/** Path-parameterized form of {@link readCodeModeBlockState}. */
+export function readCodeModeBlockStateAt(
+  path: string,
+  opts: CodeModeBlockOpts,
+): { present: boolean; upToDate: boolean } {
   if (!existsSync(path)) return { present: false, upToDate: false };
   const text = readFileSync(path, 'utf8');
   const m = text.match(HASH_RE);

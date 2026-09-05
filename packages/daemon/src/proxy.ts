@@ -6,7 +6,13 @@ import { getProxyUpstream } from './hosts.js';
 import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { OverageStateMachine } from './overage.js';
-import { insertOverageEvent, insertNotification, insertCacheTtlEvent } from './db.js';
+import {
+  insertOverageEvent,
+  insertNotification,
+  insertCacheTtlEvent,
+  insertUsageEvent,
+  stagePendingUsageEvent,
+} from './db.js';
 import type { IpcServer } from './ipc.js';
 import type { RateLimitStore } from './rate-limit-store.js';
 import type { SecurityScanner } from './security/scanner.js';
@@ -26,7 +32,7 @@ import {
   extractUsageFromJson,
   SseUsageExtractor,
 } from './cache-ttl/parser.js';
-import { computeCacheCosts } from './cache-ttl/pricing.js';
+import { computeCacheCosts, computeRequestCost } from './cache-ttl/pricing.js';
 import { rewriteCacheControlTtl } from './cache-ttl/rewriter.js';
 import { compressMessagesBody } from './optimize/compress/index.js';
 import type { CompressionStats, CaptureRecord } from './optimize/compress/index.js';
@@ -39,7 +45,7 @@ import type { CodeModeHttpHandler } from './optimize/code-mode/code-mode-server.
 import { measureToolDefinitions } from './context-bloat/mcp-definition-cost.js';
 import type { ContextCostStore } from './context-bloat/context-cost-db.js';
 import type { PauseReason } from '@sentinel/shared';
-import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
+import { FABLE_WEEKLY_WINDOW, BYOK_ACCOUNT_ID } from '@sentinel/shared';
 
 export const DAEMON_PORT = 47284;
 
@@ -93,6 +99,78 @@ const SENTINEL_UA_PREFIX = 'Sentinel/';
 function isSentinelOriginated(headers: IncomingMessage['headers']): boolean {
   const ua = headers['user-agent'];
   return typeof ua === 'string' && ua.startsWith(SENTINEL_UA_PREFIX);
+}
+
+/** Beta flag Anthropic requires on inference requests that authenticate with a
+ *  subscription OAuth token. Claude Code and the Claude Desktop app both send
+ *  it; a generic API-key client never does. Used as one arm of
+ *  {@link clientPresentsClaudeIdentity}. */
+const OAUTH_BETA_TOKEN = 'oauth-2025-04-20';
+
+/** Reserved attribution key for bring-your-own-key requests. Canonical
+ *  definition lives in @sentinel/shared (the app needs it for Metrics
+ *  scoping); re-exported here so daemon-side imports keep working. */
+export { BYOK_ACCOUNT_ID };
+
+/** True when the request carries a client-supplied `x-api-key`. */
+function hasClientApiKey(headers: IncomingMessage['headers']): boolean {
+  const key = headers['x-api-key'];
+  return typeof key === 'string' && key.length > 0;
+}
+
+/**
+ * True when a request **already** identifies as Claude Code — either by the
+ * `claude-cli/` user-agent (the terminal CLI and the Desktop app's 3p gateway
+ * mode both send it) or by carrying the OAuth beta flag that subscription
+ * tokens require.
+ *
+ * This is the gate on pooled-credential injection. Sentinel supplies a
+ * subscription token only to clients that present this identity themselves; it
+ * never manufactures the identity for a client that lacks it. A third-party
+ * client wanting Sentinel's observability brings its own key instead — see
+ * {@link isByokRequest}.
+ */
+export function clientPresentsClaudeIdentity(headers: IncomingMessage['headers']): boolean {
+  const ua = headers['user-agent'];
+  if (typeof ua === 'string' && ua.startsWith('claude-cli/')) return true;
+  const beta = headers['anthropic-beta'];
+  const betaStr = Array.isArray(beta) ? beta.join(',') : typeof beta === 'string' ? beta : '';
+  return betaStr
+    .split(',')
+    .map((s) => s.trim())
+    .includes(OAUTH_BETA_TOKEN);
+}
+
+/**
+ * True when Sentinel must stay out of this request's authentication: the client
+ * brought its own API key and is not a Claude Code surface. The proxy forwards
+ * such a request with its credential untouched and attributes it to
+ * {@link BYOK_ACCOUNT_ID}, while every observer (security scanner, permission
+ * enforcer, request log, cache-TTL, tool-call extractor) still runs.
+ */
+export function isByokRequest(headers: IncomingMessage['headers']): boolean {
+  return hasClientApiKey(headers) && !clientPresentsClaudeIdentity(headers);
+}
+
+/**
+ * True when this client exports its own OTEL telemetry, which is the source of
+ * truth for its cost and token accounting.
+ *
+ * Only the terminal Claude Code CLI does. The Desktop app shares the
+ * `claude-cli/` user-agent but runs the agent SDK with no telemetry exporter,
+ * and third-party clients have none at all — so for everything except the CLI
+ * the proxy is the only thing that ever sees the response usage, and it writes
+ * the `usage_events` row itself.
+ *
+ * The two sources partition cleanly by client, which is what makes the row
+ * write safe: a request is accounted for by OTEL or by the proxy, never both.
+ * (`otel-receiver.ts` already drops the `claude_code.cost.usage` metric for the
+ * same reason — Claude Code reports cost twice and only the log event is kept.)
+ */
+export function clientEmitsOtel(headers: IncomingMessage['headers']): boolean {
+  const ua = headers['user-agent'];
+  if (typeof ua !== 'string') return false;
+  return ua.startsWith('claude-cli/') && !ua.includes('claude-desktop-3p');
 }
 
 const proxyActivity = {
@@ -531,6 +609,9 @@ export function createProxyServer(
       delete req.headers['x-sentinel-probe-account'];
       return { token: probeToken, accountId: probeAccount };
     }
+    // BYOK: the client authenticated itself and is not a Claude Code surface.
+    // Returning null leaves its credential untouched — see isByokRequest.
+    if (isByokRequest(req.headers)) return null;
     const fromProvider = tokenProvider?.(ctx);
     if (fromProvider) {
       // Auto mode routed this request. Surface the serving account to the UI
@@ -604,8 +685,15 @@ export function createProxyServer(
     const credential = selectCredential(req, { isFable });
     if (credential) {
       req.headers['authorization'] = `Bearer ${credential.token}`;
+      // A client-supplied `x-api-key` must not travel alongside our Bearer:
+      // upstream would be free to honour the wrong one, billing a foreign key
+      // while Sentinel filed the response's rate-limit headers against the
+      // pooled account it thought it used.
+      delete req.headers['x-api-key'];
     }
-    const perRequestAccountId = credential?.accountId ?? activeAccountId?.value;
+    const perRequestAccountId =
+      credential?.accountId ??
+      (isByokRequest(req.headers) ? BYOK_ACCOUNT_ID : activeAccountId?.value);
 
     // Sentinel-side pause short-circuit. The rotator already skips paused
     // accounts in Auto mode, so this only fires in `off` mode or when
@@ -818,12 +906,18 @@ export function createProxyServer(
     const credential = selectCredential(req);
     if (credential) {
       req.headers['authorization'] = `Bearer ${credential.token}`;
+      // See the messages-POST path: never let a client key race our Bearer.
+      delete req.headers['x-api-key'];
     }
 
     // Proxy Anthropic API calls — attribute rate-limit headers to the
     // specific account whose token was used for this request (matters for
     // Auto switching where that may differ from the primary active account).
-    const perRequestAccountId = credential?.accountId ?? activeAccountId?.value;
+    // BYOK traffic is attributed to a reserved key so a foreign credential's
+    // usage never lands on a pooled account.
+    const perRequestAccountId =
+      credential?.accountId ??
+      (isByokRequest(req.headers) ? BYOK_ACCOUNT_ID : activeAccountId?.value);
 
     // Sentinel-side pause short-circuit for non-messages paths (probes,
     // /v1/models GETs, etc.). The messages path runs the same check inside
@@ -933,6 +1027,10 @@ async function proxyToAnthropic(
   // requests skip capture — they're internal noise, not user-originated.
   const settings = loadSettings();
   const isProbe = isSentinelOriginated(req.headers);
+  /** Wall-clock start, used for the `usage_events.duration_ms` of clients that
+   *  emit no OTEL. Independent of `capture.startMs`, which only exists while
+   *  request logging is enabled. */
+  const requestStartMs = Date.now();
   const capture: CaptureContext | null =
     requestLogStore && settings.requestLoggingEnabled && !isProbe
       ? {
@@ -966,6 +1064,12 @@ async function proxyToAnthropic(
     'default';
 
   const rlKey = attributionAccountId ?? accountId;
+
+  // Anthropic's `request-id` response header, captured in dispatch()'s
+  // response callback. It is the correlation key shared with the client's
+  // OTEL api_request events, which is what makes staged-usage dedupe and
+  // RequestAccountMap attribution possible.
+  let upstreamRequestId: string | null = null;
 
   // Cache TTL tracking: one row per /v1/messages POST that yielded usage.
   // Independent of request-log capture so the feature is on even when the
@@ -1388,6 +1492,62 @@ async function proxyToAnthropic(
     }
     if (!result) return;
     const model = result.model ?? 'unknown';
+
+    // Usage accounting: exactly one writer per request.
+    //
+    // - Non-claude-cli clients (Claude Desktop, BYOK clients such as
+    //   opencode's x-api-key path) emit no OTEL, so the proxy writes the row
+    //   immediately — without it their spend is invisible: the quota windows
+    //   move (account-level poller) while cost and tokens stay blank.
+    // - A claude-cli user-agent MAY mean the real Claude Code CLI, whose OTEL
+    //   export owns this row — but it may also be a client that merely
+    //   presents that UA and never emits OTEL (opencode-claude-auth), or a
+    //   `claude --print` child that exits before its exporter flushes. The UA
+    //   is a prediction, not a fact, so the proxy stages the row keyed on
+    //   Anthropic's request-id: an OTEL api_request carrying the same id
+    //   claims (discards) it, and the pending-usage sweeper commits it if no
+    //   claim arrives within the grace window.
+    // - claude-cli UA with no request-id on the response (not observed in
+    //   practice — Anthropic stamps every /v1/messages response): no dedupe
+    //   key, so keep the historical skip; OTEL owns the row if it ever
+    //   reports.
+    //
+    // Cost is null for a model that isn't in the price table rather than
+    // guessed; the tokens are still recorded.
+    const usage = {
+      ts: Date.now(),
+      accountId: rlKey,
+      sessionId: cacheTtlCtx.sessionId,
+      model,
+      costUsd: computeRequestCost(result.model, result),
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      cacheRead: result.cacheRead,
+      cacheCreate: result.cacheCreate5m + result.cacheCreate1h,
+      durationMs: Date.now() - requestStartMs,
+    };
+    if (!clientEmitsOtel(req.headers)) {
+      try {
+        insertUsageEvent(cacheTtlCtx.db, { ...usage, requestId: upstreamRequestId });
+      } catch (err) {
+        /* v8 ignore next 2 -- insert failure needs a corrupted db */
+        console.error('[Proxy] usage_event insert failed:', err);
+      }
+    } else if (upstreamRequestId !== null) {
+      try {
+        stagePendingUsageEvent(cacheTtlCtx.db, {
+          requestId: upstreamRequestId,
+          stagedAt: Date.now(),
+          ...usage,
+        });
+      } catch (err) {
+        /* v8 ignore next 2 -- insert failure needs a corrupted db */
+        console.error('[Proxy] usage_event stage failed:', err);
+      }
+    } else {
+      console.log('[Proxy] claude-cli response without request-id; deferring to OTEL');
+    }
+
     const costs = computeCacheCosts(
       model,
       result.cacheCreate5m,
@@ -1602,16 +1762,18 @@ async function proxyToAnthropic(
           }
 
           // Record requestId → account so OtelReceiver can re-bucket OTEL
-          // api_request / api_error events that carry the same id. Anthropic
+          // api_request / api_error events that carry the same id, and hold
+          // it for the staged-usage dedupe key in finalizeCacheTtl. Anthropic
           // emits `request-id` on every /v1/messages response; only skip the
           // write when the header is absent (probes, early errors). Attribute
           // to the account that produced the forwarded response, not any
           // earlier attempt that was retried away from.
-          if (requestAccountMap) {
+          {
             const reqIdRaw = proxyRes.headers['request-id'];
             const reqId = Array.isArray(reqIdRaw) ? reqIdRaw[0] : reqIdRaw;
             if (typeof reqId === 'string' && reqId) {
-              requestAccountMap.set(reqId, currentRlKey);
+              upstreamRequestId = reqId;
+              if (requestAccountMap) requestAccountMap.set(reqId, currentRlKey);
             }
           }
 

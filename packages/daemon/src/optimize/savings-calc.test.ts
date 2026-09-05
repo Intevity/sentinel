@@ -55,10 +55,14 @@ describe('computeSavings', () => {
       curatedId: 'file-explorer',
       hypoModel: 'claude-haiku-4-5',
     });
-    // Actual: 0.086 share × 100k uncached × $15/M = ~$0.129
-    // Hypo:   (30k/3.5 tokens × $1) + (500 tokens × $15/M) = ~$0.0086 + $0.0075 = ~$0.0161
-    // Savings ~= $0.113
-    expect(r.actualCostUsd).toBeGreaterThan(0.1);
+    // Actual: 0.086 share × 100k uncached × $5/M = ~$0.043
+    // Hypo:   (30k/3.5 tokens × $1/M) + (500 tokens × $1/M) = ~$0.0091
+    // Savings ~= $0.034
+    //
+    // The threshold tracks Opus 4.6+ at $5/MTok. It previously read `> 0.1`,
+    // calibrated against a price table that matched every `claude-opus-4*`
+    // model at the legacy $15 — see the ordering note in cache-ttl/pricing.ts.
+    expect(r.actualCostUsd).toBeGreaterThan(0.04);
     expect(r.hypotheticalCostUsd).toBeLessThan(r.actualCostUsd);
     expect(r.savingsUsd).toBeGreaterThan(0);
   });

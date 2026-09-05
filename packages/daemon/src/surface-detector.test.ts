@@ -126,6 +126,9 @@ describe('createSurfaceDetector', () => {
       probeDesktopInstalled: () => false,
       probeDesktopActivated: () => false,
       probeDesktopHealthy: () => false,
+      probeOpencodeInstalled: () => false,
+      probeOpencodeActivated: () => false,
+      probeOpencodePluginOverride: () => false,
       ...over,
     };
   };
@@ -140,8 +143,60 @@ describe('createSurfaceDetector', () => {
     expect(states[0]).toEqual({
       cli: { installed: true, activated: true },
       desktop: { installed: false, activated: false, healthy: false },
+      opencode: { installed: false, activated: false, pluginOverride: false },
     });
     expect(det.getCurrent()).toEqual(states[0]);
+  });
+
+  it('broadcasts when opencode flips to routed', async () => {
+    const { ipcServer, broadcasts } = makeStubServer();
+    let activated = false;
+    const det = createSurfaceDetector(
+      baseProbes({
+        ipcServer,
+        probeOpencodeInstalled: () => true,
+        probeOpencodeActivated: () => activated,
+      }),
+    );
+    await det.start();
+    activated = true;
+    await det.refresh();
+    det.stop();
+
+    const states = surfaceMsgs(broadcasts);
+    expect(states).toHaveLength(2);
+    expect(states[0]!.opencode).toEqual({
+      installed: true,
+      activated: false,
+      pluginOverride: false,
+    });
+    expect(states[1]!.opencode).toEqual({
+      installed: true,
+      activated: true,
+      pluginOverride: false,
+    });
+  });
+
+  it('surfaces a plugin override independently of activation', async () => {
+    // The config can point at Sentinel on disk while a plugin rewrites it at
+    // runtime — the card needs both facts to avoid claiming a false green.
+    const { ipcServer, broadcasts } = makeStubServer();
+    const det = createSurfaceDetector(
+      baseProbes({
+        ipcServer,
+        probeOpencodeInstalled: () => true,
+        probeOpencodeActivated: () => false,
+        probeOpencodePluginOverride: () => true,
+      }),
+    );
+    await det.start();
+    det.stop();
+
+    expect(surfaceMsgs(broadcasts)[0]!.opencode).toEqual({
+      installed: true,
+      activated: false,
+      pluginOverride: true,
+    });
   });
 
   it('does not re-broadcast when nothing changed', async () => {

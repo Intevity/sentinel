@@ -4,14 +4,31 @@ import {
   CACHE_WRITE_1H_MULTIPLIER,
   CACHE_WRITE_5M_MULTIPLIER,
   computeCacheCosts,
+  computeRequestCost,
   getBaseInputPricePerMillion,
+  getModelPrices,
 } from './pricing.js';
 
 describe('getBaseInputPricePerMillion', () => {
-  it('prices Opus family at 15', () => {
-    expect(getBaseInputPricePerMillion('claude-opus-4-7')).toBe(15);
-    expect(getBaseInputPricePerMillion('claude-opus-4-7-20260101')).toBe(15);
+  it('prices Opus 4.6 and later at 5, not the legacy 15', () => {
+    // Regression: a bare `claude-opus-4` prefix placed first matched these too
+    // and priced every request at 3× its real rate.
+    expect(getBaseInputPricePerMillion('claude-opus-5')).toBe(5);
+    expect(getBaseInputPricePerMillion('claude-opus-4-8')).toBe(5);
+    expect(getBaseInputPricePerMillion('claude-opus-4-7')).toBe(5);
+    expect(getBaseInputPricePerMillion('claude-opus-4-7-20260101')).toBe(5);
+    expect(getBaseInputPricePerMillion('claude-opus-4-6')).toBe(5);
+  });
+
+  it('keeps the legacy 15 for Opus 4.1 and older', () => {
+    expect(getBaseInputPricePerMillion('claude-opus-4-1')).toBe(15);
+    expect(getBaseInputPricePerMillion('claude-opus-4-0')).toBe(15);
     expect(getBaseInputPricePerMillion('claude-opus-3-5-sonnet')).toBe(15);
+  });
+
+  it('prices Fable at 10', () => {
+    expect(getBaseInputPricePerMillion('claude-fable-5')).toBe(10);
+    expect(getBaseInputPricePerMillion('claude-mythos-5')).toBe(10);
   });
 
   it('prices Sonnet family at 3', () => {
@@ -31,7 +48,7 @@ describe('getBaseInputPricePerMillion', () => {
 
   it('is case-insensitive', () => {
     expect(getBaseInputPricePerMillion('Claude-Sonnet-4-6')).toBe(3);
-    expect(getBaseInputPricePerMillion('CLAUDE-OPUS-4-7')).toBe(15);
+    expect(getBaseInputPricePerMillion('CLAUDE-OPUS-4-7')).toBe(5);
   });
 
   it('returns a safe fallback for unknown models', () => {
@@ -81,5 +98,76 @@ describe('computeCacheCosts', () => {
     const known = computeCacheCosts('claude-sonnet-4-6', 1_000_000, 0, 0);
     const unknown = computeCacheCosts('future-model', 1_000_000, 0, 0);
     expect(unknown.cost5mWrite).toBeCloseTo(known.cost5mWrite, 10);
+  });
+});
+
+describe('getModelPrices', () => {
+  it.each([
+    ['claude-fable-5', 10, 50],
+    ['claude-opus-5', 5, 25],
+    ['claude-sonnet-5', 3, 15],
+    ['claude-sonnet-4-6-20250514', 3, 15],
+    ['claude-haiku-4-5', 1, 5],
+    ['claude-haiku-3-5', 0.8, 4],
+  ])('%s → $%s in / $%s out per MTok', (model, input, output) => {
+    expect(getModelPrices(model)).toEqual({
+      inputPerMillion: input,
+      outputPerMillion: output,
+    });
+  });
+
+  it('returns null for an unknown model rather than guessing', () => {
+    // Unlike getBaseInputPricePerMillion, which falls back so cache-TTL keeps a
+    // usable relative comparison. A whole-request cost is read as money.
+    expect(getModelPrices('some-future-model')).toBeNull();
+    expect(getBaseInputPricePerMillion('some-future-model')).toBe(3);
+  });
+
+  it('returns null for a null model', () => {
+    expect(getModelPrices(null)).toBeNull();
+  });
+});
+
+describe('computeRequestCost', () => {
+  const TOKENS = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreate5m: 0,
+    cacheCreate1h: 0,
+    cacheRead: 0,
+  };
+
+  it('charges input and output at their own rates', () => {
+    // Sonnet: $3 input + $15 output per MTok.
+    expect(computeRequestCost('claude-sonnet-4-6', TOKENS)).toBeCloseTo(18, 10);
+  });
+
+  it('applies the cache multipliers to each write tier and to reads', () => {
+    const cost = computeRequestCost('claude-sonnet-4-6', {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreate5m: 1_000_000,
+      cacheCreate1h: 1_000_000,
+      cacheRead: 1_000_000,
+    });
+    // 3 * (1.25 + 2.0 + 0.1)
+    expect(cost).toBeCloseTo(10.05, 10);
+  });
+
+  it('is null for an unpriced model so the caller records tokens without a cost', () => {
+    expect(computeRequestCost('some-future-model', TOKENS)).toBeNull();
+    expect(computeRequestCost(null, TOKENS)).toBeNull();
+  });
+
+  it('is zero for a priced model with no tokens', () => {
+    expect(
+      computeRequestCost('claude-opus-4-8', {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreate5m: 0,
+        cacheCreate1h: 0,
+        cacheRead: 0,
+      }),
+    ).toBe(0);
   });
 });

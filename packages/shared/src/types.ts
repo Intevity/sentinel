@@ -1063,6 +1063,45 @@ export interface ClaudeDesktopDriftDetails {
 export interface SurfaceState {
   cli: { installed: boolean; activated: boolean };
   desktop: { installed: boolean; activated: boolean; healthy: boolean };
+  /** opencode. Unlike the Claude surfaces this one is bring-your-own-key: it
+   *  authenticates with the user's own Anthropic API key and Sentinel observes
+   *  the traffic without substituting a pooled subscription token.
+   *  `pluginOverride` is true when opencode is configured with a plugin that
+   *  rewrites the provider base URL at startup (`opencode-with-claude` points
+   *  it at a local Meridian proxy), which silently defeats the config Sentinel
+   *  writes — the card must report that rather than claiming to be routed. */
+  opencode: { installed: boolean; activated: boolean; pluginOverride: boolean };
+}
+
+/** How opencode's global config currently points its Anthropic provider.
+ *
+ *  - `inactive` — no `provider.anthropic.options.baseURL`, so opencode talks to
+ *    Anthropic directly and Sentinel sees nothing.
+ *  - `active` — points at Sentinel's proxy.
+ *  - `foreign-base-url` — points somewhere else (another gateway or router).
+ *  - `plugin-override` — points at Sentinel, but a configured plugin rewrites
+ *    the base URL at runtime, so the on-disk value is not what opencode uses.
+ *  - `unwritable` — the config file carries comments Sentinel cannot preserve
+ *    through a JSON round-trip, so activation must be done by hand. */
+export type OpencodeConfigState =
+  | 'inactive'
+  | 'active'
+  | 'foreign-base-url'
+  | 'plugin-override'
+  | 'unwritable';
+
+export interface OpencodeConfigDetails {
+  state: OpencodeConfigState;
+  /** Absolute path of the config file Sentinel would write, whether or not it
+   *  exists yet. */
+  configPath: string;
+  /** `provider.anthropic.options.baseURL` as found on disk, or null. */
+  baseUrl: string | null;
+  /** Plugin entries that rewrite the provider base URL at runtime, verbatim
+   *  from the config's `plugin` array. Empty when none are configured. */
+  overridingPlugins: string[];
+  /** The snippet to paste when `state === 'unwritable'`; null otherwise. */
+  manualSnippet: string | null;
 }
 
 /** Health of the proxy ingestion path that feeds the Optimize tab.
@@ -1803,6 +1842,21 @@ export interface OverageHeaders {
  * parser in claude-ai-usage.ts.
  */
 export const FABLE_WEEKLY_WINDOW = 'unified-7d_oi';
+
+/** Reserved attribution key for requests that arrive at the proxy carrying the
+ *  client's own API key ("bring your own key"). Real Sentinel account ids are
+ *  UUIDs, so this value can never collide with one — which is the point: a
+ *  foreign key's usage, rate-limit windows, and spend must never be filed
+ *  against a pooled account. Defined here (not in the daemon) so the app can
+ *  scope Metrics queries to it. */
+export const BYOK_ACCOUNT_ID = 'byok';
+
+/** Result of `get_byok_state`: whether any usage has ever been recorded under
+ *  {@link BYOK_ACCOUNT_ID}. The app uses it to gate the "API key" scope row in
+ *  the Metrics picker — shown only when there is something to show. */
+export interface ByokState {
+  hasUsage: boolean;
+}
 
 /**
  * A single rate limit window parsed from anthropic-ratelimit-* response headers.

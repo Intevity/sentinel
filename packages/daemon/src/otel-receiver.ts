@@ -1,6 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { Database } from 'better-sqlite3';
-import { insertUsageEvent, insertToolEvent, insertApiError, insertActivityEvent } from './db.js';
+import {
+  insertUsageEvent,
+  insertToolEvent,
+  insertApiError,
+  insertActivityEvent,
+  claimPendingUsageEvent,
+} from './db.js';
 import type { ActiveAccountId } from './proxy.js';
 import type { IpcServer } from './ipc.js';
 import type { RequestAccountMap } from './request-account-map.js';
@@ -444,6 +450,7 @@ export class OtelReceiver {
     switch (eventName) {
       case EVENT_API_REQUEST: {
         this.onApiRequestEvent?.();
+        const requestId = asString(attrs['request_id']);
         this.insertUsage({
           ts,
           accountId,
@@ -455,7 +462,13 @@ export class OtelReceiver {
           cacheRead: (attrs['cache_read_tokens'] as number | undefined) ?? null,
           cacheCreate: (attrs['cache_creation_tokens'] as number | undefined) ?? null,
           durationMs: (attrs['duration_ms'] as number | undefined) ?? null,
+          requestId,
         });
+        // OTEL owns this request's accounting: discard the proxy's staged
+        // row for the same request-id. Runs even when the insert above was
+        // ignored (row already committed by the sweeper) — the delete
+        // no-ops in that case.
+        if (requestId) claimPendingUsageEvent(this.db, requestId);
         return;
       }
 
@@ -571,8 +584,10 @@ export class OtelReceiver {
   // apart from the method-name rewrite.
 
   private insertUsage(ev: Parameters<typeof insertUsageEvent>[1]): void {
-    this.wroteInBatch = true;
-    insertUsageEvent(this.db, ev);
+    // Only signal a write when the insert actually landed: a duplicate
+    // request_id (row already committed from the proxy's staging table)
+    // drops on the unique index and must not trigger a metrics broadcast.
+    if (insertUsageEvent(this.db, ev) !== null) this.wroteInBatch = true;
   }
 
   private insertActivity(ev: Parameters<typeof insertActivityEvent>[1]): void {

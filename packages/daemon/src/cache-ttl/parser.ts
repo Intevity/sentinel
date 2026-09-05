@@ -81,6 +81,10 @@ export interface UsageExtractResult {
   cacheCreate1h: number;
   cacheRead: number;
   inputTokens: number;
+  /** Completion tokens. Consumed by the proxy's usage accounting for clients
+   *  that emit no OTEL (Claude Desktop, BYOK clients); the cache-TTL writer
+   *  ignores it since cache pricing is input-side only. */
+  outputTokens: number;
 }
 
 /**
@@ -127,6 +131,7 @@ function buildResult(model: string | null, usage: Record<string, unknown>): Usag
     cacheCreate1h,
     cacheRead: numberOrZero(usage['cache_read_input_tokens']),
     inputTokens: numberOrZero(usage['input_tokens']),
+    outputTokens: numberOrZero(usage['output_tokens']),
   };
 }
 
@@ -153,6 +158,7 @@ export class SseUsageExtractor {
   private cacheCreate1h = 0;
   private cacheRead = 0;
   private inputTokens = 0;
+  private outputTokens = 0;
 
   onChunk(chunk: Buffer | string): void {
     const text = typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
@@ -205,6 +211,18 @@ export class SseUsageExtractor {
     this.cacheCreate1h = result.cacheCreate1h;
     this.cacheRead = result.cacheRead;
     this.inputTokens = result.inputTokens;
+    // Output tokens take the max rather than last-wins. They are cumulative and
+    // monotonic across `message_start` → `message_delta`, and some responses
+    // carry a `message_delta.usage` holding only `output_tokens` — under
+    // last-wins a later event that omitted the field would zero a real count.
+    //
+    // The input-side fields above keep last-wins because Anthropic's contract
+    // says `message_delta.usage` is cumulative and complete. Known limitation:
+    // a delta that omits them (rather than sending explicit zeros) zeroes a real
+    // count the same way. Fixing that needs `buildResult` to distinguish absent
+    // from 0, which would change what cache-TTL rows record — deliberately left
+    // alone here rather than altered as a side effect of adding output tokens.
+    this.outputTokens = Math.max(this.outputTokens, result.outputTokens);
     this.haveUsage = true;
   }
 
@@ -216,6 +234,7 @@ export class SseUsageExtractor {
       cacheCreate1h: this.cacheCreate1h,
       cacheRead: this.cacheRead,
       inputTokens: this.inputTokens,
+      outputTokens: this.outputTokens,
     };
   }
 }

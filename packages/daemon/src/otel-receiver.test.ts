@@ -3,7 +3,15 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { unlinkSync, existsSync } from 'fs';
 import Database from 'better-sqlite3';
-import { getDb, closeDb, getUsageEvents } from './db.js';
+import {
+  getDb,
+  closeDb,
+  getUsageEvents,
+  getPendingUsageEvents,
+  stagePendingUsageEvent,
+  insertUsageEvent,
+} from './db.js';
+import { makeCapturingIpc } from './proxy.test-helpers.js';
 import { OtelReceiver, OTEL_LOG_API_REQUEST, OTEL_METRIC_COST } from './otel-receiver.js';
 import { RequestAccountMap } from './request-account-map.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -1149,6 +1157,108 @@ describe('OtelReceiver', () => {
       // is acceptable in the test stream and avoids adding a third
       // console spy past the mock-budget floor.)
       expect(calls).toHaveLength(0);
+    });
+  });
+
+  describe('staged-usage dedupe (request_id)', () => {
+    function apiRequestPayload(requestId: string | null, costUsd: number): object {
+      const attributes: Array<{ key: string; value: object }> = [
+        { key: 'event.name', value: { stringValue: OTEL_LOG_API_REQUEST } },
+        { key: 'user.account_uuid', value: { stringValue: 'acc-dedupe' } },
+        { key: 'model', value: { stringValue: 'claude-opus-4' } },
+        { key: 'cost_usd', value: { doubleValue: costUsd } },
+        { key: 'input_tokens', value: { intValue: 10 } },
+        { key: 'output_tokens', value: { intValue: 1 } },
+      ];
+      if (requestId !== null) {
+        attributes.push({ key: 'request_id', value: { stringValue: requestId } });
+      }
+      return {
+        resourceLogs: [
+          {
+            scopeLogs: [
+              {
+                logRecords: [
+                  {
+                    timeUnixNano: (BigInt(Date.now()) * BigInt(1_000_000)).toString(),
+                    attributes,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    it('persists request_id on the usage row', async () => {
+      const { res } = mockRes();
+      await receiver.handleLogs(makeRequest(apiRequestPayload('req_otel_1', 0.5), '/v1/logs'), res);
+
+      const row = db.prepare('SELECT request_id, cost_usd FROM usage_events').get() as {
+        request_id: string | null;
+        cost_usd: number;
+      };
+      expect(row.request_id).toBe('req_otel_1');
+      expect(row.cost_usd).toBe(0.5);
+    });
+
+    it('claims (deletes) the proxy-staged row for the same request_id', async () => {
+      stagePendingUsageEvent(db, {
+        requestId: 'req_claim_1',
+        stagedAt: Date.now(),
+        ts: Date.now(),
+        accountId: 'acc-dedupe',
+        sessionId: null,
+        model: 'claude-opus-4',
+        costUsd: 0.05,
+        inputTokens: 10,
+        outputTokens: 1,
+        cacheRead: null,
+        cacheCreate: null,
+        durationMs: null,
+      });
+
+      const { res } = mockRes();
+      await receiver.handleLogs(
+        makeRequest(apiRequestPayload('req_claim_1', 0.5), '/v1/logs'),
+        res,
+      );
+
+      // OTEL owns the row; the staged one is gone, not committed later.
+      expect(getPendingUsageEvents(db)).toEqual([]);
+      const events = getUsageEvents(db, { accountId: 'acc-dedupe' });
+      expect(events).toHaveLength(1);
+      expect(events[0]!.costUsd).toBe(0.5);
+    });
+
+    it('inserts nothing and does not broadcast when the request_id already landed', async () => {
+      // The sweeper committed the proxy's row before this OTEL event arrived.
+      insertUsageEvent(db, {
+        ts: Date.now(),
+        accountId: 'acc-dedupe',
+        sessionId: null,
+        model: 'claude-opus-4',
+        costUsd: 0.05,
+        inputTokens: 10,
+        outputTokens: 1,
+        cacheRead: null,
+        cacheCreate: null,
+        durationMs: null,
+        requestId: 'req_late_1',
+      });
+
+      const ipc = makeCapturingIpc();
+      const withIpc = new OtelReceiver(db, undefined, ipc);
+      const { res } = mockRes();
+      await withIpc.handleLogs(makeRequest(apiRequestPayload('req_late_1', 9.99), '/v1/logs'), res);
+
+      // The committed row's figures stand; the no-op batch fires no
+      // metrics_updated (the honest wroteInBatch signal).
+      const events = getUsageEvents(db, { accountId: 'acc-dedupe' });
+      expect(events).toHaveLength(1);
+      expect(events[0]!.costUsd).toBe(0.05);
+      expect(ipc.broadcasts).toEqual([]);
     });
   });
 });

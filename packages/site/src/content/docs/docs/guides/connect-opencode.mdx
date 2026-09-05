@@ -1,0 +1,148 @@
+---
+title: Connect opencode
+description: Route opencode through the Sentinel proxy for request logging, security scanning, and permission rules — using your own Anthropic API key.
+sidebar:
+  order: 3
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Sentinel can sit in front of [opencode](https://opencode.ai), so its Anthropic traffic gets the same
+request log, security scanning, permission rules, and cache-TTL handling as Claude Code.
+
+<Aside type="caution" title="opencode is bring-your-own-key">
+  opencode authenticates with **your own Anthropic API key**. Sentinel does **not** hand it a pooled
+  subscription account — see [Why no account pooling](#why-no-account-pooling) below. Community
+  plugins exist that bring their own subscription auth; one is verified to work alongside Sentinel —
+  see [Subscription plans via community plugins](#subscription-plans-via-community-plugins).
+</Aside>
+
+## What you get
+
+| Feature                                            | With opencode                                                                          |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Request log                                        | ✅                                                                                     |
+| Security scanning (secrets, PII, prompt injection) | ✅                                                                                     |
+| Permission rules (allow / deny / ask)              | ✅ — minus session-scoped grants                                                       |
+| Cache-TTL handling                                 | ✅                                                                                     |
+| Multi-account pooling and switching                | ❌ with an API key — works via the `opencode-claude-auth` community plugin (see below) |
+| Claude Code settings sync                          | ❌ — opencode has its own config                                                       |
+
+## Setup
+
+<Steps>
+
+1. Install opencode and give its Anthropic provider an API key — `/connect`, choose Anthropic, then
+   **Manually enter API Key**. Any `sk-ant-api…` key works.
+
+2. In Sentinel, click **Enable** on the **opencode** card. Sentinel writes one key into your global
+   opencode config (`~/.config/opencode/opencode.json`), preserving everything else in the file:
+
+   ```json
+   {
+     "provider": {
+       "anthropic": {
+         "options": {
+           "baseURL": "http://127.0.0.1:47284/v1"
+         }
+       }
+     }
+   }
+   ```
+
+   The `/v1` suffix matters — opencode's Anthropic provider appends `/messages` to the base URL, so
+   a base URL without it produces a 404. Once routing is active the card disappears; the on/off
+   control then lives in **Settings → General**.
+
+3. Restart opencode, then confirm traffic is flowing:
+
+   ```sh
+   tail -f ~/.sentinel/daemon.log
+   ```
+
+   You should see `POST /v1/messages → 200` lines appear as you use opencode.
+
+</Steps>
+
+## If your config has comments
+
+opencode accepts JSONC, and Sentinel will not rewrite a config file that contains real comments —
+saving it would silently delete them. In that case the card offers the snippet above to paste in by
+hand. (A `.jsonc` file with no actual comments is written normally; Sentinel checks the contents,
+not the extension.)
+
+## Why no account pooling
+
+Anthropic gates subscription credentials to Claude Code: the request must carry the
+`oauth-2025-04-20` beta flag and Claude Code's own system prompt. Claude Code and the Claude Desktop
+app send both, which is why Sentinel can pool accounts for them. opencode sends neither.
+
+Sentinel could forge those markers, and deliberately does not — it identifies its own traffic
+honestly and never manufactures a client identity it wasn't given. So on Sentinel's own terms,
+opencode gets the observability and guardrail half, on your own key.
+
+## Subscription plans via community plugins
+
+Plugins exist that bring a Claude subscription into opencode by doing the identity work themselves.
+Sentinel neither provides nor endorses this — Anthropic's terms gate subscription credentials to
+official clients, and opencode's own documentation notes Pro/Max use this way is prohibited. If you
+accept that trade-off, the plugins differ in the one way that matters to Sentinel: whether they keep
+opencode's normal provider stack or replace the endpoint.
+
+- **`opencode-claude-auth` — verified working alongside Sentinel.** It authenticates with the Claude
+  Code credentials already on your machine and honors whatever base URL opencode's provider config
+  resolves, so the routing this guide sets up keeps working: its traffic flows through the proxy,
+  attributes to your pooled accounts (its requests present Claude identity, so pooling and switching
+  apply), and shows up in the request log, security scanning, and Metrics cost/token figures.
+  Install it per its README (`"plugin": ["opencode-claude-auth@latest"]`), then enable the opencode
+  card as above — no API key step needed.
+
+- **`opencode-with-claude` (Meridian) — bypasses Sentinel.** It starts its own local proxy and
+  **overwrites `provider.anthropic.options.baseURL` at startup**, including the value Sentinel
+  wrote. With it installed, opencode traffic does not pass through Sentinel at all. Sentinel detects
+  this and reports it on the card rather than showing a routed state that isn't true; remove the
+  plugin from your opencode config to route through Sentinel.
+
+### Running both side by side
+
+Subscription and API-key billing can coexist in one opencode install. `opencode-claude-auth` scopes
+itself to the provider id `anthropic`, so a second custom provider entry is untouched by it:
+
+```json
+"anthropic-api": {
+  "npm": "@ai-sdk/anthropic",
+  "name": "Anthropic (API key)",
+  "options": {
+    "apiKey": "{env:ANTHROPIC_API_KEY}",
+    "baseURL": "http://127.0.0.1:47284/v1"
+  },
+  "models": {
+    "claude-sonnet-5": { "name": "Sonnet 5 (API)" }
+  }
+}
+```
+
+Pick per conversation: `anthropic/…` models bill the subscription (pooled, switched by Sentinel);
+`anthropic-api/…` models bill your API key. Both route through the proxy — the API-key traffic
+shows up in the Metrics tab under the **API key** scope (the row appears once the first request
+lands). Two caveats: this entry's `baseURL` is not managed by Sentinel's enable/disable toggle, and
+custom providers need their `models` listed explicitly.
+
+## Troubleshooting
+
+**The card says "opencode is bypassing Sentinel."** A plugin is rewriting the base URL — see
+[Subscription plans via community plugins](#subscription-plans-via-community-plugins). Remove it
+from the `plugin` array in your opencode config.
+
+**No traffic in the daemon log.** Check the base URL actually ends in `/v1`, and that you restarted
+opencode after enabling. `opencode debug config` prints the resolved configuration, including any
+value a plugin replaced.
+
+**The card still offers Enable even though the base URL already points at `127.0.0.1:47284`.** That
+is deliberate: a base URL on Sentinel's host and port but _without_ the `/v1` path cannot work,
+because the AI SDK appends `/messages` to it and Anthropic 404s the result. Sentinel reports that as
+not-yet-routed so Enable stays available and repairs the URL, rather than showing a green state on a
+config that would fail on every request.
+
+**Requests fail with 401.** Sentinel forwards your key untouched, so a 401 is between opencode and
+Anthropic — verify the key with `opencode auth list`.

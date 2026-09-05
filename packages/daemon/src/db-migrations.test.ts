@@ -91,6 +91,19 @@ function seedLegacyDb(dbPath: string): void {
         priority    INTEGER NOT NULL,
         created_at  INTEGER NOT NULL
       );
+      CREATE TABLE usage_events (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts            INTEGER NOT NULL,
+        account_id    TEXT NOT NULL,
+        session_id    TEXT,
+        model         TEXT NOT NULL,
+        cost_usd      REAL,
+        input_tokens  INTEGER,
+        output_tokens INTEGER,
+        cache_read    INTEGER,
+        cache_create  INTEGER,
+        duration_ms   INTEGER
+      );
     `);
     db.exec(
       "INSERT INTO accounts (id, email, created_at) VALUES ('legacy-uuid-1', 'old@example.com', 0)",
@@ -157,6 +170,15 @@ describe('getDb migrations on a legacy database', () => {
     const names = new Set(cols.map((c) => c.name));
     expect(names.has('approved')).toBe(true);
     expect(names.has('provenance')).toBe(true);
+  });
+
+  it('adds request_id and its partial unique index to a legacy usage_events table', () => {
+    seedLegacyDb(dbPath);
+    const db = getDb(dbPath);
+    const cols = db.pragma('table_info(usage_events)') as Array<{ name: string }>;
+    expect(cols.some((c) => c.name === 'request_id')).toBe(true);
+    const indexes = db.pragma('index_list(usage_events)') as Array<{ name: string }>;
+    expect(indexes.some((i) => i.name === 'idx_usage_request_unique')).toBe(true);
   });
 
   it('adds scope + budget_scope columns to a legacy alerts table', () => {

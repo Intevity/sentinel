@@ -14,6 +14,8 @@ import {
   setAccountColor,
   updateAccountMeta,
   getUsageByDayModel,
+  getUsageEvents,
+  commitStalePendingUsage,
   acknowledgeNotification,
   acknowledgeAllNotifications,
   upsertRateLimit,
@@ -140,7 +142,9 @@ import {
   createDesktopHealthTracker,
   isCliInstalled,
   isDesktopInstalled,
+  isOpencodeInstalled,
 } from './surface-detector.js';
+import { activateOpencode, deactivateOpencode, inspectOpencodeConfig } from './opencode-config.js';
 import {
   CaptureHealthTracker,
   composeCaptureHealth,
@@ -179,6 +183,7 @@ import {
 } from './token-refresher.js';
 import { probeRateLimits } from './rate-limit-probe.js';
 import { startRateLimitSweeper, type RateLimitSweeperHandle } from './rate-limit-sweeper.js';
+import { startPendingUsageSweeper, PENDING_USAGE_GRACE_MS } from './pending-usage-sweeper.js';
 import type {
   OAuthAccount,
   PlanType,
@@ -187,7 +192,7 @@ import type {
   AlertScope,
   CaptureHealthState,
 } from '@sentinel/shared';
-import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
+import { FABLE_WEEKLY_WINDOW, BYOK_ACCOUNT_ID } from '@sentinel/shared';
 import { request as httpRequest, type Server } from 'http';
 import { log } from './logger.js';
 import { getRequestLogStore, closeRequestLogStore } from './request-log-db.js';
@@ -246,6 +251,11 @@ import {
   uninstallCodeModeClaudeMd,
   readCodeModeBlockState,
 } from './optimize/code-mode/claude-md-inject.js';
+import {
+  installCodeModeAgentsMd,
+  uninstallCodeModeAgentsMd,
+  readCodeModeAgentsMdState,
+} from './optimize/code-mode/agents-md-inject.js';
 import { renderClaudeCodeMd } from './optimize/gap-to-claude-code.js';
 import {
   createRetrieveMcpHandler,
@@ -1158,6 +1168,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
     },
   });
 
+  // Commit staged usage rows whose OTEL claim never arrived (claude-cli-UA
+  // clients that don't actually report, e.g. opencode-claude-auth). The
+  // immediate startup pass also commits rows staged by a previous daemon run.
+  const pendingUsageSweeper = startPendingUsageSweeper({ db, ipcServer });
+
   // Spend source of truth is now Anthropic's usage endpoint via
   // ClaudeAiUsageStore. Every successful or failed fetch triggers a
   // tracker recompute so the paused set reflects the freshest numbers.
@@ -1684,6 +1699,50 @@ export async function startDaemon(): Promise<DaemonHandle> {
         break;
       }
 
+      case 'get_opencode_config_state': {
+        respond({
+          requestType: 'get_opencode_config_state',
+          success: true,
+          data: inspectOpencodeConfig(),
+        });
+        break;
+      }
+
+      case 'get_byok_state': {
+        // "Has any BYOK usage ever been recorded" — gates the "API key"
+        // scope row in the Metrics picker. limit:1 keeps it a cheap probe.
+        respond({
+          requestType: 'get_byok_state',
+          success: true,
+          data: {
+            hasUsage: getUsageEvents(db, { accountId: BYOK_ACCOUNT_ID, limit: 1 }).length > 0,
+          },
+        });
+        break;
+      }
+
+      case 'activate_opencode':
+      case 'deactivate_opencode': {
+        const requestType = msg.type;
+        void (async () => {
+          try {
+            const details =
+              requestType === 'activate_opencode'
+                ? await activateOpencode()
+                : await deactivateOpencode();
+            await surfaceDetector.refresh();
+            respond({ requestType, success: true, data: details });
+          } catch (err) {
+            respond({
+              requestType,
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        })();
+        break;
+      }
+
       case 'deactivate_desktop': {
         void (async () => {
           try {
@@ -1709,6 +1768,14 @@ export async function startDaemon(): Promise<DaemonHandle> {
       }
 
       case 'get_usage_summary': {
+        // Fold in staged rows past their grace window before reading, so the
+        // UI never lags a commit by more than the grace itself. No broadcast —
+        // the requester is about to receive fresh data.
+        try {
+          commitStalePendingUsage(db, { graceMs: PENDING_USAGE_GRACE_MS });
+        } catch {
+          /* v8 ignore next -- degraded db: serve what we have */
+        }
         const active = getActiveAccount();
         if (!active) {
           respond({ requestType: 'get_usage_summary', success: false, error: 'No active account' });
@@ -1728,6 +1795,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
       }
 
       case 'get_metrics_summary': {
+        // Same on-demand fold-in as get_usage_summary above.
+        try {
+          commitStalePendingUsage(db, { graceMs: PENDING_USAGE_GRACE_MS });
+        } catch {
+          /* v8 ignore next -- degraded db: serve what we have */
+        }
         // Scope resolution — priority:
         //   1. msg.accountIds: aggregate across the list (pool/all views)
         //   2. msg.accountId: single explicit account (per-tab picker)
@@ -3482,6 +3555,9 @@ export async function startDaemon(): Promise<DaemonHandle> {
             // non-Explore/Plan subagent (they get no skill advertisement), and
             // installed curated agents preload the skill directly.
             await installCodeModeClaudeMd({ servers: bridgedServers, port: getDaemonPort() });
+            // opencode reads its own global rules file; a no-op unless the user
+            // already keeps one (see agents-md-inject.ts).
+            await installCodeModeAgentsMd({ servers: bridgedServers, port: getDaemonPort() });
             await resyncCuratedCodeModeSkill(true);
             // No native Bash prompt for the endpoint call, in any thread.
             ensureAllowRule(codeModeCurlRule());
@@ -3556,6 +3632,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
             const remainingServers = [...new Set(remaining.map((m) => m.server))];
             await installCodeModeSkill({ servers: remainingServers, port: getDaemonPort() });
             await installCodeModeClaudeMd({ servers: remainingServers, port: getDaemonPort() });
+            await installCodeModeAgentsMd({ servers: remainingServers, port: getDaemonPort() });
             await resyncCuratedCodeModeSkill(true);
           } else {
             // Last server reverted: tear down everything Sentinel added for the
@@ -3563,6 +3640,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
             // endpoint allow rule.
             await uninstallCodeModeSkill();
             await uninstallCodeModeClaudeMd();
+            await uninstallCodeModeAgentsMd();
             await resyncCuratedCodeModeSkill(false);
             removeAllowRuleByRaw(codeModeCurlRule());
           }
@@ -3866,6 +3944,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
           const port = getDaemonPort();
           await installCodeModeSkill({ servers, port });
           await installCodeModeClaudeMd({ servers, port });
+          await installCodeModeAgentsMd({ servers, port });
           await resyncCuratedCodeModeSkill(true);
           ensureAllowRule(codeModeCurlRule());
           // Refresh the generated tool docs too. They were previously written
@@ -4408,6 +4487,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
     probeDesktopInstalled: () => isDesktopInstalled(),
     probeDesktopActivated: async () => (await inspectDesktopConfig()).state === 'active',
     probeDesktopHealthy: () => desktopHealthTracker.isHealthy(),
+    probeOpencodeInstalled: () => isOpencodeInstalled(),
+    // `active` only — a plugin-override config points at Sentinel on disk but
+    // is rewritten before opencode uses it, so it is not routed.
+    probeOpencodeActivated: () => inspectOpencodeConfig().state === 'active',
+    probeOpencodePluginOverride: () => inspectOpencodeConfig().overridingPlugins.length > 0,
   });
 
   // Sandbox feature, Leg A: sync the canonical isolation policy into Claude
@@ -4942,6 +5026,14 @@ export async function startDaemon(): Promise<DaemonHandle> {
         }
         console.log('[Startup] code-mode CLAUDE.md block healed');
       }
+      // opencode's AGENTS.md drifts independently — it can be stale while
+      // CLAUDE.md is current, so it gets its own check rather than riding on
+      // the branch above. Skipped entirely when the user keeps no AGENTS.md.
+      const agentsState = readCodeModeAgentsMdState({ servers, port });
+      if (agentsState.present && !agentsState.upToDate) {
+        await installCodeModeAgentsMd({ servers, port });
+        console.log('[Startup] code-mode AGENTS.md block healed');
+      }
       await resyncCuratedCodeModeSkill(currentSettings.codeModeSkillInstalled);
     } catch (err) {
       /* v8 ignore next 2 */
@@ -5092,6 +5184,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     console.log('[Sentinel] Shutting down...');
     stopTokenRefresher();
     rateLimitSweeper?.stop();
+    pendingUsageSweeper.stop();
     // Stop the claude.ai usage poller BEFORE closing the DB so an in-flight
     // tick() cannot land on a freed connection. The tick reads listAccounts
     // from the shared DB handle and subscribers call into SpendTracker.
