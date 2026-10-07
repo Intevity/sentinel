@@ -15,7 +15,15 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -57,6 +65,8 @@ export interface TestDaemonInit {
    * never originates inference requests on its own.
    */
   settings?: Record<string, unknown>;
+  /** Make the daemon detect opencode as installed, so its routing card shows. */
+  seedOpencode?: boolean;
 }
 
 /**
@@ -93,6 +103,9 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
   // Set HOME=workDir so the daemon places its socket and DB under workDir.
   const sentinelDir = join(workDir, '.sentinel');
   const socketPath = join(sentinelDir, 'daemon.sock');
+  // `~/.opencode` is one of the daemon's opencode install markers, and unlike
+  // the ~/.config marker it does not move with XDG_CONFIG_HOME.
+  if (init.seedOpencode) mkdirSync(join(workDir, '.opencode'));
 
   // Pre-seed: full DEFAULT_SETTINGS shape with tour + wizard flipped off
   // so the first-run modals never mount. Mirrors the coerce() expectations
