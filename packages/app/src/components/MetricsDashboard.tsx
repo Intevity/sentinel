@@ -13,6 +13,7 @@ import OtelDriftBanner from './OtelDriftBanner.js';
 import { RangeSelector } from './RangeSelector.js';
 import { RANGE_LABELS } from '../lib/dateRange.js';
 import { formatInt, formatUsd } from '../lib/format.js';
+import { shouldShowTelemetryBanner } from '../lib/metricsScope.js';
 
 const MODEL_COLORS: Record<string, string> = {
   'claude-opus-4': '#BF5AF2',
@@ -118,7 +119,9 @@ export default function MetricsDashboard({
 
   return (
     <div className="space-y-3 pt-1">
-      <OtelDriftBanner />
+      {/* Hidden for the API-key (BYOK) scope: that traffic is priced by the
+          proxy, so Claude Code telemetry being off is irrelevant to it. */}
+      {shouldShowTelemetryBanner(scope) && <OtelDriftBanner />}
 
       {/* ── Header + range selector (same control as the Optimize page) ── */}
       <div className="mb-3 flex items-center justify-between gap-3">

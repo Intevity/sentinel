@@ -1,5 +1,6 @@
 import type { AccountInfo } from '@sentinel/shared';
 import { BYOK_ACCOUNT_ID } from '@sentinel/shared';
+import { planLabel } from './plan.js';
 
 /** Sentinel value used in place of an accountId when the user picks the
  *  Auto-switching pool view (Usage + Metrics tabs). */
@@ -32,6 +33,11 @@ export interface PoolOption {
   primary: string;
   secondary: string;
   trailing?: boolean;
+  /** Show only `primary` on the collapsed picker button. The dropdown row
+   *  still renders `secondary` as its explanatory line; the button has a
+   *  ~120px secondary slot, so a long explanation there just truncates into
+   *  noise (e.g. "API key · Direct API traffic (BY…"). */
+  compact?: boolean;
 }
 
 /** Describes which accounts a metrics rollup should cover.
@@ -97,6 +103,7 @@ export function buildMetricsPoolOptions(opts: {
       primary: 'API key',
       secondary: 'Direct API traffic (BYOK)',
       trailing: true,
+      compact: true,
     });
   }
   return options;
@@ -140,4 +147,79 @@ export function metricsViewToScope(
     return { kind: 'account', id: view };
   }
   return { kind: 'active' };
+}
+
+/**
+ * The Metrics view to actually render, given what the user picked (`view`)
+ * and what the picker currently offers. A remembered selection is honoured
+ * only while it is still selectable; otherwise the view falls back to the
+ * default scope ({@link firstDefaultOption}, or `undefined` = follow the
+ * active account) instead of rendering an empty, unselectable value.
+ *
+ * The cases this guards: the BYOK row disappearing after its usage is purged
+ * by data retention, the pool row disappearing when Auto switching is turned
+ * off, and a pinned account being removed. The stored pick is not cleared —
+ * the caller derives this per render — so if the option comes back (BYOK
+ * usage resumes, Auto is re-enabled) the user's choice comes back with it.
+ */
+export function resolveMetricsView(
+  view: PickerValue | undefined,
+  poolOptions: readonly PoolOption[],
+  accounts: readonly AccountInfo[],
+): PickerValue | undefined {
+  const fallback = firstDefaultOption(poolOptions)?.value;
+  if (view === undefined) return fallback;
+  if (view === POOL_VIEW || view === ALL_VIEW || view === BYOK_VIEW) {
+    return poolOptions.some((o) => o.value === view) ? view : fallback;
+  }
+  return accounts.some((a) => a.id === view) ? view : fallback;
+}
+
+/**
+ * Whether the Metrics tab should show the "Claude Code telemetry is off"
+ * drift banner for this scope. Every scope fed by Claude Code's OpenTelemetry
+ * export needs it; the BYOK (API-key) scope does not — that traffic is priced
+ * by the proxy from the response itself, so Claude Code telemetry being off
+ * changes nothing about what the API-key view shows.
+ */
+export function shouldShowTelemetryBanner(scope: MetricsScope | undefined): boolean {
+  return !(scope?.kind === 'account' && scope.id === BYOK_ACCOUNT_ID);
+}
+
+/** Org · plan line shown under an account in the picker. */
+export function accountSecondaryLine(acct: AccountInfo): string | undefined {
+  const plan = planLabel(acct.planType);
+  const org = acct.orgName;
+  if (org && plan) return `${org} · ${plan}`;
+  return org || plan || undefined;
+}
+
+/**
+ * Label for the collapsed picker button. Synthetic rows use their option
+ * text (minus the secondary line for `compact` rows); accounts use display
+ * name plus org/plan.
+ */
+export function formatPickerLabel(
+  value: PickerValue,
+  accounts: readonly AccountInfo[],
+  poolOptions: readonly PoolOption[],
+): { primary: string; secondary?: string | undefined } {
+  if (value === POOL_VIEW || value === ALL_VIEW || value === BYOK_VIEW) {
+    const opt = poolOptions.find((o) => o.value === value);
+    if (opt)
+      return opt.compact
+        ? { primary: opt.primary }
+        : { primary: opt.primary, secondary: opt.secondary };
+    // Fallback for a sentinel the caller has not listed in poolOptions. The
+    // Metrics tab resolves such picks away (resolveMetricsView); this keeps
+    // other callers from rendering a blank button.
+    if (value === BYOK_VIEW) return { primary: 'API key' };
+    return { primary: 'All accounts', secondary: `${accounts.length} accounts` };
+  }
+  const acct = accounts.find((a) => a.id === value);
+  if (!acct) return { primary: 'Unknown' };
+  return {
+    primary: acct.displayName || acct.email,
+    secondary: accountSecondaryLine(acct),
+  };
 }

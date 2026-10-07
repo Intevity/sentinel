@@ -22,8 +22,8 @@ import AccountViewPicker, {
 } from './components/AccountViewPicker.js';
 import {
   buildMetricsPoolOptions,
-  firstDefaultOption,
   metricsViewToScope,
+  resolveMetricsView,
 } from './lib/metricsScope.js';
 import { useByokState } from './hooks/useByokState.js';
 import { accountColor } from './lib/accountColor.js';
@@ -680,8 +680,15 @@ export default function App(): React.ReactElement {
                         // makes the picker show the first pool option while
                         // the scope quietly defaults to the active account.
                         // BYOK is skipped as a default — it is opt-in only.
-                        const effectiveMetricsView: PickerValue | undefined =
-                          metricsView ?? firstDefaultOption(metricsPoolOptions)?.value;
+                        // A remembered pick that is no longer offered (BYOK
+                        // usage purged by retention, pool row gone when Auto
+                        // is off, account removed) falls back to the default
+                        // rather than rendering an unselectable value.
+                        const effectiveMetricsView: PickerValue | undefined = resolveMetricsView(
+                          metricsView,
+                          metricsPoolOptions,
+                          accounts,
+                        );
                         const picker = (
                           <AccountViewPicker
                             accounts={accounts}

@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Check } from 'lucide-react';
 import type { AccountInfo, OAuthAccount, SwitchingMode } from '@sentinel/shared';
-import { planLabel } from '../lib/plan.js';
 import { getAccountStatus, type AccountStatus } from '../lib/account-status.js';
 import { accountColor } from '../lib/accountColor.js';
 import AccountColorDot from './AccountColorDot.js';
@@ -14,6 +13,8 @@ import {
   ALL_VIEW,
   BYOK_VIEW,
   firstDefaultOption,
+  formatPickerLabel,
+  accountSecondaryLine,
   type PickerValue,
   type PoolOption,
 } from '../lib/metricsScope.js';
@@ -86,7 +87,7 @@ export default function AccountViewPicker({
 
   if (accounts.length === 0 || !resolved) return null;
 
-  const currentLabel = formatValue(resolved, accounts, poolOptions);
+  const currentLabel = formatPickerLabel(resolved, accounts, poolOptions);
   const excludedSet = new Set(poolExcludedIds);
 
   const renderPoolRow = (opt: PoolOption): React.ReactElement => (
@@ -138,7 +139,7 @@ export default function AccountViewPicker({
               key={acct.id}
               selected={resolved === acct.id}
               primary={acct.displayName || acct.email}
-              secondary={secondaryLine(acct)}
+              secondary={accountSecondaryLine(acct)}
               color={accountColor(acct)}
               status={getAccountStatus({
                 isActive: acct.isActive,
@@ -226,32 +227,4 @@ function findActiveId(accounts: AccountInfo[], active: OAuthAccount | null): str
   if (byOrg) return byOrg.id;
   const byUuid = accounts.find((a) => a.accountUuid === active.accountUuid);
   return byUuid?.id ?? null;
-}
-
-function secondaryLine(acct: AccountInfo): string | undefined {
-  const plan = planLabel(acct.planType);
-  const org = acct.orgName;
-  if (org && plan) return `${org} · ${plan}`;
-  return org || plan || undefined;
-}
-
-function formatValue(
-  value: PickerValue,
-  accounts: AccountInfo[],
-  poolOptions: PoolOption[],
-): { primary: string; secondary?: string | undefined } {
-  if (value === POOL_VIEW || value === ALL_VIEW || value === BYOK_VIEW) {
-    const opt = poolOptions.find((o) => o.value === value);
-    if (opt) return { primary: opt.primary, secondary: opt.secondary };
-    // Fallback for the legacy case where a sentinel was selected but the
-    // caller hasn't listed it in poolOptions (shouldn't happen in practice).
-    if (value === BYOK_VIEW) return { primary: 'API key' };
-    return { primary: 'All accounts', secondary: `${accounts.length} accounts` };
-  }
-  const acct = accounts.find((a) => a.id === value);
-  if (!acct) return { primary: 'Unknown' };
-  return {
-    primary: acct.displayName || acct.email,
-    secondary: secondaryLine(acct),
-  };
 }
