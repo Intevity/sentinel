@@ -266,6 +266,21 @@ describe('settings', () => {
       }
     });
 
+    it('defaults autoSwitchTargetWindow to five-hour', () => {
+      expect(loadSettings(path).autoSwitchTargetWindow).toBe('five-hour');
+    });
+
+    it('accepts autoSwitchTargetWindow five-hour or weekly and drops anything else', () => {
+      writeRawWithSig(path, JSON.stringify({ autoSwitchTargetWindow: 'weekly' }), 'utf-8');
+      expect(loadSettings(path).autoSwitchTargetWindow).toBe('weekly');
+      writeRawWithSig(path, JSON.stringify({ autoSwitchTargetWindow: 'five-hour' }), 'utf-8');
+      expect(loadSettings(path).autoSwitchTargetWindow).toBe('five-hour');
+      for (const bad of ['7d', 'Weekly', '', null, 5]) {
+        writeRawWithSig(path, JSON.stringify({ autoSwitchTargetWindow: bad }), 'utf-8');
+        expect(loadSettings(path).autoSwitchTargetWindow).toBe('five-hour');
+      }
+    });
+
     it('accepts telemetryRetentionDays in [1, 365] and clamps the rest to default', () => {
       writeRawWithSig(path, JSON.stringify({ telemetryRetentionDays: 60 }), 'utf-8');
       expect(loadSettings(path).telemetryRetentionDays).toBe(60);

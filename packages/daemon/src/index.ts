@@ -873,6 +873,8 @@ export async function startDaemon(): Promise<DaemonHandle> {
     () => new Set(currentSettings.overageEnabledIds),
     () => getPausedAccountIds(),
     () => currentSettings.overageBufferPct,
+    undefined,
+    () => currentSettings.autoSwitchTargetWindow,
   );
 
   // Mirror of `~/.claude.json:overageCreditGrantCache`. Reloaded on startup,
@@ -2164,6 +2166,26 @@ export async function startDaemon(): Promise<DaemonHandle> {
           probeRateLimits(msg.accountId, ipcServer, credsForProbe.accessToken);
         }
         respond({ requestType: 'probe_rate_limits', success: true });
+        break;
+      }
+
+      case 'clear_weekly_limit': {
+        // User says Anthropic lifted this account's weekly limit early. The
+        // store's onUpdate fan-out persists the reset windows and hands them
+        // to the spend tracker, which releases the weekly-limit pause.
+        const cleared = rateLimitStore.clearWeeklyLimit(msg.accountId, Date.now());
+        if (cleared.length > 0) {
+          console.log(
+            `[RateLimit] Cleared weekly limit for ${msg.accountId}: ` +
+              cleared.map((w) => w.name).join(', '),
+          );
+          ipcServer.broadcast({ type: 'rate_limits_updated', accountId: msg.accountId });
+        }
+        respond({
+          requestType: 'clear_weekly_limit',
+          success: true,
+          data: { cleared: cleared.length },
+        });
         break;
       }
 

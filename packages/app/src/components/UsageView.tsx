@@ -19,6 +19,7 @@ import {
   weeklyResetAt,
   weeklyFableUtilization,
   weeklyFableResetAt,
+  isWindowExhausted,
 } from '../hooks/useAllRateLimits.js';
 import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { usePausedAccounts, type PausedState } from '../hooks/usePausedAccounts.js';
@@ -56,11 +57,47 @@ function windowOrder(name: string): number {
   return WINDOW_META[name]?.order ?? 99;
 }
 
-interface ProgressRowProps {
-  window: RateLimitWindow;
+/** Weekly windows a "Clear limit" can reset (general and Fable 7-day). */
+function isWeeklyWindow(name: string): boolean {
+  return name.startsWith('unified-7d');
 }
 
-function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
+/**
+ * Escape hatch for when Anthropic lifts a weekly limit early (e.g. a one-time
+ * usage reset). Sentinel only learns usage from responses, so an exhausted
+ * weekly window would otherwise keep the account paused and out of Auto
+ * rotation until its old reset time. Clearing sends no request; the account's
+ * next genuine response reports the real value, and re-blocks it if the limit
+ * still stands. The daemon broadcasts `rate_limits_updated`, which refreshes
+ * this view.
+ */
+function ClearWeeklyLimitButton({ accountId }: { accountId: string }): React.ReactElement {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={() => {
+        setBusy(true);
+        void sendToSentinel({ type: 'clear_weekly_limit', accountId })
+          .catch(() => undefined)
+          .finally(() => setBusy(false));
+      }}
+      title="Anthropic reset this weekly limit early? Clear Sentinel's stored limit so the account can be used again. Its next request reports the real value."
+      className="text-[10px] font-semibold text-ios-blue bg-ios-blue/10 hover:bg-ios-blue/20 px-1.5 py-0.5 rounded-full transition-colors disabled:opacity-50"
+    >
+      Clear limit
+    </button>
+  );
+}
+
+interface ProgressRowProps {
+  window: RateLimitWindow;
+  /** When set, an exhausted weekly row offers ClearWeeklyLimitButton. */
+  accountId?: string | null;
+}
+
+function ProgressRow({ window: w, accountId }: ProgressRowProps): React.ReactElement {
   // Subscription plans: use utilization directly.
   // API-key plans: compute from limit/remaining.
   //
@@ -84,6 +121,7 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
 
   const blocked = w.status === 'blocked';
   const overageActive = w.inUse === true;
+  const clearable = accountId != null && isWeeklyWindow(w.name) && (blocked || pct === 100);
 
   const barColor = blocked
     ? 'bg-ios-red'
@@ -123,6 +161,7 @@ function ProgressRow({ window: w }: ProgressRowProps): React.ReactElement {
               Blocked
             </span>
           )}
+          {clearable && <ClearWeeklyLimitButton accountId={accountId} />}
           {pct != null && (
             <span className={`text-[11px] font-bold tabular-nums ${pctColor}`}>{pct}%</span>
           )}
@@ -763,7 +802,7 @@ function SingleAccountUsageView({
                 planType={accounts.find((a) => a.id === viewAccountKey)?.planType ?? 'unknown'}
               />
             ) : (
-              <ProgressRow key={w.name} window={w} />
+              <ProgressRow key={w.name} window={w} accountId={viewAccountKey ?? null} />
             ),
           )}
         </div>
@@ -872,11 +911,14 @@ function PoolAccountRow({
   util,
   resetAt,
   inPool,
+  clearable = false,
 }: {
   account: AccountInfo;
   util: number | null;
   resetAt: number | null;
   inPool: boolean;
+  /** Offer ClearWeeklyLimitButton (an exhausted weekly window). */
+  clearable?: boolean;
 }): React.ReactElement {
   const pct = utilToPct(util);
   const colors = meterColors(pct);
@@ -900,6 +942,7 @@ function PoolAccountRow({
           {sub && <p className="text-[10px] text-muted truncate leading-snug">{sub}</p>}
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {clearable && <ClearWeeklyLimitButton accountId={account.id} />}
           {hasReset && <ResetCountdown epochSec={resetAt} variant="pill" />}
           <span className={`text-[11px] font-bold tabular-nums ${colors.text}`}>
             {pct == null ? '–' : `${pct}%`}
@@ -976,8 +1019,16 @@ function AutoPoolUsageView({ accounts }: { accounts: AccountInfo[] }): React.Rea
       account: acct,
       inPool: !excludedIds.has(acct.id) && !isAutoExcluded(acct.id),
       fiveH: { util: fiveHourUtilization(w), resetAt: fiveHourResetAt(w) },
-      weekly: { util: weeklyUtilization(w), resetAt: weeklyResetAt(w) },
-      fable: { util: weeklyFableUtilization(w), resetAt: weeklyFableResetAt(w) },
+      weekly: {
+        util: weeklyUtilization(w),
+        resetAt: weeklyResetAt(w),
+        exhausted: isWindowExhausted(w, 'unified-7d'),
+      },
+      fable: {
+        util: weeklyFableUtilization(w),
+        resetAt: weeklyFableResetAt(w),
+        exhausted: isWindowExhausted(w, FABLE_WEEKLY_WINDOW),
+      },
     };
   });
 
@@ -1104,6 +1155,7 @@ function AutoPoolUsageView({ accounts }: { accounts: AccountInfo[] }): React.Rea
                 util={weekly.util}
                 resetAt={weekly.resetAt}
                 inPool={inPool}
+                clearable={weekly.exhausted}
               />
             ))}
           </div>
@@ -1120,6 +1172,7 @@ function AutoPoolUsageView({ accounts }: { accounts: AccountInfo[] }): React.Rea
                 util={fable.util}
                 resetAt={fable.resetAt}
                 inPool={inPool}
+                clearable={fable.exhausted}
               />
             ))}
           </div>

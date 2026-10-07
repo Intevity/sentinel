@@ -20,8 +20,10 @@ you're always on capacity that's about to refresh.
 
 3. **Turn on Auto.** Open **Settings → switching mode** and choose **Auto**.
 
-4. **(Optional) Choose a strategy.** The default `earliest-reset` strategy targets the account whose
-   5-hour window resets soonest. Set it via `roundRobinStrategy` in Settings.
+4. **(Optional) Choose a target limit.** Auto targets the account whose **5-hour** limit resets
+   soonest by default. Pick **Weekly** under **Settings → Accounts → Target limit** to target the
+   account whose weekly limit resets soonest instead; accounts that share a weekly reset are then
+   ordered by their 5-hour reset.
 
 5. **(Optional) Exclude accounts.** Keep a specific account out of the Auto pool (for example, a work
    account) by adding it to `poolExcludedIds` in Settings.

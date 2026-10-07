@@ -108,6 +108,16 @@ export function weeklyResetAt(windows: RateLimitWindow[] | undefined): number | 
 }
 
 /**
+ * Whether the named window reads exhausted: blocked by Anthropic, or at full
+ * utilization. Drives the Usage view's "Clear limit" offer on weekly rows.
+ */
+export function isWindowExhausted(windows: RateLimitWindow[] | undefined, name: string): boolean {
+  const w = windows?.find((x) => x.name === name);
+  if (!w) return false;
+  return w.status === 'blocked' || (w.utilization ?? 0) >= 1;
+}
+
+/**
  * Extract the 7-day Fable-specific utilization (0..1), or null when absent.
  * Anthropic omits this header until the user consumes Fable, so `null`
  * means "unknown" rather than "zero" — callers should not treat them the same.

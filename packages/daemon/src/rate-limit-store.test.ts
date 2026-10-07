@@ -766,3 +766,107 @@ describe('RateLimitStore', () => {
     });
   });
 });
+
+describe('RateLimitStore status normalization', () => {
+  const byName = (store: RateLimitStore, id: string) =>
+    Object.fromEntries(store.getAll(id).map((w) => [w.name, w]));
+
+  it('stores a header-reported `rejected` quota window as `blocked`', () => {
+    // Anthropic says `rejected`; every consumer compares against `blocked`.
+    const store = new RateLimitStore();
+    store.update('a', {
+      'anthropic-ratelimit-unified-status': 'rejected',
+      'anthropic-ratelimit-unified-7d-status': 'rejected',
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
+    });
+    const w = byName(store, 'a');
+    expect(w['unified']!.status).toBe('blocked');
+    expect(w['unified-7d']!.status).toBe('blocked');
+    expect(w['unified-5h']!.status).toBe('allowed');
+  });
+
+  it('keeps the overage window `rejected` (availability, not a quota verdict)', () => {
+    const store = new RateLimitStore();
+    store.update('a', { 'anthropic-ratelimit-unified-overage-status': 'rejected' });
+    expect(byName(store, 'a')['unified-overage']!.status).toBe('rejected');
+  });
+
+  it('heals rows persisted with `rejected` when they are loaded', () => {
+    const store = new RateLimitStore();
+    const row = {
+      utilization: 1,
+      limit: null,
+      remaining: null,
+      reset: 5_000,
+      inUse: null,
+      lastUpdated: 1,
+    };
+    store.loadAccount('a', [
+      { ...row, name: 'unified-7d', status: 'rejected' },
+      { ...row, name: 'unified-overage', status: 'rejected' },
+    ]);
+    const w = byName(store, 'a');
+    expect(w['unified-7d']!.status).toBe('blocked');
+    expect(w['unified-overage']!.status).toBe('rejected');
+  });
+});
+
+describe('RateLimitStore.clearWeeklyLimit', () => {
+  function exhausted(store: RateLimitStore, id: string): void {
+    store.update(id, {
+      'anthropic-ratelimit-unified-status': 'rejected',
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
+      'anthropic-ratelimit-unified-5h-utilization': '0.3',
+      'anthropic-ratelimit-unified-5h-reset': '2000',
+      'anthropic-ratelimit-unified-7d-status': 'rejected',
+      'anthropic-ratelimit-unified-7d-utilization': '1',
+      'anthropic-ratelimit-unified-7d-reset': '90000',
+      'anthropic-ratelimit-unified-7d_oi-utilization': '0.4',
+      'anthropic-ratelimit-unified-7d_oi-reset': '90000',
+    });
+  }
+
+  it('resets exhausted weekly windows and leaves the rest untouched', () => {
+    const store = new RateLimitStore();
+    exhausted(store, 'a');
+    const cleared = store.clearWeeklyLimit('a', 123_000);
+    expect(cleared.map((w) => w.name).sort()).toEqual(['unified', 'unified-7d']);
+    const w = Object.fromEntries(store.getAll('a').map((x) => [x.name, x]));
+    expect(w['unified-7d']).toMatchObject({
+      status: 'allowed',
+      utilization: 0,
+      reset: null,
+      lastUpdated: 123_000,
+    });
+    expect(w['unified']!.status).toBe('allowed');
+    // Not exhausted: the Fable week and the 5h window keep their values.
+    expect(w['unified-7d_oi']).toMatchObject({ utilization: 0.4, reset: 90_000 });
+    expect(w['unified-5h']).toMatchObject({ utilization: 0.3, reset: 2_000 });
+  });
+
+  it('notifies onUpdate subscribers with exactly the cleared windows', () => {
+    const store = new RateLimitStore();
+    exhausted(store, 'a');
+    const calls: Array<[string, string[]]> = [];
+    store.onUpdate((id, windows) => calls.push([id, windows.map((w) => w.name).sort()]));
+    store.clearWeeklyLimit('a', 1);
+    expect(calls).toEqual([['a', ['unified', 'unified-7d']]]);
+  });
+
+  it('clears a weekly window at full utilization even when its status is allowed', () => {
+    const store = new RateLimitStore();
+    store.update('a', { 'anthropic-ratelimit-unified-7d_oi-utilization': '1' });
+    expect(store.clearWeeklyLimit('a', 1).map((w) => w.name)).toEqual(['unified-7d_oi']);
+  });
+
+  it('does nothing and notifies no one when nothing is exhausted', () => {
+    const store = new RateLimitStore();
+    store.update('a', { 'anthropic-ratelimit-unified-7d-utilization': '0.5' });
+    const calls: string[] = [];
+    store.onUpdate((id) => calls.push(id));
+    expect(store.clearWeeklyLimit('a', 1)).toEqual([]);
+    expect(store.clearWeeklyLimit('unknown', 1)).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(store.getAll('a')[0]!.utilization).toBe(0.5);
+  });
+});

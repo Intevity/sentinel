@@ -1352,3 +1352,252 @@ describe('TokenRotator overage gate', () => {
     }
   });
 });
+
+describe('TokenRotator (weekly window)', () => {
+  let dbPath: string;
+  let keychainFile: string;
+
+  beforeEach(() => {
+    dbPath = TEST_DB();
+    keychainFile = useTestKeychain();
+  });
+
+  afterEach(() => {
+    closeDb();
+    if (existsSync(dbPath)) unlinkSync(dbPath);
+    cleanupKeychain(keychainFile);
+  });
+
+  /** Seed both windows with the wire shape Anthropic sends. */
+  function setWindows(
+    store: RateLimitStore,
+    accountId: string,
+    w: {
+      fiveHReset: number;
+      weeklyReset: number;
+      fiveHUtil?: number;
+      weeklyUtil?: number;
+      weeklyStatus?: string;
+    },
+  ): void {
+    store.update(accountId, {
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
+      'anthropic-ratelimit-unified-5h-utilization': String(w.fiveHUtil ?? 0.2),
+      'anthropic-ratelimit-unified-5h-reset': String(w.fiveHReset),
+      'anthropic-ratelimit-unified-7d-status': w.weeklyStatus ?? 'allowed',
+      'anthropic-ratelimit-unified-7d-utilization': String(w.weeklyUtil ?? 0.2),
+      'anthropic-ratelimit-unified-7d-reset': String(w.weeklyReset),
+    });
+  }
+
+  function makeRotator(
+    db: ReturnType<typeof getDb>,
+    store: RateLimitStore,
+    target: { value: 'five-hour' | 'weekly' },
+    opts: { nowSec?: () => number } = {},
+  ): TokenRotator {
+    return new TokenRotator(
+      db,
+      store,
+      { value: 'a' },
+      () => new Set(),
+      () => new Set(),
+      () => new Set(),
+      () => 5,
+      opts.nowSec ?? (() => 0),
+      () => target.value,
+    );
+  }
+
+  it('skips an account whose weekly window Anthropic reported as rejected', () => {
+    // Anthropic's headers say `rejected`, not `blocked`. The rotator used to
+    // compare against `blocked` only, so an exhausted weekly window with 5h
+    // headroom stayed eligible and every request it got came back 429.
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setWindows(store, 'a', {
+      fiveHReset: 1_000,
+      weeklyReset: 50_000,
+      weeklyUtil: 1,
+      weeklyStatus: 'rejected',
+    });
+    setWindows(store, 'b', { fiveHReset: 2_000, weeklyReset: 60_000 });
+    const rotator = makeRotator(db, store, { value: 'five-hour' });
+    expect(rotator.pick()?.accountId).toBe('b');
+  });
+
+  it('does not treat a rejected overage window as a blocked account', () => {
+    // Overage `rejected` means overage is unavailable, not that quota is
+    // spent: the account must still serve from its 5h headroom.
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    const store = new RateLimitStore();
+    setWindows(store, 'a', { fiveHReset: 1_000, weeklyReset: 50_000 });
+    store.update('a', { 'anthropic-ratelimit-unified-overage-status': 'rejected' });
+    const rotator = makeRotator(db, store, { value: 'five-hour' });
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+
+  it('ignores a blocked weekly window whose reset has already passed', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    const store = new RateLimitStore();
+    setWindows(store, 'a', {
+      fiveHReset: 9_000,
+      weeklyReset: 4_000,
+      weeklyUtil: 1,
+      weeklyStatus: 'rejected',
+    });
+    const rotator = makeRotator(db, store, { value: 'five-hour' }, { nowSec: () => 5_000 });
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+
+  it('drops an account whose weekly utilization reaches the buffer threshold', () => {
+    // Buffer 5% → cut-off at 95%. Account a resets first but its weekly
+    // window is at 96%, so b serves even though a's 5h window is nearly idle.
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setWindows(store, 'a', { fiveHReset: 1_000, weeklyReset: 50_000, weeklyUtil: 0.96 });
+    setWindows(store, 'b', { fiveHReset: 2_000, weeklyReset: 60_000, weeklyUtil: 0.5 });
+    const rotator = makeRotator(db, store, { value: 'five-hour' });
+    expect(rotator.pick()?.accountId).toBe('b');
+  });
+
+  it('does not hold an account out on the utilization of an expired week', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setWindows(store, 'a', { fiveHReset: 6_000, weeklyReset: 4_000, weeklyUtil: 0.99 });
+    setWindows(store, 'b', { fiveHReset: 9_000, weeklyReset: 90_000 });
+    const rotator = makeRotator(db, store, { value: 'five-hour' }, { nowSec: () => 5_000 });
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+
+  it('targets the soonest weekly reset when the target is weekly', () => {
+    // a's 5h window resets first, b's week ends first. Five-hour targeting
+    // picks a; weekly targeting picks b.
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setWindows(store, 'a', { fiveHReset: 1_000, weeklyReset: 90_000 });
+    setWindows(store, 'b', { fiveHReset: 5_000, weeklyReset: 40_000 });
+    expect(makeRotator(db, store, { value: 'five-hour' }).pick()?.accountId).toBe('a');
+    expect(makeRotator(db, store, { value: 'weekly' }).pick()?.accountId).toBe('b');
+  });
+
+  it('breaks a shared weekly reset on the 5h reset', () => {
+    // Weekly resets 30s apart are the same boundary (writer jitter), so the
+    // 5h reset decides: c resets its 5h window before a does.
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    seed(db, 'c', 'c@x');
+    const store = new RateLimitStore();
+    setWindows(store, 'a', { fiveHReset: 8_000, weeklyReset: 40_000 });
+    setWindows(store, 'b', { fiveHReset: 2_000, weeklyReset: 90_000 });
+    setWindows(store, 'c', { fiveHReset: 3_000, weeklyReset: 40_030 });
+    expect(makeRotator(db, store, { value: 'weekly' }).pick()?.accountId).toBe('c');
+  });
+
+  it('ranks unknown weekly resets after known ones and falls through to 5h', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    seed(db, 'c', 'c@x');
+    const store = new RateLimitStore();
+    // a and b: 5h data only (no weekly window seen yet).
+    store.update('a', {
+      'anthropic-ratelimit-unified-5h-utilization': '0.1',
+      'anthropic-ratelimit-unified-5h-reset': '6000',
+    });
+    store.update('b', {
+      'anthropic-ratelimit-unified-5h-utilization': '0.1',
+      'anthropic-ratelimit-unified-5h-reset': '4000',
+    });
+    const weekly = { value: 'weekly' as const };
+    // With every weekly reset unknown, the 5h reset decides.
+    expect(makeRotator(db, store, weekly).pick()?.accountId).toBe('b');
+    // A known weekly reset outranks the unknowns regardless of 5h.
+    setWindows(store, 'c', { fiveHReset: 9_000, weeklyReset: 80_000 });
+    expect(makeRotator(db, store, weekly).pick()?.accountId).toBe('c');
+  });
+
+  it('holds the weekly target through jitter and moves for a genuinely earlier window', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setWindows(store, 'a', { fiveHReset: 2_000, weeklyReset: 40_000 });
+    setWindows(store, 'b', { fiveHReset: 3_000, weeklyReset: 40_000 });
+    const rotator = makeRotator(db, store, { value: 'weekly' });
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    // b's weekly reset drifts 40s earlier: same boundary, and a still has
+    // the sooner 5h reset within the tied week. Hold.
+    setWindows(store, 'b', { fiveHReset: 3_000, weeklyReset: 39_960 });
+    expect(rotator.pick()?.accountId).toBe('a');
+
+    // Within the tied week, b's 5h window now resets well before a's. Move.
+    setWindows(store, 'b', { fiveHReset: 1_000, weeklyReset: 39_960 });
+    expect(rotator.pick()?.accountId).toBe('b');
+
+    // a's week now ends long before b's. Move back.
+    setWindows(store, 'a', { fiveHReset: 2_000, weeklyReset: 10_000 });
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+
+  it('holds a weekly target whose weekly reset reads unknown', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setWindows(store, 'a', { fiveHReset: 2_000, weeklyReset: 40_000 });
+    setWindows(store, 'b', { fiveHReset: 3_000, weeklyReset: 50_000 });
+    const rotator = makeRotator(db, store, { value: 'weekly' });
+    expect(rotator.pick()?.accountId).toBe('a');
+    // a's week fills, then the user clears it: the weekly reset is unknown.
+    store.update('a', { 'anthropic-ratelimit-unified-7d-utilization': '1' });
+    store.clearWeeklyLimit('a', 0);
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+
+  it('follows a target-window change on the next pick', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setWindows(store, 'a', { fiveHReset: 1_000, weeklyReset: 90_000 });
+    setWindows(store, 'b', { fiveHReset: 5_000, weeklyReset: 40_000 });
+    const target: { value: 'five-hour' | 'weekly' } = { value: 'five-hour' };
+    const rotator = makeRotator(db, store, target);
+    expect(rotator.pick()?.accountId).toBe('a');
+    target.value = 'weekly';
+    expect(rotator.pick()?.accountId).toBe('b');
+  });
+
+  it('defaults to five-hour targeting when no accessor is given', () => {
+    const db = getDb(dbPath);
+    seed(db, 'a', 'a@x');
+    seed(db, 'b', 'b@x');
+    const store = new RateLimitStore();
+    setWindows(store, 'a', { fiveHReset: 1_000, weeklyReset: 90_000 });
+    setWindows(store, 'b', { fiveHReset: 5_000, weeklyReset: 40_000 });
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'a' },
+      () => new Set(),
+      () => new Set(),
+      () => new Set(),
+      () => 5,
+      () => 0,
+    );
+    expect(rotator.pick()?.accountId).toBe('a');
+  });
+});

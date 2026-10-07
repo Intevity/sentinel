@@ -672,6 +672,74 @@ describe('SpendTracker', () => {
       });
     });
 
+    it("pauses on the wire's 'rejected' status and releases when the user clears the weekly limit", () => {
+      // Anthropic's headers say `rejected`. Before the store normalized it,
+      // this pause never fired from real traffic. Clearing the limit (an
+      // early one-time reset) must release it with no request in between.
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      store.update('a', {
+        'anthropic-ratelimit-unified-7d-status': 'rejected',
+        'anthropic-ratelimit-unified-7d-utilization': '1.0',
+        'anthropic-ratelimit-unified-7d-reset': '1800000000',
+      });
+
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings(),
+        getAnthropicSpend: () => 0,
+        now: () => 1_700_000_000_000,
+      });
+      store.onUpdate((id) => tracker.handleRateLimitUpdate(id));
+      tracker.recompute();
+      expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
+
+      // A cleared window has no reset, so the reset-delta rollover path
+      // cannot release it; the verdict-flip path must.
+      store.clearWeeklyLimit('a', 1_700_000_000_000);
+
+      expect(tracker.getPausedIds().has('a')).toBe(false);
+      expect(ipc.broadcasts).toContainEqual({ type: 'account_unpaused', accountId: 'a' });
+    });
+
+    it('pauses as soon as a response flips the weekly window to rejected mid-week', () => {
+      // No reset movement and no other recompute trigger: the header update
+      // alone must apply the pause, or traffic keeps rotating into 429s
+      // until the next unrelated recompute.
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings(),
+        getAnthropicSpend: () => 0,
+        now: () => 1_700_000_000_000,
+      });
+      store.onUpdate((id) => tracker.handleRateLimitUpdate(id));
+      const weekly = (status: string, util: string): void =>
+        store.update('a', {
+          'anthropic-ratelimit-unified-7d-status': status,
+          'anthropic-ratelimit-unified-7d-utilization': util,
+          'anthropic-ratelimit-unified-7d-reset': '1800000000',
+        });
+
+      weekly('allowed', '0.98');
+      expect(tracker.getPausedIds().has('a')).toBe(false);
+
+      weekly('rejected', '1.0');
+      expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
+      expect(ipc.broadcasts).toContainEqual(
+        expect.objectContaining({ type: 'account_paused', accountId: 'a' }),
+      );
+    });
+
     it('coexists with a budget pause on a different account without cross-contamination', () => {
       const db = getDb(dbPath);
       const store = new RateLimitStore();

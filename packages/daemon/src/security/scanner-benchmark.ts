@@ -83,6 +83,7 @@ function benchSettings(): Settings {
     budgetWeeklyUsdByAccount: {},
     budgetWeeklyUsdGlobal: null,
     overageBufferPct: 10,
+    autoSwitchTargetWindow: 'five-hour',
     manualRateLimitProbeEnabled: false,
     telemetryRetentionDays: 30,
     dataRetentionDays: 365,

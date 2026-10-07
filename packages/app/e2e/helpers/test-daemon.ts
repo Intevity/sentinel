@@ -116,6 +116,7 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
       budgetWeeklyUsdByAccount: {},
       budgetWeeklyUsdGlobal: null,
       overageBufferPct: 5,
+      autoSwitchTargetWindow: 'five-hour',
       manualRateLimitProbeEnabled: false,
       telemetryRetentionDays: 30,
       securityScanEnabled: true,

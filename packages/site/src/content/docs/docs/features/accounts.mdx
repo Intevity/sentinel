@@ -71,10 +71,19 @@ Open **Settings** and pick a **switching mode**:
 
 ### How Auto chooses
 
-In Auto mode, Sentinel selects from a **pool** of your enrolled accounts. The default strategy,
-**earliest-reset**, hard-targets the account whose 5-hour rate-limit window resets soonest — keeping
-you on capacity that's about to refresh rather than capacity you've already spent.
+In Auto mode, Sentinel selects from a **pool** of your enrolled accounts. Its strategy,
+**earliest-reset**, hard-targets the account whose rate-limit window resets soonest — keeping you on
+capacity that's about to refresh rather than capacity you've already spent.
 
+- **Target limit** — choose which window Auto targets under **Settings → Accounts → Target limit**:
+  **5-hour** (the default) or **Weekly**. With Weekly, accounts that share a weekly reset are ordered
+  by their 5-hour reset.
+- **Safety buffer** — Auto stops picking an account once its 5-hour or weekly utilization reaches
+  the buffer threshold (95% by default), so a large request can't tip it into overage or a 429.
+- **Exhausted accounts are skipped** — an account whose weekly limit Anthropic reports as reached is
+  paused until that window resets. If Anthropic lifts the limit early (for example, a one-time usage
+  reset), click **Clear limit** on its weekly row in the **Usage** tab; the next request confirms
+  the real value.
 - **Pool exclusions** — exclude specific accounts from Auto routing (for example, a work account you
   only want used manually) via `poolExcludedIds` in Settings.
 - **Paused accounts are skipped** — if [spend caps](/sentinel/docs/features/alerts/#spend-caps)
