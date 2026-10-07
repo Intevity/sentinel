@@ -328,7 +328,23 @@ export class SpendTracker {
       if (delta < MIN_ROLLOVER_DELTA_SEC[windowName]!) continue;
       rolledOver.add(windowName);
     }
-    if (rolledOver.size === 0) return;
+    if (rolledOver.size === 0) {
+      // The weekly verdict can flip without its reset moving: a response
+      // reports the window exhausted mid-week, or the user clears a limit
+      // Anthropic lifted early (the window then reads allowed with no
+      // reset). Re-evaluate weekly pauses only when the verdict and this
+      // account's pause disagree, so the common header update stays cheap.
+      const weekly = allWindows.find((x) => x.name === WEEKLY_RATE_LIMIT_WINDOW);
+      const blockedNow = weekly?.status === 'blocked';
+      const reason = this.paused.get(accountId);
+      if (
+        (blockedNow && reason === undefined) ||
+        (!blockedNow && reason === 'sentinel_weekly_rate_limit')
+      ) {
+        this.evaluateWeeklyRateLimitPauses();
+      }
+      return;
+    }
     // Clear pauses whose reason matches a window that just rolled over —
     // but only if the underlying condition has actually cleared. If
     // Anthropic is still returning status='blocked' after a threshold-sized

@@ -5,8 +5,14 @@
  * alerts) live in the lifecycle + alerts sibling files.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import type { OAuthAccount, CaptureHealth, CaptureHealthChangedMessage } from '@sentinel/shared';
+import type {
+  OAuthAccount,
+  CaptureHealth,
+  CaptureHealthChangedMessage,
+  RateLimitWindow,
+} from '@sentinel/shared';
 import { makeCreds, startTestDaemon, type TestDaemon } from './index.test-helpers.js';
+import { upsertAccount, upsertRateLimit } from './db.js';
 import { SENTINEL_BASE_URL } from './claude-otel-config.js';
 
 /** POST `count` Claude Code `api_request` OTEL log events to the daemon's
@@ -874,6 +880,71 @@ describe('IPC — probes and purges', () => {
     // still acknowledges the request. That contract is what the UI relies on.
     const r = await ctx.request({ type: 'probe_rate_limits', accountId: 'unknown-id' });
     expect(r.success).toBe(true);
+  });
+
+  it('clear_weekly_limit releases a weekly pause restored from a pre-fix `rejected` row', async () => {
+    // A row persisted before the store normalized `rejected` → `blocked`.
+    // On boot it must heal to `blocked` (pausing the account), and the
+    // user's Clear must reset it and lift the pause with no request sent.
+    const id = 'acct-weekly';
+    const farFuture = 4_102_444_800; // 2100-01-01
+    ctx = await startTestDaemon({
+      seedDb: (db) => {
+        upsertAccount(db, {
+          id,
+          accountUuid: id,
+          email: 'weekly@example.com',
+          displayName: 'weekly@example.com',
+          orgUuid: '',
+          orgName: '',
+          planType: 'max',
+          isActive: false,
+          createdAt: Date.now(),
+          color: null,
+        });
+        upsertRateLimit(db, id, {
+          name: 'unified-7d',
+          status: 'rejected',
+          utilization: 1,
+          limit: null,
+          remaining: null,
+          reset: farFuture,
+          inUse: null,
+          lastUpdated: Date.now(),
+        });
+      },
+    });
+
+    const before = await ctx.request<Array<{ accountId: string; reason: string }>>({
+      type: 'get_paused_accounts',
+    });
+    expect(before.data).toContainEqual(
+      expect.objectContaining({ accountId: id, reason: 'sentinel_weekly_rate_limit' }),
+    );
+
+    const r = await ctx.request<{ cleared: number }>({ type: 'clear_weekly_limit', accountId: id });
+    expect(r.success).toBe(true);
+    expect(r.data).toEqual({ cleared: 1 });
+    await ctx.waitForBroadcast((m) => m.type === 'account_unpaused' && m.accountId === id, 3000);
+
+    const windows = await ctx.request<RateLimitWindow[]>({
+      type: 'get_rate_limits',
+      accountId: id,
+    });
+    expect(windows.data!.find((w) => w.name === 'unified-7d')).toMatchObject({
+      status: 'allowed',
+      utilization: 0,
+      reset: null,
+    });
+    const after = await ctx.request<Array<{ accountId: string }>>({ type: 'get_paused_accounts' });
+    expect(after.data!.map((p) => p.accountId)).not.toContain(id);
+
+    // Nothing left to clear: acknowledged, nothing reset.
+    const again = await ctx.request<{ cleared: number }>({
+      type: 'clear_weekly_limit',
+      accountId: id,
+    });
+    expect(again.data).toEqual({ cleared: 0 });
   });
 
   it('purge_all_data returns success and clears keychain entries', async () => {

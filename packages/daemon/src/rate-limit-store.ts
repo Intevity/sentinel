@@ -25,6 +25,29 @@ import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
  *  dedup, the earliest-reset rotator) see one stable boundary per window. */
 const SYNC_RESET_DRIFT_TOLERANCE_SEC = 120;
 
+/** Name of the overage window. Its `status` is an availability flag
+ *  (`allowed` = overage can absorb further spend), not a quota verdict, so it
+ *  is exempt from the `rejected` → `blocked` normalization below. */
+const OVERAGE_WINDOW = 'unified-overage';
+
+/** Anthropic's response headers say `rejected` for an exhausted quota window,
+ *  while every consumer (token rotator, spend tracker, Usage view) and the
+ *  claude.ai sync path speak `blocked`. Comparing against `'blocked'` alone
+ *  meant a header-reported exhaustion never knocked an account out of Auto
+ *  rotation and never triggered the weekly-limit pause. Normalize at the store
+ *  boundary — on header ingest and on DB restore, so rows persisted before
+ *  this fix heal on the next start without any user action. */
+function normalizeStatus(name: string, status: string | null): string | null {
+  if (status === 'rejected' && name !== OVERAGE_WINDOW) return 'blocked';
+  return status;
+}
+
+/** True for the windows a "Clear weekly limit" resets: the overall `unified`
+ *  verdict and every rolling 7-day window (general, Fable). */
+function isWeeklyWindowName(name: string): boolean {
+  return name === 'unified' || name.startsWith('unified-7d');
+}
+
 export class RateLimitStore {
   private readonly data = new Map<string, Map<string, RateLimitWindow>>();
   private readonly updateCallbacks: Array<(accountId: string, windows: RateLimitWindow[]) => void> =
@@ -46,7 +69,7 @@ export class RateLimitStore {
     if (!this.data.has(accountId)) this.data.set(accountId, new Map());
     const accountMap = this.data.get(accountId)!;
     for (const w of windows) {
-      accountMap.set(w.name, w);
+      accountMap.set(w.name, { ...w, status: normalizeStatus(w.name, w.status) });
     }
   }
 
@@ -71,7 +94,7 @@ export class RateLimitStore {
       if (field === 'remaining') w.remaining = str != null ? parseInt(str, 10) : null;
       if (field === 'reset') w.reset = str != null ? parseInt(str, 10) : null;
       if (field === 'utilization') w.utilization = str != null ? parseFloat(str) : null;
-      if (field === 'status') w.status = str ?? null;
+      if (field === 'status') w.status = normalizeStatus(name, str ?? null);
       if (field === 'in-use')
         w.inUse = str != null ? str.toLowerCase() === 'true' || str === '1' : null;
     }
@@ -139,6 +162,45 @@ export class RateLimitStore {
    */
   clearAccount(accountId: string): void {
     this.data.delete(accountId);
+  }
+
+  /**
+   * User-initiated reset of an account's exhausted weekly windows, for when
+   * Anthropic lifts a weekly limit early (e.g. a one-time usage reset). A
+   * `blocked` weekly window keeps the account out of Auto rotation and under a
+   * weekly-limit pause until its stored reset elapses, and an inference-only
+   * account has no metadata endpoint to learn otherwise — the only thing that
+   * would refresh it is a request it is no longer allowed to make.
+   *
+   * Every weekly window that reads exhausted (`blocked`, or utilization ≥ 1)
+   * is set to the same zero-state `expireStaleWindows` uses. The next genuine
+   * response repopulates the real values; if the limit is in fact still in
+   * force, that response's headers re-block the account. Fires `onUpdate` so
+   * DB persistence and the spend tracker follow, exactly like a header update.
+   *
+   * Returns the windows that were reset (empty when nothing was exhausted).
+   */
+  clearWeeklyLimit(accountId: string, nowMs: number): RateLimitWindow[] {
+    const accountMap = this.data.get(accountId);
+    if (!accountMap) return [];
+    const cleared: RateLimitWindow[] = [];
+    for (const [name, w] of accountMap) {
+      if (!isWeeklyWindowName(name)) continue;
+      if (w.status !== 'blocked' && (w.utilization ?? 0) < 1) continue;
+      const reset: RateLimitWindow = {
+        ...w,
+        utilization: 0,
+        status: 'allowed',
+        reset: null,
+        lastUpdated: nowMs,
+      };
+      accountMap.set(name, reset);
+      cleared.push(reset);
+    }
+    if (cleared.length > 0) {
+      for (const cb of this.updateCallbacks) cb(accountId, cleared);
+    }
+    return cleared;
   }
 
   /**

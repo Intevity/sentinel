@@ -2089,6 +2089,18 @@ export interface ProbeRateLimitsMessage {
   accountId: string;
 }
 
+/** Reset an account's exhausted weekly windows to zero, for when Anthropic
+ *  lifts a weekly limit early (e.g. a one-time usage reset) and Sentinel's
+ *  stored `blocked` status would otherwise keep the account out of Auto
+ *  rotation and paused until the old reset time. No request is sent: the next
+ *  genuine response repopulates the real values, and re-blocks the account if
+ *  the limit is in fact still in force. Response data: `{ cleared: number }`,
+ *  the count of windows reset. */
+export interface ClearWeeklyLimitMessage {
+  type: 'clear_weekly_limit';
+  accountId: string;
+}
+
 /** Fetch the daemon's SpendTracker-paused set with each entry's reason +
  *  resets-at. Response payload is `Array<{ accountId, reason, resetsAt }>`.
  *  Used by `usePausedAccounts` on mount so the Accounts-page paused badge
@@ -2334,6 +2346,7 @@ export type AppToDaemonMessage =
   | GetClaudeAiUsageMessage
   | RefreshClaudeAiUsageMessage
   | ProbeRateLimitsMessage
+  | ClearWeeklyLimitMessage
   | GetPausedAccountsMessage
   | DevTriggerSecurityEventMessage
   | DevTriggerAlertEventMessage
