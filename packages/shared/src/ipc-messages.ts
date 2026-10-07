@@ -1273,7 +1273,7 @@ export interface McpContextInsight {
 /** Realized + potential savings for the Context feature, window-scoped like
  *  every other Optimize metric. All values are estimates and the dollar
  *  figures deliberately use CACHED rates: definitions ride as cache reads
- *  (0.1x) on most requests and re-write to cache (1.25x) roughly once per
+ *  (the model's read rate) on most requests and re-write to cache (1.25x) roughly once per
  *  session, so billing them at full input price would overstate savings. */
 export interface McpContextSavings {
   /** Definition tokens kept out of requests since each server's migration:

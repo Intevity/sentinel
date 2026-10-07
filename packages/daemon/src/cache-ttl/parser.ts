@@ -5,7 +5,7 @@
  *
  * Both surfaces are needed: request markers say what Claude Code *asked for*,
  * response usage says how many tokens upstream *actually wrote* at each TTL.
- * Reads are a flat aggregate (a 1h-written cache still costs 0.1x to read)
+ * Reads are a flat aggregate (a 1h-written cache reads at the same rate)
  * so `cache_read_input_tokens` is not broken out by TTL.
  */
 

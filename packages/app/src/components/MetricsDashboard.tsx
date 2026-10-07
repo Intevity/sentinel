@@ -22,7 +22,9 @@ const MODEL_COLORS: Record<string, string> = {
 
 function modelColor(model: string): string {
   // Handle model variants like "claude-opus-4-7[1m]" → opus
-  const base = model.match(/claude-(opus|sonnet|haiku)/)?.[0];
+  const base = model.match(/claude-(fable|mythos|opus|sonnet|haiku)/)?.[0];
+  // Fable and Mythos are one tier (same price, same chart color).
+  if (base === 'claude-fable' || base === 'claude-mythos') return '#FF375F';
   if (base === 'claude-opus') return '#BF5AF2';
   if (base === 'claude-sonnet') return '#007AFF';
   if (base === 'claude-haiku') return '#30D158';

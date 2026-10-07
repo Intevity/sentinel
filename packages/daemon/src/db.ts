@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, renameSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { getDigestTokens } from '@sentinel/shared';
+import { getBaseInputPricePerMillion } from './cache-ttl/pricing.js';
 import type {
   AccountInfo,
   UsageEvent,
@@ -855,8 +856,11 @@ export function getDb(
     .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
     .get('optimization_events_token_backfill_v1') as { ok: number } | undefined;
   if (!tokenBackfillApplied) {
-    const BASE_ACTUAL_OPUS = 15; // $/MTok, matches getBaseInputPricePerMillion('claude-opus-4')
-    const BASE_HYPO_HAIKU = 1; // $/MTok, matches 'claude-haiku-4'
+    // Rates of the models these historical rows were priced against when they
+    // were written (Opus 4.x at $15, Haiku 4.5 at $1), read from the one price
+    // table rather than restated here.
+    const BASE_ACTUAL_OPUS = getBaseInputPricePerMillion('claude-opus-4-1');
+    const BASE_HYPO_HAIKU = getBaseInputPricePerMillion('claude-haiku-4-5');
 
     const rows = _db
       .prepare(

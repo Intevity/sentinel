@@ -1909,8 +1909,9 @@ export interface CacheHitRate {
  * from the proxy (not OTEL). Captures both the client's cache_control
  * markers and upstream's actual per-TTL token writes so the Metrics tab
  * can show what was asked for side by side with what landed. Costs are
- * precomputed at write-time using fixed multipliers (5m write 1.25x,
- * 1h write 2.0x, read 0.1x) against a base input $/MTok table.
+ * precomputed at write-time from the per-model price table: writes at fixed
+ * multipliers of input (5m 1.25x, 1h 2.0x), reads at the model's own
+ * cache-read $/MTok.
  */
 export interface CacheTtlDayRow {
   /** Count of request blocks tagged `{type: 'ephemeral'}` (5m default). */

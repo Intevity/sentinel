@@ -191,4 +191,25 @@ describe('computeSavings', () => {
     expect(r.attributedInputTokens).toBeCloseTo(10000, -1);
     expect(r.attributedCachedTokens).toBeCloseTo(5000, -1);
   });
+
+  it("bills cached tokens at the model's own read rate, not a flat 0.1x of input", () => {
+    // Opus 5.5 reads at $0.20/MTok (0.05x of its $4 input). A whole-turn share
+    // (35k bytes = 10k tokens, shareOfTurn = 1) of pure cache reads costs
+    // 10_000 * 0.2 / 1e6 = $0.002. A flat 0.1x would give $0.004.
+    const r = computeSavings({
+      toolCalls: [{ responseSizeBytes: 35_000 }],
+      parentTurn: {
+        cacheRead: 10_000,
+        cacheCreate5m: 0,
+        cacheCreate1h: 0,
+        uncachedInput: 0,
+        totalInputTokens: 10_000,
+      },
+      actualModel: 'claude-opus-5-5',
+      curatedId: 'file-explorer',
+      hypoModel: 'claude-haiku-4-5',
+    });
+    expect(r.shareOfTurn).toBe(1);
+    expect(r.actualCostUsd).toBeCloseTo(0.002, 12);
+  });
 });
