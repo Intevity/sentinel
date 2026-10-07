@@ -170,12 +170,21 @@ export interface ClaudeState {
 /**
  * One of two mutually exclusive account-switching behaviors.
  *   off  — no automatic switching; user manages accounts manually
- *   auto — proxy routes each request to the enrolled account whose 5-hour
- *          window resets soonest (the "earliest-reset" engine), so quota
- *          that's about to refresh gets used first. Rotation resumes only
- *          when that account blocks or its window rolls over.
+ *   auto — proxy routes each request to the enrolled account whose targeted
+ *          window (see AutoSwitchTargetWindow) resets soonest (the
+ *          "earliest-reset" engine), so quota that's about to refresh gets
+ *          used first. Rotation resumes only when that account blocks or its
+ *          window rolls over.
  */
 export type SwitchingMode = 'off' | 'auto';
+
+/**
+ * Which rate-limit window Auto switching's earliest-reset ranking targets.
+ *   five-hour — the account whose 5-hour window resets soonest (default).
+ *   weekly    — the account whose 7-day window resets soonest; accounts that
+ *               share a weekly reset are ordered by their 5-hour reset.
+ */
+export type AutoSwitchTargetWindow = 'five-hour' | 'weekly';
 
 /** Which chart the Optimize dashboard renders above the curated subagent
  *  list. The user toggles between these via the segmented control in the
@@ -484,13 +493,19 @@ export interface Settings {
   budgetWeeklyUsdGlobal: number | null;
   /** Safety margin keeping Auto switching from picking an account whose next
    *  request might spill into Anthropic overage. The rotator excludes any
-   *  account whose unified-5h utilization is ≥ (1 − overageBufferPct/100).
+   *  account whose unified-5h or unified-7d utilization is
+   *  ≥ (1 − overageBufferPct/100).
    *  Defends against the race where an account at 98% util absorbs a 4%
    *  request and burns 2% overage the user didn't opt into. Integer range
    *  `[0, 50]`. Default 5 (= cut-off at 95% util). 0 = only cut off at
    *  full saturation (legacy pre-buffer behavior). Ignored unless
    *  `switchingMode === 'auto'`. */
   overageBufferPct: number;
+  /** Which window Auto switching ranks accounts by: `five-hour` (default)
+   *  drains the account whose 5-hour window resets soonest; `weekly` drains
+   *  the account whose 7-day window resets soonest, breaking ties on the
+   *  5-hour reset. Ignored unless `switchingMode === 'auto'`. */
+  autoSwitchTargetWindow: AutoSwitchTargetWindow;
   /** Allow the explicit per-account "Refresh" action to additionally send a
    *  minimal `POST /v1/messages` probe, capturing rate-limit headers the
    *  metadata endpoint may not carry.

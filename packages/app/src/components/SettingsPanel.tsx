@@ -670,12 +670,35 @@ export default function SettingsPanel({
                 />
                 <RadioRow
                   label="Auto"
-                  description="Sentinel routes each request to the enrolled account whose 5-hour limit resets soonest, reclaiming headroom you'd lose anyway. Rotation resumes when it blocks or rolls over."
+                  description="Sentinel routes each request to the enrolled account whose targeted limit resets soonest, reclaiming headroom you'd lose anyway. Rotation resumes when it blocks or rolls over."
                   checked={settings.switchingMode === 'auto'}
                   onChange={() => setMode('auto')}
                 />
                 {settings.switchingMode === 'auto' && accounts.length > 0 && (
                   <PoolMemberPreview accounts={accounts} excludedIds={settings.poolExcludedIds} />
+                )}
+                {settings.switchingMode === 'auto' && (
+                  <div className="px-3 pt-1 pb-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-[11px] text-muted">Target limit</p>
+                      <QuickSegmented
+                        ariaLabel="Auto switching target limit"
+                        value={settings.autoSwitchTargetWindow}
+                        onChange={(v) => {
+                          void update({ autoSwitchTargetWindow: v }).catch(() => undefined);
+                        }}
+                        options={[
+                          { value: 'five-hour', label: '5-hour' },
+                          { value: 'weekly', label: 'Weekly' },
+                        ]}
+                      />
+                    </div>
+                    <p className="text-[10px] text-muted/80 leading-snug">
+                      {settings.autoSwitchTargetWindow === 'weekly'
+                        ? 'Drains the account whose weekly limit resets soonest. Accounts that share a weekly reset are ordered by their 5-hour reset.'
+                        : 'Drains the account whose 5-hour limit resets soonest.'}
+                    </p>
+                  </div>
                 )}
                 {settings.switchingMode === 'auto' && (
                   <div className="px-3 pb-3 pt-1">
@@ -686,10 +709,10 @@ export default function SettingsPanel({
                       </span>
                     </div>
                     <p className="text-[10px] text-muted/80 leading-snug mb-2">
-                      Auto stops picking an account once its 5-hour (or Fable 7-day) utilization
-                      reaches {100 - settings.overageBufferPct}%. A larger buffer protects against a
-                      single large request pushing you into overage; a smaller one squeezes more
-                      pool throughput.
+                      Auto stops picking an account once its 5-hour, weekly (or Fable weekly)
+                      utilization reaches {100 - settings.overageBufferPct}%. A larger buffer
+                      protects against a single large request pushing you into overage; a smaller
+                      one squeezes more pool throughput.
                     </p>
                     <input
                       type="range"

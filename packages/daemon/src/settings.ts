@@ -14,6 +14,7 @@ import { dirname, join } from 'path';
 import type {
   Settings,
   SwitchingMode,
+  AutoSwitchTargetWindow,
   SecurityEnforcementMode,
   SecurityOsNotifyThreshold,
   SecurityContextVerbosity,
@@ -63,6 +64,7 @@ export const DEFAULT_SETTINGS: Settings = {
   budgetWeeklyUsdByAccount: {},
   budgetWeeklyUsdGlobal: null,
   overageBufferPct: 5,
+  autoSwitchTargetWindow: 'five-hour',
   manualRateLimitProbeEnabled: false,
   telemetryRetentionDays: 30,
   dataRetentionDays: 365,
@@ -191,6 +193,7 @@ function freshDefaults(): Settings {
 }
 
 const VALID_MODES: readonly SwitchingMode[] = ['off', 'auto'];
+const VALID_TARGET_WINDOWS: readonly AutoSwitchTargetWindow[] = ['five-hour', 'weekly'];
 const VALID_ENFORCEMENT_MODES: readonly SecurityEnforcementMode[] = [
   'observe',
   'block_high',
@@ -508,6 +511,9 @@ function coerce(raw: unknown): Settings {
     (obj['overageBufferPct'] as number) <= 50
   ) {
     next.overageBufferPct = Math.floor(obj['overageBufferPct'] as number);
+  }
+  if (VALID_TARGET_WINDOWS.includes(obj['autoSwitchTargetWindow'] as AutoSwitchTargetWindow)) {
+    next.autoSwitchTargetWindow = obj['autoSwitchTargetWindow'] as AutoSwitchTargetWindow;
   }
   // `backgroundProbeIntervalSec` was the cadence of the deleted synthetic
   // prober. Deliberately not read: an existing value in a user's settings.json

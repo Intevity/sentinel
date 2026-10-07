@@ -35,6 +35,7 @@ function defaultSettings(overrides: Partial<Settings> = {}): Settings {
     budgetWeeklyUsdByAccount: {},
     budgetWeeklyUsdGlobal: null,
     overageBufferPct: 5,
+    autoSwitchTargetWindow: 'five-hour',
     manualRateLimitProbeEnabled: false,
     telemetryRetentionDays: 30,
     dataRetentionDays: 365,

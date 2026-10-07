@@ -873,6 +873,8 @@ export async function startDaemon(): Promise<DaemonHandle> {
     () => new Set(currentSettings.overageEnabledIds),
     () => getPausedAccountIds(),
     () => currentSettings.overageBufferPct,
+    undefined,
+    () => currentSettings.autoSwitchTargetWindow,
   );
 
   // Mirror of `~/.claude.json:overageCreditGrantCache`. Reloaded on startup,

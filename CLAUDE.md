@@ -314,8 +314,8 @@ packages/daemon/src/
                       INFERENCE_ONLY_TOKEN_PREFIX in claude-ai-usage.ts.
   ipc.ts            — Unix socket IPC server/client
   settings.ts       — ~/.sentinel/settings.json load/save
-  token-rotator.ts  — round-robin {accountId, token} selector
-                      (strategy: balance | earliest-reset)
+  token-rotator.ts  — earliest-reset {accountId, token} selector
+                      (target window: five-hour | weekly)
   alerts.ts         — user-configured usage-alert evaluator
                       (per-account + pool-wide)
   security/permissions/
@@ -334,7 +334,7 @@ packages/app/src-tauri/src/
 
 **App → Daemon** (in addition to the core account/usage ones):
 
-- `get_settings` / `update_settings` — `Settings` is `{ launchAtLogin, switchingMode, roundRobinStrategy, poolExcludedIds, … }`
+- `get_settings` / `update_settings` — `Settings` is `{ launchAtLogin, switchingMode, autoSwitchTargetWindow, poolExcludedIds, … }`
 - `list_alerts` / `upsert_alert` / `delete_alert` — alerts carry a `scope`
   (`'account'` bound to a Sentinel key, or `'pool'` for round-robin-wide)
 - `get_notifications` — history for the Alerts tab

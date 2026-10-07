@@ -1,12 +1,19 @@
 import type { Database } from 'better-sqlite3';
 import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
+import type { AutoSwitchTargetWindow } from '@sentinel/shared';
 import { listAccounts } from './db.js';
 import { readActiveCredentials, readSentinelCredentials } from './accounts.js';
 import type { RateLimitStore } from './rate-limit-store.js';
 
-/** The 5-hour rolling window is the one users think of as "session limit",
- *  so the rotator evaluates rotation decisions against it exclusively. */
+/** The 5-hour rolling window, the one users think of as "session limit".
+ *  Always part of the ranking: the primary key in `five-hour` targeting, the
+ *  tie-breaker between accounts sharing a weekly reset in `weekly` targeting. */
 const SESSION_WINDOW = 'unified-5h';
+
+/** The general rolling 7-day window. Ranked first in `weekly` targeting, and
+ *  gated by the buffer threshold in both modes: a near-exhausted weekly
+ *  window spills into overage (or 429s) as surely as a 5-hour one. */
+const WEEKLY_WINDOW = 'unified-7d';
 
 /** Name of the overage RateLimitWindow as reported by Anthropic headers. */
 const OVERAGE_WINDOW = 'unified-overage';
@@ -17,8 +24,8 @@ const OVERAGE_WINDOW = 'unified-overage';
  *  stays unaffected. */
 const FABLE_WINDOW = FABLE_WEEKLY_WINDOW;
 
-/** Two `unified-5h` resets within this many seconds count as the same
- *  window boundary. The store has two writers for the reset value — API
+/** Two resets of the same window kind within this many seconds count as the
+ *  same window boundary. The store has two writers for the reset value — API
  *  response headers (epoch seconds) and the claude.ai usage sync (an ISO
  *  timestamp converted to epoch seconds) — and they can disagree at second
  *  granularity for the same window. Comparing resets exactly treated every
@@ -48,7 +55,10 @@ export interface RotatedCredential {
  * whose credentials Sentinel can resolve from the OS keychain.
  *
  * Single strategy — earliest-reset: hard-target the non-blocked pool
- * account whose `unified-5h` window resets soonest. Accounts without reset
+ * account whose targeted window resets soonest. The target is the user's
+ * `autoSwitchTargetWindow` setting: `five-hour` ranks by the `unified-5h`
+ * reset; `weekly` ranks by the `unified-7d` reset and breaks ties between
+ * accounts sharing a weekly boundary by their `unified-5h` reset. Accounts without reset
  * data — or whose stored reset is already in the past (an expired window
  * whose next request would open a brand-new one) — are deprioritized.
  * Traffic sticks to one account until it blocks or its window rolls over,
@@ -115,6 +125,10 @@ export class TokenRotator {
      *  stored reset timestamps against it to detect expired windows;
      *  tests pin it so hand-seeded epoch values stay meaningful. */
     private readonly nowSec: () => number = () => Date.now() / 1000,
+    /** Live accessor for which window the earliest-reset ranking targets
+     *  (see the class docstring). Read on every `pick()` so a settings change
+     *  takes effect on the next request. Defaults to `five-hour`. */
+    private readonly getTargetWindow: () => AutoSwitchTargetWindow = () => 'five-hour',
   ) {
     this.refresh();
   }
@@ -168,7 +182,9 @@ export class TokenRotator {
    * Account eligibility (in order):
    *   1. Pool membership (not in `poolExcludedIds`, has a token) — handled in
    *      refresh(), not here.
-   *   2. Not blocked (`status === 'blocked'` on any window).
+   *   2. Not blocked (`status === 'blocked'` on any quota window whose reset
+   *      is still ahead; the overage window's status is availability, not
+   *      a quota verdict, so it never blocks).
    *   3. Not paused by SpendTracker (Sentinel-side weekly cap hit).
    *   4. Two-tier buffer gate. Below threshold → fresh tier. At or above
    *      threshold (or with overage already `in-use`) → only retained as
@@ -199,9 +215,18 @@ export class TokenRotator {
     //
     // Accounts that would draw overage but aren't opted in are skipped
     // entirely — they're never eligible for Auto switching.
-    const fresh: { idx: number; util: number; reset: number }[] = [];
-    const overage: { idx: number; util: number; reset: number }[] = [];
+    const fresh: Candidate[] = [];
+    const overage: Candidate[] = [];
     const now = this.nowSec();
+    const targetWeekly = this.getTargetWindow() === 'weekly';
+    // A reset that is missing OR already behind the clock carries no
+    // scheduling information: the stored window has expired, and the
+    // account's next request would open a brand-new window. Rank it like
+    // "no data" instead of letting the stale timestamp win "earliest" and
+    // yank traffic onto an idle account (which would open a fresh window and
+    // immediately lose the pick again — a periodic request leak).
+    const rankable = (reset: number | null | undefined): number =>
+      reset == null || reset <= now ? Number.POSITIVE_INFINITY : reset;
     // Set when the earliest-reset sticky account is pushed out of the
     // fresh tier solely by the Fable 7d gate for THIS request — its 5h
     // window still has room, so the sticky must survive the detour.
@@ -214,39 +239,50 @@ export class TokenRotator {
       const sessionWindow = windows.find((w) => w.name === SESSION_WINDOW);
       const overageWindow = windows.find((w) => w.name === OVERAGE_WINDOW);
       const fableWindow = windows.find((w) => w.name === FABLE_WINDOW);
+      const weeklyWindow = windows.find((w) => w.name === WEEKLY_WINDOW);
       const util = sessionWindow?.utilization ?? 0;
-      // A reset that is missing OR already behind the clock carries no
-      // scheduling information: the stored window has expired, and the
-      // account's next request would open a brand-new 5h window. Rank
-      // it like "no data" instead of letting the stale timestamp win
-      // "earliest" and yank traffic onto an idle account (which would
-      // open a fresh window and immediately lose the pick again — a
-      // periodic request leak).
-      const rawReset = sessionWindow?.reset;
-      const reset = rawReset == null || rawReset <= now ? Number.POSITIVE_INFINITY : rawReset;
-      // Blocked on any window means the 5h or 7d quota is exhausted. The
-      // account is still reachable when overage is available and opted in:
-      // Anthropic lets the overage grant cover further spend. Route those
-      // through the overage tier. Every other blocked case (overage
-      // disabled, no overage window, not opted in) skips the account —
-      // the caller would just get a 429 otherwise.
-      if (windows.some((w) => w.status === 'blocked')) {
+      const sessionReset = rankable(sessionWindow?.reset);
+      const weeklyReset = rankable(weeklyWindow?.reset);
+      // An expired weekly window's utilization describes a week that is
+      // over; it must not hold the account out of the fresh tier.
+      const weeklyExpired = weeklyWindow?.reset != null && weeklyWindow.reset <= now;
+      const weeklyUtil = weeklyExpired ? 0 : (weeklyWindow?.utilization ?? 0);
+      // Ranking keys, most significant first (see `withinTolerance`).
+      const keys = targetWeekly ? [weeklyReset, sessionReset] : [sessionReset];
+      const candidate: Candidate = { idx: i, util, keys };
+      // Blocked on any quota window means the 5h or 7d quota is exhausted.
+      // A blocked window whose reset has already elapsed is stale (the
+      // server-side window rolled; no response has refreshed it yet), the
+      // same guard the spend tracker applies. The account is still
+      // reachable when overage is available and opted in: Anthropic lets
+      // the overage grant cover further spend. Route those through the
+      // overage tier. Every other blocked case (overage disabled, no
+      // overage window, not opted in) skips the account — the caller would
+      // just get a 429 otherwise.
+      const blocked = windows.some(
+        (w) =>
+          w.name !== OVERAGE_WINDOW &&
+          w.status === 'blocked' &&
+          !(w.reset != null && w.reset <= now),
+      );
+      if (blocked) {
         const canUseOverage =
           overageWindow?.status === 'allowed' && overageAllowed.has(entry.accountId);
         if (!canUseOverage) continue;
-        overage.push({ idx: i, util, reset });
+        overage.push(candidate);
         continue;
       }
       // Partitioning runs in two steps. First: is this account out of the
-      // fresh tier? That's true whenever its 5h (or Fable 7d, for Fable
-      // requests) utilization is at or above the buffer threshold — or the
+      // fresh tier? That's true whenever its 5h, its 7d (or Fable 7d, for
+      // Fable requests) utilization is at or above the buffer threshold — or the
       // overage window shows `in-use` already. The buffer is keep-alive
       // headroom as much as it is an overage-cost guard: an account at 99%
       // is one request away from a 429 whether or not overage exists to
       // catch it.
       const fableAtThreshold =
         isFable && fableWindow?.utilization != null && fableWindow.utilization >= overageThreshold;
-      const atOrAboveThreshold = util >= overageThreshold || fableAtThreshold;
+      const atOrAboveThreshold =
+        util >= overageThreshold || weeklyUtil >= overageThreshold || fableAtThreshold;
       const overageActive = overageWindow?.inUse === true;
 
       if (atOrAboveThreshold || overageActive) {
@@ -267,9 +303,9 @@ export class TokenRotator {
         const canUseOverage =
           overageWindow?.status === 'allowed' && overageAllowed.has(entry.accountId);
         if (!canUseOverage) continue;
-        overage.push({ idx: i, util, reset });
+        overage.push(candidate);
       } else {
-        fresh.push({ idx: i, util, reset });
+        fresh.push(candidate);
       }
     }
 
@@ -278,30 +314,34 @@ export class TokenRotator {
     const tier = fresh.length > 0 ? fresh : overage;
     if (tier.length === 0) return null;
 
-    // Hard-target the account whose window rolls over soonest. For the
-    // initial pick (no sticky), tie-break by lower utilization, then by
-    // pool index. Traffic sticks to the chosen account until it blocks or
-    // resets.
-    const ranked = [...tier].sort((a, b) => a.reset - b.reset || a.util - b.util || a.idx - b.idx);
-    const minReset = ranked[0]!.reset;
+    // Hard-target the account whose targeted window rolls over soonest.
+    // Every key but the last ties within RESET_TIE_TOLERANCE_SEC: two
+    // accounts whose weekly boundaries differ only by writer jitter share a
+    // week, so their 5h reset decides. The last key is compared exactly,
+    // then lower utilization, then pool index. Traffic sticks to the chosen
+    // account until it blocks or resets.
+    const last = tier[0]!.keys.length - 1;
+    let leaders = tier;
+    for (let level = 0; level < last; level++) {
+      leaders = withinTolerance(leaders, level);
+    }
+    const ranked = [...leaders].sort(
+      (a, b) => a.keys[last]! - b.keys[last]! || a.util - b.util || a.idx - b.idx,
+    );
 
     if (this.earliestResetStickyId !== null) {
-      const sticky = ranked.find((r) => this.pool[r.idx]!.accountId === this.earliestResetStickyId);
-      // Hold the sticky while it is still effectively earliest. Util is
-      // intentionally NOT consulted: re-evaluating it on every pick is
-      // what caused tied accounts to alternate request-by-request as
-      // their utilizations ticked up in lockstep. Resets within
+      const sticky = tier.find((c) => this.pool[c.idx]!.accountId === this.earliestResetStickyId);
+      // Hold the sticky while it is still effectively earliest on every
+      // key. Util is intentionally NOT consulted: re-evaluating it on every
+      // pick is what caused tied accounts to alternate request-by-request
+      // as their utilizations ticked up in lockstep. Resets within
       // RESET_TIE_TOLERANCE_SEC of the minimum count as the same window
       // boundary — the store's two reset writers (API headers vs the
-      // claude.ai usage sync) disagree at second granularity, and the
-      // previous strict equality re-targeted traffic on every such
-      // disagreement. An unknown (+Infinity) sticky reset also holds:
-      // see the class docstring.
-      if (
-        sticky &&
-        (sticky.reset === Number.POSITIVE_INFINITY ||
-          sticky.reset <= minReset + RESET_TIE_TOLERANCE_SEC)
-      ) {
+      // claude.ai usage sync) disagree at second granularity, and strict
+      // equality re-targeted traffic on every such disagreement. An
+      // unknown (+Infinity) sticky reset also holds: see the class
+      // docstring.
+      if (sticky && stickyHolds(sticky, tier)) {
         return this.pool[sticky.idx]!;
       }
       // The sticky account was pushed out of the tier by the Fable 7d
@@ -319,15 +359,48 @@ export class TokenRotator {
     // log line per actual change, never per pick.
     const next = ranked[0]!;
     const nextId = this.pool[next.idx]!.accountId;
+    const primaryReset = next.keys[0]!;
     const resetIn =
-      next.reset === Number.POSITIVE_INFINITY
+      primaryReset === Number.POSITIVE_INFINITY
         ? 'unknown'
-        : `${Math.round((next.reset - now) / 60)}m`;
+        : `${Math.round((primaryReset - now) / 60)}m`;
     console.log(
       `[Rotator] earliest-reset target -> ${nextId} ` +
-        `(reset in ${resetIn}, util ${(next.util * 100).toFixed(0)}%)`,
+        `(${targetWeekly ? 'weekly' : '5h'} reset in ${resetIn}, ` +
+        `util ${(next.util * 100).toFixed(0)}%)`,
     );
     this.earliestResetStickyId = nextId;
     return this.pool[next.idx]!;
   }
+}
+
+/** One eligible account in a `pick()` tier. `keys` are its ranking resets,
+ *  most significant first (+Infinity = unknown or expired); `util` is its 5h
+ *  utilization, the tie-breaker after the resets. */
+interface Candidate {
+  idx: number;
+  util: number;
+  keys: number[];
+}
+
+/** The candidates whose `keys[level]` lies within RESET_TIE_TOLERANCE_SEC of
+ *  the minimum at that level. When every reset there is unknown the minimum
+ *  is +Infinity and every candidate survives, so ranking falls through to
+ *  the next key. */
+function withinTolerance(candidates: Candidate[], level: number): Candidate[] {
+  const min = Math.min(...candidates.map((c) => c.keys[level]!));
+  return candidates.filter((c) => c.keys[level]! <= min + RESET_TIE_TOLERANCE_SEC);
+}
+
+/** Whether the sticky target stays put: key by key, an unknown reset holds
+ *  outright, and a known one must tie the minimum among the candidates that
+ *  tied on every earlier key. */
+function stickyHolds(sticky: Candidate, tier: Candidate[]): boolean {
+  let group = tier;
+  for (let level = 0; level < sticky.keys.length; level++) {
+    if (sticky.keys[level] === Number.POSITIVE_INFINITY) return true;
+    group = withinTolerance(group, level);
+    if (!group.includes(sticky)) return false;
+  }
+  return true;
 }
