@@ -6,7 +6,7 @@
  *
  *   actualCost   — what the parent Opus turn paid for these tokens, with
  *                  cache state derived from the matching cache_ttl_event.
- *                  Cached tokens get the 0.1x multiplier; cache writes
+ *                  Cached tokens get the model's cache-read rate; cache writes
  *                  get 1.25x (5m) or 2.0x (1h); the rest are uncached.
  *
  *   hypoCost     — what the routing alternative would have cost: the
@@ -26,7 +26,7 @@
 import { getDigestTokens, BYTES_PER_TOKEN } from '@sentinel/shared';
 import {
   getBaseInputPricePerMillion,
-  CACHE_READ_MULTIPLIER,
+  getCacheReadPricePerMillion,
   CACHE_WRITE_5M_MULTIPLIER,
   CACHE_WRITE_1H_MULTIPLIER,
 } from '../cache-ttl/pricing.js';
@@ -46,7 +46,7 @@ export interface ToolCallContribution {
 }
 
 export interface CacheTurnState {
-  /** Tokens read from prompt cache during this turn (0.1x rate). */
+  /** Tokens read from prompt cache during this turn (billed at the model's cache-read rate). */
   cacheRead: number;
   /** Tokens written to 5m cache during this turn (1.25x rate). */
   cacheCreate5m: number;
@@ -118,8 +118,9 @@ export function computeSavings(inputs: SavingsInputs): SavingsResult {
   // Cache state proportionally split across the share.
   const split = (n: number): number => n * shareOfTurn;
   const baseActual = getBaseInputPricePerMillion(inputs.actualModel);
+  const readActual = getCacheReadPricePerMillion(inputs.actualModel);
   const actualCostUsd =
-    (split(inputs.parentTurn.cacheRead) * baseActual * CACHE_READ_MULTIPLIER +
+    (split(inputs.parentTurn.cacheRead) * readActual +
       split(inputs.parentTurn.cacheCreate5m) * baseActual * CACHE_WRITE_5M_MULTIPLIER +
       split(inputs.parentTurn.cacheCreate1h) * baseActual * CACHE_WRITE_1H_MULTIPLIER +
       split(inputs.parentTurn.uncachedInput) * baseActual) /

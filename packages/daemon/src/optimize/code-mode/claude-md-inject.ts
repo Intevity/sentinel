@@ -25,8 +25,9 @@
 import { promises as fs } from 'node:fs';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { createHash, randomBytes } from 'node:crypto';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { writeFileAtomicPreserving } from '../../fs-atomic.js';
 import { codeModeTokenFilePath, resolveCodeModeDir } from './workspace-gen.js';
 
 const BEGIN_PREFIX = '<!-- BEGIN SENTINEL CODE-MODE (managed)';
@@ -127,11 +128,11 @@ function stripBlock(text: string): string {
   return text.replace(BLOCK_RE, '').replace(/\n{3,}/g, '\n\n');
 }
 
+/** Follows a symlinked instruction file (a dotfiles repo linked into place)
+ *  and keeps its mode — a bare temp + rename would replace the link with a
+ *  regular file. See fs-atomic.ts. */
 async function writeFileAtomic(path: string, content: string): Promise<void> {
-  await fs.mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp-${randomBytes(6).toString('hex')}`;
-  await fs.writeFile(tmp, content, 'utf8');
-  await fs.rename(tmp, path);
+  await writeFileAtomicPreserving(path, content);
 }
 
 /**
@@ -140,7 +141,18 @@ async function writeFileAtomic(path: string, content: string): Promise<void> {
  * again whenever the bridged set changes. Returns the file path.
  */
 export async function installCodeModeClaudeMd(opts: CodeModeBlockOpts): Promise<string> {
-  const path = claudeMdPath();
+  return installCodeModeBlockAt(claudeMdPath(), opts);
+}
+
+/**
+ * Path-parameterized form of {@link installCodeModeClaudeMd}. Other agent
+ * runtimes read their own instruction file (opencode uses `AGENTS.md`), and the
+ * block body is identical for all of them — only the destination differs.
+ */
+export async function installCodeModeBlockAt(
+  path: string,
+  opts: CodeModeBlockOpts,
+): Promise<string> {
   let existing = '';
   try {
     existing = await fs.readFile(path, 'utf8');
@@ -161,7 +173,11 @@ export async function installCodeModeClaudeMd(opts: CodeModeBlockOpts): Promise<
  * block is absent.
  */
 export async function uninstallCodeModeClaudeMd(): Promise<void> {
-  const path = claudeMdPath();
+  return uninstallCodeModeBlockAt(claudeMdPath());
+}
+
+/** Path-parameterized form of {@link uninstallCodeModeClaudeMd}. */
+export async function uninstallCodeModeBlockAt(path: string): Promise<void> {
   if (!existsSync(path)) return;
   const existing = await fs.readFile(path, 'utf8');
   if (!existing.includes(BEGIN_PREFIX)) return;
@@ -179,7 +195,14 @@ export function readCodeModeBlockState(opts: CodeModeBlockOpts): {
   present: boolean;
   upToDate: boolean;
 } {
-  const path = claudeMdPath();
+  return readCodeModeBlockStateAt(claudeMdPath(), opts);
+}
+
+/** Path-parameterized form of {@link readCodeModeBlockState}. */
+export function readCodeModeBlockStateAt(
+  path: string,
+  opts: CodeModeBlockOpts,
+): { present: boolean; upToDate: boolean } {
   if (!existsSync(path)) return { present: false, upToDate: false };
   const text = readFileSync(path, 'utf8');
   const m = text.match(HASH_RE);

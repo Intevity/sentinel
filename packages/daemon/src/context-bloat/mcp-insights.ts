@@ -36,8 +36,8 @@ import { estimateTokensFromBytes } from '@sentinel/shared';
 import { getClaudeJsonPath } from '../claude-state.js';
 import {
   getBaseInputPricePerMillion,
+  getCacheReadPricePerMillion,
   CACHE_WRITE_5M_MULTIPLIER,
-  CACHE_READ_MULTIPLIER,
 } from '../cache-ttl/pricing.js';
 import { detectMcpServers } from './mcp-detector.js';
 import { estimateMcpCosts } from './mcp-cost-estimator.js';
@@ -317,7 +317,8 @@ export function buildMcpContextInsights(deps: BuildInsightsDeps): McpContextCost
  * `__native__` row's tally minus any requests that still carried the
  * server's definitions — which self-corrects the migration day and any
  * hand-restored (drifted) period. Dollar figures use cached rates on
- * purpose: reads at 0.1x per request plus one 1.25x write per session.
+ * purpose: reads at the model's cache-read rate per request plus one 1.25x
+ * write per session.
  * Day-bucketed storage makes all of this an estimate, like every other
  * Optimize figure.
  *
@@ -338,6 +339,7 @@ function computeContextSavings(args: {
 }): McpContextSavings {
   const { db, contextStore, migrations, win, insights } = args;
   const basePrice = getBaseInputPricePerMillion(args.priceModel);
+  const readPrice = getCacheReadPricePerMillion(args.priceModel);
 
   // Potential: sum what code-mode-recommended servers carried in the window.
   let potentialTokens = 0;
@@ -347,7 +349,7 @@ function computeContextSavings(args: {
     const carried = args.measuredByKey.get(sanitizeServerName(ins.server))?.defBytesSum ?? 0;
     const tokens = estimateTokensFromBytes(carried);
     potentialTokens += tokens;
-    potentialUsd += (tokens / 1_000_000) * basePrice * CACHE_READ_MULTIPLIER + ins.cacheWriteEstUsd;
+    potentialUsd += (tokens / 1_000_000) * readPrice + ins.cacheWriteEstUsd;
   }
 
   // Realized: per bridged server, from the earliest migration timestamp. The
@@ -389,7 +391,7 @@ function computeContextSavings(args: {
     const sessions = countSessions(db, sinceWin);
     const tokens = defTokens * requests;
     const usd =
-      (tokens / 1_000_000) * basePrice * CACHE_READ_MULTIPLIER +
+      (tokens / 1_000_000) * readPrice +
       (defTokens / 1_000_000) * basePrice * CACHE_WRITE_5M_MULTIPLIER * sessions;
     byServer.push({ server, estTokens: tokens, estUsd: usd, requests });
     realizedTokens += tokens;

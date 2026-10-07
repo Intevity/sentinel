@@ -1,30 +1,25 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Check } from 'lucide-react';
 import type { AccountInfo, OAuthAccount, SwitchingMode } from '@sentinel/shared';
-import { planLabel } from '../lib/plan.js';
 import { getAccountStatus, type AccountStatus } from '../lib/account-status.js';
 import { accountColor } from '../lib/accountColor.js';
 import AccountColorDot from './AccountColorDot.js';
 
-/** Sentinel value used in place of an accountId when the user picks the
- *  Auto-switching pool view (Usage + Metrics tabs). */
-export const POOL_VIEW = '__pool__';
-
-/** Sentinel value for the "All accounts (everything)" cross-account rollup
- *  on the Metrics tab. Unlike `POOL_VIEW`, this ignores pool exclusions —
- *  it's a true total across every enrolled account. */
-export const ALL_VIEW = '__all__';
-
-export type PickerValue = string | typeof POOL_VIEW | typeof ALL_VIEW;
-
-/** A synthetic "aggregate across multiple accounts" row the picker can render
- *  at the top of its list. Callers pass whichever pool/all rows they want
- *  surfaced; the picker does not infer membership. */
-export interface PoolOption {
-  value: typeof POOL_VIEW | typeof ALL_VIEW;
-  primary: string;
-  secondary: string;
-}
+// Picker sentinels + option types live in lib/metricsScope.ts (a plain .ts
+// module) so their gating logic is unit-testable; re-exported here because
+// this component is their historical home and callers import them from it.
+import {
+  POOL_VIEW,
+  ALL_VIEW,
+  BYOK_VIEW,
+  firstDefaultOption,
+  formatPickerLabel,
+  accountSecondaryLine,
+  type PickerValue,
+  type PoolOption,
+} from '../lib/metricsScope.js';
+export { POOL_VIEW, ALL_VIEW, BYOK_VIEW, firstDefaultOption };
+export type { PickerValue, PoolOption };
 
 interface AccountViewPickerProps {
   accounts: AccountInfo[];
@@ -75,7 +70,7 @@ export default function AccountViewPicker({
   //   4. first account (last resort — should rarely happen)
   const resolved: PickerValue | null =
     value ??
-    poolOptions[0]?.value ??
+    firstDefaultOption(poolOptions)?.value ??
     findActiveId(accounts, activeAccount) ??
     accounts[0]?.id ??
     null;
@@ -92,8 +87,21 @@ export default function AccountViewPicker({
 
   if (accounts.length === 0 || !resolved) return null;
 
-  const currentLabel = formatValue(resolved, accounts, poolOptions);
+  const currentLabel = formatPickerLabel(resolved, accounts, poolOptions);
   const excludedSet = new Set(poolExcludedIds);
+
+  const renderPoolRow = (opt: PoolOption): React.ReactElement => (
+    <PickerRow
+      key={opt.value}
+      selected={resolved === opt.value}
+      primary={opt.primary}
+      secondary={opt.secondary}
+      onClick={() => {
+        onChange(opt.value);
+        setOpen(false);
+      }}
+    />
+  );
 
   return (
     <div ref={rootRef} className="relative pt-1 pb-2">
@@ -125,24 +133,13 @@ export default function AccountViewPicker({
           role="listbox"
           className="absolute left-0 top-full mt-1 z-30 min-w-[240px] rounded-xl bg-white dark:bg-[#2C2C2E] shadow-card-md border border-black/5 dark:border-white/10 py-1"
         >
-          {poolOptions.map((opt) => (
-            <PickerRow
-              key={opt.value}
-              selected={resolved === opt.value}
-              primary={opt.primary}
-              secondary={opt.secondary}
-              onClick={() => {
-                onChange(opt.value);
-                setOpen(false);
-              }}
-            />
-          ))}
+          {poolOptions.filter((o) => !o.trailing).map(renderPoolRow)}
           {accounts.map((acct) => (
             <PickerRow
               key={acct.id}
               selected={resolved === acct.id}
               primary={acct.displayName || acct.email}
-              secondary={secondaryLine(acct)}
+              secondary={accountSecondaryLine(acct)}
               color={accountColor(acct)}
               status={getAccountStatus({
                 isActive: acct.isActive,
@@ -155,6 +152,8 @@ export default function AccountViewPicker({
               }}
             />
           ))}
+          {/* Secondary scopes (BYOK) sit below the real accounts. */}
+          {poolOptions.filter((o) => o.trailing).map(renderPoolRow)}
         </div>
       )}
     </div>
@@ -228,31 +227,4 @@ function findActiveId(accounts: AccountInfo[], active: OAuthAccount | null): str
   if (byOrg) return byOrg.id;
   const byUuid = accounts.find((a) => a.accountUuid === active.accountUuid);
   return byUuid?.id ?? null;
-}
-
-function secondaryLine(acct: AccountInfo): string | undefined {
-  const plan = planLabel(acct.planType);
-  const org = acct.orgName;
-  if (org && plan) return `${org} · ${plan}`;
-  return org || plan || undefined;
-}
-
-function formatValue(
-  value: PickerValue,
-  accounts: AccountInfo[],
-  poolOptions: PoolOption[],
-): { primary: string; secondary?: string | undefined } {
-  if (value === POOL_VIEW || value === ALL_VIEW) {
-    const opt = poolOptions.find((o) => o.value === value);
-    if (opt) return { primary: opt.primary, secondary: opt.secondary };
-    // Fallback for the legacy case where a pool sentinel was selected but
-    // the caller hasn't listed it in poolOptions (shouldn't happen in practice).
-    return { primary: 'All accounts', secondary: `${accounts.length} accounts` };
-  }
-  const acct = accounts.find((a) => a.id === value);
-  if (!acct) return { primary: 'Unknown' };
-  return {
-    primary: acct.displayName || acct.email,
-    secondary: secondaryLine(acct),
-  };
 }

@@ -58,7 +58,12 @@ cd "$REPO_ROOT"
 
 # The running app holds its files open and macOS App Management will block the
 # rm -rf below. Quit it first so the swap is clean.
-if pgrep -f "Sentinel.app/Contents/MacOS/Sentinel" >/dev/null 2>&1; then
+#
+# Match the LOWERCASE binary name: the bundle is Sentinel.app but Tauri names
+# the executable `sentinel` (and the sidecar `sentinel-daemon`), so a pattern
+# ending in capital-S "Sentinel" silently never matches and this guard becomes
+# a no-op — letting the rm -rf below run against a live app.
+if pgrep -f "Sentinel\.app/Contents/MacOS/sentinel" >/dev/null 2>&1; then
   echo "✗ Sentinel is still running." >&2
   echo "  Quit it from the tray (or run: osascript -e 'quit app \"Sentinel\"')" >&2
   echo "  then re-run this script." >&2

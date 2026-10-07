@@ -173,6 +173,7 @@ describe('extractUsageFromJson', () => {
       cacheCreate1h: 200,
       cacheRead: 42,
       inputTokens: 5,
+      outputTokens: 0,
     });
   });
 
@@ -194,6 +195,7 @@ describe('extractUsageFromJson', () => {
       cacheCreate1h: 0,
       cacheRead: 0,
       inputTokens: 0,
+      outputTokens: 0,
     });
   });
 
@@ -210,6 +212,7 @@ describe('extractUsageFromJson', () => {
       cacheCreate1h: 0,
       cacheRead: 0,
       inputTokens: 0,
+      outputTokens: 0,
     });
   });
 
@@ -258,6 +261,7 @@ describe('SseUsageExtractor', () => {
       cacheCreate1h: 20,
       cacheRead: 7,
       inputTokens: 5,
+      outputTokens: 0,
     });
   });
 
@@ -298,6 +302,7 @@ describe('SseUsageExtractor', () => {
       cacheCreate1h: 150,
       cacheRead: 9,
       inputTokens: 1,
+      outputTokens: 42,
     });
   });
 

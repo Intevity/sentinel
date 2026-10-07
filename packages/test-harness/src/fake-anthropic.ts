@@ -84,8 +84,9 @@ export interface FakeAnthropic {
   setScenario(name: ScenarioName): void;
   /** Queue a single override applied to the next matching request, then popped. */
   queueResponse(endpoint: EndpointMatcher, override: FakeScenario): void;
-  /** Register a valid access token. Requests without Bearer or with unknown
-   *  tokens return 401. Call this before exercising authed endpoints. */
+  /** Register a valid credential, accepted as either an `Authorization: Bearer`
+   *  token or an `x-api-key`. Requests presenting neither, or an unknown value,
+   *  return 401. Call this before exercising authed endpoints. */
   registerToken(token: string, profile?: Partial<FakeProfile>): void;
   /** Return list of recorded requests for assertions. */
   requests(): FakeRequestRecord[];
@@ -560,12 +561,21 @@ export async function startFakeAnthropic(
     return queue.shift();
   }
 
+  /** Resolve the request's credential. The real API accepts either an
+   *  `Authorization: Bearer` OAuth token or an `x-api-key` API key, so the fake
+   *  honours both — a bring-your-own-key client sends only the latter and would
+   *  otherwise never get past auth here, making BYOK assertions vacuous. */
   function resolveAuth(req: IncomingMessage): FakeProfile | null {
     const header = req.headers['authorization'];
     const raw = Array.isArray(header) ? header[0] : header;
-    if (!raw || !raw.startsWith('Bearer ')) return null;
-    const token = raw.slice('Bearer '.length);
-    return tokens.get(token) ?? null;
+    if (raw && raw.startsWith('Bearer ')) {
+      const profile = tokens.get(raw.slice('Bearer '.length));
+      if (profile) return profile;
+    }
+    const keyHeader = req.headers['x-api-key'];
+    const apiKey = Array.isArray(keyHeader) ? keyHeader[0] : keyHeader;
+    if (apiKey) return tokens.get(apiKey) ?? null;
+    return null;
   }
 
   function requireAuth(req: IncomingMessage, res: ServerResponse): boolean {

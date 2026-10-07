@@ -23,6 +23,7 @@ import { join } from 'path';
 import type { SurfaceState } from '@sentinel/shared';
 import type { IpcServer } from './ipc.js';
 import { getClaudeJsonPath } from './claude-state.js';
+import { resolveOpencodeInstallMarkers } from './opencode-config.js';
 
 const DEFAULT_INTERVAL_MS = 20_000;
 
@@ -33,6 +34,11 @@ export interface SurfaceDetectorDeps {
   probeDesktopInstalled: () => boolean | Promise<boolean>;
   probeDesktopActivated: () => boolean | Promise<boolean>;
   probeDesktopHealthy: () => boolean;
+  probeOpencodeInstalled: () => boolean | Promise<boolean>;
+  probeOpencodeActivated: () => boolean | Promise<boolean>;
+  /** True when a configured plugin rewrites opencode's provider base URL at
+   *  runtime, so the config Sentinel wrote is not what opencode uses. */
+  probeOpencodePluginOverride: () => boolean | Promise<boolean>;
   /** Poll interval; defaults to 20s. */
   intervalMs?: number;
 }
@@ -51,11 +57,22 @@ export function createSurfaceDetector(deps: SurfaceDetectorDeps): SurfaceDetecto
   let last: SurfaceState | null = null;
 
   const compute = async (): Promise<SurfaceState> => {
-    const [cliInstalled, cliActivated, desktopInstalled, desktopActivated] = await Promise.all([
+    const [
+      cliInstalled,
+      cliActivated,
+      desktopInstalled,
+      desktopActivated,
+      opencodeInstalled,
+      opencodeActivated,
+      opencodePluginOverride,
+    ] = await Promise.all([
       deps.probeCliInstalled(),
       deps.probeCliActivated(),
       deps.probeDesktopInstalled(),
       deps.probeDesktopActivated(),
+      deps.probeOpencodeInstalled(),
+      deps.probeOpencodeActivated(),
+      deps.probeOpencodePluginOverride(),
     ]);
     return {
       cli: { installed: cliInstalled, activated: cliActivated },
@@ -63,6 +80,11 @@ export function createSurfaceDetector(deps: SurfaceDetectorDeps): SurfaceDetecto
         installed: desktopInstalled,
         activated: desktopActivated,
         healthy: deps.probeDesktopHealthy(),
+      },
+      opencode: {
+        installed: opencodeInstalled,
+        activated: opencodeActivated,
+        pluginOverride: opencodePluginOverride,
       },
     };
   };
@@ -210,6 +232,19 @@ function defaultDesktopMarkers(): string[] {
 /** Claude Desktop app presence. `markers` is injectable for testing. */
 export function isDesktopInstalled(
   markers: string[] = defaultDesktopMarkers(),
+  existsFn: (p: string) => boolean = existsSync,
+): boolean {
+  return anyExists(markers, existsFn);
+}
+
+/** opencode presence: its config dir, install dir, or data dir. `markers` is
+ *  injectable for testing. */
+export function isOpencodeInstalled(
+  markers: string[] = resolveOpencodeInstallMarkers(
+    process.platform,
+    process.env,
+    process.env.SENTINEL_TEST_HOME ?? homedir(),
+  ),
   existsFn: (p: string) => boolean = existsSync,
 ): boolean {
   return anyExists(markers, existsFn);

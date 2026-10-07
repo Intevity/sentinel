@@ -3,19 +3,11 @@ import type { MetricsSummary, OptimizeRangePreset } from '@sentinel/shared';
 import { sendToSentinel, onDaemonMessage } from '../lib/ipc.js';
 import { windowForRange } from '../lib/dateRange.js';
 
-/** Describes which accounts a metrics rollup should cover.
- *  - `active`: follow whatever Claude Code currently has bound
- *  - `account`: pin to a specific enrolled account
- *  - `pool`: aggregate across the Auto-switching pool (enrolled minus exclusions)
- *  - `all`: aggregate across every enrolled account, ignoring exclusions
- *
- *  Pool membership is computed at the call site (App.tsx) and passed in as
- *  `accountIds` so the daemon never has to know what "pool" means. */
-export type MetricsScope =
-  | { kind: 'active' }
-  | { kind: 'account'; id: string }
-  | { kind: 'pool'; label: string; accountIds: string[] }
-  | { kind: 'all'; label: string; accountIds: string[] };
+// MetricsScope lives in lib/metricsScope.ts (plain .ts, unit-testable
+// alongside metricsViewToScope); re-exported here because this hook is its
+// historical home and callers import it from here.
+import type { MetricsScope } from '../lib/metricsScope.js';
+export type { MetricsScope };
 
 interface UseMetricsSummaryResult {
   summary: MetricsSummary | null;

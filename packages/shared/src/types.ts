@@ -1063,7 +1063,63 @@ export interface ClaudeDesktopDriftDetails {
 export interface SurfaceState {
   cli: { installed: boolean; activated: boolean };
   desktop: { installed: boolean; activated: boolean; healthy: boolean };
+  /** opencode. With an Anthropic API key it is bring-your-own-key: Sentinel
+   *  forwards the user's own key and observes the traffic. With the
+   *  `opencode-claude-auth` plugin (Claude subscription sign-in) its requests
+   *  present Claude Code's identity and are served from Sentinel's account
+   *  pool like any other Claude Code traffic.
+   *  `pluginOverride` is true when opencode is configured with a plugin that
+   *  rewrites the provider base URL at startup (`opencode-with-claude` points
+   *  it at a local Meridian proxy), which silently defeats the config Sentinel
+   *  writes — the card must report that rather than claiming to be routed. */
+  opencode: { installed: boolean; activated: boolean; pluginOverride: boolean };
 }
+
+/** How opencode's global config currently points its Anthropic provider.
+ *
+ *  - `inactive` — no `provider.anthropic.options.baseURL`, so opencode talks to
+ *    Anthropic directly and Sentinel sees nothing.
+ *  - `active` — points at Sentinel's proxy.
+ *  - `foreign-base-url` — points somewhere else (another gateway or router).
+ *  - `plugin-override` — points at Sentinel, but a configured plugin rewrites
+ *    the base URL at runtime, so the on-disk value is not what opencode uses.
+ *  - `unwritable` — Sentinel will not rewrite the file (see
+ *    {@link OpencodeUnwritableReason}), so activation must be done by hand. */
+export type OpencodeConfigState =
+  | 'inactive'
+  | 'active'
+  | 'foreign-base-url'
+  | 'plugin-override'
+  | 'unwritable';
+
+export interface OpencodeConfigDetails {
+  state: OpencodeConfigState;
+  /** Absolute path of the config file Sentinel would write, whether or not it
+   *  exists yet. */
+  configPath: string;
+  /** `provider.anthropic.options.baseURL` as found on disk, or null. */
+  baseUrl: string | null;
+  /** Plugin entries that rewrite the provider base URL at runtime, verbatim
+   *  from the config's `plugin` array. Empty when none are configured. */
+  overridingPlugins: string[];
+  /** The snippet to paste when `state === 'unwritable'`; null otherwise. */
+  manualSnippet: string | null;
+  /** Why the file is `unwritable`; null in every other state. The UI must name
+   *  the actual cause rather than guessing. */
+  unwritableReason: OpencodeUnwritableReason | null;
+  /** The user's own base URL that Enable replaced (a corporate gateway, say),
+   *  saved by Sentinel and restored on Disable. Null when Enable replaced
+   *  nothing, or routing is not active. */
+  previousBaseUrl: string | null;
+}
+
+/** Why Sentinel declines to rewrite opencode's config.
+ *
+ *  - `comments` — the file carries JSONC comments a JSON round-trip would
+ *    silently delete.
+ *  - `unparseable` — the file is not valid JSON(C) at all (trailing commas are
+ *    tolerated, so this is a real syntax error). */
+export type OpencodeUnwritableReason = 'comments' | 'unparseable';
 
 /** Health of the proxy ingestion path that feeds the Optimize tab.
  *
@@ -1804,6 +1860,21 @@ export interface OverageHeaders {
  */
 export const FABLE_WEEKLY_WINDOW = 'unified-7d_oi';
 
+/** Reserved attribution key for requests that arrive at the proxy carrying the
+ *  client's own API key ("bring your own key"). Real Sentinel account ids are
+ *  UUIDs, so this value can never collide with one — which is the point: a
+ *  foreign key's usage, rate-limit windows, and spend must never be filed
+ *  against a pooled account. Defined here (not in the daemon) so the app can
+ *  scope Metrics queries to it. */
+export const BYOK_ACCOUNT_ID = 'byok';
+
+/** Result of `get_byok_state`: whether any usage has ever been recorded under
+ *  {@link BYOK_ACCOUNT_ID}. The app uses it to gate the "API key" scope row in
+ *  the Metrics picker — shown only when there is something to show. */
+export interface ByokState {
+  hasUsage: boolean;
+}
+
 /**
  * A single rate limit window parsed from anthropic-ratelimit-* response headers.
  *
@@ -1855,8 +1926,9 @@ export interface CacheHitRate {
  * from the proxy (not OTEL). Captures both the client's cache_control
  * markers and upstream's actual per-TTL token writes so the Metrics tab
  * can show what was asked for side by side with what landed. Costs are
- * precomputed at write-time using fixed multipliers (5m write 1.25x,
- * 1h write 2.0x, read 0.1x) against a base input $/MTok table.
+ * precomputed at write-time from the per-model price table: writes at fixed
+ * multipliers of input (5m 1.25x, 1h 2.0x), reads at the model's own
+ * cache-read $/MTok.
  */
 export interface CacheTtlDayRow {
   /** Count of request blocks tagged `{type: 'ephemeral'}` (5m default). */

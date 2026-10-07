@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, renameSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { getDigestTokens } from '@sentinel/shared';
+import { getBaseInputPricePerMillion } from './cache-ttl/pricing.js';
 import type {
   AccountInfo,
   UsageEvent,
@@ -105,7 +106,9 @@ CREATE TABLE IF NOT EXISTS usage_events (
   output_tokens INTEGER,
   cache_read    INTEGER,
   cache_create  INTEGER,
-  duration_ms   INTEGER
+  duration_ms   INTEGER,
+  request_id    TEXT,
+  origin        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS overage_events (
@@ -279,6 +282,30 @@ CREATE TABLE IF NOT EXISTS cache_ttl_events (
 );
 CREATE INDEX IF NOT EXISTS idx_cache_ttl_account_ts ON cache_ttl_events(account_id, ts);
 CREATE INDEX IF NOT EXISTS idx_cache_ttl_session    ON cache_ttl_events(account_id, session_id, ts);
+
+-- Usage events staged by the proxy for clients that present a claude-cli
+-- user-agent (and so *may* report their own usage via OTEL). An OTEL
+-- api_request event carrying the same Anthropic request-id claims (deletes)
+-- the row; the pending-usage sweeper commits unclaimed rows into
+-- usage_events once the grace window passes. Rows live seconds to minutes;
+-- surviving a daemon restart is the point of putting them on disk (the
+-- short-lived "claude --print" child is exactly the client whose rows are
+-- staged when the daemon goes down).
+CREATE TABLE IF NOT EXISTS pending_usage_events (
+  request_id    TEXT PRIMARY KEY,
+  staged_at     INTEGER NOT NULL,
+  ts            INTEGER NOT NULL,
+  account_id    TEXT NOT NULL,
+  session_id    TEXT,
+  model         TEXT NOT NULL,
+  cost_usd      REAL,
+  input_tokens  INTEGER,
+  output_tokens INTEGER,
+  cache_read    INTEGER,
+  cache_create  INTEGER,
+  duration_ms   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_pending_usage_staged ON pending_usage_events(staged_at);
 
 -- Findings surfaced by the security scanner. Secrets are never stored
 -- verbatim — only the masked form (first 4 + last 4 + length) plus a
@@ -610,6 +637,27 @@ export function getDb(
     _db.exec('ALTER TABLE tool_events ADD COLUMN decision_type TEXT');
   }
 
+  // Migrate usage_events for the request_id column (added with staged-usage
+  // OTEL dedupe). The partial UNIQUE index is what makes the proxy-vs-OTEL
+  // write race idempotent: whichever writer lands second drops on the index.
+  // Created here (not in SCHEMA) so legacy tables get it after the ALTER.
+  const ueCols = _db.pragma('table_info(usage_events)') as Array<{ name: string }>;
+  if (!ueCols.some((c) => c.name === 'request_id')) {
+    _db.exec('ALTER TABLE usage_events ADD COLUMN request_id TEXT');
+  }
+  _db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_request_unique
+     ON usage_events(request_id) WHERE request_id IS NOT NULL`,
+  );
+  // Migrate usage_events for the origin column: 'proxy' marks a row the
+  // staged-usage sweeper committed (no OTEL report had claimed it yet), so a
+  // late OTEL api_request without request_id can adopt that row instead of
+  // adding a second one. Legacy rows stay NULL, which only means "not
+  // adoptable" — nothing about existing accounting changes.
+  if (!ueCols.some((c) => c.name === 'origin')) {
+    _db.exec('ALTER TABLE usage_events ADD COLUMN origin TEXT');
+  }
+
   // Migrate security_events for the `approved` column (added in v1.2 for
   // the approve-in-notification flow). Existing rows default to 0.
   const seCols = _db.pragma('table_info(security_events)') as Array<{ name: string }>;
@@ -817,8 +865,11 @@ export function getDb(
     .prepare('SELECT 1 AS ok FROM _migrations WHERE name = ?')
     .get('optimization_events_token_backfill_v1') as { ok: number } | undefined;
   if (!tokenBackfillApplied) {
-    const BASE_ACTUAL_OPUS = 15; // $/MTok, matches getBaseInputPricePerMillion('claude-opus-4')
-    const BASE_HYPO_HAIKU = 1; // $/MTok, matches 'claude-haiku-4'
+    // Rates of the models these historical rows were priced against when they
+    // were written (Opus 4.x at $15, Haiku 4.5 at $1), read from the one price
+    // table rather than restated here.
+    const BASE_ACTUAL_OPUS = getBaseInputPricePerMillion('claude-opus-4-1');
+    const BASE_HYPO_HAIKU = getBaseInputPricePerMillion('claude-haiku-4-5');
 
     const rows = _db
       .prepare(
@@ -1203,6 +1254,9 @@ export function markAccountRemoved(db: Database.Database, id: string): boolean {
  */
 export function purgeAccount(db: Database.Database, id: string): boolean {
   db.prepare('DELETE FROM usage_events    WHERE account_id = ?').run(id);
+  // Staged rows would otherwise be committed by the sweeper after the purge
+  // and resurrect usage under the purged id.
+  db.prepare('DELETE FROM pending_usage_events WHERE account_id = ?').run(id);
   db.prepare('DELETE FROM rate_limits     WHERE account_id = ?').run(id);
   db.prepare('DELETE FROM overage_events  WHERE account_id = ?').run(id);
   db.prepare('DELETE FROM notifications   WHERE account_id = ?').run(id);
@@ -1335,16 +1389,30 @@ export function setAccountColor(db: Database.Database, id: string, color: string
 
 // ─── Usage event queries ──────────────────────────────────────────────────────
 
-export type InsertUsageEvent = Omit<UsageEvent, 'id'>;
+export type InsertUsageEvent = Omit<UsageEvent, 'id'> & {
+  /** Anthropic response `request-id`. The partial UNIQUE index on this column
+   *  is the proxy↔OTEL dedupe key; null (unknown id) rows never collide. */
+  requestId?: string | null;
+  /** Which writer produced the row when it matters for later dedupe:
+   *  'proxy' for a staged row the sweeper committed. Null otherwise. */
+  origin?: 'proxy' | null;
+};
 
-export function insertUsageEvent(db: Database.Database, event: InsertUsageEvent): number {
+/**
+ * Insert a usage event. `INSERT OR IGNORE` against the partial unique index
+ * on request_id, so whichever of the two writers (proxy stage-commit, OTEL
+ * receiver) lands second for the same request drops silently. Returns the new
+ * row id, or `null` when the insert was skipped — the OTEL receiver uses the
+ * null to suppress a redundant metrics broadcast.
+ */
+export function insertUsageEvent(db: Database.Database, event: InsertUsageEvent): number | null {
   const result = db
     .prepare(
       `
-      INSERT INTO usage_events
-        (ts, account_id, session_id, model, cost_usd, input_tokens, output_tokens, cache_read, cache_create, duration_ms)
+      INSERT OR IGNORE INTO usage_events
+        (ts, account_id, session_id, model, cost_usd, input_tokens, output_tokens, cache_read, cache_create, duration_ms, request_id, origin)
       VALUES
-        (@ts, @accountId, @sessionId, @model, @costUsd, @inputTokens, @outputTokens, @cacheRead, @cacheCreate, @durationMs)
+        (@ts, @accountId, @sessionId, @model, @costUsd, @inputTokens, @outputTokens, @cacheRead, @cacheCreate, @durationMs, @requestId, @origin)
     `,
     )
     .run({
@@ -1358,8 +1426,294 @@ export function insertUsageEvent(db: Database.Database, event: InsertUsageEvent)
       cacheRead: event.cacheRead ?? null,
       cacheCreate: event.cacheCreate ?? null,
       durationMs: event.durationMs ?? null,
+      requestId: event.requestId ?? null,
+      origin: event.origin ?? null,
     });
+  if (result.changes === 0) return null;
   return Number(result.lastInsertRowid);
+}
+
+// ─── Pending (staged) usage events ────────────────────────────────────────────
+//
+// The proxy cannot tell whether a claude-cli-UA client will report its own
+// usage over OTEL (the real Claude Code CLI does; opencode plugins presenting
+// the same UA do not). Instead of predicting, it stages the observed usage
+// here keyed by Anthropic's request-id. The OTEL receiver claims (deletes)
+// the row when its api_request event for the same id arrives; the sweeper
+// commits unclaimed rows to usage_events after a grace window.
+
+export interface PendingUsageEvent {
+  requestId: string;
+  stagedAt: number;
+  ts: number;
+  accountId: string;
+  sessionId: string | null;
+  model: string;
+  costUsd: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheRead: number | null;
+  cacheCreate: number | null;
+  durationMs: number | null;
+}
+
+/** Stage a usage event awaiting OTEL claim-or-timeout. `INSERT OR IGNORE` on
+ *  the request_id primary key: a duplicate stage (upstream retry reusing an
+ *  id) keeps the first observation. */
+export function stagePendingUsageEvent(db: Database.Database, ev: PendingUsageEvent): void {
+  db.prepare(
+    `
+    INSERT OR IGNORE INTO pending_usage_events
+      (request_id, staged_at, ts, account_id, session_id, model, cost_usd, input_tokens, output_tokens, cache_read, cache_create, duration_ms)
+    VALUES
+      (@requestId, @stagedAt, @ts, @accountId, @sessionId, @model, @costUsd, @inputTokens, @outputTokens, @cacheRead, @cacheCreate, @durationMs)
+  `,
+  ).run(ev);
+}
+
+/** OTEL owns this request's accounting: discard the staged row. Returns true
+ *  when a row was actually claimed (false: already committed or never staged). */
+export function claimPendingUsageEvent(db: Database.Database, requestId: string): boolean {
+  const result = db.prepare('DELETE FROM pending_usage_events WHERE request_id = ?').run(requestId);
+  return result.changes > 0;
+}
+
+// ─── Fingerprint fallback (OTEL api_request without request_id) ──────────────
+//
+// Claude Code builds that predate the `request_id` attribute on the
+// `api_request` log event (and exporter paths that drop it) report usage the
+// staged row cannot be keyed against. Without a fallback both writers land:
+// the OTEL row immediately and the proxy's staged row when the sweeper
+// commits it, doubling cost and tokens for ordinary Claude Code traffic.
+// The fallback key is the request's observable usage: exact token counts, a
+// compatible model and an event time within a few seconds. Both writers read
+// those numbers off the same Anthropic response, so they agree exactly.
+
+/** How far apart (ms) the proxy's response-end timestamp and the OTEL event
+ *  time may be for a fingerprint match. Both are taken as the response
+ *  completes on the same machine, so a few seconds is generous. */
+export const USAGE_FINGERPRINT_WINDOW_MS = 5_000;
+
+/** The usage an OTEL `api_request` event reports, as the fallback key. */
+export interface UsageFingerprint {
+  ts: number;
+  /** Account the caller would attribute the row to. Preferred, not required:
+   *  without a request_id the OTEL receiver can only guess the active
+   *  account, while the proxy row records the token that actually served
+   *  the request (they differ in round-robin mode). */
+  accountId: string;
+  model: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheRead: number | null;
+  cacheCreate: number | null;
+}
+
+/** Strip the context-window suffix (`claude-opus-4-6[1m]`) a client may
+ *  report but the response model never carries. */
+function baseModel(model: string): string {
+  return model.replace(/\[[^\]]*\]$/, '').replace(/-latest$/, '');
+}
+
+/** Same model, or one is the dated form of the other (`claude-sonnet-4-5`
+ *  vs `claude-sonnet-4-5-20250929`, or the `-latest` alias
+ *  `claude-3-5-haiku-latest` vs `claude-3-5-haiku-20241022`): the request
+ *  alias and the response model can differ that way. `unknown` (attribute absent) defers to the
+ *  token counts. */
+export function usageModelsCompatible(a: string, b: string): boolean {
+  const x = baseModel(a);
+  const y = baseModel(b);
+  if (x === y || x === 'unknown' || y === 'unknown') return true;
+  return x.startsWith(`${y}-`) || y.startsWith(`${x}-`);
+}
+
+/** A fingerprint is only usable when it carries real token counts: an event
+ *  with no counts matches anything and must never claim. */
+function fingerprintUsable(fp: UsageFingerprint): boolean {
+  return fp.inputTokens !== null && fp.outputTokens !== null;
+}
+
+/** WHERE fragment + params shared by both directions of the fallback. Cache
+ *  counts compare as 0 when absent: the proxy always records them, the OTEL
+ *  event may omit a zero. */
+function fingerprintWhere(fp: UsageFingerprint): { sql: string; params: unknown[] } {
+  return {
+    sql: `input_tokens = ? AND output_tokens = ?
+      AND COALESCE(cache_read, 0) = ? AND COALESCE(cache_create, 0) = ?
+      AND ts BETWEEN ? AND ?`,
+    // Number(): a COALESCE expression has no column affinity, so SQLite
+    // compares integer 0 with text '0' as unequal. Callers coerce already;
+    // this keeps a stringified count from silently missing the match.
+    params: [
+      Number(fp.inputTokens),
+      Number(fp.outputTokens),
+      Number(fp.cacheRead ?? 0),
+      Number(fp.cacheCreate ?? 0),
+      fp.ts - USAGE_FINGERPRINT_WINDOW_MS,
+      fp.ts + USAGE_FINGERPRINT_WINDOW_MS,
+    ],
+  };
+}
+
+/**
+ * OTEL `api_request` without a request_id: claim (delete) the ONE staged row
+ * whose usage matches, preferring the same account, then the oldest staged.
+ * Returns the claimed row so the caller can link its OTEL row to that
+ * request_id (so the same row can never be matched again) and attribute it
+ * to the account whose token served the request. Null when nothing matches.
+ */
+export function claimPendingUsageByFingerprint(
+  db: Database.Database,
+  fp: UsageFingerprint,
+): PendingUsageEvent | null {
+  if (!fingerprintUsable(fp)) return null;
+  const where = fingerprintWhere(fp);
+  const rows = db
+    .prepare(
+      `SELECT * FROM pending_usage_events WHERE ${where.sql}
+       ORDER BY (account_id = ?) DESC, staged_at ASC, ts ASC`,
+    )
+    .all(...where.params, fp.accountId) as Array<Record<string, unknown>>;
+  const match = rows.find((r) => usageModelsCompatible(r['model'] as string, fp.model));
+  if (!match) return null;
+  db.prepare('DELETE FROM pending_usage_events WHERE request_id = ?').run(match['request_id']);
+  return pendingFromRow(match);
+}
+
+function pendingFromRow(r: Record<string, unknown>): PendingUsageEvent {
+  return {
+    requestId: r['request_id'] as string,
+    stagedAt: r['staged_at'] as number,
+    ts: r['ts'] as number,
+    accountId: r['account_id'] as string,
+    sessionId: r['session_id'] as string | null,
+    model: r['model'] as string,
+    costUsd: r['cost_usd'] as number | null,
+    inputTokens: r['input_tokens'] as number | null,
+    outputTokens: r['output_tokens'] as number | null,
+    cacheRead: r['cache_read'] as number | null,
+    cacheCreate: r['cache_create'] as number | null,
+    durationMs: r['duration_ms'] as number | null,
+  };
+}
+
+/**
+ * Reverse order of {@link claimPendingUsageByFingerprint}: the OTEL row
+ * (no request_id) landed before the proxy staged, or before its claim could
+ * find the staged row. Links the ONE matching unlinked usage row to the
+ * staged request_id (preferring the same account, then the oldest row) and
+ * moves it to the staged row's account. Returns the linked row's previous
+ * account, or undefined when no unlinked row accounts for the request.
+ */
+function linkUnlinkedUsageRow(
+  db: Database.Database,
+  staged: PendingUsageEvent,
+): string | undefined {
+  if (!fingerprintUsable(staged)) return undefined;
+  const where = fingerprintWhere(staged);
+  const rows = db
+    .prepare(
+      `SELECT id, account_id, model FROM usage_events
+       WHERE request_id IS NULL AND ${where.sql}
+       ORDER BY (account_id = ?) DESC, id ASC`,
+    )
+    .all(...where.params, staged.accountId) as Array<{
+    id: number;
+    account_id: string;
+    model: string;
+  }>;
+  const match = rows.find((r) => usageModelsCompatible(r.model, staged.model));
+  if (!match) return undefined;
+  db.prepare('UPDATE usage_events SET request_id = ?, account_id = ? WHERE id = ?').run(
+    staged.requestId,
+    staged.accountId,
+    match.id,
+  );
+  return match.account_id;
+}
+
+/**
+ * Late OTEL `api_request` without request_id: the sweeper already committed
+ * the proxy's staged row for this request (the exporter was delayed past the
+ * grace window). Adopt the ONE matching sweeper-committed row (origin
+ * 'proxy', same fingerprint, preferring the same account, then the oldest)
+ * instead of inserting a second row: OTEL's figures replace the proxy's
+ * cost / session / duration, and the origin clears so the row can never be
+ * adopted twice. The row keeps its request_id and the account whose token
+ * served the request. Returns true when a row was adopted.
+ */
+export function adoptCommittedProxyUsage(
+  db: Database.Database,
+  fp: UsageFingerprint & {
+    costUsd: number | null;
+    sessionId: string | null;
+    durationMs: number | null;
+  },
+): boolean {
+  if (!fingerprintUsable(fp)) return false;
+  const where = fingerprintWhere(fp);
+  const rows = db
+    .prepare(
+      `SELECT id, model FROM usage_events
+       WHERE origin = 'proxy' AND ${where.sql}
+       ORDER BY (account_id = ?) DESC, id ASC`,
+    )
+    .all(...where.params, fp.accountId) as Array<{ id: number; model: string }>;
+  const match = rows.find((r) => usageModelsCompatible(r.model, fp.model));
+  if (!match) return false;
+  db.prepare(
+    `UPDATE usage_events
+     SET cost_usd = COALESCE(?, cost_usd), session_id = COALESCE(?, session_id),
+         duration_ms = COALESCE(?, duration_ms), origin = NULL
+     WHERE id = ?`,
+  ).run(fp.costUsd, fp.sessionId, fp.durationMs, match.id);
+  return true;
+}
+
+/** All staged rows, oldest first. Tests and diagnostics. */
+export function getPendingUsageEvents(db: Database.Database): PendingUsageEvent[] {
+  const rows = db.prepare('SELECT * FROM pending_usage_events ORDER BY staged_at').all() as Array<
+    Record<string, unknown>
+  >;
+  return rows.map(pendingFromRow);
+}
+
+/**
+ * Commit staged rows whose grace window has passed (no OTEL claim arrived)
+ * into usage_events, carrying their request_id. One transaction; the insert
+ * is `INSERT OR IGNORE`, so a row whose request_id already landed via OTEL
+ * (lost-claim race) is deleted without double counting. Returns the number
+ * of rows that actually landed — the caller's broadcast signal.
+ */
+export function commitStalePendingUsage(
+  db: Database.Database,
+  opts: { graceMs: number; now?: number },
+): number {
+  const cutoff = (opts.now ?? Date.now()) - opts.graceMs;
+  const commit = db.transaction((): number => {
+    const stale = db
+      .prepare('SELECT * FROM pending_usage_events WHERE staged_at <= ? ORDER BY staged_at')
+      .all(cutoff) as Array<Record<string, unknown>>;
+    const alreadyCommitted = db.prepare('SELECT 1 FROM usage_events WHERE request_id = ?');
+    let landed = 0;
+    for (const r of stale) {
+      const staged = pendingFromRow(r);
+      db.prepare('DELETE FROM pending_usage_events WHERE request_id = ?').run(staged.requestId);
+      // OTEL with this request_id already landed (lost-claim race): done.
+      if (alreadyCommitted.get(staged.requestId)) continue;
+      // An OTEL row without a request_id already accounts for this request
+      // (it arrived before the proxy staged): link it instead of adding a
+      // second row. A changed account is visible, so it counts as landed.
+      const previousAccount = linkUnlinkedUsageRow(db, staged);
+      if (previousAccount !== undefined) {
+        if (previousAccount !== staged.accountId) landed += 1;
+        continue;
+      }
+      if (insertUsageEvent(db, { ...staged, origin: 'proxy' }) !== null) landed += 1;
+    }
+    return landed;
+  });
+  return commit();
 }
 
 export function getUsageEvents(
