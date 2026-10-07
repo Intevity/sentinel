@@ -2,6 +2,8 @@ import React from 'react';
 import { Monitor, AlertTriangle } from 'lucide-react';
 import { useSurfaceState } from '../hooks/useSurfaceState.js';
 import { useClaudeDesktopDrift } from '../hooks/useClaudeDesktopDrift.js';
+import { useSurfaceBannerDismissal } from '../hooks/useSurfaceBannerDismissal.js';
+import SurfaceCardDismissButton from './SurfaceCardDismissButton.js';
 
 /**
  * Per-surface status card for the Claude **Desktop** app, sibling to
@@ -14,19 +16,25 @@ import { useClaudeDesktopDrift } from '../hooks/useClaudeDesktopDrift.js';
  *  - routed through Sentinel (active) → hidden; Disable lives in Settings → General
  *  - installed, not routed → Enable
  *  - routed to another gateway (drift) → Re-apply (recovery)
+ *  - dismissed (✕) → hidden until the app is routed through Sentinel; the
+ *    Settings → General toggle stays available
  */
 export default function DesktopSurfaceCard(): React.ReactElement | null {
   const { state } = useSurfaceState();
   const { details, acting, actionError, activate, reapply } = useClaudeDesktopDrift();
+  const driftState = details?.state ?? 'inactive';
+  const { dismissed, dismiss } = useSurfaceBannerDismissal('desktop', driftState === 'active');
 
   if (!state?.desktop.installed) return null;
 
-  const driftState = details?.state ?? 'inactive';
   // Once routed through Sentinel the banner has nothing actionable left, so
   // hide it instead of persisting a Disable button (mirrors ActivationBanner's
   // active-state gate). Disabling now lives in Settings → General. The card
   // only surfaces the two actionable states below.
   if (driftState === 'active') return null;
+  // The user chose not to route the desktop app; the toggle in Settings →
+  // General remains the way to change their mind.
+  if (dismissed) return null;
 
   const foreign = driftState === 'foreign-gateway';
 
@@ -81,6 +89,7 @@ export default function DesktopSurfaceCard(): React.ReactElement | null {
               {acting ? 'Enabling…' : 'Enable'}
             </button>
           )}
+          <SurfaceCardDismissButton surfaceName="Claude Desktop" onDismiss={dismiss} />
         </div>
       </div>
     </div>

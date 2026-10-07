@@ -3,6 +3,8 @@ import { Terminal, AlertTriangle } from 'lucide-react';
 import { useSurfaceState } from '../hooks/useSurfaceState.js';
 import { useOpencodeConfig } from '../hooks/useOpencodeConfig.js';
 import { opencodeCardCopy } from '../lib/opencodeCopy.js';
+import { useSurfaceBannerDismissal } from '../hooks/useSurfaceBannerDismissal.js';
+import SurfaceCardDismissButton from './SurfaceCardDismissButton.js';
 
 /**
  * Per-surface status card for **opencode**, sibling to {@link DesktopSurfaceCard}.
@@ -23,6 +25,8 @@ import { opencodeCardCopy } from '../lib/opencodeCopy.js';
  *    does not parse)
  *  - foreign-base-url → Enable, saying the user's URL comes back on Disable
  *  - installed, not routed → Enable
+ *  - dismissed (✕) → hidden until opencode is routed through Sentinel; the
+ *    Settings → General toggle stays available
  *
  * The config path is always shown: the daemon resolves it from its own
  * environment, which the GUI launches, so an `OPENCODE_CONFIG` exported only in
@@ -31,12 +35,16 @@ import { opencodeCardCopy } from '../lib/opencodeCopy.js';
 export default function OpencodeSurfaceCard(): React.ReactElement | null {
   const { state } = useSurfaceState();
   const { details, acting, actionError, activate } = useOpencodeConfig();
+  const configState = details?.state ?? 'inactive';
+  const { dismissed, dismiss } = useSurfaceBannerDismissal('opencode', configState === 'active');
 
   if (!state?.opencode.installed) return null;
 
-  const configState = details?.state ?? 'inactive';
   // Nothing actionable once routed — mirrors DesktopSurfaceCard's active gate.
   if (configState === 'active') return null;
+  // The user chose not to route opencode; the toggle in Settings → General
+  // remains the way to change their mind.
+  if (dismissed) return null;
 
   const blocked = configState === 'plugin-override' || configState === 'unwritable';
   const foreign = configState === 'foreign-base-url';
@@ -90,6 +98,7 @@ export default function OpencodeSurfaceCard(): React.ReactElement | null {
               {acting ? 'Enabling…' : 'Enable'}
             </button>
           )}
+          <SurfaceCardDismissButton surfaceName="opencode" onDismiss={dismiss} />
         </div>
       </div>
     </div>
