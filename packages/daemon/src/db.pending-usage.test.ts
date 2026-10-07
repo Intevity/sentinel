@@ -21,6 +21,7 @@ import {
   getPendingUsageEvents,
   commitStalePendingUsage,
   claimPendingUsageByFingerprint,
+  adoptCommittedProxyUsage,
   usageModelsCompatible,
   purgeAccount,
   USAGE_FINGERPRINT_WINDOW_MS,
@@ -260,6 +261,19 @@ describe('pending usage events', () => {
       // A shared prefix that is not a dated suffix must not match.
       expect(usageModelsCompatible('claude-opus-4', 'claude-opus-4x')).toBe(false);
     });
+
+    it('matches a -latest alias against the dated response model', () => {
+      expect(usageModelsCompatible('claude-3-5-haiku-latest', 'claude-3-5-haiku-20241022')).toBe(
+        true,
+      );
+      expect(usageModelsCompatible('claude-3-5-haiku-20241022', 'claude-3-5-haiku-latest')).toBe(
+        true,
+      );
+      // The alias still names one family: it must not match another model.
+      expect(usageModelsCompatible('claude-3-5-haiku-latest', 'claude-3-5-sonnet-20241022')).toBe(
+        false,
+      );
+    });
   });
 
   describe('claimPendingUsageByFingerprint (OTEL without request_id)', () => {
@@ -291,6 +305,17 @@ describe('pending usage events', () => {
       ];
       for (const fp of misses) expect(claimPendingUsageByFingerprint(db, fp)).toBeNull();
       expect(getPendingUsageEvents(db)).toHaveLength(1);
+    });
+
+    it('matches stringified token counts (the COALESCE side has no column affinity)', () => {
+      stagePendingUsageEvent(db, makePending({ cacheRead: 0, cacheCreate: 0 }));
+      const stringified = fingerprint({
+        inputTokens: '10',
+        outputTokens: '1',
+        cacheRead: '0',
+        cacheCreate: '0',
+      } as unknown as Partial<UsageFingerprint>);
+      expect(claimPendingUsageByFingerprint(db, stringified)?.requestId).toBe('req_test_1');
     });
 
     it('treats absent cache counts as zero on both sides', () => {
@@ -371,6 +396,76 @@ describe('pending usage events', () => {
 
       expect(commitStalePendingUsage(db, { graceMs: 0, now: BASE_TS + 1 })).toBe(1);
       expect(rowsById().map((r) => r.request_id)).toEqual([null, 'req_test_1']);
+    });
+  });
+
+  describe('adoptCommittedProxyUsage (OTEL without request_id after the sweep)', () => {
+    function lateOtel(overrides: Partial<UsageFingerprint> = {}) {
+      return {
+        ...fingerprint(overrides),
+        costUsd: 0.3,
+        sessionId: 'sess-otel',
+        durationMs: 777,
+      };
+    }
+
+    it('marks only sweeper-committed rows as adoptable', () => {
+      stagePendingUsageEvent(db, makePending());
+      commitStalePendingUsage(db, { graceMs: 0, now: BASE_TS + 1 });
+      insertUnlinkedOtelRow({ outputTokens: 50 });
+      const origins = db.prepare('SELECT origin FROM usage_events ORDER BY id').all();
+      expect(origins).toEqual([{ origin: 'proxy' }, { origin: null }]);
+    });
+
+    it('adopts the committed proxy row once, taking OTEL figures', () => {
+      stagePendingUsageEvent(db, makePending({ sessionId: null }));
+      commitStalePendingUsage(db, { graceMs: 0, now: BASE_TS + 1 });
+
+      expect(adoptCommittedProxyUsage(db, lateOtel())).toBe(true);
+      expect(
+        db
+          .prepare(
+            'SELECT request_id, account_id, cost_usd, session_id, duration_ms, origin FROM usage_events',
+          )
+          .all(),
+      ).toEqual([
+        {
+          request_id: 'req_test_1',
+          account_id: 'acct-1',
+          cost_usd: 0.3,
+          session_id: 'sess-otel',
+          duration_ms: 777,
+          origin: null,
+        },
+      ]);
+      // A second identical report is a different request: never adopt twice.
+      expect(adoptCommittedProxyUsage(db, lateOtel())).toBe(false);
+    });
+
+    it('keeps the proxy figures an OTEL event leaves out', () => {
+      stagePendingUsageEvent(db, makePending());
+      commitStalePendingUsage(db, { graceMs: 0, now: BASE_TS + 1 });
+      expect(
+        adoptCommittedProxyUsage(db, {
+          ...fingerprint(),
+          costUsd: null,
+          sessionId: null,
+          durationMs: null,
+        }),
+      ).toBe(true);
+      expect(
+        db.prepare('SELECT cost_usd, session_id, duration_ms FROM usage_events').all(),
+      ).toEqual([{ cost_usd: 0.075, session_id: 'sess-1', duration_ms: 1234 }]);
+    });
+
+    it('never adopts an OTEL row, a mismatched row, or without token counts', () => {
+      insertUnlinkedOtelRow();
+      stagePendingUsageEvent(db, makePending({ model: 'claude-haiku-4-5' }));
+      commitStalePendingUsage(db, { graceMs: 0, now: BASE_TS + 1 });
+
+      expect(adoptCommittedProxyUsage(db, lateOtel())).toBe(false);
+      expect(adoptCommittedProxyUsage(db, lateOtel({ inputTokens: null }))).toBe(false);
+      expect(rowsById().map((r) => r.cost_usd)).toEqual([0.2, 0.075]);
     });
   });
 

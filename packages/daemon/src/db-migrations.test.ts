@@ -181,6 +181,25 @@ describe('getDb migrations on a legacy database', () => {
     expect(indexes.some((i) => i.name === 'idx_usage_request_unique')).toBe(true);
   });
 
+  it('adds origin to a legacy usage_events table and keeps existing rows unadoptable', () => {
+    seedLegacyDb(dbPath);
+    const legacy = new Database(dbPath);
+    legacy
+      .prepare(
+        `INSERT INTO usage_events (ts, account_id, model, cost_usd, input_tokens, output_tokens)
+         VALUES (1, 'legacy-uuid-1', 'claude-opus-4-7', 0.25, 10, 1)`,
+      )
+      .run();
+    legacy.close();
+
+    const db = getDb(dbPath);
+    const cols = db.pragma('table_info(usage_events)') as Array<{ name: string }>;
+    expect(cols.some((c) => c.name === 'origin')).toBe(true);
+    expect(db.prepare('SELECT account_id, cost_usd, origin FROM usage_events').all()).toEqual([
+      { account_id: 'legacy-uuid-1', cost_usd: 0.25, origin: null },
+    ]);
+  });
+
   it('adds scope + budget_scope columns to a legacy alerts table', () => {
     seedLegacyDb(dbPath);
     const db = getDb(dbPath);

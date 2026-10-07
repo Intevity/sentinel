@@ -787,6 +787,28 @@ describe('OtelReceiver', () => {
       expect(getUsageEvents(db, { accountId: 'acc-q' })).toHaveLength(1);
     });
 
+    it('stores stringified api_request counts as numbers and drops non-numeric ones', async () => {
+      await runLogs(
+        logPayload('api_request', {
+          'user.account_uuid': 'acc-str',
+          model: 'claude-opus-4',
+          cost_usd: '0.25',
+          input_tokens: '1200',
+          output_tokens: '300',
+          cache_read_tokens: 'n/a',
+          duration_ms: '',
+        }),
+      );
+      const [ev] = getUsageEvents(db, { accountId: 'acc-str' });
+      expect(ev).toMatchObject({
+        costUsd: 0.25,
+        inputTokens: 1200,
+        outputTokens: 300,
+        cacheRead: null,
+        durationMs: null,
+      });
+    });
+
     it('accepts short event.name (api_request)', async () => {
       await runLogs(
         logPayload('api_request', {

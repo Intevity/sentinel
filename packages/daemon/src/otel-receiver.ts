@@ -7,6 +7,7 @@ import {
   insertActivityEvent,
   claimPendingUsageEvent,
   claimPendingUsageByFingerprint,
+  adoptCommittedProxyUsage,
 } from './db.js';
 import type { ActiveAccountId } from './proxy.js';
 import type { IpcServer } from './ipc.js';
@@ -457,12 +458,15 @@ export class OtelReceiver {
           accountId,
           sessionId,
           model: (attrs['model'] as string | undefined) ?? 'unknown',
-          costUsd: (attrs['cost_usd'] as number | undefined) ?? null,
-          inputTokens: (attrs['input_tokens'] as number | undefined) ?? null,
-          outputTokens: (attrs['output_tokens'] as number | undefined) ?? null,
-          cacheRead: (attrs['cache_read_tokens'] as number | undefined) ?? null,
-          cacheCreate: (attrs['cache_creation_tokens'] as number | undefined) ?? null,
-          durationMs: (attrs['duration_ms'] as number | undefined) ?? null,
+          // asNumber: older Claude Code builds pass these as strings, and
+          // OTLP/JSON encodes int64 intValue as a string. The fingerprint
+          // fallback below compares them in SQL, where '0' is not 0.
+          costUsd: asNumber(attrs['cost_usd']),
+          inputTokens: asNumber(attrs['input_tokens']),
+          outputTokens: asNumber(attrs['output_tokens']),
+          cacheRead: asNumber(attrs['cache_read_tokens']),
+          cacheCreate: asNumber(attrs['cache_creation_tokens']),
+          durationMs: asNumber(attrs['duration_ms']),
           requestId,
         };
         if (!requestId) {
@@ -476,6 +480,12 @@ export class OtelReceiver {
           if (claimed) {
             usage.requestId = claimed.requestId;
             usage.accountId = claimed.accountId;
+          } else if (adoptCommittedProxyUsage(this.db, usage)) {
+            // Arrived after the sweep committed the staged row (a backlogged
+            // exporter): that row now carries OTEL's figures; adding this
+            // one would count the request twice.
+            this.wroteInBatch = true;
+            return;
           }
         }
         this.insertUsage(usage);
@@ -648,6 +658,15 @@ export class OtelReceiver {
 
 function logRecordTs(lr: OtelLogRecord): number {
   return lr.timeUnixNano ? Number(BigInt(lr.timeUnixNano) / BigInt(1_000_000)) : Date.now();
+}
+
+/** A numeric attribute as a number, whichever OTLP value type carried it
+ *  (intValue, doubleValue or a stringified number). Null when absent or not
+ *  a finite number. */
+function asNumber(v: OtelAttributes[string]): number | null {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 function asString(v: OtelAttributes[string]): string | null {

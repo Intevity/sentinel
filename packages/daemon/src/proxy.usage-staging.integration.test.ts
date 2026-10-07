@@ -41,15 +41,30 @@ async function post(port: number, headers: Record<string, string>): Promise<Resp
  *  path the real CLI exporter uses. */
 async function postOtelApiRequest(
   port: number,
-  attrs: { requestId?: string; costUsd: number; inputTokens?: number; tsMs?: number },
+  attrs: {
+    requestId?: string;
+    costUsd: number;
+    inputTokens?: number;
+    tsMs?: number;
+    model?: string;
+    /** Send every count as an OTLP stringValue, cache counts included, the
+     *  way older Claude Code builds and type-rewriting collectors do. */
+    stringCounts?: boolean;
+  },
 ): Promise<Response> {
-  const attributes = [
+  const count = (n: number): { stringValue: string } | { intValue: number } =>
+    attrs.stringCounts ? { stringValue: String(n) } : { intValue: n };
+  const attributes: Array<{ key: string; value: Record<string, string | number> }> = [
     { key: 'event.name', value: { stringValue: OTEL_LOG_API_REQUEST } },
-    { key: 'model', value: { stringValue: 'claude-opus-4-7' } },
+    { key: 'model', value: { stringValue: attrs.model ?? 'claude-opus-4-7' } },
     { key: 'cost_usd', value: { doubleValue: attrs.costUsd } },
-    { key: 'input_tokens', value: { intValue: attrs.inputTokens ?? FAKE_INPUT_TOKENS } },
-    { key: 'output_tokens', value: { intValue: FAKE_OUTPUT_TOKENS } },
+    { key: 'input_tokens', value: count(attrs.inputTokens ?? FAKE_INPUT_TOKENS) },
+    { key: 'output_tokens', value: count(FAKE_OUTPUT_TOKENS) },
   ];
+  if (attrs.stringCounts) {
+    attributes.push({ key: 'cache_read_tokens', value: count(0) });
+    attributes.push({ key: 'cache_creation_tokens', value: count(0) });
+  }
   if (attrs.requestId !== undefined) {
     attributes.push({ key: 'request_id', value: { stringValue: attrs.requestId } });
   }
@@ -339,5 +354,79 @@ describe('proxy staged-usage dedupe for OTEL without request_id (real HTTP)', ()
     expect(sweepPastGrace(ctx)).toBe(1);
     expect(getUsageEvents(ctx.db, {})).toHaveLength(3);
     expect(rawRequestIds(ctx).filter((id) => id === 'req_other')).toHaveLength(1);
+  });
+
+  it('stringified token counts (stringValue) still claim the staged row', async () => {
+    ctx = await startProxyWithFake({ tokens: ['pool-token'], accounts: [POOL_ACCOUNT] });
+    ctx.activeToken.value = 'pool-token';
+    ctx.fake.queueResponse('/v1/messages', { extraHeaders: { 'request-id': 'req_noid_str' } });
+
+    await post(ctx.proxyPort, { 'user-agent': CLI_UA });
+    await new Promise((r) => setTimeout(r, 40));
+    await postOtelApiRequest(ctx.proxyPort, { costUsd: 0.5, stringCounts: true });
+
+    expect(getPendingUsageEvents(ctx.db)).toEqual([]);
+    expect(sweepPastGrace(ctx)).toBe(0);
+    const events = getUsageEvents(ctx.db, {});
+    expect(events).toHaveLength(1);
+    expect(events[0]!.inputTokens).toBe(FAKE_INPUT_TOKENS);
+    expect(events[0]!.cacheRead).toBe(0);
+    expect(rawRequestIds(ctx)).toEqual(['req_noid_str']);
+  });
+
+  it('a -latest model alias claims the staged row for its dated response model', async () => {
+    ctx = await startProxyWithFake({ tokens: ['pool-token'], accounts: [POOL_ACCOUNT] });
+    ctx.activeToken.value = 'pool-token';
+    ctx.fake.queueResponse('/v1/messages', {
+      extraHeaders: { 'request-id': 'req_noid_latest' },
+      body: {
+        id: 'msg_fake',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-3-5-haiku-20241022',
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: FAKE_INPUT_TOKENS, output_tokens: FAKE_OUTPUT_TOKENS },
+      },
+    });
+
+    await post(ctx.proxyPort, { 'user-agent': CLI_UA });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(getPendingUsageEvents(ctx.db).map((p) => p.model)).toEqual([
+      'claude-3-5-haiku-20241022',
+    ]);
+    await postOtelApiRequest(ctx.proxyPort, { costUsd: 0.01, model: 'claude-3-5-haiku-latest' });
+
+    expect(getPendingUsageEvents(ctx.db)).toEqual([]);
+    expect(sweepPastGrace(ctx)).toBe(0);
+    expect(rawRequestIds(ctx)).toEqual(['req_noid_latest']);
+  });
+
+  it('OTEL delayed past the sweep adopts the committed row instead of adding one', async () => {
+    ctx = await startProxyWithFake({ tokens: ['pool-token'], accounts: [POOL_ACCOUNT] });
+    ctx.activeToken.value = 'pool-token';
+    ctx.fake.queueResponse('/v1/messages', { extraHeaders: { 'request-id': 'req_noid_late' } });
+
+    const requestTs = Date.now();
+    await post(ctx.proxyPort, { 'user-agent': CLI_UA });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(sweepPastGrace(ctx)).toBe(1);
+    expect(getUsageEvents(ctx.db, {})).toHaveLength(1);
+
+    // A backlogged exporter: the event carries the request's own time.
+    const broadcastsBefore = ctx.ipcServer.broadcasts.length;
+    await postOtelApiRequest(ctx.proxyPort, { costUsd: 0.5, tsMs: requestTs });
+
+    const events = getUsageEvents(ctx.db, {});
+    expect(events).toHaveLength(1);
+    // OTEL's figures replace the proxy's on the one row.
+    expect(events[0]!.costUsd).toBe(0.5);
+    expect(events[0]!.accountId).toBe('acct-pool');
+    expect(rawRequestIds(ctx)).toEqual(['req_noid_late']);
+    expect(ctx.ipcServer.broadcasts.length).toBeGreaterThan(broadcastsBefore);
+
+    // A second identical late report is another request: it counts.
+    await postOtelApiRequest(ctx.proxyPort, { costUsd: 0.5, tsMs: requestTs });
+    expect(getUsageEvents(ctx.db, {})).toHaveLength(2);
   });
 });

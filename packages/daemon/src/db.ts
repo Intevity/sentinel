@@ -107,7 +107,8 @@ CREATE TABLE IF NOT EXISTS usage_events (
   cache_read    INTEGER,
   cache_create  INTEGER,
   duration_ms   INTEGER,
-  request_id    TEXT
+  request_id    TEXT,
+  origin        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS overage_events (
@@ -648,6 +649,14 @@ export function getDb(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_request_unique
      ON usage_events(request_id) WHERE request_id IS NOT NULL`,
   );
+  // Migrate usage_events for the origin column: 'proxy' marks a row the
+  // staged-usage sweeper committed (no OTEL report had claimed it yet), so a
+  // late OTEL api_request without request_id can adopt that row instead of
+  // adding a second one. Legacy rows stay NULL, which only means "not
+  // adoptable" — nothing about existing accounting changes.
+  if (!ueCols.some((c) => c.name === 'origin')) {
+    _db.exec('ALTER TABLE usage_events ADD COLUMN origin TEXT');
+  }
 
   // Migrate security_events for the `approved` column (added in v1.2 for
   // the approve-in-notification flow). Existing rows default to 0.
@@ -1384,6 +1393,9 @@ export type InsertUsageEvent = Omit<UsageEvent, 'id'> & {
   /** Anthropic response `request-id`. The partial UNIQUE index on this column
    *  is the proxy↔OTEL dedupe key; null (unknown id) rows never collide. */
   requestId?: string | null;
+  /** Which writer produced the row when it matters for later dedupe:
+   *  'proxy' for a staged row the sweeper committed. Null otherwise. */
+  origin?: 'proxy' | null;
 };
 
 /**
@@ -1398,9 +1410,9 @@ export function insertUsageEvent(db: Database.Database, event: InsertUsageEvent)
     .prepare(
       `
       INSERT OR IGNORE INTO usage_events
-        (ts, account_id, session_id, model, cost_usd, input_tokens, output_tokens, cache_read, cache_create, duration_ms, request_id)
+        (ts, account_id, session_id, model, cost_usd, input_tokens, output_tokens, cache_read, cache_create, duration_ms, request_id, origin)
       VALUES
-        (@ts, @accountId, @sessionId, @model, @costUsd, @inputTokens, @outputTokens, @cacheRead, @cacheCreate, @durationMs, @requestId)
+        (@ts, @accountId, @sessionId, @model, @costUsd, @inputTokens, @outputTokens, @cacheRead, @cacheCreate, @durationMs, @requestId, @origin)
     `,
     )
     .run({
@@ -1415,6 +1427,7 @@ export function insertUsageEvent(db: Database.Database, event: InsertUsageEvent)
       cacheCreate: event.cacheCreate ?? null,
       durationMs: event.durationMs ?? null,
       requestId: event.requestId ?? null,
+      origin: event.origin ?? null,
     });
   if (result.changes === 0) return null;
   return Number(result.lastInsertRowid);
@@ -1499,12 +1512,13 @@ export interface UsageFingerprint {
 /** Strip the context-window suffix (`claude-opus-4-6[1m]`) a client may
  *  report but the response model never carries. */
 function baseModel(model: string): string {
-  return model.replace(/\[[^\]]*\]$/, '');
+  return model.replace(/\[[^\]]*\]$/, '').replace(/-latest$/, '');
 }
 
 /** Same model, or one is the dated form of the other (`claude-sonnet-4-5`
- *  vs `claude-sonnet-4-5-20250929`): the request alias and the response
- *  model can differ that way. `unknown` (attribute absent) defers to the
+ *  vs `claude-sonnet-4-5-20250929`, or the `-latest` alias
+ *  `claude-3-5-haiku-latest` vs `claude-3-5-haiku-20241022`): the request
+ *  alias and the response model can differ that way. `unknown` (attribute absent) defers to the
  *  token counts. */
 export function usageModelsCompatible(a: string, b: string): boolean {
   const x = baseModel(a);
@@ -1527,11 +1541,14 @@ function fingerprintWhere(fp: UsageFingerprint): { sql: string; params: unknown[
     sql: `input_tokens = ? AND output_tokens = ?
       AND COALESCE(cache_read, 0) = ? AND COALESCE(cache_create, 0) = ?
       AND ts BETWEEN ? AND ?`,
+    // Number(): a COALESCE expression has no column affinity, so SQLite
+    // compares integer 0 with text '0' as unequal. Callers coerce already;
+    // this keeps a stringified count from silently missing the match.
     params: [
-      fp.inputTokens,
-      fp.outputTokens,
-      fp.cacheRead ?? 0,
-      fp.cacheCreate ?? 0,
+      Number(fp.inputTokens),
+      Number(fp.outputTokens),
+      Number(fp.cacheRead ?? 0),
+      Number(fp.cacheCreate ?? 0),
       fp.ts - USAGE_FINGERPRINT_WINDOW_MS,
       fp.ts + USAGE_FINGERPRINT_WINDOW_MS,
     ],
@@ -1615,6 +1632,44 @@ function linkUnlinkedUsageRow(
   return match.account_id;
 }
 
+/**
+ * Late OTEL `api_request` without request_id: the sweeper already committed
+ * the proxy's staged row for this request (the exporter was delayed past the
+ * grace window). Adopt the ONE matching sweeper-committed row (origin
+ * 'proxy', same fingerprint, preferring the same account, then the oldest)
+ * instead of inserting a second row: OTEL's figures replace the proxy's
+ * cost / session / duration, and the origin clears so the row can never be
+ * adopted twice. The row keeps its request_id and the account whose token
+ * served the request. Returns true when a row was adopted.
+ */
+export function adoptCommittedProxyUsage(
+  db: Database.Database,
+  fp: UsageFingerprint & {
+    costUsd: number | null;
+    sessionId: string | null;
+    durationMs: number | null;
+  },
+): boolean {
+  if (!fingerprintUsable(fp)) return false;
+  const where = fingerprintWhere(fp);
+  const rows = db
+    .prepare(
+      `SELECT id, model FROM usage_events
+       WHERE origin = 'proxy' AND ${where.sql}
+       ORDER BY (account_id = ?) DESC, id ASC`,
+    )
+    .all(...where.params, fp.accountId) as Array<{ id: number; model: string }>;
+  const match = rows.find((r) => usageModelsCompatible(r.model, fp.model));
+  if (!match) return false;
+  db.prepare(
+    `UPDATE usage_events
+     SET cost_usd = COALESCE(?, cost_usd), session_id = COALESCE(?, session_id),
+         duration_ms = COALESCE(?, duration_ms), origin = NULL
+     WHERE id = ?`,
+  ).run(fp.costUsd, fp.sessionId, fp.durationMs, match.id);
+  return true;
+}
+
 /** All staged rows, oldest first. Tests and diagnostics. */
 export function getPendingUsageEvents(db: Database.Database): PendingUsageEvent[] {
   const rows = db.prepare('SELECT * FROM pending_usage_events ORDER BY staged_at').all() as Array<
@@ -1654,7 +1709,7 @@ export function commitStalePendingUsage(
         if (previousAccount !== staged.accountId) landed += 1;
         continue;
       }
-      if (insertUsageEvent(db, staged) !== null) landed += 1;
+      if (insertUsageEvent(db, { ...staged, origin: 'proxy' }) !== null) landed += 1;
     }
     return landed;
   });
