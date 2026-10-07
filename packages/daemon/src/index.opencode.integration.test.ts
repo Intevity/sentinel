@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { startTestDaemon, type TestDaemon } from './index.test-helpers.js';
-import { OPENCODE_BASE_URL } from './opencode-config.js';
+import { opencodeBaseUrl } from './opencode-config.js';
 import { stagePendingUsageEvent, insertUsageEvent } from './db.js';
 import { BYOK_ACCOUNT_ID } from '@sentinel/shared';
 import type {
@@ -53,9 +53,9 @@ describe('opencode surface IPC', () => {
 
     expect(r.success).toBe(true);
     expect(r.data?.state).toBe('active');
-    expect(r.data?.baseUrl).toBe(OPENCODE_BASE_URL);
+    expect(r.data?.baseUrl).toBe(opencodeBaseUrl());
     expect(JSON.parse(readFileSync(configPath(), 'utf8'))).toEqual({
-      provider: { anthropic: { options: { baseURL: OPENCODE_BASE_URL } } },
+      provider: { anthropic: { options: { baseURL: opencodeBaseUrl() } } },
     });
 
     const surface = await ctx.request<SurfaceState>({ type: 'get_surface_state' });
@@ -63,6 +63,37 @@ describe('opencode surface IPC', () => {
       installed: true,
       activated: true,
       pluginOverride: false,
+    });
+  });
+
+  it('writes the port the running daemon is bound to, not the default', async () => {
+    // The harness binds an ephemeral port and publishes it through
+    // SENTINEL_TEST_DAEMON_PORT, the same seam getDaemonPort() reads.
+    const port = process.env.SENTINEL_TEST_DAEMON_PORT;
+    expect(port).toBeDefined();
+    expect(port).not.toBe('47284');
+
+    const r = await ctx.request<OpencodeConfigDetails>({ type: 'activate_opencode' });
+
+    expect(r.data?.baseUrl).toBe(`http://127.0.0.1:${port}/v1`);
+    expect(r.data?.state).toBe('active');
+  });
+
+  it('restores the user’s own base URL on deactivate', async () => {
+    const gateway = 'https://llm-gateway.corp.example/v1';
+    const path = seedConfig(
+      JSON.stringify({ provider: { anthropic: { options: { baseURL: gateway } } } }),
+    );
+
+    const on = await ctx.request<OpencodeConfigDetails>({ type: 'activate_opencode' });
+    expect(on.data?.state).toBe('active');
+    expect(on.data?.previousBaseUrl).toBe(gateway);
+
+    const off = await ctx.request<OpencodeConfigDetails>({ type: 'deactivate_opencode' });
+
+    expect(off.data?.state).toBe('foreign-base-url');
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
+      provider: { anthropic: { options: { baseURL: gateway } } },
     });
   });
 
@@ -119,7 +150,7 @@ describe('opencode surface IPC', () => {
     const r = await ctx.request<OpencodeConfigDetails>({ type: 'activate_opencode' });
 
     expect(r.data?.state).toBe('unwritable');
-    expect(r.data?.manualSnippet).toContain(OPENCODE_BASE_URL);
+    expect(r.data?.manualSnippet).toContain(opencodeBaseUrl());
     expect(readFileSync(path, 'utf8')).toBe(original);
   });
 

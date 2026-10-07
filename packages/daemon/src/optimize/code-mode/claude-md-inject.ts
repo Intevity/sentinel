@@ -25,8 +25,9 @@
 import { promises as fs } from 'node:fs';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { createHash, randomBytes } from 'node:crypto';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { writeFileAtomicPreserving } from '../../fs-atomic.js';
 import { codeModeTokenFilePath, resolveCodeModeDir } from './workspace-gen.js';
 
 const BEGIN_PREFIX = '<!-- BEGIN SENTINEL CODE-MODE (managed)';
@@ -127,11 +128,11 @@ function stripBlock(text: string): string {
   return text.replace(BLOCK_RE, '').replace(/\n{3,}/g, '\n\n');
 }
 
+/** Follows a symlinked instruction file (a dotfiles repo linked into place)
+ *  and keeps its mode — a bare temp + rename would replace the link with a
+ *  regular file. See fs-atomic.ts. */
 async function writeFileAtomic(path: string, content: string): Promise<void> {
-  await fs.mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp-${randomBytes(6).toString('hex')}`;
-  await fs.writeFile(tmp, content, 'utf8');
-  await fs.rename(tmp, path);
+  await writeFileAtomicPreserving(path, content);
 }
 
 /**

@@ -29,6 +29,12 @@
  *     which `claude-md-inject.ts` keeps current. Coverage either way, and
  *     Sentinel never changes which file opencode reads.
  *
+ * A symlinked `AGENTS.md` (linked in from a dotfiles repo) is written through
+ * to its target, keeping the link and the file mode — the shared writer
+ * follows links (see `fs-atomic.ts`). A dangling link counts as absent, so its
+ * target is never created. Uninstall strips only the managed block, leaving
+ * the user's content as it was before install.
+ *
  * Known gap: a user who sets `OPENCODE_DISABLE_CLAUDE_CODE` *and* has no
  * `AGENTS.md` gets no advertisement. Creating the file for them would trade a
  * silent gap for a silent behavior change, which is the worse of the two.

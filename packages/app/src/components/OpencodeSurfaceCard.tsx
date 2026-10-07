@@ -2,23 +2,31 @@ import React from 'react';
 import { Terminal, AlertTriangle } from 'lucide-react';
 import { useSurfaceState } from '../hooks/useSurfaceState.js';
 import { useOpencodeConfig } from '../hooks/useOpencodeConfig.js';
+import { opencodeCardCopy } from '../lib/opencodeCopy.js';
 
 /**
  * Per-surface status card for **opencode**, sibling to {@link DesktopSurfaceCard}.
  *
- * Unlike the Claude surfaces this one is bring-your-own-key: opencode
- * authenticates with the user's own Anthropic API key and Sentinel observes the
- * traffic (request log, security scanning, permission rules, cache TTL) without
- * substituting a pooled subscription token. The copy says so, because a user who
- * expects account pooling here would otherwise be quietly misled.
+ * opencode reaches Anthropic one of two ways, and the copy names both because
+ * a user who guesses wrong is quietly misled about whose quota they spend:
+ * with an API key, Sentinel forwards the user's own key and only observes
+ * (request log, security scanning, permission rules, cache TTL); with the
+ * `opencode-claude-auth` plugin (Claude subscription sign-in), requests are
+ * served from Sentinel's account pool like Claude Code's.
  *
  *  - not installed → hidden
  *  - routed through Sentinel (active) → hidden; Disable lives in Settings → General
  *  - plugin-override → warning, no action; a plugin rewrites the base URL at
  *    startup, so writing the config again would not change anything
- *  - unwritable → warning + the snippet to paste (commented config we refuse to
- *    round-trip through JSON.stringify)
+ *  - unwritable → warning + the snippet to paste, naming the actual cause
+ *    (comments we refuse to round-trip through JSON.stringify, or a file that
+ *    does not parse)
+ *  - foreign-base-url → Enable, saying the user's URL comes back on Disable
  *  - installed, not routed → Enable
+ *
+ * The config path is always shown: the daemon resolves it from its own
+ * environment, which the GUI launches, so an `OPENCODE_CONFIG` exported only in
+ * a shell rc file is not honored — showing the path makes that visible.
  */
 export default function OpencodeSurfaceCard(): React.ReactElement | null {
   const { state } = useSurfaceState();
@@ -42,23 +50,7 @@ export default function OpencodeSurfaceCard(): React.ReactElement | null {
     ? 'flex-shrink-0 w-8 h-8 rounded-full bg-ios-orange/10 flex items-center justify-center'
     : 'flex-shrink-0 w-8 h-8 rounded-full bg-ios-blue/10 flex items-center justify-center';
 
-  const title =
-    configState === 'plugin-override'
-      ? 'opencode is bypassing Sentinel'
-      : configState === 'unwritable'
-        ? 'opencode needs a manual config edit'
-        : foreign
-          ? 'opencode routed elsewhere'
-          : 'Route opencode through Sentinel';
-
-  const body =
-    configState === 'plugin-override'
-      ? `A configured plugin (${details?.overridingPlugins.join(', ')}) rewrites opencode's Anthropic base URL when it starts, so it reaches Anthropic without passing through Sentinel. Remove the plugin from your opencode config to route it here.`
-      : configState === 'unwritable'
-        ? 'Your opencode config contains comments, which Sentinel will not rewrite — saving it would delete them. Add this to it by hand instead:'
-        : foreign
-          ? `opencode's Anthropic provider points at ${details?.baseUrl}. Enabling replaces that with the Sentinel proxy.`
-          : 'Routes opencode through the Sentinel proxy for request logging, security scanning, and permission rules. Uses your own Anthropic API key — Sentinel does not supply pooled subscription accounts to opencode. Restart opencode after enabling.';
+  const { title, body } = opencodeCardCopy(details);
 
   return (
     <div className="mx-4 mt-1 mb-1">
@@ -79,9 +71,10 @@ export default function OpencodeSurfaceCard(): React.ReactElement | null {
                 {details.manualSnippet}
               </pre>
             )}
-            {details?.configPath && configState !== 'inactive' && (
-              <p className="text-[10px] text-muted mt-1 font-mono break-all">
-                {details.configPath}
+            {details?.configPath && (
+              <p className="text-[10px] text-muted mt-1 break-all">
+                {configState === 'unwritable' ? 'Config file: ' : 'Writes to '}
+                <span className="font-mono">{details.configPath}</span>
               </p>
             )}
             {actionError && (

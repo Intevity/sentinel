@@ -1063,9 +1063,11 @@ export interface ClaudeDesktopDriftDetails {
 export interface SurfaceState {
   cli: { installed: boolean; activated: boolean };
   desktop: { installed: boolean; activated: boolean; healthy: boolean };
-  /** opencode. Unlike the Claude surfaces this one is bring-your-own-key: it
-   *  authenticates with the user's own Anthropic API key and Sentinel observes
-   *  the traffic without substituting a pooled subscription token.
+  /** opencode. With an Anthropic API key it is bring-your-own-key: Sentinel
+   *  forwards the user's own key and observes the traffic. With the
+   *  `opencode-claude-auth` plugin (Claude subscription sign-in) its requests
+   *  present Claude Code's identity and are served from Sentinel's account
+   *  pool like any other Claude Code traffic.
    *  `pluginOverride` is true when opencode is configured with a plugin that
    *  rewrites the provider base URL at startup (`opencode-with-claude` points
    *  it at a local Meridian proxy), which silently defeats the config Sentinel
@@ -1081,8 +1083,8 @@ export interface SurfaceState {
  *  - `foreign-base-url` — points somewhere else (another gateway or router).
  *  - `plugin-override` — points at Sentinel, but a configured plugin rewrites
  *    the base URL at runtime, so the on-disk value is not what opencode uses.
- *  - `unwritable` — the config file carries comments Sentinel cannot preserve
- *    through a JSON round-trip, so activation must be done by hand. */
+ *  - `unwritable` — Sentinel will not rewrite the file (see
+ *    {@link OpencodeUnwritableReason}), so activation must be done by hand. */
 export type OpencodeConfigState =
   | 'inactive'
   | 'active'
@@ -1102,7 +1104,22 @@ export interface OpencodeConfigDetails {
   overridingPlugins: string[];
   /** The snippet to paste when `state === 'unwritable'`; null otherwise. */
   manualSnippet: string | null;
+  /** Why the file is `unwritable`; null in every other state. The UI must name
+   *  the actual cause rather than guessing. */
+  unwritableReason: OpencodeUnwritableReason | null;
+  /** The user's own base URL that Enable replaced (a corporate gateway, say),
+   *  saved by Sentinel and restored on Disable. Null when Enable replaced
+   *  nothing, or routing is not active. */
+  previousBaseUrl: string | null;
 }
+
+/** Why Sentinel declines to rewrite opencode's config.
+ *
+ *  - `comments` — the file carries JSONC comments a JSON round-trip would
+ *    silently delete.
+ *  - `unparseable` — the file is not valid JSON(C) at all (trailing commas are
+ *    tolerated, so this is a real syntax error). */
+export type OpencodeUnwritableReason = 'comments' | 'unparseable';
 
 /** Health of the proxy ingestion path that feeds the Optimize tab.
  *

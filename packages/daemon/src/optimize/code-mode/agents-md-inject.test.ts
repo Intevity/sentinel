@@ -9,7 +9,18 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  symlinkSync,
+  lstatSync,
+  statSync,
+  chmodSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -180,5 +191,67 @@ describe('uninstallCodeModeAgentsMd', () => {
     seedAgentsMd('# Just my rules\n');
     await uninstallCodeModeAgentsMd();
     expect(readFileSync(agentsMdPath(), 'utf8')).toBe('# Just my rules\n');
+  });
+
+  it('restores the file byte-for-byte after an install/uninstall round trip', async () => {
+    const original = '# My rules\n\nAlways write tests.\n';
+    seedAgentsMd(original);
+    await installCodeModeAgentsMd(OPTS());
+    await installCodeModeAgentsMd({ ...OPTS(), servers: ['mcp-atlassian', 'github'] });
+
+    await uninstallCodeModeAgentsMd();
+
+    expect(readFileSync(agentsMdPath(), 'utf8')).toBe(original);
+  });
+});
+
+describe('symlinked AGENTS.md', () => {
+  let dotfiles: string;
+
+  beforeEach(() => {
+    dotfiles = mkdtempSync(join(tmpdir(), 'sentinel-amd-dotfiles-'));
+  });
+  afterEach(() => {
+    rmSync(dotfiles, { recursive: true, force: true });
+  });
+
+  /** AGENTS.md linked into place from a dotfiles repo — the common setup. */
+  function linkAgentsMd(contents: string | null): string {
+    const target = join(dotfiles, 'AGENTS.md');
+    if (contents !== null) writeFileSync(target, contents, 'utf8');
+    mkdirSync(dirname(agentsMdPath()), { recursive: true });
+    symlinkSync(target, agentsMdPath());
+    return target;
+  }
+
+  it('writes the block into the link target and keeps the link and its mode', async () => {
+    const target = linkAgentsMd('# Shared rules\n');
+    chmodSync(target, 0o640);
+
+    await installCodeModeAgentsMd(OPTS());
+
+    expect(lstatSync(agentsMdPath()).isSymbolicLink()).toBe(true);
+    expect(readFileSync(target, 'utf8')).toContain(BEGIN);
+    expect(statSync(target).mode & 0o777).toBe(0o640);
+    expect(readCodeModeAgentsMdState(OPTS())).toEqual({ present: true, upToDate: true });
+  });
+
+  it('removes the block from the link target on uninstall, leaving the link', async () => {
+    const target = linkAgentsMd('# Shared rules\n');
+    await installCodeModeAgentsMd(OPTS());
+
+    await uninstallCodeModeAgentsMd();
+
+    expect(lstatSync(agentsMdPath()).isSymbolicLink()).toBe(true);
+    expect(readFileSync(target, 'utf8')).toBe('# Shared rules\n');
+  });
+
+  it('does not create the target of a dangling link', async () => {
+    const target = linkAgentsMd(null);
+
+    expect(await installCodeModeAgentsMd(OPTS())).toBeNull();
+
+    expect(existsSync(target)).toBe(false);
+    expect(lstatSync(agentsMdPath()).isSymbolicLink()).toBe(true);
   });
 });

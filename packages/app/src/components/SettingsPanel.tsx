@@ -26,6 +26,7 @@ import { useClaudeAiUsage } from '../hooks/useClaudeAiUsage.js';
 import { useAccounts } from '../hooks/useAccounts.js';
 import { useClaudeDesktopDrift } from '../hooks/useClaudeDesktopDrift.js';
 import { useOpencodeConfig } from '../hooks/useOpencodeConfig.js';
+import { opencodeToggleDescription } from '../lib/opencodeCopy.js';
 import { useSurfaceState } from '../hooks/useSurfaceState.js';
 import { accountColor } from '../lib/accountColor.js';
 import { isDemoModeEnabled, setDemoModeEnabled } from '../lib/demoMode.js';
@@ -585,13 +586,7 @@ export default function SettingsPanel({
                 {opencodeInstalled && (
                   <ToggleRow
                     label="Route opencode through Sentinel"
-                    description={
-                      opencodeConfig?.state === 'plugin-override'
-                        ? `Unavailable: the ${opencodeConfig.overridingPlugins.join(', ')} plugin rewrites opencode's Anthropic base URL at startup, so it bypasses Sentinel regardless of this setting.`
-                        : opencodeConfig?.state === 'unwritable'
-                          ? 'Unavailable: your opencode config contains comments Sentinel will not rewrite. Add the base URL by hand instead.'
-                          : 'Route opencode through the Sentinel proxy for request logging, security scanning, and permission rules. opencode uses your own Anthropic API key — pooled subscription accounts are not supplied to it. Restart opencode after changing this.'
-                    }
+                    description={opencodeToggleDescription(opencodeConfig)}
                     checked={opencodeRouted}
                     onChange={setOpencodeRouting}
                     disabled={opencodeActing || opencodeBlocked}
