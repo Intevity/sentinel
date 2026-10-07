@@ -20,7 +20,12 @@ import {
   claimPendingUsageEvent,
   getPendingUsageEvents,
   commitStalePendingUsage,
+  claimPendingUsageByFingerprint,
+  usageModelsCompatible,
+  purgeAccount,
+  USAGE_FINGERPRINT_WINDOW_MS,
   type PendingUsageEvent,
+  type UsageFingerprint,
 } from './db.js';
 
 const BASE_TS = 1_700_000_000_000;
@@ -204,6 +209,184 @@ describe('pending usage events', () => {
       const events = getUsageEvents(db, {});
       expect(events).toHaveLength(1);
       expect(events[0]!.costUsd).toBe(0.12);
+    });
+  });
+  /** An OTEL-shaped usage row with no request_id, matching makePending(). */
+  function insertUnlinkedOtelRow(overrides: Partial<UsageFingerprint> & { costUsd?: number } = {}) {
+    return insertUsageEvent(db, {
+      ts: BASE_TS + 500,
+      accountId: 'acct-1',
+      sessionId: 'sess-1',
+      model: 'claude-opus-4-7',
+      costUsd: 0.2,
+      inputTokens: 10,
+      outputTokens: 1,
+      cacheRead: 3,
+      cacheCreate: 7,
+      durationMs: 900,
+      requestId: null,
+      ...overrides,
+    });
+  }
+
+  function fingerprint(overrides: Partial<UsageFingerprint> = {}): UsageFingerprint {
+    return {
+      ts: BASE_TS + 500,
+      accountId: 'acct-1',
+      model: 'claude-opus-4-7',
+      inputTokens: 10,
+      outputTokens: 1,
+      cacheRead: 3,
+      cacheCreate: 7,
+      ...overrides,
+    };
+  }
+
+  function rowsById(): Array<{ account_id: string; request_id: string | null; cost_usd: number }> {
+    return db
+      .prepare('SELECT account_id, request_id, cost_usd FROM usage_events ORDER BY id')
+      .all() as Array<{ account_id: string; request_id: string | null; cost_usd: number }>;
+  }
+
+  describe('usageModelsCompatible', () => {
+    it('matches equal, dated-alias, context-suffixed and unknown models only', () => {
+      expect(usageModelsCompatible('claude-opus-4-7', 'claude-opus-4-7')).toBe(true);
+      expect(usageModelsCompatible('claude-sonnet-4-5', 'claude-sonnet-4-5-20250929')).toBe(true);
+      expect(usageModelsCompatible('claude-sonnet-4-5-20250929', 'claude-sonnet-4-5')).toBe(true);
+      expect(usageModelsCompatible('claude-opus-4-6[1m]', 'claude-opus-4-6')).toBe(true);
+      expect(usageModelsCompatible('unknown', 'claude-opus-4-7')).toBe(true);
+      expect(usageModelsCompatible('claude-opus-4-7', 'unknown')).toBe(true);
+      expect(usageModelsCompatible('claude-opus-4-7', 'claude-haiku-4-5')).toBe(false);
+      // A shared prefix that is not a dated suffix must not match.
+      expect(usageModelsCompatible('claude-opus-4', 'claude-opus-4x')).toBe(false);
+    });
+  });
+
+  describe('claimPendingUsageByFingerprint (OTEL without request_id)', () => {
+    it('claims the matching staged row and returns it', () => {
+      stagePendingUsageEvent(db, makePending());
+      const claimed = claimPendingUsageByFingerprint(db, fingerprint());
+      expect(claimed?.requestId).toBe('req_test_1');
+      expect(claimed?.accountId).toBe('acct-1');
+      expect(getPendingUsageEvents(db)).toEqual([]);
+    });
+
+    it('never claims without real token counts', () => {
+      stagePendingUsageEvent(db, makePending());
+      expect(claimPendingUsageByFingerprint(db, fingerprint({ inputTokens: null }))).toBeNull();
+      expect(claimPendingUsageByFingerprint(db, fingerprint({ outputTokens: null }))).toBeNull();
+      expect(getPendingUsageEvents(db)).toHaveLength(1);
+    });
+
+    it('requires exact tokens, a compatible model and the time window', () => {
+      stagePendingUsageEvent(db, makePending());
+      const misses = [
+        fingerprint({ inputTokens: 11 }),
+        fingerprint({ outputTokens: 2 }),
+        fingerprint({ cacheRead: 4 }),
+        fingerprint({ cacheCreate: 8 }),
+        fingerprint({ model: 'claude-haiku-4-5' }),
+        fingerprint({ ts: BASE_TS + USAGE_FINGERPRINT_WINDOW_MS + 1 }),
+        fingerprint({ ts: BASE_TS - USAGE_FINGERPRINT_WINDOW_MS - 1 }),
+      ];
+      for (const fp of misses) expect(claimPendingUsageByFingerprint(db, fp)).toBeNull();
+      expect(getPendingUsageEvents(db)).toHaveLength(1);
+    });
+
+    it('treats absent cache counts as zero on both sides', () => {
+      stagePendingUsageEvent(db, makePending({ cacheRead: 0, cacheCreate: null }));
+      const claimed = claimPendingUsageByFingerprint(
+        db,
+        fingerprint({ cacheRead: null, cacheCreate: 0 }),
+      );
+      expect(claimed?.requestId).toBe('req_test_1');
+    });
+
+    it('prefers the same account, then the oldest staged row, and claims only one', () => {
+      stagePendingUsageEvent(
+        db,
+        makePending({ requestId: 'req_other_acct', accountId: 'acct-2', stagedAt: BASE_TS - 10 }),
+      );
+      stagePendingUsageEvent(db, makePending({ requestId: 'req_newer', stagedAt: BASE_TS + 20 }));
+      stagePendingUsageEvent(db, makePending({ requestId: 'req_older', stagedAt: BASE_TS + 10 }));
+
+      expect(claimPendingUsageByFingerprint(db, fingerprint())?.requestId).toBe('req_older');
+      expect(getPendingUsageEvents(db).map((p) => p.requestId)).toEqual([
+        'req_other_acct',
+        'req_newer',
+      ]);
+      expect(claimPendingUsageByFingerprint(db, fingerprint())?.requestId).toBe('req_newer');
+      // Same account exhausted: falls back to the other account's row.
+      expect(claimPendingUsageByFingerprint(db, fingerprint())?.requestId).toBe('req_other_acct');
+      expect(claimPendingUsageByFingerprint(db, fingerprint())).toBeNull();
+    });
+  });
+
+  describe('commitStalePendingUsage with an unlinked OTEL row (OTEL arrived first)', () => {
+    it('links the OTEL row to the staged request instead of committing a second row', () => {
+      insertUnlinkedOtelRow();
+      stagePendingUsageEvent(db, makePending());
+
+      expect(commitStalePendingUsage(db, { graceMs: 0, now: BASE_TS + 1 })).toBe(0);
+
+      expect(rowsById()).toEqual([
+        { account_id: 'acct-1', request_id: 'req_test_1', cost_usd: 0.2 },
+      ]);
+      expect(getPendingUsageEvents(db)).toEqual([]);
+    });
+
+    it('moves a linked row onto the staged account and reports it as a change', () => {
+      insertUnlinkedOtelRow({ accountId: 'acct-signed-in' });
+      stagePendingUsageEvent(db, makePending());
+
+      expect(commitStalePendingUsage(db, { graceMs: 0, now: BASE_TS + 1 })).toBe(1);
+      expect(rowsById()).toEqual([
+        { account_id: 'acct-1', request_id: 'req_test_1', cost_usd: 0.2 },
+      ]);
+    });
+
+    it('links one OTEL row to at most one staged request', () => {
+      insertUnlinkedOtelRow();
+      stagePendingUsageEvent(db, makePending({ requestId: 'req_a', stagedAt: BASE_TS }));
+      stagePendingUsageEvent(db, makePending({ requestId: 'req_b', stagedAt: BASE_TS + 1 }));
+
+      expect(commitStalePendingUsage(db, { graceMs: 0, now: BASE_TS + 2 })).toBe(1);
+
+      const rows = rowsById();
+      expect(rows.map((r) => r.request_id)).toEqual(['req_a', 'req_b']);
+      expect(rows[1]!.cost_usd).toBe(0.075);
+    });
+
+    it('commits normally when the OTEL row is for a different request', () => {
+      insertUnlinkedOtelRow({ outputTokens: 99 });
+      stagePendingUsageEvent(db, makePending());
+
+      expect(commitStalePendingUsage(db, { graceMs: 0, now: BASE_TS + 1 })).toBe(1);
+      expect(rowsById().map((r) => r.request_id)).toEqual([null, 'req_test_1']);
+    });
+
+    it('commits a staged row without token counts (no fingerprint to match)', () => {
+      insertUnlinkedOtelRow();
+      stagePendingUsageEvent(db, makePending({ inputTokens: null }));
+
+      expect(commitStalePendingUsage(db, { graceMs: 0, now: BASE_TS + 1 })).toBe(1);
+      expect(rowsById().map((r) => r.request_id)).toEqual([null, 'req_test_1']);
+    });
+  });
+
+  describe('purgeAccount', () => {
+    it('drops the purged account staged rows so the sweeper cannot resurrect them', () => {
+      stagePendingUsageEvent(db, makePending({ requestId: 'req_purged', accountId: 'acct-1' }));
+      stagePendingUsageEvent(db, makePending({ requestId: 'req_kept', accountId: 'acct-2' }));
+
+      purgeAccount(db, 'acct-1');
+      commitStalePendingUsage(db, { graceMs: 0, now: BASE_TS + 1 });
+
+      expect(getUsageEvents(db, { accountId: 'acct-1' })).toEqual([]);
+      expect(getUsageEvents(db, { accountId: 'acct-2' }).map((e) => e.accountId)).toEqual([
+        'acct-2',
+      ]);
+      expect(getPendingUsageEvents(db)).toEqual([]);
     });
   });
 });

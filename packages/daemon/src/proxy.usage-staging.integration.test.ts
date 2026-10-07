@@ -41,13 +41,13 @@ async function post(port: number, headers: Record<string, string>): Promise<Resp
  *  path the real CLI exporter uses. */
 async function postOtelApiRequest(
   port: number,
-  attrs: { requestId?: string; costUsd: number },
+  attrs: { requestId?: string; costUsd: number; inputTokens?: number; tsMs?: number },
 ): Promise<Response> {
   const attributes = [
     { key: 'event.name', value: { stringValue: OTEL_LOG_API_REQUEST } },
     { key: 'model', value: { stringValue: 'claude-opus-4-7' } },
     { key: 'cost_usd', value: { doubleValue: attrs.costUsd } },
-    { key: 'input_tokens', value: { intValue: FAKE_INPUT_TOKENS } },
+    { key: 'input_tokens', value: { intValue: attrs.inputTokens ?? FAKE_INPUT_TOKENS } },
     { key: 'output_tokens', value: { intValue: FAKE_OUTPUT_TOKENS } },
   ];
   if (attrs.requestId !== undefined) {
@@ -63,7 +63,7 @@ async function postOtelApiRequest(
             {
               logRecords: [
                 {
-                  timeUnixNano: (BigInt(Date.now()) * BigInt(1_000_000)).toString(),
+                  timeUnixNano: (BigInt(attrs.tsMs ?? Date.now()) * BigInt(1_000_000)).toString(),
                   attributes,
                 },
               ],
@@ -221,5 +221,123 @@ describe('proxy staged-usage OTEL dedupe (real HTTP)', () => {
     expect(events[0]!.costUsd).toBeCloseTo(EXPECTED_COST, 10);
     expect(getPendingUsageEvents(ctx.db)).toEqual([]);
     expect(rawRequestIds(ctx)).toEqual(['req_desktop_1']);
+  });
+});
+
+/** Sweep as if the grace window had passed for every staged row. */
+function sweepPastGrace(ctx: StartedProxy): number {
+  return commitStalePendingUsage(ctx.db, {
+    graceMs: PENDING_USAGE_GRACE_MS,
+    now: Date.now() + PENDING_USAGE_GRACE_MS + 1000,
+  });
+}
+
+/**
+ * Claude Code builds that predate the `request_id` attribute on api_request
+ * (and exporter paths that drop it) give the staged row no id to be claimed
+ * by. Without the usage-fingerprint fallback the OTEL row lands at once and
+ * the sweeper commits the proxy's row 90 s later: every ordinary Claude Code
+ * request counted twice.
+ */
+describe('proxy staged-usage dedupe for OTEL without request_id (real HTTP)', () => {
+  let ctx: StartedProxy;
+
+  afterEach(async () => {
+    if (ctx) await ctx.cleanup();
+  });
+
+  it('OTEL after staging: claims the staged row by fingerprint, one row total', async () => {
+    ctx = await startProxyWithFake({ tokens: ['pool-token'], accounts: [POOL_ACCOUNT] });
+    ctx.activeToken.value = 'pool-token';
+    ctx.fake.queueResponse('/v1/messages', { extraHeaders: { 'request-id': 'req_noid_fwd' } });
+
+    await post(ctx.proxyPort, { 'user-agent': CLI_UA });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(getPendingUsageEvents(ctx.db)).toHaveLength(1);
+
+    await postOtelApiRequest(ctx.proxyPort, { costUsd: 0.5 });
+
+    expect(getPendingUsageEvents(ctx.db)).toEqual([]);
+    expect(sweepPastGrace(ctx)).toBe(0);
+    const events = getUsageEvents(ctx.db, {});
+    expect(events).toHaveLength(1);
+    // OTEL owns the figures; the row is linked to the request it accounts for.
+    expect(events[0]!.costUsd).toBe(0.5);
+    expect(rawRequestIds(ctx)).toEqual(['req_noid_fwd']);
+  });
+
+  it('OTEL before staging: the sweep links the OTEL row instead of committing a second', async () => {
+    ctx = await startProxyWithFake({ tokens: ['pool-token'], accounts: [POOL_ACCOUNT] });
+    ctx.activeToken.value = 'pool-token';
+    ctx.fake.queueResponse('/v1/messages', { extraHeaders: { 'request-id': 'req_noid_rev' } });
+
+    await postOtelApiRequest(ctx.proxyPort, { costUsd: 0.5 });
+    expect(rawRequestIds(ctx)).toEqual([null]);
+
+    await post(ctx.proxyPort, { 'user-agent': CLI_UA });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(getPendingUsageEvents(ctx.db)).toHaveLength(1);
+
+    sweepPastGrace(ctx);
+
+    expect(getPendingUsageEvents(ctx.db)).toEqual([]);
+    const events = getUsageEvents(ctx.db, {});
+    expect(events).toHaveLength(1);
+    expect(events[0]!.costUsd).toBe(0.5);
+    expect(rawRequestIds(ctx)).toEqual(['req_noid_rev']);
+  });
+
+  it('one OTEL event claims exactly one of two identical staged requests', async () => {
+    ctx = await startProxyWithFake({ tokens: ['pool-token'], accounts: [POOL_ACCOUNT] });
+    ctx.activeToken.value = 'pool-token';
+    ctx.fake.queueResponse('/v1/messages', { extraHeaders: { 'request-id': 'req_twin_a' } });
+    ctx.fake.queueResponse('/v1/messages', { extraHeaders: { 'request-id': 'req_twin_b' } });
+
+    await post(ctx.proxyPort, { 'user-agent': CLI_UA });
+    await new Promise((r) => setTimeout(r, 40));
+    await post(ctx.proxyPort, { 'user-agent': CLI_UA });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(getPendingUsageEvents(ctx.db)).toHaveLength(2);
+
+    await postOtelApiRequest(ctx.proxyPort, { costUsd: 0.5 });
+
+    // The oldest staged row is the one claimed; the other still awaits its
+    // own report and commits on the sweep.
+    expect(getPendingUsageEvents(ctx.db).map((p) => p.requestId)).toEqual(['req_twin_b']);
+    expect(sweepPastGrace(ctx)).toBe(1);
+    expect(getUsageEvents(ctx.db, {})).toHaveLength(2);
+    expect(rawRequestIds(ctx).sort()).toEqual(['req_twin_a', 'req_twin_b']);
+  });
+
+  it('attributes the claimed row to the account whose token served the request', async () => {
+    ctx = await startProxyWithFake({ tokens: ['pool-token'], accounts: [POOL_ACCOUNT] });
+    ctx.activeToken.value = 'pool-token';
+    ctx.fake.queueResponse('/v1/messages', { extraHeaders: { 'request-id': 'req_noid_acct' } });
+
+    await post(ctx.proxyPort, { 'user-agent': CLI_UA });
+    await new Promise((r) => setTimeout(r, 40));
+    // Without a request_id the receiver can only guess the active account.
+    ctx.activeAccountId.value = 'acct-signed-in';
+    await postOtelApiRequest(ctx.proxyPort, { costUsd: 0.5 });
+
+    expect(getUsageEvents(ctx.db, { accountId: 'acct-signed-in' })).toEqual([]);
+    expect(getUsageEvents(ctx.db, { accountId: 'acct-pool' })).toHaveLength(1);
+  });
+
+  it('does not claim a staged row whose usage differs, so both requests count', async () => {
+    ctx = await startProxyWithFake({ tokens: ['pool-token'], accounts: [POOL_ACCOUNT] });
+    ctx.activeToken.value = 'pool-token';
+    ctx.fake.queueResponse('/v1/messages', { extraHeaders: { 'request-id': 'req_other' } });
+
+    await post(ctx.proxyPort, { 'user-agent': CLI_UA });
+    await new Promise((r) => setTimeout(r, 40));
+    // A different request (other token count) and one far outside the window.
+    await postOtelApiRequest(ctx.proxyPort, { costUsd: 0.5, inputTokens: FAKE_INPUT_TOKENS + 1 });
+    await postOtelApiRequest(ctx.proxyPort, { costUsd: 0.7, tsMs: Date.now() - 60_000 });
+
+    expect(getPendingUsageEvents(ctx.db)).toHaveLength(1);
+    expect(sweepPastGrace(ctx)).toBe(1);
+    expect(getUsageEvents(ctx.db, {})).toHaveLength(3);
+    expect(rawRequestIds(ctx).filter((id) => id === 'req_other')).toHaveLength(1);
   });
 });

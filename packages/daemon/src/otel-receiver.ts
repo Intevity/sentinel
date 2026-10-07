@@ -6,6 +6,7 @@ import {
   insertApiError,
   insertActivityEvent,
   claimPendingUsageEvent,
+  claimPendingUsageByFingerprint,
 } from './db.js';
 import type { ActiveAccountId } from './proxy.js';
 import type { IpcServer } from './ipc.js';
@@ -451,7 +452,7 @@ export class OtelReceiver {
       case EVENT_API_REQUEST: {
         this.onApiRequestEvent?.();
         const requestId = asString(attrs['request_id']);
-        this.insertUsage({
+        const usage = {
           ts,
           accountId,
           sessionId,
@@ -463,7 +464,21 @@ export class OtelReceiver {
           cacheCreate: (attrs['cache_creation_tokens'] as number | undefined) ?? null,
           durationMs: (attrs['duration_ms'] as number | undefined) ?? null,
           requestId,
-        });
+        };
+        if (!requestId) {
+          // Older Claude Code builds (and exporter paths that drop it) send
+          // api_request without request_id. Claim the proxy's staged row for
+          // the same request by its usage fingerprint, or the sweeper would
+          // commit it as a second row 90 s later. The claimed row's
+          // request_id links this row (it can never be matched twice) and
+          // its account is the token that actually served the request.
+          const claimed = claimPendingUsageByFingerprint(this.db, usage);
+          if (claimed) {
+            usage.requestId = claimed.requestId;
+            usage.accountId = claimed.accountId;
+          }
+        }
+        this.insertUsage(usage);
         // OTEL owns this request's accounting: discard the proxy's staged
         // row for the same request-id. Runs even when the insert above was
         // ignored (row already committed by the sweeper) — the delete

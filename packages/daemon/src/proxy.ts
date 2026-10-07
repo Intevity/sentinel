@@ -32,6 +32,7 @@ import {
   extractUsageFromJson,
   SseUsageExtractor,
 } from './cache-ttl/parser.js';
+import { appendToTail, extractUsageFromJsonTail } from './usage-json-tail.js';
 import { computeCacheCosts, computeRequestCost } from './cache-ttl/pricing.js';
 import { rewriteCacheControlTtl } from './cache-ttl/rewriter.js';
 import { compressMessagesBody } from './optimize/compress/index.js';
@@ -364,6 +365,17 @@ export interface DaemonHealthSnapshot {
 
 const HEALTH_LOG_THROTTLE_MS = 60_000;
 
+/** Minimum gap between two BYOK 401 explanations in the daemon log. */
+export const BYOK_AUTH_HINT_THROTTLE_MS = 10 * 60_000;
+
+/** Logged when an x-api-key (BYOK) request comes back 401. */
+export const BYOK_AUTH_REJECTED_HINT =
+  '[Proxy] Anthropic rejected a BYOK request (401): the client sent its own x-api-key ' +
+  'and Sentinel forwards that key unchanged. Sentinel no longer substitutes a pooled ' +
+  'Claude token for x-api-key clients. Fix: give the client a valid Anthropic API key, ' +
+  'or remove the placeholder x-api-key so the client signs in through Claude ' +
+  '(Claude Code / OAuth) and Sentinel can route it through the account pool.';
+
 /** Mutable capture state threaded through a single request's lifecycle.
  *  Built when capture is enabled, populated phase by phase, and handed to
  *  `RequestLogStore.enqueue()` on finalization. */
@@ -403,6 +415,11 @@ const RL_BROADCAST_DEBOUNCE_MS = 2_000;
 // metrics_updated broadcast to this cadence so a burst of requests doesn't
 // cause the UI to re-fetch on every single one.
 const CACHE_TTL_BROADCAST_DEBOUNCE_MS = 1_000;
+
+// Non-SSE /v1/messages bodies: how much of the head the proxy buffers whole
+// for its usage parse and the tool-call extractor. Past this, usage comes
+// from the rolling tail (usage-json-tail.ts).
+const NON_SSE_HEAD_BYTES = 256 * 1024;
 
 // Upstream socket inactivity timeout. Auto-resets on each read/write, so
 // long-running SSE streams that keep producing chunks are never affected.
@@ -530,11 +547,27 @@ export function createProxyServer(
     mcpHandler,
     codeModeHandler,
     requestAccountMap,
-    onUpstreamAuthFailure,
     onToolCallsFlushed,
     onRealMessagesRequest,
     onDesktopRequest,
   } = opts;
+
+  // BYOK 401s are the client's own key being rejected: there is no pooled
+  // token to refresh. Since x-api-key clients stopped receiving a substituted
+  // pooled token, a client configured with a placeholder key (it used to
+  // work) fails here, so say why in the daemon log, once per window and
+  // without any key material.
+  let lastByokAuthHintAt = Number.NEGATIVE_INFINITY;
+  const onUpstreamAuthFailure = (accountId: string): void => {
+    if (accountId !== BYOK_ACCOUNT_ID) {
+      opts.onUpstreamAuthFailure?.(accountId);
+      return;
+    }
+    const now = Date.now();
+    if (now - lastByokAuthHintAt < BYOK_AUTH_HINT_THROTTLE_MS) return;
+    lastByokAuthHintAt = now;
+    log.warn(BYOK_AUTH_REJECTED_HINT);
+  };
   const getPausedAccountIds = opts.getPausedAccountIds ?? (() => new Set<string>());
   const getPauseReason = opts.getPauseReason ?? (() => null);
   const getSessionResetAt = opts.getSessionResetAt ?? (() => null);
@@ -1088,6 +1121,9 @@ async function proxyToAnthropic(
     sse: SseUsageExtractor;
     nonSseChunks: Buffer[];
     nonSseBytes: number;
+    /** Last USAGE_TAIL_BYTES of a non-SSE body, for the usage parse when
+     *  the body outgrows the head buffer. */
+    nonSseTail: Buffer;
     isSse: boolean;
   } | null =
     db && isMessagesPost
@@ -1100,6 +1136,7 @@ async function proxyToAnthropic(
           sse: new SseUsageExtractor(),
           nonSseChunks: [],
           nonSseBytes: 0,
+          nonSseTail: Buffer.alloc(0),
           isSse: false,
         }
       : null;
@@ -1465,14 +1502,16 @@ async function proxyToAnthropic(
     if (cacheTtlCtx) {
       if (cacheTtlCtx.isSse) {
         cacheTtlCtx.sse.onChunk(chunk);
-      } else if (cacheTtlCtx.nonSseBytes < 256 * 1024) {
-        // Non-SSE responses: buffer up to 256 KB for a final JSON parse.
-        // That's plenty of headroom for a top-level usage object on a
-        // non-streaming /v1/messages response; anything larger almost
-        // certainly IS streaming misclassified by a gzip edge case, and
-        // we'll simply skip the insert.
-        cacheTtlCtx.nonSseChunks.push(chunk);
+      } else {
+        // Non-SSE responses: buffer the first 256 KB for a final JSON parse
+        // (and the tool-call extractor), and keep a rolling tail. A long
+        // non-streaming answer outgrows the head, but its top-level usage
+        // object is serialized last, so the tail still yields it.
+        if (cacheTtlCtx.nonSseBytes < NON_SSE_HEAD_BYTES) {
+          cacheTtlCtx.nonSseChunks.push(chunk);
+        }
         cacheTtlCtx.nonSseBytes += chunk.length;
+        cacheTtlCtx.nonSseTail = appendToTail(cacheTtlCtx.nonSseTail, chunk);
       }
     }
     // Optimize feature: pure observer. Only feed SSE bytes here — a
@@ -1488,7 +1527,11 @@ async function proxyToAnthropic(
     if (!cacheTtlCtx) return;
     let result = cacheTtlCtx.sse.getResult();
     if (!result && cacheTtlCtx.nonSseChunks.length > 0) {
-      result = extractUsageFromJson(Buffer.concat(cacheTtlCtx.nonSseChunks));
+      const head = Buffer.concat(cacheTtlCtx.nonSseChunks);
+      result =
+        head.length === cacheTtlCtx.nonSseBytes
+          ? extractUsageFromJson(head)
+          : extractUsageFromJsonTail(head, cacheTtlCtx.nonSseTail);
     }
     if (!result) return;
     const model = result.model ?? 'unknown';
@@ -1699,7 +1742,8 @@ async function proxyToAnthropic(
           // broadcasts token_refresh_failed so the Re-authenticate banner
           // lights up within ~1s. We do not retry the current request (too
           // invasive — would require buffering the body), but the next one
-          // will use the fresh token.
+          // will use the fresh token. A BYOK 401 (the client's own key) is
+          // routed to a log explanation instead — see createProxyServer.
           if (proxyRes.statusCode === 401 && onUpstreamAuthFailure) {
             onUpstreamAuthFailure(currentRlKey);
           }

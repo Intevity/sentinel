@@ -19,6 +19,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { startProxyWithFake, type StartedProxy } from './proxy.test-helpers.js';
 import { getUsageEvents, getPendingUsageEvents } from './db.js';
 import { BYOK_ACCOUNT_ID } from './proxy.js';
+import { computeRequestCost } from './cache-ttl/pricing.js';
 
 const CLIENT_KEY = 'sk-ant-api03-client-owned-key';
 const CLI_UA = 'claude-cli/2.1.197 (external, cli)';
@@ -158,5 +159,47 @@ describe('proxy usage accounting (real HTTP)', () => {
     expect(events[0]!.cacheRead).toBe(5);
     // Sonnet: 20 × $3 + 5 × $3 × 0.1 (cache read) + 42 × $15, per MTok.
     expect(events[0]!.costUsd).toBeCloseTo((20 * 3 + 5 * 3 * 0.1 + 42 * 15) / 1e6, 12);
+  });
+
+  it('still records usage for a non-streaming response larger than the 256 KB head buffer', async () => {
+    ctx = await startProxyWithFake({
+      tokens: ['pool-token', CLIENT_KEY],
+      accounts: [{ id: 'acct-pool', email: 'pool@example.com', token: 'pool-token' }],
+    });
+    // A long non-streaming answer: ~600 KB of content, usage serialized last.
+    ctx.fake.queueResponse('/v1/messages', {
+      body: {
+        id: 'msg_big',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-opus-4-7',
+        content: [{ type: 'text', text: 'z'.repeat(600 * 1024) }],
+        stop_reason: 'max_tokens',
+        stop_sequence: null,
+        usage: { input_tokens: 1500, output_tokens: 32000, cache_read_input_tokens: 100 },
+      },
+    });
+
+    const res = await post(ctx.proxyPort, { 'x-api-key': CLIENT_KEY, 'user-agent': OPENCODE_UA });
+    // The client still gets the whole body.
+    expect((await res.text()).length).toBeGreaterThan(600 * 1024);
+    await new Promise((r) => setTimeout(r, 40));
+
+    const byok = getUsageEvents(ctx.db, { accountId: BYOK_ACCOUNT_ID });
+    expect(byok).toHaveLength(1);
+    expect(byok[0]!.model).toBe('claude-opus-4-7');
+    expect(byok[0]!.inputTokens).toBe(1500);
+    expect(byok[0]!.outputTokens).toBe(32000);
+    expect(byok[0]!.cacheRead).toBe(100);
+    // Priced exactly like a fully-buffered response with the same usage.
+    const expectedCost = computeRequestCost('claude-opus-4-7', {
+      inputTokens: 1500,
+      outputTokens: 32000,
+      cacheCreate5m: 0,
+      cacheCreate1h: 0,
+      cacheRead: 100,
+    });
+    expect(expectedCost).toBeGreaterThan(0);
+    expect(byok[0]!.costUsd).toBeCloseTo(expectedCost!, 10);
   });
 });

@@ -17,7 +17,8 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { startProxyWithFake, type StartedProxy } from './proxy.test-helpers.js';
-import { BYOK_ACCOUNT_ID } from './proxy.js';
+import { BYOK_ACCOUNT_ID, BYOK_AUTH_REJECTED_HINT } from './proxy.js';
+import { log } from './logger.js';
 
 const CLIENT_KEY = 'sk-ant-api03-client-owned-key';
 const OPENCODE_UA = 'opencode/1.18.16';
@@ -123,5 +124,47 @@ describe('proxy BYOK passthrough (real HTTP)', () => {
     const upstream = ctx.fake.requests().filter((r) => r.url.startsWith('/v1/messages'));
     expect(upstream[0]!.headers['authorization']).toBe('Bearer pool-token');
     expect(upstream[0]!.headers['x-api-key']).toBeUndefined();
+  });
+
+  it('explains a rejected BYOK key in the log once, and never refreshes a pooled token for it', async () => {
+    const authFailures: string[] = [];
+    ctx = await startProxyWithFake({
+      tokens: ['pool-token', CLIENT_KEY],
+      accounts: [{ id: 'acct-pool', email: 'pool@example.com', token: 'pool-token' }],
+      onUpstreamAuthFailure: (id) => authFailures.push(id),
+    });
+    ctx.activeToken.value = 'pool-token';
+    const unauthorized = {
+      status: 401,
+      body: {
+        type: 'error',
+        error: { type: 'authentication_error', message: 'invalid x-api-key' },
+      },
+    };
+    const hintCount = (): number =>
+      log.getHistory().filter((e) => e.message === BYOK_AUTH_REJECTED_HINT).length;
+    const before = hintCount();
+
+    for (let i = 0; i < 2; i++) {
+      ctx.fake.queueResponse('/v1/messages', unauthorized);
+      const res = await post(ctx.proxyPort, { 'x-api-key': CLIENT_KEY, 'user-agent': OPENCODE_UA });
+      expect(res.status).toBe(401);
+    }
+    await new Promise((r) => setTimeout(r, 30));
+
+    // One explanation for the burst (rate-limited), carrying no key material,
+    // and no refresh attempt against the reserved BYOK id.
+    expect(hintCount() - before).toBe(1);
+    expect(BYOK_AUTH_REJECTED_HINT).not.toContain(CLIENT_KEY);
+    expect(BYOK_AUTH_REJECTED_HINT).toContain('no longer substitutes a pooled');
+    expect(authFailures).toEqual([]);
+
+    // A pooled Claude Code request's 401 still reaches the refresh hook.
+    ctx.fake.queueResponse('/v1/messages', unauthorized);
+    await post(ctx.proxyPort, { 'user-agent': 'claude-cli/2.1.197 (external, cli)' });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(authFailures).toHaveLength(1);
+    expect(authFailures[0]).not.toBe(BYOK_ACCOUNT_ID);
+    expect(hintCount() - before).toBe(1);
   });
 });
