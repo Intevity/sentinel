@@ -76,10 +76,29 @@ describe('getModelPrices', () => {
     expect(getBaseInputPricePerMillion(model)).toBe(input);
   });
 
-  it('does not price an unknown minor version as its family', () => {
-    // An unreleased minor version is an honest blank rather than a guess.
-    expect(getModelPrices('claude-opus-5-9')).toBeNull();
-    expect(getModelPrices('claude-opus-4-9')).toBeNull();
+  it.each([
+    // A minor version newer than the table takes the closest earlier minor.
+    ['claude-opus-5-9', 4, 0.2],
+    ['claude-opus-5-6-20270101', 4, 0.2],
+    ['claude-opus-4-9', 5, 0.5],
+    ['claude-sonnet-4-7', 3, 0.3],
+    ['claude-fable-5-2', 10, 0.25],
+    ['claude-haiku-4-6', 1, 0.1],
+  ])('prices unreleased %s as its nearest earlier minor', (model, input, read) => {
+    expect(getModelPrices(model)).toMatchObject({
+      inputPerMillion: input,
+      cacheReadPerMillion: read,
+    });
+  });
+
+  it('falls back to the bare major row when no earlier minor exists', () => {
+    // claude-sonnet-5 has no -1..-4 rows, so -5's siblings resolve to the major.
+    expect(getModelPrices('claude-sonnet-5-3')?.inputPerMillion).toBe(2);
+  });
+
+  it('still returns null for a family the table does not know', () => {
+    expect(getModelPrices('claude-quill-1-2')).toBeNull();
+    expect(getModelPrices('claude-opus-9-1')).toBeNull();
   });
 
   it.each([

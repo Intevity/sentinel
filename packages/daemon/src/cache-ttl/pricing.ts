@@ -120,7 +120,29 @@ function lookupPrices(model: string): ModelPrices | null {
       return prices;
     }
   }
-  return null;
+  return lookupNearestEarlierMinor(m);
+}
+
+const VERSIONED_ID = /^(claude-[a-z]+-\d+)-(\d{1,2})(?:-|$)/;
+
+/**
+ * A minor version newer than the table (a model released after this build)
+ * is priced as the closest earlier minor of the same family and major —
+ * `claude-opus-5-6` as `claude-opus-5-5` — falling back to the bare major row.
+ * Prices within a family have only held or dropped across minor releases, so
+ * this is a better estimate than leaving every request on the new model
+ * unpriced until Sentinel ships a table row for it.
+ */
+function lookupNearestEarlierMinor(m: string): ModelPrices | null {
+  const match = VERSIONED_ID.exec(m);
+  if (!match) return null;
+  // Both groups are mandatory in VERSIONED_ID, so a match always has them.
+  const base = match[1] as string;
+  for (let minor = Number(match[2]) - 1; minor >= 1; minor--) {
+    const prices = PRICES_BY_KEY.get(`${base}-${minor}`);
+    if (prices) return prices;
+  }
+  return PRICES_BY_KEY.get(base) ?? null;
 }
 
 /**
