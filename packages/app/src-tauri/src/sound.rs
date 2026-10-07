@@ -17,9 +17,10 @@ pub fn play_system_sound(name: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let path = format!("/System/Library/Sounds/{}.aiff", name);
-        std::process::Command::new("afplay")
-            .arg(&path)
-            .spawn()
+        // spawn_reaped, not a bare spawn(): a dropped std Child is never
+        // waited on, so each alert sound used to leave an `afplay` zombie
+        // parented to the app for the rest of its (long) lifetime.
+        crate::child_reap::spawn_reaped(std::process::Command::new("afplay").arg(&path))
             .map_err(|e| format!("afplay failed: {}", e))?;
     }
     #[cfg(not(target_os = "macos"))]

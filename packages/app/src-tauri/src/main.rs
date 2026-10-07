@@ -3,6 +3,7 @@
 
 mod activation;
 mod app_log;
+mod child_reap;
 mod daemon;
 mod first_run;
 mod ipc;
