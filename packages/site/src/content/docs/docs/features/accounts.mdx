@@ -8,14 +8,17 @@ sidebar:
 import { Aside } from '@astrojs/starlight/components';
 
 The **Accounts** tab is home base. It lists every Claude account you've enrolled (Pro, Max, Team,
-Enterprise), shows which one is currently serving requests, and lets you switch, tag, pause, or
-remove them.
+Enterprise, or an Anthropic API key), shows which one is currently serving requests, and lets you
+switch, tag, pause, or remove them.
 
 ![The Accounts tab showing enrolled accounts and the active account in the header](/sentinel/screenshots/accounts-tab.png)
 
 ## Enrolling accounts
 
-Click **Add Account**. Sentinel opens an in-app terminal running `claude setup-token` — the
+Click **Add Account** and choose what you're adding: a **Claude subscription** or an
+[**API key**](#adding-an-api-key).
+
+For a subscription, Sentinel opens an in-app terminal running `claude setup-token` — the
 official Claude Code sign-in — and captures the long-lived token it produces. Complete the browser
 sign-in for the account you want to enroll, then give the account a name and (optionally) an
 organization label. You can enroll as many accounts as you own.
@@ -24,6 +27,31 @@ organization label. You can enroll as many accounts as you own.
 your profile, so Sentinel cannot derive the account's email, display name, or organization from the
 token — the name and organization you type are how you tell accounts apart in the UI. Both are
 editable later, and you can also assign a **color tag** to each account.
+
+### Adding an API key
+
+Choose **API key** to enroll a key from the [Claude Console](https://platform.claude.com/settings/keys)
+instead of a subscription. Both kinds of Console key work: a **personal** (or service-account) key,
+which starts with `sk-ant-usr`, and a legacy **workspace** key, which starts with `sk-ant-api`.
+Paste the key, give the account a name, and Sentinel checks the key with Anthropic before saving it,
+so a mistyped or disabled key is caught on the spot.
+
+A personal key that works in more than one workspace has to say which workspace each request acts
+in. Enter that workspace's ID (`wrkspc_…`, from the Workspaces page in the Console) in **Workspace
+ID**; Sentinel tells you when a key needs one.
+
+An API-key account behaves differently from a subscription:
+
+- **It bills to your API credits.** There's no 5-hour or weekly limit, so its card shows no usage
+  bars and it gets no default usage alert.
+- **In Auto mode it's the last resort.** Auto routes to it only while no subscription account in the
+  pool can take the request, then moves back as soon as one can. Exclude it from the pool if you
+  want it used only when you switch to it yourself.
+- **Claude Code keeps its own sign-in.** Sentinel never writes the key into Claude Code's login;
+  the proxy sends it to Anthropic as an API key on Claude Code's behalf.
+
+If Anthropic stops accepting the key (it was disabled, deleted, or expired), the account shows
+**Replace key**, which opens the same form and swaps in a new key while keeping the account's data.
 
 ### Editing name and organization
 
