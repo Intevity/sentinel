@@ -220,6 +220,7 @@ export interface StartProxyOpts {
   /** When set, overrides the default tokenProvider (Auto switching). The
    *  helper's default tokenProvider returns null (fallback to activeToken). */
   tokenProvider?: (ctx?: { isFable: boolean }) => TokenSelection | null;
+  getApiKeyWorkspaceId?: (accountId: string) => string | undefined;
   /** Live accessors — wired straight into `createProxyServer`. */
   getPausedAccountIds?: () => ReadonlySet<string>;
   getPauseReason?: (accountId: string) => PauseReason | null;
@@ -362,6 +363,7 @@ export async function startProxyWithFake(opts: StartProxyOpts = {}): Promise<Sta
     requestAccountMap,
   };
   if (opts.tokenProvider) proxyOpts.tokenProvider = opts.tokenProvider;
+  if (opts.getApiKeyWorkspaceId) proxyOpts.getApiKeyWorkspaceId = opts.getApiKeyWorkspaceId;
   if (opts.getPausedAccountIds) proxyOpts.getPausedAccountIds = opts.getPausedAccountIds;
   if (opts.getPauseReason) proxyOpts.getPauseReason = opts.getPauseReason;
   if (opts.getSessionResetAt) proxyOpts.getSessionResetAt = opts.getSessionResetAt;

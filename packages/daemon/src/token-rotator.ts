@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import { FABLE_WEEKLY_WINDOW } from '@sentinel/shared';
+import { FABLE_WEEKLY_WINDOW, isApiKeyCredential } from '@sentinel/shared';
 import type { AutoSwitchTargetWindow } from '@sentinel/shared';
 import { listAccounts } from './db.js';
 import { readActiveCredentials, readSentinelCredentials } from './accounts.js';
@@ -217,6 +217,7 @@ export class TokenRotator {
     // entirely — they're never eligible for Auto switching.
     const fresh: Candidate[] = [];
     const overage: Candidate[] = [];
+    const apiKey: Candidate[] = [];
     const now = this.nowSec();
     const targetWeekly = this.getTargetWindow() === 'weekly';
     // A reset that is missing OR already behind the clock carries no
@@ -250,6 +251,13 @@ export class TokenRotator {
       // Ranking keys, most significant first (see `withinTolerance`).
       const keys = targetWeekly ? [weeklyReset, sessionReset] : [sessionReset];
       const candidate: Candidate = { idx: i, util, keys };
+      // An API-key account bills per token and has no windows to rank by.
+      // It is held back as a last resort, used only while no subscription
+      // account in the pool can take the request.
+      if (isApiKeyCredential(entry.token)) {
+        apiKey.push(candidate);
+        continue;
+      }
       // Blocked on any quota window means the 5h or 7d quota is exhausted.
       // A blocked window whose reset has already elapsed is stale (the
       // server-side window rolled; no response has refreshed it yet), the
@@ -310,8 +318,8 @@ export class TokenRotator {
     }
 
     // Prefer the fresh tier: drain pool-wide 5h quota before spilling to
-    // overage.
-    const tier = fresh.length > 0 ? fresh : overage;
+    // overage, and spend API credits only once both are empty.
+    const tier = fresh.length > 0 ? fresh : overage.length > 0 ? overage : apiKey;
     if (tier.length === 0) return null;
 
     // Hard-target the account whose targeted window rolls over soonest.

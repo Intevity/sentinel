@@ -46,7 +46,7 @@ import type { CodeModeHttpHandler } from './optimize/code-mode/code-mode-server.
 import { measureToolDefinitions } from './context-bloat/mcp-definition-cost.js';
 import type { ContextCostStore } from './context-bloat/context-cost-db.js';
 import type { PauseReason } from '@sentinel/shared';
-import { FABLE_WEEKLY_WINDOW, BYOK_ACCOUNT_ID } from '@sentinel/shared';
+import { FABLE_WEEKLY_WINDOW, BYOK_ACCOUNT_ID, isApiKeyCredential } from '@sentinel/shared';
 
 export const DAEMON_PORT = 47284;
 
@@ -154,6 +154,39 @@ export function isByokRequest(headers: IncomingMessage['headers']): boolean {
 }
 
 /**
+ * Authenticate a request with the pooled credential Sentinel picked for it.
+ *
+ * A subscription token goes in `Authorization: Bearer`. An Anthropic API key
+ * goes in `x-api-key`, and the request loses the OAuth beta flag Claude Code
+ * adds for its subscription login, which describes a credential this request
+ * no longer carries. An identity-linked key that works in several workspaces
+ * also names the one to act in. Either way, the client's own credential
+ * header of the other kind is removed: upstream must not be free to honour
+ * the wrong one, billing a credential Sentinel didn't attribute the response to.
+ */
+export function applyPooledCredential(
+  headers: IncomingMessage['headers'],
+  token: string,
+  workspaceId: string | undefined,
+): void {
+  if (!isApiKeyCredential(token)) {
+    headers['authorization'] = `Bearer ${token}`;
+    delete headers['x-api-key'];
+    return;
+  }
+  headers['x-api-key'] = token;
+  delete headers['authorization'];
+  if (workspaceId) headers['anthropic-workspace-id'] = workspaceId;
+  const beta = headers['anthropic-beta'];
+  const flags = (Array.isArray(beta) ? beta.join(',') : (beta ?? ''))
+    .split(',')
+    .map((f) => f.trim())
+    .filter((f) => f && f !== OAUTH_BETA_TOKEN);
+  if (flags.length > 0) headers['anthropic-beta'] = flags.join(',');
+  else delete headers['anthropic-beta'];
+}
+
+/**
  * True when this client exports its own OTEL telemetry, which is the source of
  * truth for its cost and token accounting.
  *
@@ -232,6 +265,9 @@ interface ProxyOptions {
    *  exhausts. Callers without model context pass undefined and the rotator
    *  falls back to the 5h-only gate (Opus-safe default). */
   tokenProvider?: (ctx?: { isFable: boolean }) => TokenSelection | null;
+  /** Workspace an API-key account acts in, sent as `anthropic-workspace-id`.
+   *  Asked only when the selected credential is an API key. */
+  getApiKeyWorkspaceId?: (accountId: string) => string | undefined;
   /** Live accessor for the Sentinel-side paused-account set. When the
    *  account that a request is about to be attributed to is paused, the
    *  proxy short-circuits the request with 503 + Retry-After. The reset
@@ -537,6 +573,14 @@ export function createProxyServer(
   const activeAccountId = opts.activeAccountId;
   const rateLimitStore = opts.rateLimitStore;
   const tokenProvider = opts.tokenProvider;
+  const getApiKeyWorkspaceId = opts.getApiKeyWorkspaceId;
+  /** Put the selected pooled credential on the request; see applyPooledCredential. */
+  const applyCredential = (req: IncomingMessage, credential: TokenSelection): void => {
+    const workspaceId = isApiKeyCredential(credential.token)
+      ? getApiKeyWorkspaceId?.(credential.accountId)
+      : undefined;
+    applyPooledCredential(req.headers, credential.token, workspaceId);
+  };
   const {
     ipcServer,
     securityScanner,
@@ -716,14 +760,7 @@ export function createProxyServer(
     const isFable = isFableModel(model);
 
     const credential = selectCredential(req, { isFable });
-    if (credential) {
-      req.headers['authorization'] = `Bearer ${credential.token}`;
-      // A client-supplied `x-api-key` must not travel alongside our Bearer:
-      // upstream would be free to honour the wrong one, billing a foreign key
-      // while Sentinel filed the response's rate-limit headers against the
-      // pooled account it thought it used.
-      delete req.headers['x-api-key'];
-    }
+    if (credential) applyCredential(req, credential);
     const perRequestAccountId =
       credential?.accountId ??
       (isByokRequest(req.headers) ? BYOK_ACCOUNT_ID : activeAccountId?.value);
@@ -937,11 +974,15 @@ export function createProxyServer(
     }
 
     const credential = selectCredential(req);
-    if (credential) {
-      req.headers['authorization'] = `Bearer ${credential.token}`;
-      // See the messages-POST path: never let a client key race our Bearer.
-      delete req.headers['x-api-key'];
-    }
+    if (credential) applyCredential(req, credential);
+    // An API key is a credential for the public API (`/v1/*`) only. Claude
+    // Code's account endpoints answer it with 401 as a matter of course, which
+    // says nothing about whether the key is still good, so it must not flag
+    // the account for re-authentication.
+    const authFailureHook =
+      credential && isApiKeyCredential(credential.token) && !url.startsWith('/v1/')
+        ? undefined
+        : onUpstreamAuthFailure;
 
     // Proxy Anthropic API calls — attribute rate-limit headers to the
     // specific account whose token was used for this request (matters for
@@ -976,7 +1017,7 @@ export function createProxyServer(
         opts.db,
         undefined,
         requestAccountMap,
-        onUpstreamAuthFailure,
+        authFailureHook,
         onToolCallsFlushed,
       ).catch((err) => {
         console.error('[Proxy] Proxy error:', err);
@@ -1001,7 +1042,7 @@ export function createProxyServer(
       opts.db,
       undefined,
       requestAccountMap,
-      onUpstreamAuthFailure,
+      authFailureHook,
       onToolCallsFlushed,
     ).catch((err) => {
       console.error('[Proxy] Default proxy error:', err);

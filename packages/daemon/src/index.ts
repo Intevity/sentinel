@@ -90,7 +90,7 @@ import { RateLimitStore } from './rate-limit-store.js';
 import { TokenRotator } from './token-rotator.js';
 import { OverageGrantStore } from './overage-grant-store.js';
 import { SpendTracker } from './spend-tracker.js';
-import { ClaudeAiUsageStore, INFERENCE_ONLY_TOKEN_PREFIX } from './claude-ai-usage.js';
+import { ClaudeAiUsageStore, isInferenceOnlyCredential } from './claude-ai-usage.js';
 import {
   startAlertEvaluator,
   startFableAlertEvaluator,
@@ -174,7 +174,8 @@ import {
   deleteSentinelCredentials,
   readSentinelCredentials,
 } from './accounts.js';
-import { fetchProfile } from './oauth.js';
+import { fetchProfile, type ProfileResult } from './oauth.js';
+import { verifyApiKey } from './api-key-verifier.js';
 import { verifyStartupActiveAccount, healDriftedRows } from './credential-verifier.js';
 import {
   startTokenRefresher,
@@ -191,8 +192,15 @@ import type {
   MetricsSummary,
   AlertScope,
   CaptureHealthState,
+  StoreApiKeyResult,
 } from '@sentinel/shared';
-import { FABLE_WEEKLY_WINDOW, BYOK_ACCOUNT_ID } from '@sentinel/shared';
+import {
+  FABLE_WEEKLY_WINDOW,
+  BYOK_ACCOUNT_ID,
+  isApiKeyCredential,
+  validateApiKeyInput,
+  validateWorkspaceIdInput,
+} from '@sentinel/shared';
 import { request as httpRequest, type Server } from 'http';
 import { log } from './logger.js';
 import { getRequestLogStore, closeRequestLogStore } from './request-log-db.js';
@@ -350,6 +358,8 @@ function hostUuidForOtel(): string {
 }
 
 function inferPlanType(account: OAuthAccount, creds?: ClaudeCodeCredentials | null): PlanType {
+  // An API key has no subscription behind it; the key itself says so.
+  if (creds && isApiKeyCredential(creds.accessToken)) return 'api';
   // When credentials include a subscriptionType (from the OAuth profile API), trust it
   // as the authoritative source — it reflects the actual org type the token was minted for.
   const sub = creds?.subscriptionType?.toLowerCase() ?? '';
@@ -638,6 +648,19 @@ export async function startDaemon(): Promise<DaemonHandle> {
   const activeToken: ActiveToken = { value: null };
   // Shared account-key reference — mutated on switch/refresh, used by proxy for rate limit storage
   const activeAccountId: ActiveAccountId = { value: startupKey ?? 'default' };
+  // Workspace each API-key account acts in (`anthropic-workspace-id`), read
+  // from its stored credential the first time the proxy serves it. Null caches
+  // "no workspace", so a single-workspace key costs one keychain read in all.
+  // storeInferenceAccount drops an entry whenever it rewrites the credential.
+  const apiKeyWorkspaceIds = new Map<string, string | null>();
+  const apiKeyWorkspaceIdFor = (accountId: string): string | undefined => {
+    let cached = apiKeyWorkspaceIds.get(accountId);
+    if (cached === undefined) {
+      cached = readSentinelCredentials(accountId)?.workspaceId ?? null;
+      apiKeyWorkspaceIds.set(accountId, cached);
+    }
+    return cached ?? undefined;
+  };
 
   // Seed the active token from keychain on startup
   if (startupCreds) activeToken.value = startupCreds.accessToken;
@@ -1278,31 +1301,48 @@ export async function startDaemon(): Promise<DaemonHandle> {
    * previously-active account was removed / lost its credential — then the new
    * account is adopted so the proxy has a working token to serve. Returns
    * fields for the `login_complete` broadcast.
+   *
+   * An Anthropic API key (`store_api_key`) takes the same path, with three
+   * differences: there is no profile to sniff (the key can't read it), no
+   * default usage alert (an API key has no subscription limits to cross), and
+   * the optional `workspaceId` is stored for the proxy to send upstream.
    */
-  const storeSetupTokenAccount = async (
+  const storeInferenceAccount = async (
     token: string,
-    label: string | undefined,
-    accountId?: string,
-    orgLabel?: string,
+    opts: {
+      label?: string | undefined;
+      accountId?: string | undefined;
+      orgLabel?: string | undefined;
+      workspaceId?: string | undefined;
+    },
   ): Promise<{ email: string; orgName?: string; wasKnown: boolean }> => {
+    const { label, accountId, orgLabel, workspaceId } = opts;
+    const apiKey = isApiKeyCredential(token);
+    const logTag = apiKey ? '[ApiKey]' : '[SetupToken]';
     // setup-token mints a long-lived (~1yr) inference-scoped token with no
     // refresh token. Stamp a 330-day expiry so the refresher's validity check
-    // treats it as healthy until well before the real ~365-day expiry.
-    const expiresAt = Date.now() + 330 * 24 * 60 * 60 * 1000;
+    // treats it as healthy until well before the real ~365-day expiry. An API
+    // key's own expiry (if it has one) isn't readable, so it is treated as
+    // healthy until Anthropic rejects it.
+    const expiresAt = Date.now() + (apiKey ? 10 * 365 : 330) * 24 * 60 * 60 * 1000;
+    const credsFor = (): ClaudeCodeCredentials => ({
+      accessToken: token,
+      refreshToken: '',
+      expiresAt,
+      scopes: ['user:inference'],
+      ...(workspaceId ? { workspaceId } : {}),
+    });
 
     // Re-auth path: refresh the named account's credential in place.
     const existingForReauth = accountId ? getAccount(db, accountId) : null;
     if (accountId && existingForReauth) {
       const prev = readSentinelCredentials(accountId);
-      const creds: ClaudeCodeCredentials = {
-        accessToken: token,
-        refreshToken: '',
-        expiresAt,
-        scopes: ['user:inference'],
-      };
+      const creds = credsFor();
       if (prev?.subscriptionType) creds.subscriptionType = prev.subscriptionType;
       if (prev?.rateLimitTier) creds.rateLimitTier = prev.rateLimitTier;
       writeSentinelCredentials(accountId, creds);
+      // The proxy re-reads the workspace from the credential just written.
+      apiKeyWorkspaceIds.delete(accountId);
       reactivateAccount(db, accountId);
       markAccountReauthenticated(accountId);
       // Keep the proxy serving the fresh token if this account is active, and
@@ -1316,7 +1356,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
           writeClaudeCodeCredentials(creds);
         } catch (err) {
           console.warn(
-            `[SetupToken] Could not update Claude Code keychain: ${err instanceof Error ? err.message : String(err)}`,
+            `${logTag} Could not update Claude Code keychain: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       } else if (adoptAsActive) {
@@ -1330,7 +1370,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
         tokenRotator.refresh();
       }
       void claudeAiUsageStore.refresh(accountId);
-      console.log(`[SetupToken] Re-authenticated ${existingForReauth.email} (${accountId})`);
+      console.log(`${logTag} Re-authenticated ${existingForReauth.email} (${accountId})`);
       return {
         email: existingForReauth.email,
         wasKnown: true,
@@ -1341,8 +1381,9 @@ export async function startDaemon(): Promise<DaemonHandle> {
     // Sniff identity with the token itself. Inference-only tokens usually can't
     // read /api/oauth/profile (fetchProfile returns an empty struct on 401), so
     // fall back to the user's label. We do NOT read ~/.claude.json — it reflects
-    // a different, currently-active account and would mislabel this one.
-    const profile = await fetchProfile(token);
+    // a different, currently-active account and would mislabel this one. An API
+    // key never can, so it isn't asked.
+    const profile: Partial<ProfileResult> = apiKey ? {} : await fetchProfile(token);
     const hasProfile = Boolean(profile.email || profile.accountUuid || profile.orgUuid);
 
     const accountUuid = profile.accountUuid || randomUUID();
@@ -1350,22 +1391,18 @@ export async function startDaemon(): Promise<DaemonHandle> {
     // Keep credKey consistent with accountUuid so the active-account key derived
     // from ~/.claude.json (sentinelKey) matches the row/credential we store.
     const credKey = sentinelKey(orgUuid, accountUuid) || accountUuid;
-    const email = profile.email || label || 'Claude account';
+    const email = profile.email || label || (apiKey ? 'API key' : 'Claude account');
     const displayName = profile.displayName || label || email;
     // Profile-derived org wins; the user's typed org label is the fallback
     // (inference-only tokens can't read the profile, so it's usually the
     // only source). Editable later via `update_account`.
     const orgName = profile.orgName || orgLabel?.trim() || '';
 
-    const creds: ClaudeCodeCredentials = {
-      accessToken: token,
-      refreshToken: '',
-      expiresAt,
-      scopes: ['user:inference'],
-    };
+    const creds = credsFor();
     if (profile.subscriptionType) creds.subscriptionType = profile.subscriptionType;
     if (profile.rateLimitTier) creds.rateLimitTier = profile.rateLimitTier;
     writeSentinelCredentials(credKey, creds);
+    apiKeyWorkspaceIds.delete(credKey);
 
     const wasKnown = hasActiveAccount(db, credKey);
     reactivateAccount(db, credKey);
@@ -1374,13 +1411,13 @@ export async function startDaemon(): Promise<DaemonHandle> {
       accountUuid,
       emailAddress: email,
       organizationUuid: orgUuid,
-      hasExtraUsageEnabled: profile.hasExtraUsageEnabled,
+      hasExtraUsageEnabled: profile.hasExtraUsageEnabled ?? false,
       billingType: profile.subscriptionType || 'unknown',
       accountCreatedAt: new Date().toISOString(),
       subscriptionCreatedAt: new Date().toISOString(),
       displayName,
       organizationRole: (profile.organizationRole as OAuthAccount['organizationRole']) || 'user',
-      workspaceRole: profile.workspaceRole,
+      workspaceRole: profile.workspaceRole ?? null,
       organizationName: orgName,
     };
     const existing = listAccounts(db).find((a) => a.id === credKey);
@@ -1397,7 +1434,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
       color: existing?.color ?? null,
     });
 
-    if (!wasKnown && listAlerts(db, { scope: 'account', accountId: credKey }).length === 0) {
+    if (
+      !apiKey &&
+      !wasKnown &&
+      listAlerts(db, { scope: 'account', accountId: credKey }).length === 0
+    ) {
       upsertAlert(db, { scope: 'account', accountId: credKey, thresholdPct: 95, enabled: true });
       console.log(`[SetupToken] Seeded default 95% alert for ${credKey}`);
     }
@@ -1416,7 +1457,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
         writeClaudeCodeCredentials(creds);
       } catch (err) {
         console.warn(
-          `[SetupToken] Could not update Claude Code keychain: ${err instanceof Error ? err.message : String(err)}`,
+          `${logTag} Could not update Claude Code keychain: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -1426,7 +1467,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
     void claudeAiUsageStore.refresh(credKey);
 
     console.log(
-      `[SetupToken] Stored ${email} (org: ${orgName || '?'}, profile: ${hasProfile}), broadcasting to ${ipcServer.connectedClients} client(s)`,
+      `${logTag} Stored ${email} (org: ${orgName || '?'}, profile: ${hasProfile}), broadcasting to ${ipcServer.connectedClients} client(s)`,
     );
     return { email, wasKnown, ...(orgName ? { orgName } : {}) };
   };
@@ -3061,7 +3102,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
         // announces completion via login_complete — same async shape the old
         // login path used.
         respond({ requestType: 'store_setup_token', success: true });
-        void storeSetupTokenAccount(msg.token, msg.label, msg.accountId, msg.orgName)
+        void storeInferenceAccount(msg.token, {
+          label: msg.label,
+          accountId: msg.accountId,
+          orgLabel: msg.orgName,
+        })
           .then(({ email, orgName, wasKnown }) => {
             ipcServer.broadcast({
               type: 'login_complete',
@@ -3076,6 +3121,68 @@ export async function startDaemon(): Promise<DaemonHandle> {
             console.error('[SetupToken] store failed:', errMsg);
             ipcServer.broadcast({ type: 'login_complete', email: '', error: 'store-failed' });
           });
+        break;
+      }
+
+      case 'store_api_key': {
+        // Add (or replace the key of) an account backed by an Anthropic API key.
+        // Unlike store_setup_token the reply waits for the key check, so the
+        // form can say why a key was refused and keep what the user typed.
+        const key = validateApiKeyInput(msg.apiKey);
+        if (!key.ok) {
+          respond({ requestType: 'store_api_key', success: false, error: key.error });
+          break;
+        }
+        const workspace = validateWorkspaceIdInput(msg.workspaceId);
+        if (!workspace.ok) {
+          respond({ requestType: 'store_api_key', success: false, error: workspace.error });
+          break;
+        }
+        void (async () => {
+          const verdict = await verifyApiKey(key.apiKey, workspace.workspaceId);
+          if (verdict.status === 'invalid') {
+            console.warn(`[ApiKey] Key refused by Anthropic: ${verdict.error}`);
+            respond({ requestType: 'store_api_key', success: false, error: verdict.error });
+            return;
+          }
+          if (verdict.status === 'unverified') {
+            console.warn(`[ApiKey] Could not check the key (${verdict.detail}); storing it anyway`);
+          }
+          let stored: Awaited<ReturnType<typeof storeInferenceAccount>>;
+          try {
+            stored = await storeInferenceAccount(key.apiKey, {
+              label: msg.label,
+              accountId: msg.accountId,
+              orgLabel: msg.orgName,
+              workspaceId: workspace.workspaceId,
+            });
+          } catch (err) {
+            console.error(
+              '[ApiKey] store failed:',
+              err instanceof Error ? err.message : String(err),
+            );
+            respond({
+              requestType: 'store_api_key',
+              success: false,
+              error: 'Sentinel could not save the API key. Check the daemon log.',
+            });
+            return;
+          }
+          const { email, orgName, wasKnown } = stored;
+          const data: StoreApiKeyResult = {
+            email,
+            ...(orgName ? { orgName } : {}),
+            verified: verdict.status === 'valid',
+          };
+          respond({ requestType: 'store_api_key', success: true, data });
+          ipcServer.broadcast({
+            type: 'login_complete',
+            email,
+            ...(orgName ? { orgName } : {}),
+            reauth: wasKnown,
+            imported: !wasKnown,
+          });
+        })();
         break;
       }
 
@@ -4841,6 +4948,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
       activeToken,
       activeAccountId,
       rateLimitStore,
+      getApiKeyWorkspaceId: apiKeyWorkspaceIdFor,
       // Callback wiring for createProxyServer: these only fire when a request
       // flows through the proxy. The full in-daemon wiring is tested by
       // `proxy.*.integration.test.ts`, which uses `startProxyWithFake` to
@@ -5162,7 +5270,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
         // An inference-only setup-token credential can't read the profile at
         // all (403, missing user:profile), so there is nothing to learn here
         // either — skip rather than spend a request proving it again.
-        if (freshCreds.accessToken.startsWith(INFERENCE_ONLY_TOKEN_PREFIX)) continue;
+        if (isInferenceOnlyCredential(freshCreds.accessToken)) continue;
         try {
           const profile = await fetchProfile(freshCreds.accessToken);
           if (profile.subscriptionType && !freshCreds.subscriptionType) {
