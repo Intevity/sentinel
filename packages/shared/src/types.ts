@@ -14,6 +14,10 @@ export interface ClaudeCodeCredentials {
     emailAddress: string;
     organizationUuid: string;
   };
+  /** Sentinel-only, API-key accounts: the workspace an identity-linked key
+   *  acts in, sent as `anthropic-workspace-id`. Needed only for a key that
+   *  works in more than one workspace. Never written to Claude Code's slot. */
+  workspaceId?: string;
 }
 
 /**
@@ -33,7 +37,9 @@ export interface OAuthAccount {
   organizationName: string;
 }
 
-export type PlanType = 'pro' | 'max' | 'team' | 'enterprise';
+/** `api` marks an account backed by an Anthropic API key rather than a Claude
+ *  subscription: it bills to API credits and has no 5-hour or weekly limits. */
+export type PlanType = 'pro' | 'max' | 'team' | 'enterprise' | 'api';
 
 /**
  * Enriched account record combining OS credential metadata with Sentinel's stored info

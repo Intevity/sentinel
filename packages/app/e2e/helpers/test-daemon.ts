@@ -80,6 +80,9 @@ export interface TestDaemon {
   bridgeUrl: string;
   fake: FakeAnthropic;
   workDir: string;
+  /** The port the daemon's proxy actually bound, for driving Claude Code-shaped
+   *  traffic through it. */
+  proxyPort: number;
   /**
    * Open an SSE stream to the bridge and resolve with the first broadcast
    * matching `type` (and `predicate`, if supplied). Rejects on timeout.
@@ -290,8 +293,27 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
     daemon.stdout!.on('data', (b) => process.stderr.write(`[daemon] ${b}`));
     daemon.stderr!.on('data', (b) => process.stderr.write(`[daemon err] ${b}`));
   }
+  // In test mode the daemon's proxy binds an OS-assigned port rather than
+  // `daemonPort`, and logs the one it got.
+  const proxyPortLogged = new Promise<number>((resolvePort, rejectPort) => {
+    let seen = '';
+    const onData = (b: Buffer): void => {
+      seen += b.toString();
+      const m = /HTTP proxy listening on http:\/\/127\.0\.0\.1:(\d+)/.exec(seen);
+      if (!m) return;
+      daemon.stdout!.off('data', onData);
+      clearTimeout(timer);
+      resolvePort(Number(m[1]));
+    };
+    const timer = setTimeout(
+      () => rejectPort(new Error('daemon never reported its proxy port')),
+      10_000,
+    );
+    daemon.stdout!.on('data', onData);
+  });
 
   await waitForSocket(socketPath, 5000);
+  const proxyPort = await proxyPortLogged;
 
   // Seed non-active accounts directly into SQLite. The daemon only upserts
   // the active account (from ~/.claude.json) at startup; additional seeds
@@ -343,6 +365,7 @@ export async function startTestDaemon(init: TestDaemonInit = {}): Promise<TestDa
     bridgeUrl,
     fake,
     workDir,
+    proxyPort,
     waitForBroadcast(type, predicate, timeoutMs = 5000) {
       return waitForBroadcast(bridgeUrl, type, predicate, timeoutMs);
     },

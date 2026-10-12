@@ -1,5 +1,5 @@
 import type { IpcServer } from './ipc.js';
-import type { ClaudeAiUsageSnapshot } from '@sentinel/shared';
+import { isApiKeyCredential, type ClaudeAiUsageSnapshot } from '@sentinel/shared';
 import { readSentinelCredentials } from './accounts.js';
 import { fetchRunBudget } from './claude-ai-run-budget.js';
 import { headerValue, sentinelRequest, type SentinelResponse } from './http-identity.js';
@@ -135,6 +135,15 @@ export function isOAuthForbiddenBodyString(
  *  does not issue. Shared with rate-limit-probe.ts, which bails on the same
  *  prefix for the same reason. */
 export const INFERENCE_ONLY_TOKEN_PREFIX = 'sk-ant-oat01-';
+
+/** True when a stored credential can serve inference but cannot read
+ *  Anthropic's OAuth metadata endpoints (`/api/oauth/profile`, `/usage`): a
+ *  `claude setup-token` token, or an Anthropic API key, which has no Claude
+ *  subscription behind it at all. Every caller that would otherwise spend a
+ *  guaranteed-to-fail request on such an account checks this first. */
+export function isInferenceOnlyCredential(accessToken: string): boolean {
+  return accessToken.startsWith(INFERENCE_ONLY_TOKEN_PREFIX) || isApiKeyCredential(accessToken);
+}
 
 /** Pattern identifying Anthropic's "your token lacks the required scope" 403.
  *  Verified live 2026-07-27 against `/api/oauth/usage`:
@@ -600,7 +609,7 @@ export class ClaudeAiUsageStore {
     // guaranteed-403 traffic got itself rate-limited) would otherwise sit on
     // the stale "Sign-in expired" until the Retry-After elapsed. Deciding it
     // here clears that state on the very next tick after upgrade.
-    if (creds?.accessToken?.startsWith(INFERENCE_ONLY_TOKEN_PREFIX)) {
+    if (creds?.accessToken && isInferenceOnlyCredential(creds.accessToken)) {
       this.recordInferenceOnly(accountId);
       return;
     }

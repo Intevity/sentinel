@@ -91,7 +91,8 @@ with a normal double-click. Full per-OS steps (including Linux system libraries)
 3. _(If you use the Claude Desktop app)_ Click **Enable** on the **Claude Desktop** card to route it
    too, then fully quit and reopen the desktop app. See
    [Connect Claude Desktop](https://intevity.github.io/sentinel/docs/guides/connect-claude-desktop/).
-4. **Add Account** and complete the OAuth flow for each Claude subscription you own.
+4. **Add Account** for each Claude subscription you own (Sentinel runs `claude setup-token` in an
+   in-app terminal), or paste an Anthropic API key (`sk-ant-usr…` or `sk-ant-api…`).
 5. _(Optional)_ Turn on **Auto** switching in Settings to route across accounts automatically.
 
 The full walkthrough is in the

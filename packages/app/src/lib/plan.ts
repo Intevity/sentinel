@@ -5,8 +5,9 @@
  * the lookup table.
  *
  * `billingType` on OAuthAccount and `planType` on AccountInfo converge on
- * the same string set: 'pro' | 'max' | 'team' | 'enterprise'. Unknown
- * values fall through to the raw string so new tiers surface immediately.
+ * the same string set: 'pro' | 'max' | 'team' | 'enterprise', plus 'api' for
+ * an account backed by an Anthropic API key. Unknown values fall through to
+ * the raw string so new tiers surface immediately.
  */
 
 interface PlanMeta {
@@ -20,6 +21,7 @@ const PLAN_META: Record<string, PlanMeta> = {
   max: { label: 'Max', color: 'bg-ios-purple/10 text-ios-purple' },
   team: { label: 'Team', color: 'bg-ios-indigo/10 text-ios-indigo' },
   enterprise: { label: 'Enterprise', color: 'bg-ios-orange/10 text-ios-orange' },
+  api: { label: 'API key', color: 'bg-ios-green/10 text-ios-green' },
 };
 
 const UNKNOWN_COLOR = 'bg-muted/10 text-muted';

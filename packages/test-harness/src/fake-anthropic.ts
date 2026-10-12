@@ -278,8 +278,19 @@ export async function startFakeAnthropic(
 
     if (path === '/v1/models') {
       if (!requireAuth(req, res)) return;
-      res.writeHead(200, { 'content-type': 'application/json', 'request-id': randomUUID() });
-      res.end(JSON.stringify({ data: [{ id: 'claude-opus-4-7', display_name: 'Opus 4.7' }] }));
+      // A queued override stands in for the API's refusals that auth alone
+      // can't produce, e.g. the 400 an identity-linked key gets without an
+      // `anthropic-workspace-id`.
+      const override = popOverride('/v1/models');
+      res.writeHead(override?.status ?? 200, {
+        'content-type': 'application/json',
+        'request-id': randomUUID(),
+      });
+      res.end(
+        serializeBody(
+          override?.body ?? { data: [{ id: 'claude-opus-4-7', display_name: 'Opus 4.7' }] },
+        ),
+      );
       return;
     }
 

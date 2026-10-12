@@ -712,6 +712,39 @@ export interface StoreSetupTokenMessage {
   accountId?: string;
 }
 
+/** App → Daemon: add an account backed by an Anthropic API key (a Console
+ *  workspace key `sk-ant-api03…`, or a personal / service-account key
+ *  `sk-ant-usr…`) instead of a Claude subscription. The daemon validates the
+ *  key's shape, checks it against the API (a free `GET /v1/models`), and only
+ *  then stores it. Unlike `store_setup_token` the response waits for that
+ *  check, so the form can show why a key was refused; success is also
+ *  announced with a `login_complete` broadcast. */
+export interface StoreApiKeyMessage {
+  type: 'store_api_key';
+  /** The API key as pasted. Surrounding whitespace is trimmed. */
+  apiKey: string;
+  /** Account name shown in Sentinel. An API key carries no readable identity. */
+  label?: string;
+  /** Optional organization label, shown beside the name. */
+  orgName?: string;
+  /** Workspace an identity-linked key acts in (`wrkspc_…`), sent upstream as
+   *  `anthropic-workspace-id`. Only a key that works in several workspaces
+   *  needs one. */
+  workspaceId?: string;
+  /** Replace the key of this existing account (or restore a removed one) in
+   *  place, keeping its name, settings and history. */
+  accountId?: string;
+}
+
+/** `data` of a successful `store_api_key` response. */
+export interface StoreApiKeyResult {
+  email: string;
+  orgName?: string;
+  /** False when Anthropic couldn't be reached to check the key (offline, 5xx,
+   *  rate-limited). The key is stored anyway; the first request proves it. */
+  verified: boolean;
+}
+
 export interface RemoveAccountMessage {
   type: 'remove_account';
   /** Sentinel key (id) of the account to remove */
@@ -2269,6 +2302,7 @@ export type AppToDaemonMessage =
   | SwitchAccountMessage
   | RefreshAccountsMessage
   | StoreSetupTokenMessage
+  | StoreApiKeyMessage
   | RemoveAccountMessage
   | GetRateLimitsMessage
   | GetAllRateLimitsMessage

@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 import type { ClaudeCodeCredentials, OAuthAccount } from '@sentinel/shared';
 import { fetchProfile } from './oauth.js';
 import type { ProfileResult } from './oauth.js';
-import { INFERENCE_ONLY_TOKEN_PREFIX } from './claude-ai-usage.js';
+import { isInferenceOnlyCredential } from './claude-ai-usage.js';
 import { listAccounts, markAccountRemoved } from './db.js';
 
 /**
@@ -16,7 +16,7 @@ import { listAccounts, markAccountRemoved } from './db.js';
  * one guaranteed-to-fail auth request per stored account.
  */
 function canReadProfile(accessToken: string): boolean {
-  return !accessToken.startsWith(INFERENCE_ONLY_TOKEN_PREFIX);
+  return !isInferenceOnlyCredential(accessToken);
 }
 
 /**

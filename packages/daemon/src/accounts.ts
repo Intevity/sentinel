@@ -2,7 +2,7 @@ import { execFileSync, execSync } from 'child_process';
 import { homedir, userInfo as osUserInfo } from 'os';
 import { dirname, join } from 'path';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
-import type { ClaudeCodeCredentials } from '@sentinel/shared';
+import { isApiKeyCredential, type ClaudeCodeCredentials } from '@sentinel/shared';
 
 /** Claude Code's keychain service name (single shared slot, keyed by OS username). */
 const CC_SERVICE = 'Claude Code-credentials';
@@ -111,8 +111,15 @@ export function captureCurrentCredentials(accountKey: string): ClaudeCodeCredent
       // authoritative for these: return it and never overwrite from CC's slot —
       // that clobber reverted a freshly-stored token to a stale, "expired" one on
       // every refresh_accounts. Identified by the oat token prefix (the reliable
-      // signal; a missing refresh token alone is too broad).
-      if (existing?.accessToken.startsWith('sk-ant-oat01-')) {
+      // signal; a missing refresh token alone is too broad). An API-key account
+      // is the same case taken further: Claude Code's slot never holds its key
+      // at all, so a capture would replace the key with some other account's
+      // OAuth token.
+      if (
+        existing &&
+        (existing.accessToken.startsWith('sk-ant-oat01-') ||
+          isApiKeyCredential(existing.accessToken))
+      ) {
         return existing;
       }
       // CC's keychain slot doesn't include subscriptionType / rateLimitTier.
@@ -188,8 +195,15 @@ export function deleteSentinelCredentials(key: string): void {
  * Write credentials into Claude Code's single keychain slot.
  * Call this after switching accounts so Claude Code picks up the new token
  * and so that captureCurrentCredentials() reads the correct creds afterwards.
+ *
+ * An API key is never written. The slot is Claude Code's OAuth login: it sends
+ * whatever is there as `Authorization: Bearer` with the subscription beta flag,
+ * which an API key doesn't answer to once Sentinel isn't in the request path.
+ * The proxy injects the key as `x-api-key` instead, so Claude Code keeps the
+ * login it already had.
  */
 export function writeClaudeCodeCredentials(creds: ClaudeCodeCredentials): void {
+  if (isApiKeyCredential(creds.accessToken)) return;
   const osUser = osUserInfo().username;
   writeCredentialBlob(CC_SERVICE, osUser, JSON.stringify({ claudeAiOauth: creds }));
 }

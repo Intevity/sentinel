@@ -124,6 +124,42 @@ describe('TokenRotator', () => {
     expect(['a', 'b', 'c']).toContain(ids[0]);
   });
 
+  it('holds an API-key account back until no subscription account can serve', () => {
+    const db = getDb(dbPath);
+    // Pool order puts the key first, so only the tiering keeps it out.
+    upsertAccount(db, {
+      id: 'key',
+      accountUuid: 'key',
+      email: 'API key',
+      displayName: 'API key',
+      orgUuid: '',
+      orgName: '',
+      planType: 'api',
+      isActive: false,
+      createdAt: Date.now(),
+      color: null,
+    });
+    writeSentinelCredentials('key', {
+      accessToken: `sk-ant-api03-${'k'.repeat(95)}`,
+      refreshToken: '',
+      expiresAt: 0,
+      scopes: [],
+    });
+    seed(db, 'sub', 'sub@x');
+    const store = new RateLimitStore();
+    const rotator = new TokenRotator(db, store, { value: 'sub' });
+
+    expect(rotator.pick()?.accountId).toBe('sub');
+
+    // The subscription is exhausted with no overage to fall back on: only now
+    // does traffic move to the key, billed to API credits.
+    store.update('sub', {
+      'anthropic-ratelimit-unified-5h-status': 'blocked',
+      'anthropic-ratelimit-unified-5h-utilization': '1.0',
+    });
+    expect(rotator.pick()?.accountId).toBe('key');
+  });
+
   it('skips accounts whose rate-limit store shows blocked status', () => {
     const db = getDb(dbPath);
     seed(db, 'a', 'a@x');
