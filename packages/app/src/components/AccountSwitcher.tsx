@@ -3,6 +3,8 @@ import { RefreshCw, Plus, Loader2, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import AccountCard from './AccountCard.js';
 import SetupTokenTerminal from './SetupTokenTerminal.js';
+import AddAccountChooser, { type AddAccountKind } from './AddAccountChooser.js';
+import ApiKeyForm from './ApiKeyForm.js';
 import { useAccounts } from '../hooks/useAccounts.js';
 import {
   useAllRateLimits,
@@ -172,10 +174,14 @@ export default function AccountSwitcher({
       cardRefreshTimersRef.current.set(r.id, t);
     }
   }, [accounts, refreshAccounts]);
-  // Controls the slide-up `claude setup-token` terminal panel for Add Account.
-  const [showSetupTerminal, setShowSetupTerminal] = useState(false);
+  // The Add Account panel: the kind chooser, then the `claude setup-token`
+  // terminal (subscription) or the API key form. Null when closed.
+  const [addFlow, setAddFlow] = useState<'choose' | AddAccountKind | null>(null);
   // When re-authenticating an expired account, the account being refreshed.
   const [reauthAccountId, setReauthAccountId] = useState<string | null>(null);
+  const reauthAccount = reauthAccountId
+    ? accounts.find((a) => a.id === reauthAccountId)
+    : undefined;
   const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null);
   const [purgingId, setPurgingId] = useState<string | null>(null);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
@@ -231,6 +237,9 @@ export default function AccountSwitcher({
   // `login_complete` handler reads this to show concise success copy. Reset
   // whenever a flow terminates or a new one starts.
   const reauthIntentRef = useRef<'reauth' | 'add' | null>(null);
+  // Which kind of account the open (or last) add flow was for, so the
+  // `login_complete` copy can say "API key" rather than "token".
+  const addKindRef = useRef<AddAccountKind>('subscription');
 
   useEffect(() => {
     void refreshAccounts();
@@ -290,11 +299,13 @@ export default function AccountSwitcher({
   // Listen for login_complete broadcast from daemon
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let disposed = false;
     onDaemonMessage((msg) => {
       if (msg.type === 'login_complete') {
-        // The terminal panel closes itself after sending the token; ensure it's
-        // closed even if the broadcast wins the race.
-        setShowSetupTerminal(false);
+        // The terminal panel and the API key form close themselves once the
+        // account is stored; ensure the panel is closed even if the broadcast
+        // wins the race.
+        setAddFlow(null);
         // Capture intent before any branch returns, then clear so a later
         // event (retry) can't pick up a stale value.
         const intent = reauthIntentRef.current;
@@ -310,7 +321,10 @@ export default function AccountSwitcher({
         const orgLabel = msg.orgName ? ` (${msg.orgName})` : '';
         if (intent === 'reauth') {
           setStatusMessage({
-            text: `Re-authenticated ${msg.email}. Token refreshed.`,
+            text:
+              addKindRef.current === 'api-key'
+                ? `Replaced the API key for ${msg.email}.`
+                : `Re-authenticated ${msg.email}. Token refreshed.`,
             kind: 'success',
           });
           setTimeout(() => setStatusMessage(null), 6000);
@@ -338,8 +352,11 @@ export default function AccountSwitcher({
       } else if (msg.type === 'token_refresh_failed') {
         if (msg.reason === 'expired') {
           setExpiredAccountIds((prev) => new Set(prev).add(msg.accountId));
+          const isApiKey = accounts.find((a) => a.id === msg.accountId)?.planType === 'api';
           setStatusMessage({
-            text: `Sign-in expired for ${msg.email}. Click "Re-authenticate" on that account to restore access.`,
+            text: isApiKey
+              ? `Anthropic rejected the API key for ${msg.email}. Click "Replace key" on that account to add a working one.`
+              : `Sign-in expired for ${msg.email}. Click "Re-authenticate" on that account to restore access.`,
             kind: 'error',
           });
         }
@@ -353,10 +370,15 @@ export default function AccountSwitcher({
       }
     })
       .then((fn) => {
-        unlisten = fn;
+        // Re-run before the subscription resolved (`accounts` changes often):
+        // drop it, or a second handler would answer the same login_complete
+        // with the intent the first already consumed.
+        if (disposed) fn();
+        else unlisten = fn;
       })
       .catch(() => {});
     return () => {
+      disposed = true;
       unlisten?.();
     };
   }, [refreshAccounts, accounts]);
@@ -390,19 +412,32 @@ export default function AccountSwitcher({
     if (result.success) setTimeout(() => setStatusMessage(null), 4000);
   };
 
-  // Open the in-app `claude setup-token` terminal. Sentinel doesn't run OAuth
-  // itself — the user completes Claude Code's browser sign-in in the terminal
-  // and the printed token is captured + stored. The daemon's `login_complete`
-  // broadcast carries the outcome. Shared by Add Account and the per-card
-  // Re-authenticate action (intent tunes the success copy).
-  const openSetupTerminal = (intent: 'reauth' | 'add' = 'add', accountId?: string): void => {
+  // Open the Add Account panel. Add Account starts at the kind chooser; the
+  // per-card re-authenticate action goes straight to the right kind: the
+  // in-app `claude setup-token` terminal for a subscription (Sentinel doesn't
+  // run OAuth itself; the token Claude Code prints is captured and stored), or
+  // the API key form to replace a rejected key. The daemon's `login_complete`
+  // broadcast carries the outcome (intent tunes the success copy).
+  const openAddFlow = (
+    flow: 'choose' | AddAccountKind,
+    intent: 'reauth' | 'add' = 'add',
+    accountId?: string,
+  ): void => {
     reauthIntentRef.current = intent;
+    if (flow !== 'choose') addKindRef.current = flow;
     setReauthAccountId(accountId ?? null);
     setStatusMessage(null);
-    setShowSetupTerminal(true);
+    setAddFlow(flow);
   };
 
-  const handleAddAccount = (): void => openSetupTerminal('add');
+  const handleAddAccount = (): void => openAddFlow('choose');
+
+  const handleReauth = (id: string): void => {
+    const isApiKey = accounts.find((a) => a.id === id)?.planType === 'api';
+    openAddFlow(isApiKey ? 'api-key' : 'subscription', 'reauth', id);
+  };
+
+  const closeAddFlow = (): void => setAddFlow(null);
 
   const handleRefreshToken = async (id: string): Promise<void> => {
     setRefreshingId(id);
@@ -491,7 +526,7 @@ export default function AccountSwitcher({
           </button>
           <button
             onClick={() => handleAddAccount()}
-            disabled={showSetupTerminal || loading}
+            disabled={addFlow !== null || loading}
             data-tour-id="add-account"
             className="flex items-center gap-1 text-[11px] font-semibold text-ios-blue
                        disabled:opacity-40 transition-all active:scale-95"
@@ -581,15 +616,26 @@ export default function AccountSwitcher({
         )}
       </AnimatePresence>
 
-      {/* Add Account: in-app `claude setup-token` terminal */}
+      {/* Add Account: the kind chooser, then the in-app `claude setup-token`
+          terminal (subscription) or the API key form */}
       <AnimatePresence initial={false}>
-        {showSetupTerminal && (
+        {addFlow && (
           <motion.div {...TRANSIENT_ANIM} className="overflow-hidden">
-            <SetupTokenTerminal
-              {...(reauthAccountId ? { reauthAccountId } : {})}
-              removedAccounts={removedAccounts}
-              onClose={() => setShowSetupTerminal(false)}
-            />
+            {addFlow === 'choose' ? (
+              <AddAccountChooser onChoose={(kind) => openAddFlow(kind)} onClose={closeAddFlow} />
+            ) : addFlow === 'api-key' ? (
+              <ApiKeyForm
+                {...(reauthAccount ? { replaceAccount: reauthAccount } : {})}
+                onClose={closeAddFlow}
+              />
+            ) : (
+              <SetupTokenTerminal
+                {...(reauthAccountId ? { reauthAccountId } : {})}
+                // An API-key account can't be restored with a subscription token.
+                removedAccounts={removedAccounts.filter((a) => a.planType !== 'api')}
+                onClose={closeAddFlow}
+              />
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -664,7 +710,7 @@ export default function AccountSwitcher({
             onRefreshToken={(id) => void handleRefreshToken(id)}
             refreshing={refreshingId === account.id}
             needsReauth={expired}
-            onReauth={(id) => openSetupTerminal('reauth', id)}
+            onReauth={handleReauth}
             isAuto={isAuto}
             inPool={inPool}
             canExclude={poolMemberCount > 1}
@@ -686,8 +732,9 @@ export default function AccountSwitcher({
         <div className="rounded-2xl bg-white dark:bg-[#1E1E1E] shadow-card px-4 py-10 text-center">
           <p className="text-[14px] font-medium text-black dark:text-white">No accounts yet</p>
           <p className="text-[12px] text-muted mt-1">
-            Sign into an account in Claude Code (/login), then click <strong>Add Account</strong> to
-            import it. Sentinel keeps each account you import so you can switch between them here.
+            Click <strong>Add Account</strong> to add a Claude subscription (signed in through
+            Claude Code) or an Anthropic API key. Sentinel keeps each account you add so you can
+            switch between them here.
           </p>
         </div>
       )}

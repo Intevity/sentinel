@@ -154,7 +154,7 @@ export default function App(): React.ReactElement {
   }, [navigateToSecurityEvent]);
 
   // The Usage tab's Reconnect CTA fires this window event so the user lands on
-  // the Accounts tab, where Add Account opens the `claude setup-token` terminal.
+  // the Accounts tab, where Add Account offers the `claude setup-token` terminal.
   // Lives in App so it works regardless of which tab dispatched it.
   useEffect(() => {
     const onOpenAddAccount = (): void => setActiveTab('accounts');
@@ -328,7 +328,9 @@ export default function App(): React.ReactElement {
     isAuto && routedAccountId ? accounts.find((a) => a.id === routedAccountId) : undefined;
   const headerInfo = routedInfo ?? activeInfo;
   const headerEmail = routedInfo?.email ?? activeAccount?.emailAddress ?? '';
-  const headerPlanType = routedInfo?.planType ?? activeAccount?.billingType;
+  // Sentinel's own plan for the account wins over ~/.claude.json's billingType,
+  // which has no value for an API-key account.
+  const headerPlanType = headerInfo?.planType ?? activeAccount?.billingType;
   const headerPlanBadge = headerPlanType ? planLabel(headerPlanType) : '';
 
   return (

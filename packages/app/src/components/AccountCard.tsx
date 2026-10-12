@@ -430,11 +430,14 @@ export default function AccountCard({
       {/* ── Sign-in expired banner ────────────────────────────
           Warning copy on top, a Re-authenticate button below. Re-authenticate
           opens the in-app `claude setup-token` terminal so the user can sign in
-          again and refresh this account's token. */}
+          again and refresh this account's token; on an API-key account it is
+          "Replace key", which opens the API key form instead. */}
       {needsReauth && (
         <div className="rounded-xl bg-ios-orange/10 dark:bg-ios-orange/15 px-3 py-2 space-y-1.5">
           <p className="text-[11px] text-ios-orange leading-snug">
-            Sign-in expired. Re-authenticate to restore access.
+            {account.planType === 'api'
+              ? 'Anthropic rejected this API key. Replace it to restore access.'
+              : 'Sign-in expired. Re-authenticate to restore access.'}
           </p>
           <div className="flex items-center justify-end gap-2">
             <button
@@ -442,7 +445,7 @@ export default function AccountCard({
               className="shrink-0 text-[11px] font-semibold text-white bg-ios-orange
                          hover:opacity-90 active:scale-95 px-2.5 py-1 rounded-full transition-all"
             >
-              Re-authenticate
+              {account.planType === 'api' ? 'Replace key' : 'Re-authenticate'}
             </button>
           </div>
         </div>

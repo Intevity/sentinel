@@ -82,7 +82,7 @@ export const TOUR_STEPS: TourStep[] = [
     targetId: 'add-account',
     tab: 'accounts',
     title: 'Add every account you own',
-    body: 'Sentinel pools Claude Pro, Max, Team, and Enterprise accounts. Each one gets a card with live 5-hour utilization, plan type, and reset countdown.',
+    body: 'Sentinel pools Claude Pro, Max, Team, and Enterprise accounts, and Anthropic API keys. Each subscription gets a card with live 5-hour utilization, plan type, and reset countdown.',
     placement: 'auto',
     icon: Users,
     accent: 'blue',
