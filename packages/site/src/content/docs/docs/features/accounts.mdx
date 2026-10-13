@@ -44,11 +44,15 @@ An API-key account behaves differently from a subscription:
 
 - **It bills to your API credits.** There's no 5-hour or weekly limit, so its card shows no usage
   bars and it gets no default usage alert.
-- **In Auto mode it's the last resort.** Auto routes to it only while no subscription account in the
-  pool can take the request, then moves back as soon as one can. Exclude it from the pool if you
+- **In Auto mode it takes over when your subscriptions run out.** Auto routes to it once no
+  subscription account in the pool has quota left, before any account dips into paid extra usage,
+  and moves back as soon as a subscription can take requests again. Exclude it from the pool if you
   want it used only when you switch to it yourself.
 - **Claude Code keeps its own sign-in.** Sentinel never writes the key into Claude Code's login;
-  the proxy sends it to Anthropic as an API key on Claude Code's behalf.
+  the proxy sends it to Anthropic as an API key on Claude Code's behalf. Those requests go out as
+  plain API requests rather than as Claude Code's, because Anthropic bills Claude Code traffic
+  differently and refuses it on some keys with "Credit balance too low" even when the key has
+  credits.
 
 If Anthropic stops accepting the key (it was disabled, deleted, or expired), the account shows
 **Replace key**, which opens the same form and swaps in a new key while keeping the account's data.
