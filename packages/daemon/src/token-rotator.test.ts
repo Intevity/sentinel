@@ -124,7 +124,7 @@ describe('TokenRotator', () => {
     expect(['a', 'b', 'c']).toContain(ids[0]);
   });
 
-  it('holds an API-key account back until no subscription account can serve', () => {
+  it('holds an API-key account back while a subscription account has quota left', () => {
     const db = getDb(dbPath);
     // Pool order puts the key first, so only the tiering keeps it out.
     upsertAccount(db, {
@@ -151,7 +151,7 @@ describe('TokenRotator', () => {
 
     expect(rotator.pick()?.accountId).toBe('sub');
 
-    // The subscription is exhausted with no overage to fall back on: only now
+    // The subscription has run out of quota: only now
     // does traffic move to the key, billed to API credits.
     store.update('sub', {
       'anthropic-ratelimit-unified-5h-status': 'blocked',
@@ -839,6 +839,51 @@ describe('TokenRotator overage gate', () => {
     // `hot` resets earlier (500 vs 9000) but would draw overage — must skip.
     expect(rotator.pick()?.accountId).toBe('fresh');
     expect(rotator.pick()?.accountId).toBe('fresh');
+  });
+
+  it('spends a pooled API key before drawing an opted-in account into overage', () => {
+    const db = getDb(dbPath);
+    seed(db, 'hot', 'h@x');
+    upsertAccount(db, {
+      id: 'key',
+      accountUuid: 'key',
+      email: 'API key',
+      displayName: 'API key',
+      orgUuid: '',
+      orgName: '',
+      planType: 'api',
+      isActive: false,
+      createdAt: Date.now(),
+      color: null,
+    });
+    writeSentinelCredentials('key', {
+      accessToken: `sk-ant-usr01-${'k'.repeat(95)}`,
+      refreshToken: '',
+      expiresAt: 0,
+      scopes: [],
+    });
+    const store = new RateLimitStore();
+    // `hot` is out of 5h quota and already running on overage it is opted into.
+    setSession(store, 'hot', 1.0, 500);
+    setOverage(store, 'hot', { status: 'allowed', inUse: true });
+    const excluded = new Set<string>();
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'hot' },
+      () => excluded,
+      () => new Set(['hot']),
+      () => new Set(),
+      () => 10,
+      () => 0,
+    );
+
+    expect(rotator.pick()?.accountId).toBe('key');
+
+    // With the key out of the pool, overage is the only way left to serve.
+    excluded.add('key');
+    rotator.refresh();
+    expect(rotator.pick()?.accountId).toBe('hot');
   });
 
   it('skips a saturated account that is NOT in the overage allow-list', () => {

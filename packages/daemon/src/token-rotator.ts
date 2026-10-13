@@ -252,8 +252,8 @@ export class TokenRotator {
       const keys = targetWeekly ? [weeklyReset, sessionReset] : [sessionReset];
       const candidate: Candidate = { idx: i, util, keys };
       // An API-key account bills per token and has no windows to rank by.
-      // It is held back as a last resort, used only while no subscription
-      // account in the pool can take the request.
+      // It takes over once no subscription account has quota left, ahead of
+      // any account's paid overage: the user put the key in the pool to use.
       if (isApiKeyCredential(entry.token)) {
         apiKey.push(candidate);
         continue;
@@ -317,9 +317,9 @@ export class TokenRotator {
       }
     }
 
-    // Prefer the fresh tier: drain pool-wide 5h quota before spilling to
-    // overage, and spend API credits only once both are empty.
-    const tier = fresh.length > 0 ? fresh : overage.length > 0 ? overage : apiKey;
+    // Prefer the fresh tier: drain pool-wide subscription quota first, then
+    // spend a pooled API key's credits, and draw paid overage only after that.
+    const tier = fresh.length > 0 ? fresh : apiKey.length > 0 ? apiKey : overage;
     if (tier.length === 0) return null;
 
     // Hard-target the account whose targeted window rolls over soonest.

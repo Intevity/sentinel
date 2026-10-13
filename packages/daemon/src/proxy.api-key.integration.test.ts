@@ -3,7 +3,9 @@
  * request to is backed by an Anthropic API key rather than a subscription
  * token, the proxy must authenticate it the way the API expects a key:
  * `x-api-key`, no `Authorization: Bearer`, no subscription OAuth beta flag,
- * and the workspace an identity-linked key acts in.
+ * and the workspace an identity-linked key acts in. Upstream, the request also
+ * stops identifying as Claude Code, which Anthropic would otherwise bill as
+ * something other than the key's API credits.
  *
  * Driven over real HTTP through `startProxyWithFake`. The fake accepts an
  * `x-api-key` only for registered keys, so a 200 here is proof the key arrived
@@ -14,6 +16,8 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { IncomingMessage } from 'http';
 import { startProxyWithFake, type StartedProxy } from './proxy.test-helpers.js';
 import { applyPooledCredential } from './proxy.js';
+import { getUsageEvents, getPendingUsageEvents } from './db.js';
+import { sentinelUserAgent } from './http-identity.js';
 
 const API_KEY = `sk-ant-api03-${'k'.repeat(95)}`;
 const USER_KEY = `sk-ant-usr01-${'u'.repeat(95)}`;
@@ -34,7 +38,7 @@ describe('proxy with a pooled API-key account (real HTTP)', () => {
     if (ctx) await ctx.cleanup();
   });
 
-  it('sends the key as x-api-key with the workspace, and drops the OAuth beta flag', async () => {
+  it('sends the key as x-api-key with the workspace, without the OAuth or Claude Code markers', async () => {
     const workspaceAsked: string[] = [];
     const workspaceFor = (id: string): string | undefined => {
       workspaceAsked.push(id);
@@ -61,8 +65,48 @@ describe('proxy with a pooled API-key account (real HTTP)', () => {
     expect(headers['x-api-key']).toBe(USER_KEY);
     expect(headers['authorization']).toBeUndefined();
     expect(headers['anthropic-workspace-id']).toBe('wrkspc_01Team');
-    expect(headers['anthropic-beta']).toBe('claude-code-20250219,interleaved-thinking-2025-05-14');
+    // A claude-cli user-agent or the claude-code beta makes Anthropic answer an
+    // identity-linked key with "Your credit balance is too low".
+    expect(headers['anthropic-beta']).toBe('interleaved-thinking-2025-05-14');
+    expect(headers['user-agent']).toBe(sentinelUserAgent());
     expect(workspaceAsked).toEqual(['acct-usr']);
+  });
+
+  it("keeps Claude Code's identity on a request routed to a subscription account", async () => {
+    ctx = await startProxyWithFake({
+      tokens: ['sk-ant-oat01-pooled'],
+      accounts: [{ id: 'acct-sub', email: 'sub@example.com', token: 'sk-ant-oat01-pooled' }],
+    });
+
+    const res = await post(ctx.proxyPort, {
+      'user-agent': CLI_UA,
+      'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20',
+    });
+    expect(res.status).toBe(200);
+    const headers = ctx.fake.requests().find((r) => r.url.startsWith('/v1/messages'))!.headers;
+    expect(headers['authorization']).toBe('Bearer sk-ant-oat01-pooled');
+    expect(headers['user-agent']).toBe(CLI_UA);
+    expect(headers['anthropic-beta']).toBe('claude-code-20250219,oauth-2025-04-20');
+  });
+
+  it("still accounts the request as Claude Code's, whose OTEL reports its cost", async () => {
+    ctx = await startProxyWithFake({
+      tokens: [USER_KEY],
+      accounts: [{ id: 'acct-usr', email: 'Personal key', token: USER_KEY }],
+    });
+
+    const res = await post(ctx.proxyPort, {
+      'user-agent': CLI_UA,
+      'anthropic-beta': 'claude-code-20250219',
+    });
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 40));
+
+    // Only the upstream copy of the headers changes. Read off the request,
+    // Sentinel's user-agent would make this a client without OTEL and write a
+    // second usage row beside the one Claude Code's telemetry reports.
+    expect(getUsageEvents(ctx.db, {})).toEqual([]);
+    expect(getPendingUsageEvents(ctx.db)).toHaveLength(1);
   });
 
   it('omits the beta header when the OAuth flag was its only entry, and sends no workspace when none is set', async () => {

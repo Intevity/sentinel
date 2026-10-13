@@ -3,6 +3,7 @@ import { request as httpsRequest } from 'https';
 import { request as httpRequest } from 'http';
 import type { Server } from 'http';
 import { getProxyUpstream } from './hosts.js';
+import { sentinelUserAgent } from './http-identity.js';
 import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { OverageStateMachine } from './overage.js';
@@ -177,13 +178,44 @@ export function applyPooledCredential(
   headers['x-api-key'] = token;
   delete headers['authorization'];
   if (workspaceId) headers['anthropic-workspace-id'] = workspaceId;
+  removeBetaFlag(headers, OAUTH_BETA_TOKEN);
+}
+
+/** Drop one flag from `anthropic-beta`, deleting the header once it is empty. */
+function removeBetaFlag(headers: IncomingMessage['headers'], flag: string): void {
   const beta = headers['anthropic-beta'];
   const flags = (Array.isArray(beta) ? beta.join(',') : (beta ?? ''))
     .split(',')
     .map((f) => f.trim())
-    .filter((f) => f && f !== OAUTH_BETA_TOKEN);
+    .filter((f) => f && f !== flag);
   if (flags.length > 0) headers['anthropic-beta'] = flags.join(',');
   else delete headers['anthropic-beta'];
+}
+
+/** Beta flag Claude Code adds to every request it sends. */
+const CLAUDE_CODE_BETA_TOKEN = 'claude-code-20250219';
+
+/** Requests Sentinel authenticated with a pooled API key. Their headers are
+ *  reshaped on the way upstream only (see {@link presentAsApiKeyClient}), so
+ *  the request itself keeps the Claude Code identity every classifier reads. */
+const pooledApiKeyRequests = new WeakSet<IncomingMessage>();
+
+/**
+ * Make a request Sentinel sends with a pooled API key look like an API client
+ * rather than Claude Code, on the copy of the headers that goes upstream.
+ *
+ * Anthropic bills a request that identifies as Claude Code (by the
+ * `claude-code` beta flag, or by `claude-cli` anywhere in the user-agent)
+ * differently from a plain API request. Sent with an identity-linked key
+ * (`sk-ant-usr…`), such a request is refused with 400 "Your credit balance is
+ * too low" even though the key's organization has credits; the same request
+ * without those two markers succeeds. Verified against live keys on
+ * 2026-10-13. Every other header Claude Code sends, its other beta flags
+ * included, passes unchanged.
+ */
+export function presentAsApiKeyClient(headers: IncomingMessage['headers']): void {
+  headers['user-agent'] = sentinelUserAgent();
+  removeBetaFlag(headers, CLAUDE_CODE_BETA_TOKEN);
 }
 
 /**
@@ -576,10 +608,10 @@ export function createProxyServer(
   const getApiKeyWorkspaceId = opts.getApiKeyWorkspaceId;
   /** Put the selected pooled credential on the request; see applyPooledCredential. */
   const applyCredential = (req: IncomingMessage, credential: TokenSelection): void => {
-    const workspaceId = isApiKeyCredential(credential.token)
-      ? getApiKeyWorkspaceId?.(credential.accountId)
-      : undefined;
+    const apiKey = isApiKeyCredential(credential.token);
+    const workspaceId = apiKey ? getApiKeyWorkspaceId?.(credential.accountId) : undefined;
     applyPooledCredential(req.headers, credential.token, workspaceId);
+    if (apiKey) pooledApiKeyRequests.add(req);
   };
   const {
     ipcServer,
@@ -1516,10 +1548,15 @@ async function proxyToAnthropic(
     }
   }
 
+  // The headers that go upstream. A copy, so reshaping them for a pooled API
+  // key leaves `req.headers` (which every classifier reads) as Claude Code sent it.
+  const upstreamHeaders: IncomingMessage['headers'] = { ...req.headers };
+  if (pooledApiKeyRequests.has(req)) presentAsApiKeyClient(upstreamHeaders);
+
   // Snapshot the post-mutation request body (after any permissions strip) —
   // this is what actually goes upstream, which is what the user wants to see.
   if (capture) {
-    capture.requestHeaders = redactHeaders(req.headers, capture.redactAuth);
+    capture.requestHeaders = redactHeaders(upstreamHeaders, capture.redactAuth);
     capture.requestBodySize = body.length;
     if (body.length <= capture.maxBodyBytes) {
       capture.requestBody = body;
@@ -2026,7 +2063,7 @@ async function proxyToAnthropic(
 
     // Kick off the single upstream attempt. `rlKey` is already set above from
     // the per-request `attributionAccountId`.
-    dispatch({ ...req.headers }, rlKey);
+    dispatch(upstreamHeaders, rlKey);
   });
 }
 
