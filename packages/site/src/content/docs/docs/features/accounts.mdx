@@ -52,7 +52,8 @@ An API-key account behaves differently from a subscription:
   the proxy sends it to Anthropic as an API key on Claude Code's behalf. Those requests go out as
   plain API requests rather than as Claude Code's, because Anthropic bills Claude Code traffic
   differently and refuses it on some keys with "Credit balance too low" even when the key has
-  credits.
+  credits. Sentinel removes the markers that identify Claude Code from the request's headers and
+  from the start of its system prompt; the instructions the model reads stay the same.
 
 If Anthropic stops accepting the key (it was disabled, deleted, or expired), the account shows
 **Replace key**, which opens the same form and swaps in a new key while keeping the account's data.
