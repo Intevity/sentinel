@@ -1213,10 +1213,9 @@ describe('SpendTracker', () => {
       expect(ipc.broadcasts.some((b) => b.type === 'account_paused')).toBe(false);
     });
 
-    it('pauses a weekly-blocked account when overage is allowed but the account is NOT opted in', () => {
-      // Opt-in is required: a user who has not enabled overage for this
-      // account explicitly doesn't want it spilling into overage, even
-      // if Anthropic would allow it.
+    it('pauses a weekly-blocked account in Auto when overage is allowed but the account is NOT opted in', () => {
+      // Auto spends extra usage on the user's behalf only for accounts they
+      // opted in, even when Anthropic would allow it.
       const db = getDb(dbPath);
       const store = new RateLimitStore();
       const ipc = ipcStub();
@@ -1228,7 +1227,7 @@ describe('SpendTracker', () => {
         db,
         rateLimitStore: store,
         ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
-        getSettings: () => settings(),
+        getSettings: () => settings({ switchingMode: 'auto' }),
         getAnthropicSpend: () => 0,
         getOverageAllowedIds: () => new Set(),
         now: () => 1_700_000_000_000,
@@ -1236,6 +1235,108 @@ describe('SpendTracker', () => {
       tracker.recompute();
 
       expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
+    });
+
+    it('keeps an account the user picked serving on extra usage without the opt-in', () => {
+      // Switching off: the user chose this account and Anthropic still offers
+      // extra usage on it, so Sentinel lets it run.
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      blockWeekly(store, 'a');
+      setOverage(store, 'a', 'allowed');
+
+      let mode: Settings['switchingMode'] = 'off';
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings({ switchingMode: mode }),
+        getAnthropicSpend: () => 0,
+        getOverageAllowedIds: () => new Set(),
+        now: () => 1_700_000_000_000,
+      });
+      tracker.recompute();
+      expect(tracker.getPauseReason('a')).toBe(null);
+
+      // Turning Auto on hands the decision to the opt-in.
+      mode = 'auto';
+      tracker.recompute();
+      expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
+
+      // Picking accounts by hand again releases it.
+      mode = 'off';
+      tracker.recompute();
+      expect(tracker.getPauseReason('a')).toBe(null);
+    });
+
+    it('still pauses an account the user picked once Anthropic stops offering extra usage', () => {
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      blockWeekly(store, 'a');
+      store.update('a', {
+        'anthropic-ratelimit-unified-overage-status': 'rejected',
+        'anthropic-ratelimit-unified-overage-disabled-reason': 'out_of_credits',
+      });
+
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings({ switchingMode: 'off' }),
+        getAnthropicSpend: () => 0,
+        getOverageAllowedIds: () => new Set(['a']),
+        now: () => 1_700_000_000_000,
+      });
+      tracker.recompute();
+      expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
+    });
+
+    it('releases a paused account when claude.ai starts offering extra usage, with no request to it', () => {
+      // A paused account sends nothing upstream, so the claude.ai usage poll
+      // is the only fresh data. Extra usage turned on there must be enough.
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      blockWeekly(store, 'a');
+      store.update('a', { 'anthropic-ratelimit-unified-overage-status': 'rejected' });
+
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings({ switchingMode: 'auto' }),
+        getAnthropicSpend: () => 0,
+        getOverageAllowedIds: () => new Set(['a']),
+        now: () => 1_700_000_000_000,
+      });
+      store.onUpdate((id) => tracker.handleRateLimitUpdate(id));
+      tracker.recompute();
+      expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
+
+      store.syncFromClaudeAiSnapshot('a', {
+        fiveHourUtilization: null,
+        fiveHourResetsAt: null,
+        sevenDayUtilization: null,
+        sevenDayResetsAt: null,
+        sevenDayFableUtilization: null,
+        sevenDayFableResetsAt: null,
+        extraUsage: {
+          isEnabled: true,
+          limitUsd: 100,
+          usedUsd: 12,
+          utilizationPct: 12,
+          currency: 'USD',
+        },
+        perUserBudget: null,
+        fetchedAt: Date.now() + 60_000,
+      });
+      expect(tracker.getPauseReason('a')).toBe(null);
+      expect(ipc.broadcasts).toContainEqual({ type: 'account_unpaused', accountId: 'a' });
     });
 
     it('does NOT pause an opted-in weekly-blocked account whose overage reads allowed_warning', () => {

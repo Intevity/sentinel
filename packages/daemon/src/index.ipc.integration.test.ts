@@ -947,6 +947,64 @@ describe('IPC — probes and purges', () => {
     expect(again.data).toEqual({ cleared: 0 });
   });
 
+  it('update_settings releases a weekly pause as soon as the account may spend extra usage', async () => {
+    // A paused account sends nothing upstream, so no response will re-check
+    // it: turning on its overage opt-in, or switching accounts by hand, has
+    // to lift the pause from the settings write alone.
+    const id = 'acct-overage';
+    const farFuture = 4_102_444_800; // 2100-01-01
+    ctx = await startTestDaemon({
+      settings: { switchingMode: 'auto', overageEnabledIds: [] },
+      seedDb: (db) => {
+        upsertAccount(db, {
+          id,
+          accountUuid: id,
+          email: 'overage@example.com',
+          displayName: 'overage@example.com',
+          orgUuid: '',
+          orgName: '',
+          planType: 'max',
+          isActive: false,
+          createdAt: Date.now(),
+          color: null,
+        });
+        const window = { limit: null, remaining: null, lastUpdated: Date.now() };
+        upsertRateLimit(db, id, {
+          ...window,
+          name: 'unified-7d',
+          status: 'blocked',
+          utilization: 1,
+          reset: farFuture,
+          inUse: null,
+        });
+        upsertRateLimit(db, id, {
+          ...window,
+          name: 'unified-overage',
+          status: 'allowed',
+          utilization: 0.4,
+          reset: farFuture,
+          inUse: true,
+        });
+      },
+    });
+    const daemon = ctx;
+    const pausedIds = async (): Promise<string[]> =>
+      (
+        await daemon.request<Array<{ accountId: string }>>({ type: 'get_paused_accounts' })
+      ).data!.map((p) => p.accountId);
+    expect(await pausedIds()).toContain(id);
+
+    await ctx.request({ type: 'update_settings', settings: { overageEnabledIds: [id] } });
+    await ctx.waitForBroadcast((m) => m.type === 'account_unpaused' && m.accountId === id, 3000);
+    expect(await pausedIds()).not.toContain(id);
+
+    // Opting back out pauses it again; picking accounts by hand releases it.
+    await ctx.request({ type: 'update_settings', settings: { overageEnabledIds: [] } });
+    expect(await pausedIds()).toContain(id);
+    await ctx.request({ type: 'update_settings', settings: { switchingMode: 'off' } });
+    expect(await pausedIds()).not.toContain(id);
+  });
+
   it('purge_all_data returns success and clears keychain entries', async () => {
     ctx = await startWithActiveAccount();
     const r = await ctx.request({ type: 'purge_all_data' });

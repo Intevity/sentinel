@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import { isOverageAvailable, type RateLimitStore } from './rate-limit-store.js';
+import { isOverageAvailable, OVERAGE_WINDOW, type RateLimitStore } from './rate-limit-store.js';
 import type { IpcServer } from './ipc.js';
 import type { Settings, Alert, PauseReason } from '@sentinel/shared';
 import {
@@ -94,9 +94,9 @@ export interface SpendTrackerDeps {
   /** Live accessor for the user's overage opt-in allow-list (Sentinel ids).
    *  The weekly-rate-limit evaluator consults this: an account whose
    *  `unified-7d` window is blocked is still usable via overage when
-   *  overage is still available (`isOverageAvailable`) AND the account is opted in,
-   *  so the pause is deferred until overage itself runs out. Defaults to
-   *  an empty set (no accounts overage-eligible). */
+   *  overage is still available (`isOverageAvailable`) AND the account is
+   *  opted in or switching is `off`, so the pause is deferred until overage
+   *  itself runs out. Defaults to an empty set (no accounts opted in). */
   getOverageAllowedIds?: () => ReadonlySet<string>;
   /** Current time getter — injectable so tests can freeze the clock. */
   now?: () => number;
@@ -330,16 +330,16 @@ export class SpendTracker {
     }
     if (rolledOver.size === 0) {
       // The weekly verdict can flip without its reset moving: a response
-      // reports the window exhausted mid-week, or the user clears a limit
+      // reports the window exhausted mid-week, the user clears a limit
       // Anthropic lifted early (the window then reads allowed with no
-      // reset). Re-evaluate weekly pauses only when the verdict and this
-      // account's pause disagree, so the common header update stays cheap.
-      const weekly = allWindows.find((x) => x.name === WEEKLY_RATE_LIMIT_WINDOW);
-      const blockedNow = weekly?.status === 'blocked';
+      // reset), or claude.ai starts offering extra usage on an account that
+      // is already paused. Re-evaluate weekly pauses only when the verdict and
+      // this account's pause disagree, so the common header update stays cheap.
       const reason = this.paused.get(accountId);
+      const warranted = this.weeklyPauseWarranted(accountId, Math.floor(this.clock() / 1000));
       if (
-        (blockedNow && reason === undefined) ||
-        (!blockedNow && reason === 'sentinel_weekly_rate_limit')
+        (warranted && reason === undefined) ||
+        (!warranted && reason === 'sentinel_weekly_rate_limit')
       ) {
         this.evaluateWeeklyRateLimitPauses();
       }
@@ -502,34 +502,23 @@ export class SpendTracker {
    *  not the 5-hour reset — a budget-style 5h release would re-admit the
    *  account hours before Anthropic is willing to serve it.
    *
-   *  Overage escape hatch: if Anthropic still reports
-   *  overage as available (`allowed` or `allowed_warning`) AND the user has opted this
-   *  account into overage spending, the pause is deferred. The account
-   *  stays usable by draining its overage grant instead. Once Anthropic
-   *  flips overage to `rejected` (grant exhausted), the next
+   *  Overage escape hatch: while Anthropic still reports overage as
+   *  available (`allowed` or `allowed_warning`) the account stays usable by
+   *  drawing on extra usage, and the pause is deferred when either
+   *    - switching is `off`: the user picked the account themselves, and a
+   *      manual pick already spends overage past its 5-hour limit unasked; or
+   *    - the account is opted into overage, which is what Auto requires
+   *      before it spends extra usage on the user's behalf.
+   *  Once Anthropic flips overage to `rejected` (grant exhausted), the next
    *  evaluator pass applies the pause.
    *
    *  Scoped to its own reason: does not touch 'sentinel_budget' pauses,
    *  and its own pauses survive a budget evaluation pass. */
   private evaluateWeeklyRateLimitPauses(): void {
     const shouldPause = new Set<string>();
-    const overageAllowed = this.deps.getOverageAllowedIds?.() ?? new Set<string>();
     const nowSec = Math.floor(this.clock() / 1000);
     for (const acc of listAccounts(this.deps.db)) {
-      const windows = this.deps.rateLimitStore.getAll(acc.id);
-      const weekly = windows.find((x) => x.name === WEEKLY_RATE_LIMIT_WINDOW);
-      if (weekly?.status !== 'blocked') continue;
-      // Stale-blocked guard: once the window's reset has elapsed, the
-      // stored `status='blocked'` is known-stale (the server-side window
-      // has rolled, but no fresh upstream response has landed to refresh
-      // it yet). Skip re-pausing in that case — this mirrors the sweep's
-      // release policy so that a recompute immediately following a sweep
-      // doesn't undo the release.
-      if (weekly.reset != null && weekly.reset <= nowSec) continue;
-      const overage = windows.find((x) => x.name === 'unified-overage');
-      const canUseOverage = isOverageAvailable(overage?.status) && overageAllowed.has(acc.id);
-      if (canUseOverage) continue;
-      shouldPause.add(acc.id);
+      if (this.weeklyPauseWarranted(acc.id, nowSec)) shouldPause.add(acc.id);
     }
 
     // Enter weekly pauses. Skip ids already paused for any reason — if an
@@ -573,6 +562,26 @@ export class SpendTracker {
       this.deps.ipcServer.broadcast({ type: 'account_unpaused', accountId: id });
       console.log(`[Spend] Unpaused ${id} (reason=weekly_rate_limit)`);
     }
+  }
+
+  /** Whether this account should be under a weekly-rate-limit pause now (see
+   *  `evaluateWeeklyRateLimitPauses` for the rule). */
+  private weeklyPauseWarranted(accountId: string, nowSec: number): boolean {
+    const windows = this.deps.rateLimitStore.getAll(accountId);
+    const weekly = windows.find((x) => x.name === WEEKLY_RATE_LIMIT_WINDOW);
+    if (weekly?.status !== 'blocked') return false;
+    // Stale-blocked guard: once the window's reset has elapsed, the
+    // stored `status='blocked'` is known-stale (the server-side window
+    // has rolled, but no fresh upstream response has landed to refresh
+    // it yet). Skip re-pausing in that case — this mirrors the sweep's
+    // release policy so that a recompute immediately following a sweep
+    // doesn't undo the release.
+    if (weekly.reset != null && weekly.reset <= nowSec) return false;
+    const overage = windows.find((x) => x.name === OVERAGE_WINDOW);
+    if (!isOverageAvailable(overage?.status)) return true;
+    const manualPick = this.deps.getSettings().switchingMode === 'off';
+    const optedIn = this.deps.getOverageAllowedIds?.().has(accountId) ?? false;
+    return !manualPick && !optedIn;
   }
 
   private evaluateBudgetAlerts(settings: Settings, spend: SpendSummary): void {
