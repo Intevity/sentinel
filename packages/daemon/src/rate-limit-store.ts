@@ -42,6 +42,15 @@ function normalizeStatus(name: string, status: string | null): string | null {
   return status;
 }
 
+/** True when the overage window's status says overage can still absorb spend.
+ *  Anthropic reports `allowed_warning` once the overage budget is mostly used,
+ *  and it serves those requests exactly like `allowed`; only `rejected` (the
+ *  budget is spent, or claude.ai has overage off) stops it. Reading
+ *  `allowed_warning` as unavailable paused opted-in accounts mid-overage. */
+export function isOverageAvailable(status: string | null | undefined): boolean {
+  return status === 'allowed' || status === 'allowed_warning';
+}
+
 /** True for the windows a "Clear weekly limit" resets: the overall `unified`
  *  verdict and every rolling 7-day window (general, Fable). */
 function isWeeklyWindowName(name: string): boolean {

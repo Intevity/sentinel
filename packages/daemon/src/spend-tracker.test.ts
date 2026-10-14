@@ -1238,6 +1238,69 @@ describe('SpendTracker', () => {
       expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
     });
 
+    it('does NOT pause an opted-in weekly-blocked account whose overage reads allowed_warning', () => {
+      // Anthropic warns once most of the overage budget is used and keeps
+      // serving; only `rejected` means the budget is spent.
+      const db = getDb(dbPath);
+      const store = new RateLimitStore();
+      const ipc = ipcStub();
+      seed(db, 'a');
+      blockWeekly(store, 'a');
+      store.update('a', {
+        'anthropic-ratelimit-unified-overage-status': 'allowed_warning',
+        'anthropic-ratelimit-unified-overage-utilization': '0.76',
+        'anthropic-ratelimit-unified-overage-in-use': 'true',
+      });
+
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings(),
+        getAnthropicSpend: () => 0,
+        getOverageAllowedIds: () => new Set(['a']),
+        now: () => 1_700_000_000_000,
+      });
+      tracker.recompute();
+      expect(tracker.getPauseReason('a')).toBe(null);
+      expect(ipc.broadcasts.some((b) => b.type === 'account_paused')).toBe(false);
+
+      store.update('a', { 'anthropic-ratelimit-unified-overage-status': 'rejected' });
+      tracker.recompute();
+      expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
+    });
+
+    it('releases a weekly pause persisted while overage read allowed_warning, on the next start', () => {
+      // An earlier build paused opted-in accounts at `allowed_warning`. The
+      // pause row survives a restart; the first recompute must drop it.
+      const db = getDb(dbPath);
+      seed(db, 'a');
+      upsertPausedAccount(db, 'a', 'sentinel_weekly_rate_limit', 1_800_000_000, Date.now());
+      const store = new RateLimitStore();
+      blockWeekly(store, 'a', 1_800_000_000);
+      store.update('a', {
+        'anthropic-ratelimit-unified-overage-status': 'allowed_warning',
+        'anthropic-ratelimit-unified-overage-in-use': 'true',
+      });
+      const ipc = ipcStub();
+      const tracker = new SpendTracker({
+        db,
+        rateLimitStore: store,
+        ipcServer: ipc as unknown as import('./ipc.js').IpcServer,
+        getSettings: () => settings(),
+        getAnthropicSpend: () => 0,
+        getOverageAllowedIds: () => new Set(['a']),
+        now: () => 1_700_000_000_000,
+      });
+      tracker.loadPersistedPauses();
+      expect(tracker.getPauseReason('a')).toBe('sentinel_weekly_rate_limit');
+
+      tracker.recompute();
+      expect(tracker.getPauseReason('a')).toBe(null);
+      expect(listPausedAccounts(db)).toHaveLength(0);
+      expect(ipc.broadcasts).toContainEqual({ type: 'account_unpaused', accountId: 'a' });
+    });
+
     it('pauses when the overage window flips from allowed to non-allowed', () => {
       // Simulates exhausting the overage grant: once Anthropic reports
       // unified-overage.status !== 'allowed', Sentinel must apply the
