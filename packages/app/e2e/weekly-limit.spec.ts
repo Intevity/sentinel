@@ -100,6 +100,9 @@ test('Clear limit lifts a rejected weekly window and its pause', async ({ page }
     timeout: 10000,
   });
 
+  // No extra usage to fall back on: with it, an account picked by hand keeps
+  // serving and is never paused. The fake's claude.ai snapshot has extra
+  // usage on, so the response says it's spent, as Anthropic's 429s do.
   const weekAhead = String(Math.floor(Date.now() / 1000) + 3 * 86_400);
   daemon.fake.queueResponse('/v1/messages', {
     extraHeaders: {
@@ -107,6 +110,8 @@ test('Clear limit lifts a rejected weekly window and its pause', async ({ page }
       'anthropic-ratelimit-unified-7d-status': 'rejected',
       'anthropic-ratelimit-unified-7d-utilization': '1.0',
       'anthropic-ratelimit-unified-7d-reset': weekAhead,
+      'anthropic-ratelimit-unified-overage-status': 'rejected',
+      'anthropic-ratelimit-unified-overage-disabled-reason': 'out_of_credits',
     },
   });
   const paused = daemon.waitForBroadcast(

@@ -28,7 +28,7 @@ const SYNC_RESET_DRIFT_TOLERANCE_SEC = 120;
 /** Name of the overage window. Its `status` is an availability flag
  *  (`allowed` = overage can absorb further spend), not a quota verdict, so it
  *  is exempt from the `rejected` → `blocked` normalization below. */
-const OVERAGE_WINDOW = 'unified-overage';
+export const OVERAGE_WINDOW = 'unified-overage';
 
 /** Anthropic's response headers say `rejected` for an exhausted quota window,
  *  while every consumer (token rotator, spend tracker, Usage view) and the

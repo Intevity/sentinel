@@ -59,6 +59,31 @@ describe('proxy pause short-circuits (real HTTP)', () => {
     const body = (await res.json()) as { error: { type: string; message: string } };
     expect(body.error.type).toBe('sentinel_weekly_rate_limit_paused');
     expect(body.error.message).toContain('weekly (7-day) rate limit');
+    expect(body.error.message).toContain('resume automatically when the 7-day window resets');
+    expect(body.error.message).not.toContain('Allow spending overage');
+  });
+
+  it('names the overage switch when Anthropic still offers extra usage on the paused account', async () => {
+    ctx = await startProxyWithFake({
+      accounts: [{ id: 'paused-acct', email: 'paused@example.com', token: 'tok' }],
+      tokens: ['tok'],
+      getPausedAccountIds: () => new Set(['paused-acct']),
+      getPauseReason: () => 'sentinel_weekly_rate_limit',
+      getOverageAllowedIds: () => new Set(),
+    });
+    ctx.rateLimitStore.update('paused-acct', {
+      'anthropic-ratelimit-unified-overage-status': 'allowed_warning',
+    });
+
+    const res = await postThroughProxy(ctx.proxyPort, '/v1/messages', { messages: [] });
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: { type: string; message: string } };
+    expect(body.error.type).toBe('sentinel_weekly_rate_limit_paused');
+    // "Clear limit" can't release it: the next response reports the limit again.
+    expect(body.error.message).toContain(
+      'turn on "Allow spending overage" for this account in Sentinel Settings > Accounts',
+    );
+    expect(ctx.fake.requests().some((r) => r.url.startsWith('/v1/messages'))).toBe(false);
   });
 
   it('weekly pause short-circuits a non-messages path too', async () => {

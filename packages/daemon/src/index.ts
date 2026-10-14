@@ -2245,7 +2245,14 @@ export async function startDaemon(): Promise<DaemonHandle> {
           prev.budgetWeeklyUsdGlobal !== next.budgetWeeklyUsdGlobal ||
           JSON.stringify(prev.budgetWeeklyUsdByAccount) !==
             JSON.stringify(next.budgetWeeklyUsdByAccount);
-        if (budgetsChanged) spendTracker.recompute();
+        // The weekly-limit pause also depends on the overage opt-ins and the
+        // switching mode. A paused account sends nothing upstream, so no fresh
+        // rate-limit headers will arrive to re-check it: re-evaluate now.
+        const overageRulesChanged =
+          prev.switchingMode !== next.switchingMode ||
+          JSON.stringify([...prev.overageEnabledIds].sort()) !==
+            JSON.stringify([...next.overageEnabledIds].sort());
+        if (budgetsChanged || overageRulesChanged) spendTracker.recompute();
         // Pool composition may have changed (mode toggle or exclusion list
         // edit). Re-evaluate pool alerts so crossings visible to the new
         // pool fire now instead of waiting for the next rate-limit header.

@@ -2200,9 +2200,10 @@ function ClaudeAiConnectionRow({
               Allow spending overage
             </p>
             <p className="text-[10px] text-muted leading-snug">
-              Auto picks this account for new requests after its 5-hour quota is exhausted, and lets
-              Fable requests through once the Fable 7-day quota is spent. Off: Sentinel refuses
-              either spillover with a 503.
+              Lets Auto keep using this account on extra usage after its 5-hour or weekly quota runs
+              out, and lets Fable requests past the Fable 7-day quota. Off: Auto moves on, and Fable
+              spillover gets a 503. An account you switch to yourself keeps using extra usage either
+              way, except for Fable.
             </p>
           </div>
           <input

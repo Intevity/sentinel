@@ -473,17 +473,18 @@ export interface Settings {
    *  the typical reauth failure mode is claude.ai holding a stale session
    *  for a different identity; a fresh cookie jar is the safe default. */
   reauthIncognitoDefault: boolean;
-  /** Sentinel account IDs explicitly allowed to draw on Anthropic's overage
-   *  budget when their subscription quota is exhausted. Opt-IN — an account
-   *  NOT on this list is treated as "never spend overage". Default [].
+  /** Sentinel account IDs Auto may spend Anthropic's overage budget on once
+   *  their subscription quota is exhausted. Opt-IN. Default [].
    *
    *  Auto mode: the `TokenRotator` refuses to pick an account whose
-   *  next request would consume overage (5h window saturated with overage
-   *  status `allowed`, or overage `in_use === true`) unless the account is
-   *  on this list.
+   *  next request would consume overage (5h or weekly window exhausted with
+   *  overage available, or overage `in_use === true`) unless the account is
+   *  on this list, and a weekly-exhausted account off the list is paused.
    *
-   *  `off` mode: the daemon still surfaces the existing `overage_entered`
-   *  notification — the user picked that active account themselves. */
+   *  `off` mode: the user picked the active account themselves, so it keeps
+   *  drawing on overage past its 5-hour and weekly limits whenever Anthropic
+   *  offers it; the daemon surfaces the `overage_entered` notification. Fable
+   *  requests past the Fable weekly quota still need the opt-in in both modes. */
   overageEnabledIds: string[];
   /** Per-account weekly (rolling 7-day) spend cap in USD. When set and the
    *  account's cost_usd sum over the trailing 7 days meets or exceeds this

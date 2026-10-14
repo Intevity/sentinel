@@ -30,6 +30,20 @@ to track overage budget in detail.
   [Troubleshooting](/sentinel/docs/reference/troubleshooting/).
 </Aside>
 
+## When an account runs out of quota
+
+An account whose 5-hour or weekly quota is spent can keep working on extra usage for as long as
+Anthropic offers it (extra usage is on in claude.ai and its monthly limit isn't reached).
+
+- **An account you switched to yourself** keeps working on extra usage.
+- **Auto** moves traffic onto extra usage only for accounts with **Allow spending overage** on
+  (**Settings → Accounts → Overage spend tracking**). Without it, Auto uses another account, and an
+  account whose weekly quota is spent is paused until its 7-day window resets.
+- **Fable** requests past the Fable 7-day quota need **Allow spending overage** either way.
+
+**Clear limit** on the Usage tab is for a weekly limit Anthropic lifted early. It doesn't release an
+account that is waiting on **Allow spending overage**: the next response reports the limit again.
+
 ## How detection works
 
 Claude Code routes through the daemon, which inspects each response for
