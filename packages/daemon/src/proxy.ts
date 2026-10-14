@@ -16,7 +16,7 @@ import {
   stagePendingUsageEvent,
 } from './db.js';
 import type { IpcServer } from './ipc.js';
-import type { RateLimitStore } from './rate-limit-store.js';
+import { isOverageAvailable, OVERAGE_WINDOW, type RateLimitStore } from './rate-limit-store.js';
 import type { SecurityScanner } from './security/scanner.js';
 import type { PermissionsEnforcer } from './security/permissions/enforcer.js';
 import { extractSessionInfo } from './security/permissions/enforcer.js';
@@ -664,13 +664,23 @@ export function createProxyServer(
     const reason = getPauseReason(accountId);
     if (reason === 'sentinel_weekly_rate_limit') {
       const resetSec = getWeeklyResetAt(accountId) ?? getSessionResetAt(accountId);
+      // Anthropic would still serve the account from extra usage; it is held
+      // back only because Auto may not spend overage on it. Say which switch
+      // releases it, since "Clear limit" can't (the next response re-blocks).
+      const overage = rateLimitStore?.getAll(accountId).find((w) => w.name === OVERAGE_WINDOW);
+      const heldByOptIn =
+        isOverageAvailable(overage?.status) && !getOverageAllowedIds().has(accountId);
       respond503(
         res,
         resetSec,
         'sentinel_weekly_rate_limit_paused',
-        'Sentinel has paused this account because its weekly (7-day) rate limit was reached. ' +
-          'It will resume automatically when the 7-day window resets. ' +
-          'Switch accounts to unblock sooner.',
+        heldByOptIn
+          ? 'Sentinel has paused this account because its weekly (7-day) rate limit was reached. ' +
+              'Anthropic still offers extra usage on it: turn on "Allow spending overage" for ' +
+              'this account in Sentinel Settings > Accounts to keep using it, or switch accounts.'
+          : 'Sentinel has paused this account because its weekly (7-day) rate limit was reached. ' +
+              'It will resume automatically when the 7-day window resets. ' +
+              'Switch accounts to unblock sooner.',
       );
       return;
     }
