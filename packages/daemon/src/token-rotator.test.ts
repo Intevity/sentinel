@@ -886,6 +886,60 @@ describe('TokenRotator overage gate', () => {
     expect(rotator.pick()?.accountId).toBe('hot');
   });
 
+  it('keeps an opted-in account on overage after Anthropic warns its overage budget is nearly spent', () => {
+    const db = getDb(dbPath);
+    seed(db, 'team', 't@x');
+    const store = new RateLimitStore();
+    // Weekly quota exhausted, overage in use and past Anthropic's warning mark:
+    // what a Team account reports three quarters into its overage budget.
+    store.update('team', {
+      'anthropic-ratelimit-unified-5h-status': 'allowed',
+      'anthropic-ratelimit-unified-5h-utilization': '0.28',
+      'anthropic-ratelimit-unified-7d-status': 'rejected',
+      'anthropic-ratelimit-unified-7d-utilization': '1.0',
+      'anthropic-ratelimit-unified-7d-reset': '9000',
+      'anthropic-ratelimit-unified-overage-status': 'allowed_warning',
+      'anthropic-ratelimit-unified-overage-in-use': 'true',
+    });
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'team' },
+      () => new Set(),
+      () => new Set(['team']),
+      () => new Set(),
+      () => 10,
+      () => 0,
+    );
+    expect(rotator.pick()?.accountId).toBe('team');
+
+    // Once the overage budget is spent Anthropic says `rejected`.
+    store.update('team', { 'anthropic-ratelimit-unified-overage-status': 'rejected' });
+    expect(rotator.pick()).toBeNull();
+  });
+
+  it('draws an account past its buffer into overage that reads allowed_warning', () => {
+    const db = getDb(dbPath);
+    seed(db, 'hot', 'h@x');
+    const store = new RateLimitStore();
+    setSession(store, 'hot', 0.97, 500);
+    store.update('hot', { 'anthropic-ratelimit-unified-overage-status': 'allowed_warning' });
+    const rotator = new TokenRotator(
+      db,
+      store,
+      { value: 'hot' },
+      () => new Set(),
+      () => new Set(['hot']),
+      () => new Set(),
+      () => 10,
+      () => 0,
+    );
+    expect(rotator.pick()?.accountId).toBe('hot');
+
+    store.update('hot', { 'anthropic-ratelimit-unified-overage-status': 'rejected' });
+    expect(rotator.pick()).toBeNull();
+  });
+
   it('skips a saturated account that is NOT in the overage allow-list', () => {
     const db = getDb(dbPath);
     seed(db, 'saturated', 's@x');

@@ -4,7 +4,8 @@
  * token, the proxy must authenticate it the way the API expects a key:
  * `x-api-key`, no `Authorization: Bearer`, no subscription OAuth beta flag,
  * and the workspace an identity-linked key acts in. Upstream, the request also
- * stops identifying as Claude Code, which Anthropic would otherwise bill as
+ * stops identifying as Claude Code, in its headers and at the front of its
+ * system prompt, which Anthropic would otherwise bill as
  * something other than the key's API credits.
  *
  * Driven over real HTTP through `startProxyWithFake`. The fake accepts an
@@ -28,6 +29,28 @@ async function post(port: number, headers: Record<string, string>): Promise<Resp
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify({ model: 'claude-sonnet-4-5-20250929', messages: [] }),
+  });
+}
+
+const CC_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+const CC_MAIN = 'You are an interactive agent that helps users with software engineering tasks.';
+/** The system prompt Claude Code sends: billing block, identity line, prompt. */
+const CC_SYSTEM = [
+  { type: 'text', text: 'x-anthropic-billing-header: cc_version=2.1.296.a1b; cc_entrypoint=cli;' },
+  { type: 'text', text: CC_IDENTITY, cache_control: { type: 'ephemeral' } },
+  { type: 'text', text: CC_MAIN, cache_control: { type: 'ephemeral' } },
+];
+
+async function postMessages(port: number, system: unknown): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}/v1/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'user-agent': CLI_UA },
+    body: JSON.stringify({
+      model: 'claude-opus-5-5',
+      max_tokens: 64,
+      system,
+      messages: [{ role: 'user', content: 'hi' }],
+    }),
   });
 }
 
@@ -87,6 +110,40 @@ describe('proxy with a pooled API-key account (real HTTP)', () => {
     expect(headers['authorization']).toBe('Bearer sk-ant-oat01-pooled');
     expect(headers['user-agent']).toBe(CLI_UA);
     expect(headers['anthropic-beta']).toBe('claude-code-20250219,oauth-2025-04-20');
+  });
+
+  it("moves Claude Code's markers off the front of a key request's system prompt", async () => {
+    ctx = await startProxyWithFake({
+      tokens: [USER_KEY],
+      accounts: [{ id: 'acct-usr', email: 'Personal key', token: USER_KEY }],
+    });
+
+    const res = await postMessages(ctx.proxyPort, CC_SYSTEM);
+    expect(res.status).toBe(200);
+
+    const sent = ctx.fake.requests().find((r) => r.url.startsWith('/v1/messages'))!;
+    // A first system block that is Claude Code's billing block or its exact
+    // identity line gets the same "credit balance is too low" answer.
+    expect(JSON.parse(sent.body).system).toEqual([
+      {
+        type: 'text',
+        text: `${CC_IDENTITY}\n\n${CC_MAIN}`,
+        cache_control: { type: 'ephemeral' },
+      },
+    ]);
+    expect(sent.headers['content-length']).toBe(String(Buffer.byteLength(sent.body)));
+  });
+
+  it("sends a subscription account's system prompt as Claude Code wrote it", async () => {
+    ctx = await startProxyWithFake({
+      tokens: ['sk-ant-oat01-pooled'],
+      accounts: [{ id: 'acct-sub', email: 'sub@example.com', token: 'sk-ant-oat01-pooled' }],
+    });
+
+    const res = await postMessages(ctx.proxyPort, CC_SYSTEM);
+    expect(res.status).toBe(200);
+    const sent = ctx.fake.requests().find((r) => r.url.startsWith('/v1/messages'))!;
+    expect(JSON.parse(sent.body).system).toEqual(CC_SYSTEM);
   });
 
   it("still accounts the request as Claude Code's, whose OTEL reports its cost", async () => {

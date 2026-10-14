@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import type { RateLimitStore } from './rate-limit-store.js';
+import { isOverageAvailable, type RateLimitStore } from './rate-limit-store.js';
 import type { IpcServer } from './ipc.js';
 import type { Settings, Alert, PauseReason } from '@sentinel/shared';
 import {
@@ -94,7 +94,7 @@ export interface SpendTrackerDeps {
   /** Live accessor for the user's overage opt-in allow-list (Sentinel ids).
    *  The weekly-rate-limit evaluator consults this: an account whose
    *  `unified-7d` window is blocked is still usable via overage when
-   *  `unified-overage.status === 'allowed'` AND the account is opted in,
+   *  overage is still available (`isOverageAvailable`) AND the account is opted in,
    *  so the pause is deferred until overage itself runs out. Defaults to
    *  an empty set (no accounts overage-eligible). */
   getOverageAllowedIds?: () => ReadonlySet<string>;
@@ -503,10 +503,10 @@ export class SpendTracker {
    *  account hours before Anthropic is willing to serve it.
    *
    *  Overage escape hatch: if Anthropic still reports
-   *  `unified-overage.status === 'allowed'` AND the user has opted this
+   *  overage as available (`allowed` or `allowed_warning`) AND the user has opted this
    *  account into overage spending, the pause is deferred. The account
    *  stays usable by draining its overage grant instead. Once Anthropic
-   *  flips overage to a non-`allowed` state (grant exhausted), the next
+   *  flips overage to `rejected` (grant exhausted), the next
    *  evaluator pass applies the pause.
    *
    *  Scoped to its own reason: does not touch 'sentinel_budget' pauses,
@@ -527,7 +527,7 @@ export class SpendTracker {
       // doesn't undo the release.
       if (weekly.reset != null && weekly.reset <= nowSec) continue;
       const overage = windows.find((x) => x.name === 'unified-overage');
-      const canUseOverage = overage?.status === 'allowed' && overageAllowed.has(acc.id);
+      const canUseOverage = isOverageAvailable(overage?.status) && overageAllowed.has(acc.id);
       if (canUseOverage) continue;
       shouldPause.add(acc.id);
     }

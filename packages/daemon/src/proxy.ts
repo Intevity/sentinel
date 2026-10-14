@@ -4,6 +4,7 @@ import { request as httpRequest } from 'http';
 import type { Server } from 'http';
 import { getProxyUpstream } from './hosts.js';
 import { sentinelUserAgent } from './http-identity.js';
+import { presentSystemPromptAsApiClient } from './api-key-system-prompt.js';
 import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { OverageStateMachine } from './overage.js';
@@ -211,7 +212,8 @@ const pooledApiKeyRequests = new WeakSet<IncomingMessage>();
  * too low" even though the key's organization has credits; the same request
  * without those two markers succeeds. Verified against live keys on
  * 2026-10-13. Every other header Claude Code sends, its other beta flags
- * included, passes unchanged.
+ * included, passes unchanged. The front of the system prompt carries the same
+ * identity; `presentSystemPromptAsApiClient` reshapes the body to match.
  */
 export function presentAsApiKeyClient(headers: IncomingMessage['headers']): void {
   headers['user-agent'] = sentinelUserAgent();
@@ -1545,6 +1547,21 @@ async function proxyToAnthropic(
       }
     } catch {
       // Malformed JSON body — skip measurement; never stall the hot path.
+    }
+  }
+
+  // A pooled API key's request also loses Claude Code's markers from the
+  // front of its system prompt (see presentSystemPromptAsApiClient). Runs
+  // after every other body rewrite so the request log shows what was sent.
+  if (
+    pooledApiKeyRequests.has(req) &&
+    req.method === 'POST' &&
+    req.url?.startsWith('/v1/messages')
+  ) {
+    const rewritten = presentSystemPromptAsApiClient(body);
+    if (rewritten !== body) {
+      body = rewritten;
+      req.headers['content-length'] = String(body.length);
     }
   }
 

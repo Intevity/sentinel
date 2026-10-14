@@ -3,7 +3,7 @@ import { FABLE_WEEKLY_WINDOW, isApiKeyCredential } from '@sentinel/shared';
 import type { AutoSwitchTargetWindow } from '@sentinel/shared';
 import { listAccounts } from './db.js';
 import { readActiveCredentials, readSentinelCredentials } from './accounts.js';
-import type { RateLimitStore } from './rate-limit-store.js';
+import { isOverageAvailable, type RateLimitStore } from './rate-limit-store.js';
 
 /** The 5-hour rolling window, the one users think of as "session limit".
  *  Always part of the ranking: the primary key in `five-hour` targeting, the
@@ -275,7 +275,7 @@ export class TokenRotator {
       );
       if (blocked) {
         const canUseOverage =
-          overageWindow?.status === 'allowed' && overageAllowed.has(entry.accountId);
+          isOverageAvailable(overageWindow?.status) && overageAllowed.has(entry.accountId);
         if (!canUseOverage) continue;
         overage.push(candidate);
         continue;
@@ -309,7 +309,7 @@ export class TokenRotator {
         // overage disabled, which previously slipped through to the fresh
         // tier and drove Claude Code into 429s at 100%.
         const canUseOverage =
-          overageWindow?.status === 'allowed' && overageAllowed.has(entry.accountId);
+          isOverageAvailable(overageWindow?.status) && overageAllowed.has(entry.accountId);
         if (!canUseOverage) continue;
         overage.push(candidate);
       } else {
