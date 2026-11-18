@@ -93,16 +93,27 @@ export interface PermissionsEnforcer {
    *      request. Both headers are only present when auto-mode is active.
    *
    *  Either signal bypasses all rule evaluation so the user isn't
-   *  double-gated by Sentinel on top of Claude Code's own classifier. */
-  isSkippedForAutoMode(headers?: IncomingHttpHeaders): boolean;
+   *  double-gated by Sentinel on top of Claude Code's own classifier.
+   *
+   *  `serverReview` is the third signal: the request asks for auto mode's
+   *  server-side classifier review (its body carries `safeguards`, see
+   *  auto-mode-review.ts). Claude Code only asks in auto mode, and doesn't
+   *  always send `afk-mode` alongside it. */
+  isSkippedForAutoMode(headers?: IncomingHttpHeaders, serverReview?: boolean): boolean;
   /** Rewrite an outbound /v1/messages body so any whole-tool deny rules
    *  strip the matching entries from its `tools` array. Returns the new
    *  Buffer (or the original when no stripping occurred or when the
    *  user approves the held block). Every strip opens a pending block
    *  and awaits the user's decision before proceeding — approve
    *  forwards the body as-is, deny/timeout strips the tools. Persists
-   *  `tool_permission_blocked` events at resolution time. */
-  stripDeniedTools(body: Buffer, accountId: string, headers?: IncomingHttpHeaders): Promise<Buffer>;
+   *  `tool_permission_blocked` events at resolution time. `serverReview`
+   *  is passed through to {@link isSkippedForAutoMode}. */
+  stripDeniedTools(
+    body: Buffer,
+    accountId: string,
+    headers?: IncomingHttpHeaders,
+    serverReview?: boolean,
+  ): Promise<Buffer>;
   /** Install an interceptor on the response stream. Returns null when the
    *  feature is disabled or auto-mode-skipped — caller should pipe raw.
    *  When hold is enabled the interceptor awaits the user's decision
@@ -111,12 +122,14 @@ export interface PermissionsEnforcer {
    *  Sprint 9: pass the original request body so the enforcer can
    *  extract the cwd (and session_id) and thread them into the
    *  evaluator. Optional for backwards compatibility — without a body
-   *  scoped rules act as if cwd is unknown (= scoped rules skip). */
+   *  scoped rules act as if cwd is unknown (= scoped rules skip).
+   *  `serverReview` is passed through to {@link isSkippedForAutoMode}. */
   createInterceptor(
     res: ServerResponse,
     accountId: string,
     headers?: IncomingHttpHeaders,
     body?: Buffer,
+    serverReview?: boolean,
   ): PermissionsSseInterceptor | null;
   /** Resolve a pending permission block from the UI (approve or deny).
    *  Returns true when the id belonged to this registry and was
@@ -154,8 +167,10 @@ export interface PermissionsEnforcer {
    *  `isSkippedForAutoMode`, this runs unconditionally (even when the
    *  feature is disabled) so the UI can still surface "Claude Code is in
    *  auto mode" even if Sentinel's rules aren't installed. Header-based
-   *  detection drives the freshness window; no per-session state is kept. */
-  observeRequest(headers: IncomingHttpHeaders): void;
+   *  detection drives the freshness window; no per-session state is kept.
+   *  A request that asks for server review (`serverReview`) counts as an
+   *  auto-mode request too. */
+  observeRequest(headers: IncomingHttpHeaders, serverReview?: boolean): void;
   /** Live auto-mode status used by the UI to show the "Claude Code is in
    *  auto mode" banner. Combines the manual settings toggle with header-based
    *  detection (held active for a 60 s freshness window so a bursty
@@ -412,17 +427,18 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
     broadcastStatusIfChanged();
   };
 
-  const observeRequest = (headers: IncomingHttpHeaders): void => {
+  const observeRequest = (headers: IncomingHttpHeaders, serverReview = false): void => {
     // The only thing we record is "an auto-mode request was just seen". A
     // non-auto request changes nothing: the freshness window from the last
     // auto-mode request still governs deactivation.
-    if (detectAutoModeFromHeaders(headers)) markHeaderDetection();
+    if (serverReview || detectAutoModeFromHeaders(headers)) markHeaderDetection();
   };
 
-  const isSkippedForAutoMode = (headers?: IncomingHttpHeaders): boolean => {
+  const isSkippedForAutoMode = (headers?: IncomingHttpHeaders, serverReview = false): boolean => {
     const s = deps.getSettings();
     if (!s.toolPermissionSkipInAutoMode) return false;
     if (s.toolPermissionAutoModeActive) return true;
+    if (serverReview) return true;
     if (headers && detectAutoModeFromHeaders(headers)) return true;
     return false;
   };
@@ -681,8 +697,11 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
     body: Buffer,
     accountId: string,
     headers?: IncomingHttpHeaders,
+    serverReview = false,
   ): Promise<Buffer> => {
-    if (!isEnabled() || isSkippedForAutoMode(headers) || body.length === 0) return body;
+    if (!isEnabled() || isSkippedForAutoMode(headers, serverReview) || body.length === 0) {
+      return body;
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(body.toString('utf-8'));
@@ -810,8 +829,9 @@ export function createPermissionsEnforcer(deps: PermissionsEnforcerDeps): Permis
     accountId: string,
     headers?: IncomingHttpHeaders,
     body?: Buffer,
+    serverReview = false,
   ): PermissionsSseInterceptor | null => {
-    if (!isEnabled() || isSkippedForAutoMode(headers)) return null;
+    if (!isEnabled() || isSkippedForAutoMode(headers, serverReview)) return null;
     const { rules } = getCompiled();
     // Sprint 9: extract cwd + session_id once for this response and
     // close over them so the awaitDecision hook can consult session

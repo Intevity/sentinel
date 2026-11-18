@@ -41,6 +41,33 @@ sets this for you.
   [Troubleshooting](/sentinel/docs/reference/troubleshooting/).
 </Aside>
 
+## Auto mode
+
+In auto mode, Claude Code asks Anthropic's API to review each action before it runs. Behind a proxy,
+the review keeps working only while the proxy passes the request for it and its results through
+untouched. If a response comes back without the results, Claude Code stops using the review for the
+rest of the session, and current versions then ask you to approve every action yourself.
+
+Sentinel passes them through:
+
+- A request that asks for the review goes upstream with its `anthropic-beta` header and its
+  `safeguards` field exactly as Claude Code sent them. **Force 1h cache TTL** still moves its cache
+  breakpoints to one hour but doesn't add its beta flag there, and compression still shortens earlier
+  tool output without touching any tool call.
+- Responses reach Claude Code byte for byte, review results included. If a
+  [permission rule](/sentinel/docs/features/permission-rules/) blocks a tool call in auto mode,
+  Sentinel still replaces that call, and the review results stay in place.
+- A request that asks for the review counts as auto mode for **Skip enforcement in auto mode**.
+- The one header change Sentinel still makes is for an account backed by an API key, which can't
+  carry the flags that describe your Claude subscription login. The review's own flag stays.
+
+To check a session, run `/status` in Claude Code: **Auto mode server** reads `Enabled` while the
+review is in use. Sentinel also counts the reviews it forwarded under `autoModeReview` in
+`curl -s http://localhost:47284/health`. `answered` means the results came back. `missing` means
+Anthropic's response arrived complete without them. Sentinel logs the first one as an
+`[AutoModeReview]` line in `~/.sentinel/daemon.log`, naming which kind of credential carried the
+request.
+
 ## Deactivating
 
 Use the **⋯ menu → Uninstall Sentinel…** (or the activation toggle) to remove the variables and

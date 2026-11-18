@@ -25,6 +25,10 @@ context stays small and cheap.
 Oversized `tool_result` payloads quietly fill your context window. Sentinel trims them at one of
 three levels — **Conservative**, **Moderate**, or **Aggressive**.
 
+Results that carry your own words are never trimmed: your answers to Claude's questions, the plan
+you approved, and what you said when you rejected a tool call. Auto mode's safety review rereads
+them to judge what you've agreed to.
+
 <Aside type="note" title="Nothing is lost in reversible mode">
   In reversible mode, Sentinel stores the original payload and leaves a marker. Claude can pull the
   full content back on demand with the `mcp__sentinel__retrieve` tool — so compression never costs

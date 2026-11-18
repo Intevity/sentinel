@@ -724,3 +724,78 @@ describe('interceptor — async hold flow', () => {
     expect(out.split('rm -rf /').length - 1).toBe(1);
   });
 });
+
+describe('interceptor — byte fidelity (auto mode server review)', () => {
+  /** A Buffer-collecting sink: what the client's socket receives, as bytes. */
+  function byteSink(): InterceptorSink & { bytes: () => Buffer } {
+    const parts: Buffer[] = [];
+    return {
+      write(c: string | Buffer): void {
+        parts.push(typeof c === 'string' ? Buffer.from(c, 'utf-8') : c);
+      },
+      bytes: () => Buffer.concat(parts),
+    };
+  }
+
+  /** A reviewed response: a tool_use whose input carries multi-byte UTF-8,
+   *  then the review results keyed by that tool_use's id. */
+  function reviewedStream(): Buffer {
+    const stream = buildToolUseStream({
+      name: 'Bash',
+      id: 'toolu_review',
+      inputParts: ['{"command":"echo \'café — 日本 ', '🚀\'"}'],
+    }).replace(
+      '"delta":{"stop_reason":"end_turn"}',
+      '"delta":{"stop_reason":"tool_use","safeguard_results":[{"type":"dangerous_tool_use","status":{"type":"available","tool_uses":{"toolu_review":{"type":"evaluated","outcome":"not_flagged"}}}}]}',
+    );
+    return Buffer.from(stream, 'utf-8');
+  }
+
+  it('passes a stream through byte-for-byte when TCP splits multi-byte characters', () => {
+    const upstream = reviewedStream();
+    const sink = byteSink();
+    const it = createPermissionsSseInterceptor({
+      sink,
+      rules: compileRules([rule({ decision: 'allow', tool: 'Bash', pattern: null, raw: 'Bash' })]),
+      settings: settings(),
+      accountId: 'acc-1',
+    });
+    // One byte per chunk: every multi-byte character arrives split.
+    for (let i = 0; i < upstream.length; i += 1) it.push(upstream.subarray(i, i + 1));
+    it.flush();
+    expect(sink.bytes().equals(upstream)).toBe(true);
+    expect(sink.bytes().toString('utf-8')).not.toContain('�');
+  });
+
+  it('flushes a character the upstream never finished instead of dropping it', () => {
+    const sink = byteSink();
+    const it = createPermissionsSseInterceptor({
+      sink,
+      rules: compileRules([]),
+      settings: settings(),
+      accountId: 'acc-1',
+    });
+    // An em dash cut after its first byte, at the very end of the stream.
+    it.push(Buffer.from([0x3a, 0x20, 0xe2]));
+    it.flush();
+    expect(sink.bytes().toString('utf-8')).toBe(': �');
+  });
+
+  it('keeps safeguard_results when a denied tool_use forces the stop_reason rewrite', () => {
+    const sink = collectingSink();
+    const it = createPermissionsSseInterceptor({
+      sink,
+      rules: compileRules([rule({ decision: 'deny', tool: 'Bash', pattern: null, raw: 'Bash' })]),
+      settings: settings(),
+      accountId: 'acc-1',
+    });
+    it.push(reviewedStream());
+    it.flush();
+    const out = sink.joined();
+    expect(out).toContain('[Blocked by Sentinel: Bash]');
+    expect(out).toContain('"stop_reason":"end_turn"');
+    expect(out).toContain(
+      '"safeguard_results":[{"type":"dangerous_tool_use","status":{"type":"available","tool_uses":{"toolu_review":{"type":"evaluated","outcome":"not_flagged"}}}}]',
+    );
+  });
+});

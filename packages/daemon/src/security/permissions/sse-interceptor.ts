@@ -22,6 +22,7 @@
  */
 
 import type { ServerResponse } from 'http';
+import { StringDecoder } from 'string_decoder';
 import type { PermissionRule } from '@sentinel/shared';
 import {
   compileRules,
@@ -199,9 +200,18 @@ export function createPermissionsSseInterceptor(
    *  so the proxy now awaits this before flushing. */
   const pendingDecisions: Promise<unknown>[] = [];
 
+  /** Decodes upstream bytes across chunk boundaries. TCP splits a multi-byte
+   *  UTF-8 character (an em dash, a curly quote, any non-Latin text) across
+   *  two chunks whenever it likes; decoding each chunk on its own turned both
+   *  halves into U+FFFD, so the client received tool_use input that differed
+   *  from what upstream sent and auto mode's server review had judged. The
+   *  decoder holds a split character back until its last byte arrives, so
+   *  every frame passed through re-encodes to upstream's exact bytes. */
+  const decoder = new StringDecoder('utf8');
+
   const push = (chunk: Buffer | string): void => {
     if (killed) return;
-    const str = typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+    const str = typeof chunk === 'string' ? chunk : decoder.write(chunk);
     if (holdActive) {
       holdBuffer += str;
       return;
@@ -478,6 +488,9 @@ export function createPermissionsSseInterceptor(
 
   const flush = (): void => {
     if (killed) return;
+    // Whatever the decoder still holds: only bytes of a character the
+    // upstream never finished, which it can't fix by waiting longer.
+    rawBuffer += decoder.end();
     // If a hold is still active when the upstream signals 'end',
     // there's no way to retroactively emit the right outcome — the
     // user can't approve an already-closed stream. Flush the

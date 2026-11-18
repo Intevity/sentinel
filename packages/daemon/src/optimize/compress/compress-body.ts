@@ -127,6 +127,35 @@ function buildToolNameMap(messages: unknown[]): Map<string, string> {
   return map;
 }
 
+/** Tools whose result is the user's own decision: an answer to a question, or
+ *  the plan they approved (edits included). */
+const USER_DECISION_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
+/** Opening of the result Claude Code sends when the user rejects a tool call,
+ *  often followed by what the user said to do instead. */
+const USER_REJECTION_MARKER = "The user doesn't want to proceed with this tool use";
+
+/**
+ * True when a tool_result carries the user's own words: what they answered,
+ * which plan they approved, or why they rejected a call. These are never
+ * compressed, at any age. Auto mode's server-side review rereads the
+ * transcript to judge what the user has agreed to, and these blocks are where
+ * that consent lives. The decision depends only on the block, so a message
+ * keeps the same form on every request of the conversation.
+ */
+function carriesUserDecision(block: Record<string, unknown>, toolName: string): boolean {
+  if (USER_DECISION_TOOLS.has(toolName)) return true;
+  const content = block['content'];
+  if (typeof content === 'string') return content.includes(USER_REJECTION_MARKER);
+  if (!Array.isArray(content)) return false;
+  return content.some(
+    (part) =>
+      !!part &&
+      typeof part === 'object' &&
+      typeof (part as Record<string, unknown>)['text'] === 'string' &&
+      ((part as Record<string, unknown>)['text'] as string).includes(USER_REJECTION_MARKER),
+  );
+}
+
 function resolveToolName(map: Map<string, string>, toolUseId: unknown): string {
   if (typeof toolUseId === 'string') {
     const name = map.get(toolUseId);
@@ -245,8 +274,9 @@ export function compressMessagesBody(body: Buffer, opts: CompressOpts): Compress
       if (!block || typeof block !== 'object') continue;
       const b = block as Record<string, unknown>;
       if (b['type'] !== 'tool_result') continue;
-      toolResultCount++;
       const toolName = resolveToolName(toolNames, b['tool_use_id']);
+      if (carriesUserDecision(b, toolName)) continue;
+      toolResultCount++;
 
       if (foldEnabled) {
         const f = foldableText(b);
