@@ -424,3 +424,83 @@ describe('compressMessagesBody intra-body fold', () => {
     expect(second.stats.skipReason).toBe('already_compressed');
   });
 });
+
+describe('compressMessagesBody leaves the user’s own words alone', () => {
+  const noisy = `${ESC}[32mok${ESC}[0m\n${'noise\n'.repeat(50)}`;
+  const rejection =
+    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it " +
+    'was a file edit, the new_string was NOT written to the file). To tell you how to proceed, ' +
+    `the user said:\n${ESC}[1mdo not push to main${ESC}[0m\n${'   \n'.repeat(30)}`;
+
+  /** One user-decision result plus one ordinary Bash result in the same turn. */
+  function body(decision: { tool: string; content: unknown }): Buffer {
+    return buf({
+      model: 'claude-sonnet-4-6',
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'tu_decision', name: decision.tool, input: {} },
+            { type: 'tool_use', id: 'tu_bash', name: 'Bash', input: {} },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'tu_decision', content: decision.content },
+            { type: 'tool_result', tool_use_id: 'tu_bash', content: noisy },
+          ],
+        },
+      ],
+    });
+  }
+
+  function results(out: Buffer): unknown[] {
+    const parsed = JSON.parse(out.toString('utf-8')) as {
+      messages: Array<{ content: Array<{ content?: unknown }> }>;
+    };
+    return parsed.messages[1]!.content.map((b) => b.content);
+  }
+
+  it.each([
+    ['an AskUserQuestion answer', 'AskUserQuestion', `User answered:\n${noisy}`],
+    [
+      'an approved plan',
+      'ExitPlanMode',
+      `User has approved your plan.\n## Approved Plan:\n${noisy}`,
+    ],
+    ['a rejected call with the user’s feedback', 'Bash', rejection],
+    ['a rejection carried in a text part', 'Edit', [{ type: 'text', text: rejection }]],
+  ])('keeps %s byte-for-byte while compressing the rest', (_label, tool, content) => {
+    const { body: out, stats } = compressMessagesBody(body({ tool, content }), {
+      level: 'aggressive',
+      maxBodyBytes: BIG,
+    });
+    expect(stats.changed).toBe(true);
+    const [decision, bash] = results(out);
+    expect(decision).toEqual(content);
+    expect(String(bash)).not.toContain(ESC);
+    // Only the ordinary result is counted as a compression candidate.
+    expect(Object.keys(stats.perTool)).toEqual(['Bash']);
+    expect(stats.perTool['Bash']!.blocks).toBe(1);
+  });
+
+  it('reports no tool results when the only result is the user’s decision', () => {
+    const only = buf({
+      model: 'claude-sonnet-4-6',
+      messages: [
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'q', name: 'AskUserQuestion', input: {} }],
+        },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'q', content: noisy }] },
+      ],
+    });
+    const { body: out, stats } = compressMessagesBody(only, {
+      level: 'aggressive',
+      maxBodyBytes: BIG,
+    });
+    expect(out).toBe(only);
+    expect(stats.skipReason).toBe('no_tool_results');
+  });
+});
