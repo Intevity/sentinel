@@ -5,6 +5,13 @@ import type { Server } from 'http';
 import { getProxyUpstream } from './hosts.js';
 import { sentinelUserAgent } from './http-identity.js';
 import { presentSystemPromptAsApiClient } from './api-key-system-prompt.js';
+import {
+  createReviewResultScanner,
+  getAutoModeReviewStats,
+  recordReviewOutcome,
+  requestsServerReview,
+  type ReviewCredential,
+} from './auto-mode-review.js';
 import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { OverageStateMachine } from './overage.js';
@@ -201,9 +208,23 @@ const CLAUDE_CODE_BETA_TOKEN = 'claude-code-20250219';
  *  the request itself keeps the Claude Code identity every classifier reads. */
 const pooledApiKeyRequests = new WeakSet<IncomingMessage>();
 
+/** The credential a reviewed request went upstream with, for the auto mode
+ *  review ledger. Read after credential selection. */
+function reviewCredential(req: IncomingMessage): ReviewCredential {
+  if (pooledApiKeyRequests.has(req)) return 'pooled-api-key';
+  if (isByokRequest(req.headers)) return 'client-api-key';
+  return 'login';
+}
+
 /**
  * Make a request Sentinel sends with a pooled API key look like an API client
  * rather than Claude Code, on the copy of the headers that goes upstream.
+ *
+ * This is the one place Sentinel still edits `anthropic-beta` on a request
+ * asking for auto mode's server review: the request no longer carries the
+ * credential those flags describe, and the API refuses it with them. The
+ * review's own beta value and the `safeguards` field it pairs with pass
+ * through untouched.
  *
  * Anthropic bills a request that identifies as Claude Code (by the
  * `claude-code` beta flag, or by `claude-cli` anywhere in the user-agent)
@@ -915,6 +936,9 @@ export function createProxyServer(
         status: healthy ? 'ok' : 'degraded',
         pid: process.pid,
         components: snapshot,
+        // Whether auto mode's server review came back on reviewed requests,
+        // split by whether Sentinel rewrote the body. See auto-mode-review.ts.
+        autoModeReview: getAutoModeReviewStats(),
       };
       res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(body));
@@ -1145,6 +1169,18 @@ async function proxyToAnthropic(
   // requests skip capture — they're internal noise, not user-originated.
   const settings = loadSettings();
   const isProbe = isSentinelOriginated(req.headers);
+  /** The request asks for auto mode's server-side classifier review. Its
+   *  `anthropic-beta` then goes upstream as Claude Code sent it (the API key
+   *  credential swap aside), the permission enforcer treats it as auto mode,
+   *  and its response is checked for the review results. Body rewrites still
+   *  run: none of them touches `safeguards` or a tool_use block, and reviews
+   *  were observed coming back on rewritten bodies. See auto-mode-review.ts. */
+  const serverReview =
+    req.method === 'POST' &&
+    (req.url?.startsWith('/v1/messages') ?? false) &&
+    requestsServerReview(body);
+  /** The body as the client sent it, to tell whether a rewrite changed it. */
+  const bodyAsReceived = body;
   /** Wall-clock start, used for the `usage_events.duration_ms` of clients that
    *  emit no OTEL. Independent of `capture.startMs`, which only exists while
    *  request logging is enabled. */
@@ -1294,7 +1330,7 @@ async function proxyToAnthropic(
     !req.url.includes('count_tokens') &&
     !isSentinelOriginated(req.headers)
   ) {
-    permissionsEnforcer.observeRequest(req.headers);
+    permissionsEnforcer.observeRequest(req.headers, serverReview);
   }
 
   // Tool permission enforcement — request side. Whole-tool deny rules strip
@@ -1309,11 +1345,16 @@ async function proxyToAnthropic(
   // modes (run in parallel) each get the right treatment.
   if (
     permissionsEnforcer?.isEnabled() &&
-    !permissionsEnforcer.isSkippedForAutoMode(req.headers) &&
+    !permissionsEnforcer.isSkippedForAutoMode(req.headers, serverReview) &&
     req.method === 'POST' &&
     req.url?.startsWith('/v1/messages')
   ) {
-    const rewritten = await permissionsEnforcer.stripDeniedTools(body, rlKey, req.headers);
+    const rewritten = await permissionsEnforcer.stripDeniedTools(
+      body,
+      rlKey,
+      req.headers,
+      serverReview,
+    );
     if (rewritten !== body) {
       body = rewritten;
       // Keep Content-Length honest so Node doesn't truncate or stall.
@@ -1343,6 +1384,11 @@ async function proxyToAnthropic(
   // Only mutates breakpoints the client already placed, so we stay under the
   // 4-breakpoint API cap automatically. The beta header was required when
   // 1h TTL was gated; it's GA now but harmless to include as insurance.
+  //
+  // Except on a request asking for auto mode's server review: its
+  // `anthropic-beta` travels as a pair with the `safeguards` field and goes
+  // upstream unchanged. The 1h rewrite needs no beta there; Claude Code
+  // itself sends `ttl: "1h"` to subscribers without one.
   if (
     settings.cacheTtlForceOneHour &&
     req.method === 'POST' &&
@@ -1353,6 +1399,13 @@ async function proxyToAnthropic(
       body = rewritten;
       req.headers['content-length'] = String(body.length);
     }
+  }
+  if (
+    settings.cacheTtlForceOneHour &&
+    !serverReview &&
+    req.method === 'POST' &&
+    req.url?.startsWith('/v1/messages')
+  ) {
     const existingBeta = req.headers['anthropic-beta'];
     const betaToken = 'extended-cache-ttl-2025-04-11';
     if (typeof existingBeta === 'string') {
@@ -1980,8 +2033,38 @@ async function proxyToAnthropic(
       // at the request layer (accept-encoding was stripped).
       const isSse = !encoding && req.url?.startsWith('/v1/messages') && req.method === 'POST';
       const interceptor = isSse
-        ? (permissionsEnforcer?.createInterceptor(res, currentRlKey, req.headers, body) ?? null)
+        ? (permissionsEnforcer?.createInterceptor(
+            res,
+            currentRlKey,
+            req.headers,
+            body,
+            serverReview,
+          ) ?? null)
         : null;
+
+      // Auto mode's server review: note whether this response carried the
+      // review results. A pure observer on upstream's bytes, like the
+      // capture and cache-TTL taps below. Attached before them, in the same
+      // tick, so it sees every chunk. An encoded body can't be scanned.
+      if (serverReview && !encoding) {
+        const statusCode = Number(proxyRes.statusCode);
+        const scanner = createReviewResultScanner(
+          String(proxyRes.headers['content-type']).includes('text/event-stream'),
+        );
+        let completed = false;
+        proxyRes.on('data', (chunk: Buffer) => scanner.push(chunk));
+        proxyRes.on('end', () => {
+          completed = true;
+        });
+        proxyRes.once('close', () => {
+          recordReviewOutcome({
+            outcome: scanner.outcome(statusCode, completed),
+            rewritten: body !== bodyAsReceived,
+            credential: reviewCredential(req),
+            statusCode,
+          });
+        });
+      }
 
       const captureChunk = (chunk: Buffer): void => {
         if (!capture || !capture.captureResponse) return;
